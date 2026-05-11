@@ -17,8 +17,8 @@
  */
 
 #include "cGDriver.h"
-#include "GLSupport.h"
 #include "VertexFormatUtils.h"
+#include <cstring>
 
 FILE* gLogFile = nullptr;
 cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() { }
@@ -31,15 +31,15 @@ static_assert(offsetof(sGDMode, _unknownFuncPtr) == 0x34);*/
 
 namespace nSCGL
 {
-	static GLenum fogParamTypeMap[] = { GL_FOG_MODE, GL_FOG_COLOR, GL_FOG_DENSITY, GL_FOG_START, GL_FOG_END, GL_FOG_COORD_SRC };
+	static D3DRENDERSTATETYPE fogParamTypeMap[] = { D3DRS_FOGVERTEXMODE, D3DRS_FOGCOLOR, D3DRS_FOGDENSITY, D3DRS_FOGSTART, D3DRS_FOGEND, D3DRS_FOGTABLEMODE };
 
 	cGDriver::cGDriver() :
 		lastError(DriverError::OK),
 #ifndef NDEBUG
-		dbgLastError(GL_NO_ERROR),
+		dbgLastError(D3D_OK),
 #endif
 		currentVideoMode(-1),
-		driverInfo("Maxis 3D GDriver\nOpenGL\n3.0\n"),
+		driverInfo("Maxis 3D GDriver\nDirect3D\n9.0c\n"),
 		videoModeCount(0),
 		refCount(0),
 		windowWidth(0),
@@ -49,28 +49,31 @@ namespace nSCGL
 		viewportWidth(0),
 		viewportHeight(0),
 		bufferRegionFlags(0),
-		framebufferHandles(),
-		renderbufferHandles(),
-		framebufferMasks(),
-		supportedExtensions(),
+		bufferRegions(),
+		supportedFeatures(),
 		windowHandle(nullptr),
-		deviceContext(nullptr),
-		glContext(nullptr)
+		d3d(nullptr),
+		d3dDevice(nullptr),
+		presentParams(),
+		deviceCaps(),
+		clearColor(D3DCOLOR_ARGB(0, 0, 0, 0)),
+		clearDepth(1.0f),
+		clearStencil(0)
 	{
 	}
 
 	cGDriver::~cGDriver() {
 	}
 
-	void cGDriver::DrawArrays(GLenum gdMode, GLint first, GLsizei count) {
+	void cGDriver::DrawArrays(uint32_t gdMode, int32_t first, int32_t count) {
 		state.DrawArrays(gdMode, first, count);
 	}
 
-	void cGDriver::DrawElements(GLenum gdMode, GLsizei count, GLenum gdType, void const* indices) {
+	void cGDriver::DrawElements(uint32_t gdMode, int32_t count, uint32_t gdType, void const* indices) {
 		state.DrawElements(gdMode, count, gdType, indices);
 	}
 
-	void cGDriver::InterleavedArrays(GLenum format, GLsizei stride, void const* pointer) {
+	void cGDriver::InterleavedArrays(uint32_t format, int32_t stride, void const* pointer) {
 		if (stride == 0) {
 			stride = VertexFormatStride(format);
 		}
@@ -99,32 +102,34 @@ namespace nSCGL
 		return RZVertexFormatNumElements(gdVertexFormat, gdElementType);
 	}
 
-	void cGDriver::Clear(GLbitfield mask) {
-		GLbitfield glMask = 0;
-		glMask  = (mask & 0x1000) >> 4; // GL_DEPTH_BUFFER_BIT   (0x100)
-		glMask |= (mask & 0x2000) >> 3; // GL_STENCIL_BUFFER_BIT (0x400)
-		glMask |= (mask & 0x4000);      // GL_COLOR_BUFFER_BIT   (0x4000)
-		glClear(glMask);
+	void cGDriver::Clear(uint32_t mask) {
+		DWORD d3dMask = 0;
+		d3dMask |= (mask & 0x1000) ? D3DCLEAR_ZBUFFER : 0;
+		d3dMask |= (mask & 0x2000) ? D3DCLEAR_STENCIL : 0;
+		d3dMask |= (mask & 0x4000) ? D3DCLEAR_TARGET : 0;
+
+		if (d3dDevice != nullptr && d3dMask != 0) {
+			d3dDevice->Clear(0, nullptr, d3dMask, clearColor, clearDepth, clearStencil);
+		}
 	}
 
-	void cGDriver::ClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha) {
-		//glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
-		glClearColor(red, green, blue, alpha);
+	void cGDriver::ClearColor(float red, float green, float blue, float alpha) {
+		clearColor = D3DCOLOR_COLORVALUE(red, green, blue, alpha);
 	}
 
-	void cGDriver::ClearDepth(GLclampd depth) {
-		glClearDepth(depth);
+	void cGDriver::ClearDepth(double depth) {
+		clearDepth = static_cast<float>(depth);
 	}
 
-	void cGDriver::ClearStencil(GLint s) {
-		glClearStencil(s);
+	void cGDriver::ClearStencil(int32_t s) {
+		clearStencil = static_cast<uint32_t>(s);
 	}
 
 	void cGDriver::ColorMask(bool flag) {
 		state.ColorMask(flag);
 	}
 
-	void cGDriver::DepthFunc(GLenum gdFunc) {
+	void cGDriver::DepthFunc(uint32_t gdFunc) {
 		state.DepthFunc(gdFunc);
 	}
 
@@ -132,41 +137,54 @@ namespace nSCGL
 		state.DepthMask(flag);
 	}
 
-	void cGDriver::StencilFunc(GLenum gdFunc, GLint ref, GLuint mask) {
+	void cGDriver::StencilFunc(uint32_t gdFunc, int32_t ref, uint32_t mask) {
 		state.StencilFunc(gdFunc, ref, mask);
 	}
 
-	void cGDriver::StencilMask(GLuint mask) {
+	void cGDriver::StencilMask(uint32_t mask) {
 		state.StencilMask(mask);
 	}
 
-	void cGDriver::StencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
+	void cGDriver::StencilOp(uint32_t fail, uint32_t zfail, uint32_t zpass) {
 		state.StencilOp(fail, zfail, zpass);
 	}
 
-	void cGDriver::BlendFunc(GLenum sfactor, GLenum dfactor) {
+	void cGDriver::BlendFunc(uint32_t sfactor, uint32_t dfactor) {
 		state.BlendFunc(sfactor, dfactor);
 	}
 
-	void cGDriver::AlphaFunc(GLenum func, GLclampf ref) {
+	void cGDriver::AlphaFunc(uint32_t func, float ref) {
 		state.AlphaFunc(func, ref);
 	}
 
-	void cGDriver::ShadeModel(GLenum mode) {
+	void cGDriver::ShadeModel(uint32_t mode) {
 		state.ShadeModel(mode);
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, uint32_t gdFogParam) {
-		static GLenum fogParamMap[] = { GL_EXP, GL_EXP2, GL_LINEAR, GL_FOG_COORD, GL_ZERO };
+		static DWORD fogParamMap[] = { D3DFOG_EXP, D3DFOG_EXP2, D3DFOG_LINEAR, D3DFOG_NONE, D3DFOG_NONE };
 		SIZE_CHECK(gdFogParamType, fogParamTypeMap);
 		SIZE_CHECK(gdFogParam, fogParamMap);
 
-		glFogi(fogParamTypeMap[gdFogParamType], fogParamMap[gdFogParam]);
+		if (d3dDevice != nullptr) {
+			d3dDevice->SetRenderState(fogParamTypeMap[gdFogParamType], fogParamMap[gdFogParam]);
+		}
 	}
 
-	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const* params) {
+	void cGDriver::Fog(uint32_t gdFogParamType, float const* params) {
 		SIZE_CHECK(gdFogParamType, fogParamTypeMap);
-		glFogfv(fogParamTypeMap[gdFogParamType], params);
+		if (d3dDevice == nullptr || params == nullptr) {
+			return;
+		}
+
+		if (gdFogParamType == 1) {
+			d3dDevice->SetRenderState(D3DRS_FOGCOLOR, D3DCOLOR_COLORVALUE(params[0], params[1], params[2], params[3]));
+		}
+		else {
+			DWORD value;
+			memcpy(&value, params, sizeof(value));
+			d3dDevice->SetRenderState(fogParamTypeMap[gdFogParamType], value);
+		}
 	}
 
 	void cGDriver::ColorMultiplier(float r, float g, float b) {
@@ -181,11 +199,11 @@ namespace nSCGL
 		state.EnableVertexColors(ambient, diffuse);
 	}
 
-	void cGDriver::MatrixMode(GLenum mode) {
+	void cGDriver::MatrixMode(uint32_t mode) {
 		state.MatrixMode(mode);
 	}
 
-	void cGDriver::LoadMatrix(GLfloat const* m) {
+	void cGDriver::LoadMatrix(float const* m) {
 		state.LoadMatrix(m);
 	}
 
@@ -193,19 +211,19 @@ namespace nSCGL
 		state.LoadIdentity();
 	}
 
-	void cGDriver::Enable(GLenum gdCap) {
+	void cGDriver::Enable(uint32_t gdCap) {
 		state.Enable(gdCap);
 	}
 
-	void cGDriver::Disable(GLenum gdCap) {
+	void cGDriver::Disable(uint32_t gdCap) {
 		state.Disable(gdCap);
 	}
 
-	bool cGDriver::IsEnabled(GLenum gdCap) {
+	bool cGDriver::IsEnabled(uint32_t gdCap) {
 		return state.IsEnabled(gdCap);
 	}
 
-	void cGDriver::GetBoolean(GLenum pname, bool* params) {
+	void cGDriver::GetBoolean(uint32_t pname, bool* params) {
 #ifndef NDEBUG
 		if (pname != 0) {
 			UNEXPECTED();
@@ -213,10 +231,10 @@ namespace nSCGL
 		}
 #endif
 
-		glGetBooleanv(GL_UNPACK_ROW_LENGTH, reinterpret_cast<GLboolean*>(params));
+		*params = false;
 	}
 
-	void cGDriver::GetInteger(GLenum pname, GLint* params) {
+	void cGDriver::GetInteger(uint32_t pname, int32_t* params) {
 #ifndef NDEBUG
 		if (pname != 0) {
 			UNEXPECTED();
@@ -224,10 +242,10 @@ namespace nSCGL
 		}
 #endif
 
-		glGetIntegerv(GL_UNPACK_ROW_LENGTH, params);
+		*params = 0;
 	}
 
-	void cGDriver::GetFloat(GLenum pname, GLfloat* params) {
+	void cGDriver::GetFloat(uint32_t pname, float* params) {
 #ifndef NDEBUG
 		if (pname != 0) {
 			UNEXPECTED();
@@ -235,7 +253,7 @@ namespace nSCGL
 		}
 #endif
 
-		glGetFloatv(GL_UNPACK_ROW_LENGTH, params);
+		*params = 0.0f;
 	}
 
 	void cGDriver::PolygonOffset(int32_t offset) {
@@ -244,7 +262,11 @@ namespace nSCGL
 			fOffset += 4294967296.0f;
 		}
 
-		glPolygonOffset(0.0f, fOffset);
+		if (d3dDevice != nullptr) {
+			DWORD value;
+			memcpy(&value, &fOffset, sizeof(value));
+			d3dDevice->SetRenderState(D3DRS_DEPTHBIAS, value);
+		}
 	}
 
 	void cGDriver::BitBlt(

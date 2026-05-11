@@ -37,8 +37,6 @@ add_library(SCGL SHARED
             scgl/ext/cGDriver_Snapshot.cpp
             scgl/ext/cGDriver_VertexBuffers.cpp
             scgl/GLStateManager.cpp
-            scgl/GLSupport.cpp
-            scgl/GLTextureUnit.cpp
             scgl/VertexFormatUtils.cpp
             vendor/framework/src/cRZCOMDllDirector.cpp
             vendor/framework/src/cRZRefCount.cpp
@@ -66,4 +64,4 @@ target_compile_definitions(SCGL PRIVATE
 )
 
 # Should come with MinGW
-target_link_libraries(SCGL opengl32.lib)
+target_link_libraries(SCGL d3d9.lib)

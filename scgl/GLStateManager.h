@@ -1,52 +1,15 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
- *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation, under
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ *  This class name is kept for ABI/source stability, but the implementation
+ *  now targets Direct3D 9 fixed function instead of OpenGL.
  */
 
 #pragma once
-#include <stdint.h>
-#include <stdio.h>
+
+#include <vector>
+#include "D3DSupport.h"
 #include "cIGZGDriver.h"
-#include "GLShareableState.h"
-#include "GLSupport.h"
-#include "GLTextureUnit.h"
-
-// We're still using the GL fixed function pipeline,
-// so we shouldn't have a high number of texture units.
-constexpr size_t MAX_TEXTURE_UNITS = 2;
-
-extern FILE* gLogFile;
-
-#ifdef NDEBUG
-#define NOTIMPL()
-#define SIZE_CHECK(...)
-#define SIZE_CHECK_RETVAL(...)
-#else
-#define NOTIMPL() { if (gLogFile == nullptr) gLogFile = fopen("C:\\temp\\cGDriver.notimpl.log", "w"); fprintf(gLogFile, "%s\n", __FUNCSIG__); fflush(gLogFile); }
-#define UNEXPECTED NOTIMPL
-#define SIZE_CHECK(param, map) if (param >= sizeof(map) / sizeof(map[0])) { UNEXPECTED(); return; }
-#define SIZE_CHECK_RETVAL(param, map, ret) if (param >= sizeof(map) / sizeof(map[0])) { UNEXPECTED(); return ret; }
-#endif
-
-enum GLStatefulMatrix
-{
-	GLStatefulMatrix_ModelView,
-	GLStatefulMatrix_Projection,
-	GLStatefulMatrix_Texture,
-};
 
 class GLStateManager
 {
@@ -54,102 +17,78 @@ public:
 	GLStateManager();
 
 public:
-	void DrawArrays(GLenum gdMode, GLint first, GLsizei count);
-	void DrawElements(GLenum gdMode, GLsizei count, GLenum gdType, void const* indices);
-	void InterleavedArrays(GLenum format, GLsizei stride, void const* pointer);
+	void SetDevice(IDirect3DDevice9* device);
+	void ResetStateCache();
+
+public:
+	void DrawArrays(uint32_t gdMode, int32_t first, int32_t count);
+	void DrawElements(uint32_t gdMode, int32_t count, uint32_t gdType, void const* indices);
+	void InterleavedArrays(uint32_t format, int32_t stride, void const* pointer);
 
 public:
 	void ColorMask(bool flag);
-	void DepthFunc(GLenum gdFunc);
+	void DepthFunc(uint32_t gdFunc);
 	void DepthMask(bool flag);
-	void StencilFunc(GLenum gdFunc, GLint ref, GLuint mask);
-	void StencilMask(GLuint mask);
-	void StencilOp(GLenum fail, GLenum zfail, GLenum zpass);
-	void BlendFunc(GLenum sfactor, GLenum dfactor);
-	void AlphaFunc(GLenum func, GLclampf ref);
-	void ShadeModel(GLenum mode);
-	//void Fog(uint32_t gdFogParamType, uint32_t gdFogParam);
-	//void Fog(uint32_t gdFogParamType, GLfloat const* params);
+	void StencilFunc(uint32_t gdFunc, int32_t ref, uint32_t mask);
+	void StencilMask(uint32_t mask);
+	void StencilOp(uint32_t fail, uint32_t zfail, uint32_t zpass);
+	void BlendFunc(uint32_t sfactor, uint32_t dfactor);
+	void AlphaFunc(uint32_t func, float ref);
+	void ShadeModel(uint32_t mode);
 	void ColorMultiplier(float r, float g, float b);
 	void AlphaMultiplier(float a);
 	void EnableVertexColors(bool ambient, bool diffuse);
 
 public:
-	void MatrixMode(GLenum mode);
-	void LoadMatrix(GLfloat const* m);
+	void MatrixMode(uint32_t mode);
+	void LoadMatrix(float const* m);
 	void LoadIdentity(void);
 
 public:
-	void Enable(GLenum gdCap);
-	void Disable(GLenum gdCap);
-	bool IsEnabled(GLenum gdCap);
+	void Enable(uint32_t gdCap);
+	void Disable(uint32_t gdCap);
+	bool IsEnabled(uint32_t gdCap);
 
 public:
-	void TexEnv(GLenum target, GLenum pname, GLint gdParam);
-	void TexEnv(GLenum target, GLenum pname, GLfloat const* params);
-	void TexParameter(GLenum target, GLenum pname, GLint param);
-	void TexStage(GLenum texUnit);
+	void TexEnv(uint32_t target, uint32_t pname, int32_t gdParam);
+	void TexEnv(uint32_t target, uint32_t pname, float const* params);
+	void TexParameter(uint32_t target, uint32_t pname, int32_t param);
+	void TexStage(uint32_t texUnit);
 	void TexStageCoord(uint32_t gdTexCoordSource);
-	void TexStageMatrix(GLfloat const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags);
+	void TexStageMatrix(float const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags);
 
 public:
-	void BindTexture(GLuint textureId);
-	void SetTexture(GLuint textureId, GLenum texUnit);
-	void SetTextureImmediately(GLuint textureId);
-	intptr_t GetTexture(GLenum texUnit);
+	void BindTexture(uint32_t textureId);
+	void SetTexture(uint32_t textureId, uint32_t texUnit);
+	void SetTextureImmediately(uint32_t textureId);
+	intptr_t GetTexture(uint32_t texUnit);
+	uint32_t GetActiveTextureUnit() const;
 
 private:
+	void ApplyVertexFormat();
 	void ApplyTextureStages();
-	
-public:
-	struct GLShareableState shareable;
+	void DrawIndexedConvertedQuads(uint32_t gdType, void const* indices, int32_t count);
+	DWORD CurrentFVF() const;
 
 private:
-	bool normalArrayEnabled;
-	bool colorArrayEnabled;
-	uint8_t normalOffset;
-	uint8_t colorOffset;
+	IDirect3DDevice9* device;
+	uint32_t interleavedFormat;
+	uint32_t interleavedStride;
+	void const* interleavedPointer;
 
-	bool colorMaskFlag;
+	uint32_t activeMatrixMode;
+	uint32_t activeTextureUnit;
+	uint32_t textureHandles[MAX_TEXTURE_UNITS];
+	bool textureEnabled[MAX_TEXTURE_UNITS];
+	uint32_t textureCoordSource[MAX_TEXTURE_UNITS];
 
-	uint8_t depthFunc;
-	bool depthMask;
-
-	uint8_t stencilFunc;
-	GLint stencilFuncRef;
-	GLuint stencilFuncMask;
-
-	GLuint stencilMask;
-	uint8_t stencilFailFunc;
-	uint8_t stencilZFailFunc;
-	uint8_t stencilZPassFunc;
-
-	uint8_t blendSrcFactor;
-	uint8_t blendDstFactor;
-
-	uint8_t alphaFunc;
-	GLclampf alphaRef;
-
-	uint8_t shadeModel;
-
+	bool enabledCapabilities[kGDNumCapabilities];
 	bool ambientLightEnabled;
 	bool diffuseLightEnabled;
 	float ambientLightParams[4];
 	float diffuseLightParams[4];
+	float textureEnvColor[4];
+	bool isIdentityMatrix[2];
 
-	bool isIdentityMatrix[3];
-
-	bool enabledCapabilities[8];
-
-	uint8_t texEnvMode;
-	GLfloat texEnvColor[4];
-
-	GLint textureParameters[4];
-
-	uint32_t textureCoordSource;
-
-private:
-	GLTextureUnit textureUnits[2];
-	uint8_t activeTextureUnit;
-	bool areTextureUnitsDirty;
+	std::vector<uint32_t> convertedIndices;
 };

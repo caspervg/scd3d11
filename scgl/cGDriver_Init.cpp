@@ -1,181 +1,111 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
- *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
- *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation, under
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  */
 
+#include <cstring>
 #include <string>
 #include "cGDriver.h"
-#include "GLSupport.h"
 
 namespace nSCGL
 {
 	bool cGDriver::Init(void) {
-#ifndef NDEBUG
-		WNDCLASS wcDebug{};
-		wcDebug.style = CS_OWNDC;
-		wcDebug.lpfnWndProc = DefWindowProcA;
-		wcDebug.hInstance = GetModuleHandle(nullptr);
-		wcDebug.lpszClassName = "GDriverClass--OpenGLDebug";
-
-		UnregisterClass(wcDebug.lpszClassName, nullptr);
-
-		if (!RegisterClass(&wcDebug)) {
-			DWORD err = GetLastError();
-			if (err != ERROR_CLASS_ALREADY_EXISTS) {
-				MessageBoxA(NULL, "Failed to set up an OpenGL debug window class", "SCGL failed to start", MB_ICONERROR);
-				return false;
-			}
-		}
-#endif
-
-		// Create an invisible default window to set up an initial OpenGL context
 		WNDCLASS wc{};
 		wc.style = CS_OWNDC;
 		wc.lpfnWndProc = DefWindowProcA;
 		wc.hInstance = GetModuleHandle(nullptr);
-		wc.lpszClassName = "GDriverClass--OpenGL";
+		wc.lpszClassName = "GDriverClass--Direct3D9";
 
 		UnregisterClass(wc.lpszClassName, nullptr);
 
 		if (!RegisterClass(&wc)) {
 			DWORD err = GetLastError();
 			if (err != ERROR_CLASS_ALREADY_EXISTS) {
-				MessageBoxA(NULL, "Failed to set up an OpenGL window class", "SCGL failed to start", MB_ICONERROR);
+				MessageBoxA(NULL, "Failed to set up a Direct3D 9 window class", "SCGL failed to start", MB_ICONERROR);
 				return false;
 			}
 		}
 
-		windowHandle = CreateWindowA(wc.lpszClassName, "GDriverWindow--OpenGL--FalseContext", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, wc.hInstance, 0);
-		if (windowHandle == nullptr) {
-			MessageBoxA(NULL, "Failed to create an OpenGL window", "SCGL failed to start", MB_ICONERROR);
+		d3d = Direct3DCreate9(D3D_SDK_VERSION);
+		if (d3d == nullptr) {
+			MessageBoxA(NULL, "Failed to create the Direct3D 9 interface", "SCGL failed to start", MB_ICONERROR);
 			return false;
 		}
 
-		deviceContext = GetDC(static_cast<HWND>(windowHandle));
-
-		PIXELFORMATDESCRIPTOR defaultPfd{};
-		defaultPfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
-		defaultPfd.nVersion = 1;
-		defaultPfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-		defaultPfd.iPixelType = PFD_TYPE_RGBA;
-		defaultPfd.cColorBits = 16;
-		defaultPfd.cDepthBits = 16;
-		defaultPfd.cStencilBits = 8;
-		defaultPfd.iLayerType = PFD_MAIN_PLANE;
-
-		int pixelFormat = ChoosePixelFormat(static_cast<HDC>(deviceContext), &defaultPfd);
-		if (!SetPixelFormat(static_cast<HDC>(deviceContext), pixelFormat, &defaultPfd)) {
-			MessageBoxA(NULL, "Failed to set pixel format for window", "SCGL failed to start", MB_ICONERROR);
+		if (FAILED(d3d->GetDeviceCaps(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, &deviceCaps))) {
+			MessageBoxA(NULL, "Failed to query Direct3D 9 device capabilities", "SCGL failed to start", MB_ICONERROR);
 			return false;
 		}
 
-		glContext = wglCreateContext(static_cast<HDC>(deviceContext));
-		if (glContext == nullptr || !wglMakeCurrent(static_cast<HDC>(deviceContext), static_cast<HGLRC>(glContext))) {
-			MessageBoxA(NULL, "Failed to create an OpenGL context", "SCGL failed to start", MB_ICONERROR);
-			return false;
-		}
+		supportedFeatures.hardwareTransformAndLight = (deviceCaps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) != 0;
+		supportedFeatures.pureDevice = (deviceCaps.DevCaps & D3DDEVCAPS_PUREDEVICE) != 0;
+		supportedFeatures.stencilBuffer = true;
+		supportedFeatures.multitexture = deviceCaps.MaxSimultaneousTextures >= 2;
+		supportedFeatures.textureEnvCombine = true;
+		supportedFeatures.fogCoord = true;
+		supportedFeatures.textureCompression =
+			SUCCEEDED(d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, D3DFMT_DXT1)) &&
+			SUCCEEDED(d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, D3DFMT_DXT3)) &&
+			SUCCEEDED(d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, D3DFMT_DXT5));
+		supportedFeatures.nvTextureEnvCombine4 = false;
+		supportedFeatures.bufferRegion = true;
 
-		// Load function pointers and check extensions now that we have a false context
-		InitGLSupport();
+		D3DADAPTER_IDENTIFIER9 adapterId{};
+		d3d->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapterId);
 
-		int glExtensionCount;
-		glGetIntegerv(GL_NUM_EXTENSIONS, &glExtensionCount);
-
-		for (int i = 0; i < glExtensionCount; i++) {
-			const char* extensionName = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
-
-			if (strcmp(extensionName, "GL_ARB_vertex_array_bgra") == 0) supportedExtensions.bgraColor = true;
-			if (strcmp(extensionName, "GL_EXT_vertex_array_bgra") == 0) supportedExtensions.bgraColor = true;
-			if (strcmp(extensionName, "GL_ARB_multitexture") == 0) supportedExtensions.multitexture = true;
-			if (strcmp(extensionName, "GL_ARB_texture_env_combine") == 0) supportedExtensions.textureEnvCombine = true;
-			if (strcmp(extensionName, "GL_EXT_fog_coord") == 0) supportedExtensions.fogCoord = true;
-			if (strcmp(extensionName, "GL_EXT_texture_compression_s3tc") == 0) supportedExtensions.textureCompression = true;
-			if (strcmp(extensionName, "GL_NV_texture_env_combine4") == 0) supportedExtensions.nvTextureEnvCombine4 = true;
-			if (strcmp(extensionName, "GL_KHR_debug") == 0) supportedExtensions.debugOutput = true;
-			if (strcmp(extensionName, "GL_KHR_no_error") == 0) supportedExtensions.noError = true;
-		}
-
-		if (wglGetExtensionsStringARB != nullptr) {
-			char* wglExtensions = _strdup(wglGetExtensionsStringARB(static_cast<HDC>(deviceContext)));
-			char* token = strtok(wglExtensions, " ");
-
-			while (token != nullptr) {
-				if (strcmp(token, "WGL_ARB_buffer_region") == 0) supportedExtensions.bufferRegion = true;
-				if (strcmp(token, "WGL_ARB_create_context") == 0) supportedExtensions.createContext = true;
-				if (strcmp(token, "WGL_ARB_create_context_no_error") == 0) supportedExtensions.createContextNoError = true;
-				if (strcmp(token, "WGL_ARB_create_context_profile") == 0) supportedExtensions.createContextProfile = true;
-				if (strcmp(token, "WGL_ARB_multisample") == 0) supportedExtensions.multisample = true;
-				if (strcmp(token, "WGL_ARB_pixel_format") == 0) supportedExtensions.pixelFormat = true;
-				if (strcmp(token, "WGL_EXT_swap_control") == 0) supportedExtensions.swapControl = true;
-
-				token = strtok(nullptr, " ");
-			}
-		}
-
-		if (!supportedExtensions.bgraColor) {
-			MessageBoxA(NULL, "Your graphics card does not support BGRA color order. SimCity 4 will fall back to software rendering.", "SCGL failed to start", MB_ICONERROR);
-			return false;
-		}
-
-		// Get device info while the false context is still up
-		char const* vendor = reinterpret_cast<char const*>(glGetString(GL_VENDOR));
-		char const* renderer = reinterpret_cast<char const*>(glGetString(GL_RENDERER));
-		char const* version = reinterpret_cast<char const*>(glGetString(GL_VERSION));
-
-		static const char unknownDriverName[] = "UnknownDriverName";
-		static const char unknownCardVersion[] = "UnknownCardVersion";
-
+		static const char unknownDriverName[] = "Direct3D9";
 		driverInfo.append(unknownDriverName, sizeof(unknownDriverName) - 1);
+		driverInfo.append("\n9.0c\n", 6);
+		driverInfo.append(adapterId.Description, strlen(adapterId.Description));
 		driverInfo.append("\n", 1);
-		driverInfo.append(version, strlen(version));
+		driverInfo.append(adapterId.Driver, strlen(adapterId.Driver));
 		driverInfo.append("\n", 1);
-		driverInfo.append(renderer, strlen(renderer));
-		driverInfo.append("\n", 1);
-		driverInfo.append(unknownCardVersion, sizeof(unknownCardVersion) - 1);
-		driverInfo.append("\n", 1);
-		driverInfo.append(renderer, strlen(renderer));
+		driverInfo.append(adapterId.Description, strlen(adapterId.Description));
 		driverInfo.append("\n", 1);
 
 		InitializeVideoModeVector();
-
-		// Tear down the false context. We'll create a new, better one in SetVideoMode.
-		DestroyOpenGLContext();
 		return true;
 	}
 
 	bool cGDriver::Shutdown(void) {
-		DestroyOpenGLContext();
-		UnregisterClass("GDriverClass--OpenGL", nullptr);
+		DestroyD3DDevice();
+
+		if (d3d != nullptr) {
+			d3d->Release();
+			d3d = nullptr;
+		}
+
+		UnregisterClass("GDriverClass--Direct3D9", nullptr);
 		return true;
 	}
 
-	void cGDriver::DestroyOpenGLContext(void) {
-		if (glContext != nullptr) {
-			wglMakeCurrent(nullptr, nullptr);
-			wglDeleteContext(static_cast<HGLRC>(glContext));
+	void cGDriver::DestroyD3DDevice(void) {
+		DeleteAllBufferRegions();
 
-			glContext = nullptr;
+		state.SetDevice(nullptr);
+
+		if (d3dDevice != nullptr) {
+			d3dDevice->Release();
+			d3dDevice = nullptr;
 		}
 
 		if (windowHandle != nullptr) {
 			DestroyWindow(static_cast<HWND>(windowHandle));
-
 			windowHandle = nullptr;
-			deviceContext = nullptr;
 		}
+	}
+
+	void cGDriver::ReleaseTexture(uint32_t texture) {
+		D3DTextureHandle* handle = reinterpret_cast<D3DTextureHandle*>(static_cast<uintptr_t>(texture));
+		if (handle == nullptr) {
+			return;
+		}
+
+		if (handle->texture != nullptr) {
+			handle->texture->Release();
+			handle->texture = nullptr;
+		}
+
+		delete handle;
 	}
 
 	int32_t cGDriver::InitializeVideoModeVector(void) {
@@ -207,20 +137,13 @@ namespace nSCGL
 
 			sGDMode tempMode{};
 			tempMode.textureStageCount = MAX_TEXTURE_UNITS;
-
-			// If not set, SC4 throws the "Could not initialize the hardware driver" error and switches to software mode.
-			tempMode.isInitialized = supportedExtensions.bgraColor;
-
-			// Set our graphics capabilities as determined by extensions.
-			// Stencil buffer is always present since we require it for the pixel format.
-			tempMode.supportsStencilBuffer = true;
-			tempMode.supportsMultitexture = supportedExtensions.multitexture;
-			tempMode.supportsTextureEnvCombine = supportedExtensions.textureEnvCombine;
-			tempMode.supportsFogCoord = supportedExtensions.fogCoord;
-			tempMode.supportsDxtTextures = supportedExtensions.textureCompression;
-			tempMode.supportsNvTextureEnvCombine4 = supportedExtensions.nvTextureEnvCombine4;
-
-			// TODO: what are these flags for and why does the game's OpenGL driver set them?
+			tempMode.isInitialized = true;
+			tempMode.supportsStencilBuffer = supportedFeatures.stencilBuffer;
+			tempMode.supportsMultitexture = supportedFeatures.multitexture;
+			tempMode.supportsTextureEnvCombine = supportedFeatures.textureEnvCombine;
+			tempMode.supportsFogCoord = supportedFeatures.fogCoord;
+			tempMode.supportsDxtTextures = supportedFeatures.textureCompression;
+			tempMode.supportsNvTextureEnvCombine4 = supportedFeatures.nvTextureEnvCombine4;
 			tempMode.__unknown2 = true;
 			tempMode.__unknown5[0] = false;
 			tempMode.__unknown5[1] = false;
@@ -243,14 +166,11 @@ namespace nSCGL
 			tempMode.width = displayMode.dmPelsWidth;
 			tempMode.height = displayMode.dmPelsHeight;
 			tempMode.depth = depth;
-
 			tempMode.isFullscreen = true;
-
 			videoModes.push_back(tempMode);
 
 			tempMode.index = videoModeCount++;
 			tempMode.isFullscreen = false;
-
 			videoModes.push_back(tempMode);
 		}
 

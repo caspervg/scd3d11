@@ -83,38 +83,31 @@ namespace nSCGL
 		// We're not expecting to use a lot of buffer regions simultaneously, so we'll use an
 		// 8-bit mask to indicate which regions are allocated and free.
 		uint8_t bufferRegionFlags;
-		uint32_t framebufferHandles[MAX_BUFFER_REGIONS];
-		uint32_t renderbufferHandles[MAX_BUFFER_REGIONS];
-		uint32_t framebufferMasks[MAX_BUFFER_REGIONS];
+		D3DBufferRegion bufferRegions[MAX_BUFFER_REGIONS];
 
 	private:
 		struct {
-			// OpenGL
-			bool bgraColor;
+			bool hardwareTransformAndLight;
+			bool pureDevice;
 			bool stencilBuffer;
 			bool multitexture;
 			bool textureEnvCombine;
 			bool fogCoord;
 			bool textureCompression;
 			bool nvTextureEnvCombine4;
-			bool debugOutput;
-			bool noError;
-
-			// WGL
 			bool bufferRegion;
-			bool createContext;
-			bool createContextNoError;
-			bool createContextProfile;
-			bool multisample;
-			bool pixelFormat;
-			bool swapControl;
-		} supportedExtensions;
+		} supportedFeatures;
 
 	private:
 		GLStateManager state;
 		void* windowHandle;
-		void* deviceContext;
-		void* glContext;
+		IDirect3D9* d3d;
+		IDirect3DDevice9* d3dDevice;
+		D3DPRESENT_PARAMETERS presentParams;
+		D3DCAPS9 deviceCaps;
+		D3DCOLOR clearColor;
+		float clearDepth;
+		uint32_t clearStencil;
 
 #ifndef NDEBUG
 		void* secondaryWindow;
@@ -125,7 +118,8 @@ namespace nSCGL
 
 	private:
 		void SetLastError(DriverError err);
-		void DestroyOpenGLContext();
+		void DestroyD3DDevice();
+		void ReleaseTexture(uint32_t texture);
 		int FindFreeBufferRegionIndex(void);
 		int InitializeVideoModeVector(void);
 

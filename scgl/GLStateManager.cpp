@@ -1,450 +1,648 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
- *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation, under
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ *  Direct3D 9 fixed-function state manager.
  */
 
 #include <cassert>
+#include <cstring>
 #include "GLStateManager.h"
 #include "VertexFormatUtils.h"
 
-// These are shared with the Textures compilation unit and can't be static.
-GLenum typeMap[16] = {
-	GL_BYTE, GL_UNSIGNED_BYTE, GL_SHORT, GL_UNSIGNED_SHORT, GL_INT, GL_UNSIGNED_INT,
-	GL_FLOAT, GL_DOUBLE, GL_UNSIGNED_SHORT_4_4_4_4, GL_UNSIGNED_SHORT_5_5_5_1, GL_RGBA,
-	GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, GL_UNSIGNED_SHORT_4_4_4_4_REV, GL_RGBA, GL_RGBA
+static D3DPRIMITIVETYPE d3dPrimitiveMap[8] = {
+	D3DPT_TRIANGLELIST,
+	D3DPT_TRIANGLESTRIP,
+	D3DPT_TRIANGLEFAN,
+	D3DPT_POINTLIST,
+	D3DPT_LINELIST,
+	D3DPT_LINESTRIP,
+	D3DPT_TRIANGLELIST, // SimGL quads are expanded before drawing.
+	D3DPT_TRIANGLELIST, // SimGL quad strips are expanded before drawing.
 };
 
-GLenum glBlendMap[11] = {
-	GL_ZERO, GL_ONE, GL_SRC_COLOR, GL_ONE_MINUS_SRC_COLOR,
-	GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA,
-	GL_ONE_MINUS_DST_ALPHA, GL_DST_COLOR, GL_ONE_MINUS_DST_COLOR,
-	GL_SRC_ALPHA_SATURATE
+static D3DCMPFUNC d3dFuncMap[8] = {
+	D3DCMP_NEVER,
+	D3DCMP_LESS,
+	D3DCMP_EQUAL,
+	D3DCMP_LESSEQUAL,
+	D3DCMP_GREATER,
+	D3DCMP_NOTEQUAL,
+	D3DCMP_GREATEREQUAL,
+	D3DCMP_ALWAYS,
 };
 
-GLenum matrixModeMap[2] = { GL_MODELVIEW, GL_PROJECTION };
+static D3DBLEND d3dBlendMap[11] = {
+	D3DBLEND_ZERO,
+	D3DBLEND_ONE,
+	D3DBLEND_SRCCOLOR,
+	D3DBLEND_INVSRCCOLOR,
+	D3DBLEND_SRCALPHA,
+	D3DBLEND_INVSRCALPHA,
+	D3DBLEND_DESTALPHA,
+	D3DBLEND_INVDESTALPHA,
+	D3DBLEND_DESTCOLOR,
+	D3DBLEND_INVDESTCOLOR,
+	D3DBLEND_SRCALPHASAT,
+};
 
-static GLenum drawModeMap[8] = { GL_TRIANGLES, GL_TRIANGLE_STRIP, GL_TRIANGLE_FAN, GL_POINTS, GL_LINES, GL_LINE_STRIP, GL_QUADS, GL_QUAD_STRIP };
-static GLenum glFuncMap[8] = { GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL, GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS };
-static GLenum capabilityMap[8] = { GL_ALPHA_TEST, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_CULL_FACE, GL_BLEND, GL_TEXTURE_2D, GL_FOG, 0 };
+static D3DTEXTUREOP d3dTextureOpMap[] = {
+	D3DTOP_SELECTARG1,
+	D3DTOP_MODULATE,
+	D3DTOP_ADD,
+	D3DTOP_ADDSIGNED,
+	D3DTOP_BLENDCURRENTALPHA,
+	D3DTOP_DOTPRODUCT3,
+};
 
-GLShareableState::GLShareableState() :
-	interleavedFormat(-1),
-	interleavedStride(0),
-	interleavedPointer(nullptr),
-	activeMatrixMode(0), // GL_MODELVIEW
-	glActiveTextureUnit(0)
+static DWORD d3dTextureArgMap[] = {
+	D3DTA_TEXTURE,
+	D3DTA_CURRENT,
+	D3DTA_TFACTOR,
+	D3DTA_DIFFUSE,
+};
+
+static uint32_t PrimitiveCount(uint32_t gdMode, int32_t vertexCount)
 {
+	switch (gdMode) {
+	case 0: return vertexCount / 3;
+	case 1: return vertexCount > 2 ? vertexCount - 2 : 0;
+	case 2: return vertexCount > 2 ? vertexCount - 2 : 0;
+	case 3: return vertexCount;
+	case 4: return vertexCount / 2;
+	case 5: return vertexCount > 1 ? vertexCount - 1 : 0;
+	case 6: return (vertexCount / 4) * 2;
+	case 7: return vertexCount >= 4 ? ((vertexCount - 2) / 2) * 2 : 0;
+	default: return 0;
+	}
+}
+
+static D3DMATRIX ToD3DMatrix(float const* m)
+{
+	D3DMATRIX matrix{};
+	std::memcpy(&matrix, m, sizeof(matrix));
+	return matrix;
+}
+
+static void SetDefaultTextureStage(IDirect3DDevice9* device, uint32_t stage)
+{
+	device->SetTextureStageState(stage, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	device->SetTextureStageState(stage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	device->SetTextureStageState(stage, D3DTSS_COLORARG2, stage == 0 ? D3DTA_DIFFUSE : D3DTA_CURRENT);
+	device->SetTextureStageState(stage, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	device->SetTextureStageState(stage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	device->SetTextureStageState(stage, D3DTSS_ALPHAARG2, stage == 0 ? D3DTA_DIFFUSE : D3DTA_CURRENT);
+}
+
+static D3DTextureHandle* TextureFromId(uint32_t textureId)
+{
+	return reinterpret_cast<D3DTextureHandle*>(static_cast<uintptr_t>(textureId));
 }
 
 GLStateManager::GLStateManager() :
-	normalArrayEnabled(false),
-	colorArrayEnabled(false),
-	normalOffset(0),
-	colorOffset(0),
-	shareable(),
-	colorMaskFlag(true),
-	depthFunc(1),         // GL_LESS
-	depthMask(true),
-	stencilFunc(7),       // GL_ALWAYS
-	stencilFuncRef(0),
-	stencilFuncMask(-1),
-	stencilMask(-1),
-	stencilFailFunc(0),   // GL_KEEP
-	stencilZFailFunc(0),  // GL_KEEP
-	stencilZPassFunc(0),  // GL_KEEP
-	blendSrcFactor(1),    // GL_ONE
-	blendDstFactor(0),    // GL_ZERO
-	alphaFunc(7),         // GL_ALWAYS
-	alphaRef(0.0f),
-	shadeModel(1),        // GL_SMOOTH,
+	device(nullptr),
+	interleavedFormat(0),
+	interleavedStride(0),
+	interleavedPointer(nullptr),
+	activeMatrixMode(0),
+	activeTextureUnit(0),
+	textureHandles{},
+	textureEnabled{ true, false },
+	textureCoordSource{},
+	enabledCapabilities{},
 	ambientLightEnabled(false),
 	diffuseLightEnabled(false),
 	ambientLightParams{ 0.2f, 0.2f, 0.2f, 1.0f },
-	diffuseLightParams{ 0.0f, 0.0f, 0.0f, 1.0f },
-	isIdentityMatrix{ true, true, true },
-	enabledCapabilities{ false, false, false, false, false, false, false, false },
-	texEnvMode(1),        // GL_MODULATE
-	texEnvColor{ 0.0f, 0.0f, 0.0f, 0.0f },
-	textureParameters{ GL_LINEAR, GL_NEAREST_MIPMAP_LINEAR, GL_REPEAT, GL_REPEAT },
-	textureCoordSource(0),
-	activeTextureUnit(0),
-	areTextureUnitsDirty(false),
-	textureUnits{
-		GLTextureUnit(0, &shareable),
-		GLTextureUnit(1, &shareable)
-	}
+	diffuseLightParams{ 1.0f, 1.0f, 1.0f, 1.0f },
+	textureEnvColor{ 0.0f, 0.0f, 0.0f, 0.0f },
+	isIdentityMatrix{ true, true },
+	convertedIndices()
 {
 }
 
-void GLStateManager::ApplyTextureStages() {
+void GLStateManager::SetDevice(IDirect3DDevice9* newDevice)
+{
+	device = newDevice;
+	ResetStateCache();
+}
+
+void GLStateManager::ResetStateCache()
+{
+	interleavedFormat = 0;
+	interleavedStride = 0;
+	interleavedPointer = nullptr;
+	activeMatrixMode = 0;
+	activeTextureUnit = 0;
+	textureHandles[0] = 0;
+	textureHandles[1] = 0;
+	textureEnabled[0] = true;
+	textureEnabled[1] = false;
+	textureCoordSource[0] = 0;
+	textureCoordSource[1] = 0;
+	std::memset(enabledCapabilities, 0, sizeof(enabledCapabilities));
+	isIdentityMatrix[0] = true;
+	isIdentityMatrix[1] = true;
+
+	if (device != nullptr) {
+		SetDefaultTextureStage(device, 0);
+		device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+		device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	}
+}
+
+DWORD GLStateManager::CurrentFVF() const
+{
+	DWORD fvf = D3DFVF_XYZ;
+
+	if (RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) {
+		fvf |= D3DFVF_NORMAL;
+	}
+
+	if (RZVertexFormatNumElements(interleavedFormat, kGDElementType_Color) != 0) {
+		fvf |= D3DFVF_DIFFUSE;
+	}
+
+	uint32_t texCoordCount = RZVertexFormatNumElements(interleavedFormat, kGDElementType_TexCoord);
+	if (texCoordCount > 0) {
+		fvf |= texCoordCount << D3DFVF_TEXCOUNT_SHIFT;
+	}
+
+	return fvf;
+}
+
+void GLStateManager::ApplyVertexFormat()
+{
+	if (device == nullptr) {
+		return;
+	}
+
+	device->SetFVF(CurrentFVF());
+}
+
+void GLStateManager::ApplyTextureStages()
+{
+	if (device == nullptr) {
+		return;
+	}
+
 	for (uint32_t i = 0; i < MAX_TEXTURE_UNITS; i++) {
-		textureUnits[i].ApplyStateChanges();
+		D3DTextureHandle* handle = TextureFromId(textureHandles[i]);
+		device->SetTexture(i, (textureEnabled[i] && handle != nullptr) ? handle->texture : nullptr);
 
-		if (textureUnits[i].IsEnabled() && textureUnits[i].needsTextureParamRefresh) {
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, textureParameters[0]);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, textureParameters[1]);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, textureParameters[2]);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, textureParameters[3]);
-
-			textureUnits[i].needsTextureParamRefresh = false;
+		if (textureEnabled[i]) {
+			device->SetTextureStageState(i, D3DTSS_TEXCOORDINDEX, textureCoordSource[i]);
+		}
+		else {
+			device->SetTextureStageState(i, D3DTSS_COLOROP, D3DTOP_DISABLE);
+			device->SetTextureStageState(i, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 		}
 	}
 }
 
-void GLStateManager::DrawArrays(GLenum gdMode, GLint first, GLsizei count) {
-	SIZE_CHECK(gdMode, drawModeMap);
+void GLStateManager::DrawArrays(uint32_t gdMode, int32_t first, int32_t count)
+{
+	SIZE_CHECK(gdMode, d3dPrimitiveMap);
+	if (device == nullptr || interleavedPointer == nullptr || count <= 0) {
+		return;
+	}
 
-	GLenum mode = drawModeMap[gdMode];
-
+	ApplyVertexFormat();
 	ApplyTextureStages();
-	glDrawArrays(mode, first, count);
-}
 
-void GLStateManager::DrawElements(GLenum gdMode, GLsizei count, GLenum gdType, void const* indices) {
-	SIZE_CHECK(gdMode, drawModeMap);
-	SIZE_CHECK(gdType, typeMap);
+	uint8_t const* vertices = reinterpret_cast<uint8_t const*>(interleavedPointer) + (first * interleavedStride);
+	uint32_t primitiveCount = PrimitiveCount(gdMode, count);
+	if (primitiveCount == 0) {
+		return;
+	}
 
-	GLenum mode = drawModeMap[gdMode];
-	GLenum type = typeMap[gdType];
-
-	ApplyTextureStages();
-	glDrawElements(mode, count, type, indices);
-}
-
-void GLStateManager::InterleavedArrays(GLenum format, GLsizei stride, void const* pointer) {
-	if (format != shareable.interleavedFormat) {
-		int normalLength = RZVertexFormatNumElements(format, kGDElementType_Normal);
-		if (normalLength == 0) {
-			if (normalArrayEnabled) {
-				glDisableClientState(GL_NORMAL_ARRAY);
-				normalArrayEnabled = false;
+	if (gdMode == 6 || gdMode == 7) {
+		convertedIndices.clear();
+		if (gdMode == 6) {
+			for (uint32_t i = 0; i + 3 < static_cast<uint32_t>(count); i += 4) {
+				convertedIndices.push_back(i);
+				convertedIndices.push_back(i + 1);
+				convertedIndices.push_back(i + 2);
+				convertedIndices.push_back(i);
+				convertedIndices.push_back(i + 2);
+				convertedIndices.push_back(i + 3);
 			}
 		}
 		else {
-			if (!normalArrayEnabled) {
-				glEnableClientState(GL_NORMAL_ARRAY);
-				normalArrayEnabled = true;
-			}
-
-			normalOffset = RZVertexFormatElementOffset(format, kGDElementType_Normal, 0);
-		}
-
-		int colorLength = RZVertexFormatNumElements(format, kGDElementType_Color);
-		if (colorLength == 0) {
-			if (colorArrayEnabled) {
-				glDisableClientState(GL_COLOR_ARRAY);
-				colorArrayEnabled = false;
-				glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+			for (uint32_t i = 0; i + 3 < static_cast<uint32_t>(count); i += 2) {
+				convertedIndices.push_back(i);
+				convertedIndices.push_back(i + 1);
+				convertedIndices.push_back(i + 2);
+				convertedIndices.push_back(i + 1);
+				convertedIndices.push_back(i + 3);
+				convertedIndices.push_back(i + 2);
 			}
 		}
-		else {
-			if (!colorArrayEnabled) {
-				glEnableClientState(GL_COLOR_ARRAY);
-				colorArrayEnabled = true;
-			}
 
-			colorOffset = RZVertexFormatElementOffset(format, kGDElementType_Color, 0);
+		device->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, count, primitiveCount, convertedIndices.data(), D3DFMT_INDEX32, vertices, interleavedStride);
+		return;
+	}
+
+	device->DrawPrimitiveUP(d3dPrimitiveMap[gdMode], primitiveCount, vertices, interleavedStride);
+}
+
+void GLStateManager::DrawIndexedConvertedQuads(uint32_t gdType, void const* indices, int32_t count)
+{
+	convertedIndices.clear();
+	uint32_t maxIndex = 0;
+
+	if (gdType == 3) {
+		uint16_t const* src = reinterpret_cast<uint16_t const*>(indices);
+		for (int32_t i = 0; i + 3 < count; i += 4) {
+			maxIndex = max(maxIndex, static_cast<uint32_t>(src[i]));
+			maxIndex = max(maxIndex, static_cast<uint32_t>(src[i + 1]));
+			maxIndex = max(maxIndex, static_cast<uint32_t>(src[i + 2]));
+			maxIndex = max(maxIndex, static_cast<uint32_t>(src[i + 3]));
+			convertedIndices.push_back(src[i]);
+			convertedIndices.push_back(src[i + 1]);
+			convertedIndices.push_back(src[i + 2]);
+			convertedIndices.push_back(src[i]);
+			convertedIndices.push_back(src[i + 2]);
+			convertedIndices.push_back(src[i + 3]);
 		}
 	}
-
-	glVertexPointer(3, GL_FLOAT, stride, pointer);
-
-	if (normalArrayEnabled) {
-		glNormalPointer(GL_FLOAT, stride, reinterpret_cast<uint8_t const*>(pointer) + normalOffset);
-	}
-
-	if (colorArrayEnabled) {
-		// GPU must implement GL_ARB_vertex_array_bgra or GL_EXT_vertex_array_bgra for this to work.
-		// These extensions did not exist when SimCity 4 was released, so their workaround was to
-		// use the CPU to swap the order of color components. That's slow - let's never do that.
-		glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, stride, reinterpret_cast<uint8_t const*>(pointer) + colorOffset);
-		glMaterialfv(GL_FRONT, GL_DIFFUSE, diffuseLightParams);
-	}
-
-	shareable.interleavedPointer = pointer;
-	shareable.interleavedFormat = format;
-	shareable.interleavedStride = stride;
-}
-
-void GLStateManager::ColorMask(bool flag) {
-	if (colorMaskFlag != flag) {
-		glColorMask(flag, flag, flag, flag);
-		colorMaskFlag = flag;
-	}
-}
-
-void GLStateManager::DepthFunc(GLenum gdFunc) {
-	if (depthFunc != gdFunc) {
-		SIZE_CHECK(gdFunc, glFuncMap);
-
-		glDepthFunc(glFuncMap[gdFunc]);
-		depthFunc = gdFunc;
-	}
-}
-
-void GLStateManager::DepthMask(bool flag) {
-	if (depthMask != flag) {
-		glDepthMask(flag);
-		depthMask = flag;
-	}
-}
-
-void GLStateManager::StencilFunc(GLenum gdFunc, GLint ref, GLuint mask) {
-	if (stencilFunc != gdFunc || stencilFuncRef != ref || stencilFuncMask != mask) {
-		SIZE_CHECK(gdFunc, glFuncMap);
-		glStencilFunc(glFuncMap[gdFunc], ref, mask);
-
-		stencilFunc = gdFunc;
-		stencilFuncRef = ref;
-		stencilFuncMask = mask;
-	}
-}
-
-void GLStateManager::StencilMask(GLuint mask) {
-	if (stencilMask != mask) {
-		glStencilMask(mask);
-		stencilMask = mask;
-	}
-}
-
-void GLStateManager::StencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
-	if (stencilFailFunc != fail || stencilZFailFunc != zfail || stencilZPassFunc != zpass) {
-		static GLenum glStencilMap[] = { GL_KEEP, GL_REPLACE, GL_INCR, GL_DECR, GL_INVERT };
-		SIZE_CHECK(fail, glStencilMap);
-		SIZE_CHECK(zfail, glStencilMap);
-		SIZE_CHECK(zpass, glStencilMap);
-
-		glStencilOp(glStencilMap[fail], glStencilMap[zfail], glStencilMap[zpass]);
-
-		stencilFailFunc = fail;
-		stencilZFailFunc = zfail;
-		stencilZPassFunc = zpass;
-	}
-}
-
-void GLStateManager::BlendFunc(GLenum sfactor, GLenum dfactor) {
-	if (blendSrcFactor != sfactor || blendDstFactor != dfactor) {
-		SIZE_CHECK(sfactor, glBlendMap);
-		SIZE_CHECK(dfactor, glBlendMap);
-
-		glBlendFunc(glBlendMap[sfactor], glBlendMap[dfactor]);
-
-		blendSrcFactor = sfactor;
-		blendDstFactor = dfactor;
-	}
-}
-
-void GLStateManager::AlphaFunc(GLenum func, GLclampf ref) {
-	if (alphaFunc != func || alphaRef != ref) {
-		SIZE_CHECK(func, glFuncMap);
-		glAlphaFunc(glFuncMap[func], ref);
-
-		alphaFunc = func;
-		alphaRef = ref;
-	}
-}
-
-void GLStateManager::ShadeModel(GLenum mode) {
-	if (shadeModel != mode) {
-		static GLenum shadeModelMap[2] = { GL_FLAT, GL_SMOOTH };
-		SIZE_CHECK(mode, shadeModelMap);
-
-		glShadeModel(shadeModelMap[mode]);
-
-		shadeModel = mode;
-	}
-}
-
-void GLStateManager::ColorMultiplier(float r, float g, float b) {
-	if (ambientLightParams[0] != r || ambientLightParams[1] != g || ambientLightParams[2] != b) {
-		ambientLightParams[0] = r;
-		ambientLightParams[1] = g;
-		ambientLightParams[2] = b;
-
-		glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambientLightParams);
-	}
-}
-
-void GLStateManager::AlphaMultiplier(float a) {
-	if (diffuseLightParams[3] != a) {
-		diffuseLightParams[3] = a;
-
-		if (ambientLightEnabled || diffuseLightEnabled) {
-			glMaterialfv(GL_FRONT, GL_DIFFUSE, diffuseLightParams);
+	else if (gdType == 5) {
+		uint32_t const* src = reinterpret_cast<uint32_t const*>(indices);
+		for (int32_t i = 0; i + 3 < count; i += 4) {
+			maxIndex = max(maxIndex, src[i]);
+			maxIndex = max(maxIndex, src[i + 1]);
+			maxIndex = max(maxIndex, src[i + 2]);
+			maxIndex = max(maxIndex, src[i + 3]);
+			convertedIndices.push_back(src[i]);
+			convertedIndices.push_back(src[i + 1]);
+			convertedIndices.push_back(src[i + 2]);
+			convertedIndices.push_back(src[i]);
+			convertedIndices.push_back(src[i + 2]);
+			convertedIndices.push_back(src[i + 3]);
 		}
-	}
-}
-
-void GLStateManager::EnableVertexColors(bool ambient, bool diffuse) {
-	if (ambientLightEnabled != ambient || diffuseLightEnabled != diffuse) {
-		uint8_t oldFlags = (ambientLightEnabled ? 1 : 0) | (diffuseLightEnabled ? 2 : 0);
-		uint8_t newFlags = (ambient ? 1 : 0) | (diffuse ? 2 : 0);
-
-		ambientLightEnabled = ambient;
-		diffuseLightEnabled = diffuse;
-
-		switch (newFlags) {
-		case 0:
-			glDisable(GL_COLOR_MATERIAL);
-			return;
-
-		case 1:
-			glColorMaterial(GL_FRONT, GL_AMBIENT);
-			break;
-
-		case 2:
-			glColorMaterial(GL_FRONT, GL_DIFFUSE);
-			break;
-
-		case 3:
-			glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
-			break;
-
-		default:
-			assert(false);
-			break;
-		}
-
-		if (!oldFlags) {
-			glEnable(GL_COLOR_MATERIAL);
-			glMaterialfv(GL_FRONT, GL_DIFFUSE, diffuseLightParams);
-		}
-	}
-}
-
-void GLStateManager::MatrixMode(GLenum mode) {
-	SIZE_CHECK(mode, matrixModeMap);
-
-	if (shareable.activeMatrixMode != mode) {
-		glMatrixMode(matrixModeMap[mode]);
-	}
-
-	shareable.activeMatrixMode = mode;
-}
-
-void GLStateManager::LoadMatrix(GLfloat const* m) {
-	glLoadMatrixf(m);
-	isIdentityMatrix[shareable.activeMatrixMode] = false;
-}
-
-void GLStateManager::LoadIdentity(void) {
-	if (!isIdentityMatrix[shareable.activeMatrixMode]) {
-		glLoadIdentity();
-		isIdentityMatrix[shareable.activeMatrixMode] = true;
-	}
-}
-
-void GLStateManager::Enable(GLenum gdCap) {
-	if (gdCap == kGDCapability_Texture2D) {
-		areTextureUnitsDirty |= textureUnits[activeTextureUnit].Enable();
-	}
-	else if (!enabledCapabilities[gdCap] && gdCap != kGDCapability_Unused0) {
-		SIZE_CHECK(gdCap, capabilityMap);
-
-		GLenum glCap = capabilityMap[gdCap];
-		glEnable(glCap);
-
-		enabledCapabilities[gdCap] = true;
-	}
-}
-
-void GLStateManager::Disable(GLenum gdCap) {
-	if (gdCap == kGDCapability_Texture2D) {
-		areTextureUnitsDirty |= textureUnits[activeTextureUnit].Disable();
-	}
-	else if (gdCap != kGDCapability_Unused0 && enabledCapabilities[gdCap]) {
-		SIZE_CHECK(gdCap, capabilityMap);
-
-		GLenum glCap = capabilityMap[gdCap];
-		glDisable(glCap);
-
-		enabledCapabilities[gdCap] = false;
-	}
-}
-
-bool GLStateManager::IsEnabled(GLenum gdCap) {
-	SIZE_CHECK_RETVAL(gdCap, capabilityMap, false);
-
-	if (gdCap != kGDCapability_Texture2D) {
-		return enabledCapabilities[gdCap];
 	}
 	else {
-		return textureUnits[activeTextureUnit].IsEnabled();
+		return;
+	}
+
+	device->DrawIndexedPrimitiveUP(
+		D3DPT_TRIANGLELIST,
+		0,
+		maxIndex + 1,
+		(count / 4) * 2,
+		convertedIndices.data(),
+		D3DFMT_INDEX32,
+		interleavedPointer,
+		interleavedStride);
+}
+
+void GLStateManager::DrawElements(uint32_t gdMode, int32_t count, uint32_t gdType, void const* indices)
+{
+	SIZE_CHECK(gdMode, d3dPrimitiveMap);
+	if (device == nullptr || interleavedPointer == nullptr || indices == nullptr || count <= 0) {
+		return;
+	}
+
+	ApplyVertexFormat();
+	ApplyTextureStages();
+
+	uint32_t primitiveCount = PrimitiveCount(gdMode, count);
+	if (primitiveCount == 0) {
+		return;
+	}
+
+	if (gdMode == 6) {
+		DrawIndexedConvertedQuads(gdType, indices, count);
+		return;
+	}
+
+	D3DFORMAT indexFormat;
+	uint32_t maxIndex = 0;
+	if (gdType == 3) {
+		indexFormat = D3DFMT_INDEX16;
+		uint16_t const* src = reinterpret_cast<uint16_t const*>(indices);
+		for (int32_t i = 0; i < count; i++) {
+			maxIndex = max(maxIndex, static_cast<uint32_t>(src[i]));
+		}
+	}
+	else if (gdType == 5) {
+		indexFormat = D3DFMT_INDEX32;
+		uint32_t const* src = reinterpret_cast<uint32_t const*>(indices);
+		for (int32_t i = 0; i < count; i++) {
+			maxIndex = max(maxIndex, src[i]);
+		}
+	}
+	else {
+		UNEXPECTED();
+		return;
+	}
+
+	device->DrawIndexedPrimitiveUP(d3dPrimitiveMap[gdMode], 0, maxIndex + 1, primitiveCount, indices, indexFormat, interleavedPointer, interleavedStride);
+}
+
+void GLStateManager::InterleavedArrays(uint32_t format, int32_t stride, void const* pointer)
+{
+	interleavedFormat = format;
+	interleavedStride = stride;
+	interleavedPointer = pointer;
+}
+
+void GLStateManager::ColorMask(bool flag)
+{
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_COLORWRITEENABLE, flag ? (D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA) : 0);
 	}
 }
 
-void GLStateManager::TexEnv(GLenum target, GLenum pname, GLint gdParam) {
-	//if (texEnvMode != gdParam) {
-		GLint paramMap[] = { GL_REPLACE, GL_MODULATE, GL_DECAL, GL_BLEND, GL_COMBINE, GL_COMBINE4_NV };
-
-		assert(pname == 0);
-		SIZE_CHECK(gdParam, paramMap);
-
-		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, paramMap[gdParam]);
-		texEnvMode = gdParam;
-	//}
-}
-
-void GLStateManager::TexEnv(GLenum target, GLenum pname, GLfloat const* params) {
-	assert(pname == 1);
-	glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, params);
-}
-
-void GLStateManager::TexParameter(GLenum target, GLenum pname, GLint param) {
-	static GLenum texParamNameMap[] = { GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T };
-	static GLenum texParamMap[] = { GL_NEAREST, GL_LINEAR, GL_CLAMP, GL_REPEAT, GL_NEAREST_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_NEAREST, GL_NEAREST_MIPMAP_LINEAR, GL_LINEAR_MIPMAP_LINEAR };
-
-	SIZE_CHECK(pname, texParamNameMap);
-	SIZE_CHECK(param, texParamMap);
-
-	textureParameters[pname] = texParamMap[param];
-	for (int i = 0; i < MAX_TEXTURE_UNITS; i++) {
-		textureUnits[0].needsTextureParamRefresh = true;
+void GLStateManager::DepthFunc(uint32_t gdFunc)
+{
+	SIZE_CHECK(gdFunc, d3dFuncMap);
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_ZFUNC, d3dFuncMap[gdFunc]);
 	}
 }
 
-void GLStateManager::TexStage(GLenum texUnit) {
-	activeTextureUnit = texUnit;
-
-	glClientActiveTexture(GL_TEXTURE0 + texUnit);
-	glActiveTexture(GL_TEXTURE0 + texUnit);
-
-	shareable.glActiveTextureUnit = texUnit;
+void GLStateManager::DepthMask(bool flag)
+{
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_ZWRITEENABLE, flag);
+	}
 }
 
-void GLStateManager::TexStageCoord(uint32_t gdTexCoordSource) {
-	areTextureUnitsDirty |= textureUnits[activeTextureUnit].TexStageCoord(gdTexCoordSource);
+void GLStateManager::StencilFunc(uint32_t gdFunc, int32_t ref, uint32_t mask)
+{
+	SIZE_CHECK(gdFunc, d3dFuncMap);
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_STENCILFUNC, d3dFuncMap[gdFunc]);
+		device->SetRenderState(D3DRS_STENCILREF, ref);
+		device->SetRenderState(D3DRS_STENCILMASK, mask);
+	}
 }
 
-void GLStateManager::TexStageMatrix(GLfloat const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags) {
-	areTextureUnitsDirty |= textureUnits[activeTextureUnit].TexStageMatrix(matrix, unknown0, unknown1, gdTexMatFlags);
+void GLStateManager::StencilMask(uint32_t mask)
+{
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_STENCILWRITEMASK, mask);
+	}
 }
 
-void GLStateManager::BindTexture(GLuint textureId) {
-	areTextureUnitsDirty |= textureUnits[activeTextureUnit].SetTexture(textureId);
+void GLStateManager::StencilOp(uint32_t fail, uint32_t zfail, uint32_t zpass)
+{
+	static D3DSTENCILOP d3dStencilMap[] = { D3DSTENCILOP_KEEP, D3DSTENCILOP_REPLACE, D3DSTENCILOP_INCRSAT, D3DSTENCILOP_DECRSAT, D3DSTENCILOP_INVERT };
+	SIZE_CHECK(fail, d3dStencilMap);
+	SIZE_CHECK(zfail, d3dStencilMap);
+	SIZE_CHECK(zpass, d3dStencilMap);
+
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_STENCILFAIL, d3dStencilMap[fail]);
+		device->SetRenderState(D3DRS_STENCILZFAIL, d3dStencilMap[zfail]);
+		device->SetRenderState(D3DRS_STENCILPASS, d3dStencilMap[zpass]);
+	}
 }
 
-void GLStateManager::SetTexture(GLuint textureId, GLenum texUnit) {
-	areTextureUnitsDirty |= textureUnits[texUnit].SetTexture(textureId);
+void GLStateManager::BlendFunc(uint32_t sfactor, uint32_t dfactor)
+{
+	SIZE_CHECK(sfactor, d3dBlendMap);
+	SIZE_CHECK(dfactor, d3dBlendMap);
+
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_SRCBLEND, d3dBlendMap[sfactor]);
+		device->SetRenderState(D3DRS_DESTBLEND, d3dBlendMap[dfactor]);
+	}
 }
 
-void GLStateManager::SetTextureImmediately(GLuint textureId) {
-	textureUnits[activeTextureUnit].SetTextureImmediately(textureId);
+void GLStateManager::AlphaFunc(uint32_t func, float ref)
+{
+	SIZE_CHECK(func, d3dFuncMap);
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_ALPHAFUNC, d3dFuncMap[func]);
+		device->SetRenderState(D3DRS_ALPHAREF, static_cast<DWORD>(ref * 255.0f));
+	}
 }
 
-intptr_t GLStateManager::GetTexture(GLenum texUnit) {
-	return textureUnits[texUnit].GetTexture();
+void GLStateManager::ShadeModel(uint32_t mode)
+{
+	static D3DSHADEMODE shadeModelMap[] = { D3DSHADE_FLAT, D3DSHADE_GOURAUD };
+	SIZE_CHECK(mode, shadeModelMap);
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_SHADEMODE, shadeModelMap[mode]);
+	}
+}
+
+void GLStateManager::ColorMultiplier(float r, float g, float b)
+{
+	ambientLightParams[0] = r;
+	ambientLightParams[1] = g;
+	ambientLightParams[2] = b;
+
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_COLORVALUE(r, g, b, ambientLightParams[3]));
+	}
+}
+
+void GLStateManager::AlphaMultiplier(float a)
+{
+	diffuseLightParams[3] = a;
+}
+
+void GLStateManager::EnableVertexColors(bool ambient, bool diffuse)
+{
+	ambientLightEnabled = ambient;
+	diffuseLightEnabled = diffuse;
+
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_COLORVERTEX, ambient || diffuse);
+		device->SetRenderState(D3DRS_AMBIENTMATERIALSOURCE, ambient ? D3DMCS_COLOR1 : D3DMCS_MATERIAL);
+		device->SetRenderState(D3DRS_DIFFUSEMATERIALSOURCE, diffuse ? D3DMCS_COLOR1 : D3DMCS_MATERIAL);
+	}
+}
+
+void GLStateManager::MatrixMode(uint32_t mode)
+{
+	SIZE_CHECK(mode, isIdentityMatrix);
+	activeMatrixMode = mode;
+}
+
+void GLStateManager::LoadMatrix(float const* m)
+{
+	if (device == nullptr || m == nullptr) {
+		return;
+	}
+
+	D3DMATRIX matrix = ToD3DMatrix(m);
+	device->SetTransform(activeMatrixMode == 0 ? D3DTS_VIEW : D3DTS_PROJECTION, &matrix);
+	isIdentityMatrix[activeMatrixMode] = false;
+}
+
+void GLStateManager::LoadIdentity(void)
+{
+	if (device == nullptr || isIdentityMatrix[activeMatrixMode]) {
+		return;
+	}
+
+	D3DMATRIX identity{};
+	identity._11 = 1.0f;
+	identity._22 = 1.0f;
+	identity._33 = 1.0f;
+	identity._44 = 1.0f;
+	device->SetTransform(activeMatrixMode == 0 ? D3DTS_VIEW : D3DTS_PROJECTION, &identity);
+	isIdentityMatrix[activeMatrixMode] = true;
+}
+
+void GLStateManager::Enable(uint32_t gdCap)
+{
+	SIZE_CHECK(gdCap, enabledCapabilities);
+	enabledCapabilities[gdCap] = true;
+
+	if (device == nullptr) {
+		return;
+	}
+
+	switch (gdCap) {
+	case kGDCapability_AlphaTest: device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE); break;
+	case kGDCapability_DepthTest: device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE); break;
+	case kGDCapability_StencilTest: device->SetRenderState(D3DRS_STENCILENABLE, TRUE); break;
+	case kGDCapability_CullFace: device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW); break;
+	case kGDCapability_Blend: device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE); break;
+	case kGDCapability_Texture2D:
+		textureEnabled[activeTextureUnit] = true;
+		SetDefaultTextureStage(device, activeTextureUnit);
+		break;
+	case kGDCapability_Fog: device->SetRenderState(D3DRS_FOGENABLE, TRUE); break;
+	default: break;
+	}
+}
+
+void GLStateManager::Disable(uint32_t gdCap)
+{
+	SIZE_CHECK(gdCap, enabledCapabilities);
+	enabledCapabilities[gdCap] = false;
+
+	if (device == nullptr) {
+		return;
+	}
+
+	switch (gdCap) {
+	case kGDCapability_AlphaTest: device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE); break;
+	case kGDCapability_DepthTest: device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE); break;
+	case kGDCapability_StencilTest: device->SetRenderState(D3DRS_STENCILENABLE, FALSE); break;
+	case kGDCapability_CullFace: device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE); break;
+	case kGDCapability_Blend: device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE); break;
+	case kGDCapability_Texture2D: textureEnabled[activeTextureUnit] = false; break;
+	case kGDCapability_Fog: device->SetRenderState(D3DRS_FOGENABLE, FALSE); break;
+	default: break;
+	}
+}
+
+bool GLStateManager::IsEnabled(uint32_t gdCap)
+{
+	SIZE_CHECK_RETVAL(gdCap, enabledCapabilities, false);
+	return enabledCapabilities[gdCap];
+}
+
+void GLStateManager::TexEnv(uint32_t, uint32_t pname, int32_t gdParam)
+{
+	if (device == nullptr) {
+		return;
+	}
+
+	if (pname == kGDTextureEnvParamType_Mode) {
+		static D3DTEXTUREOP envOpMap[] = { D3DTOP_SELECTARG1, D3DTOP_MODULATE, D3DTOP_SELECTARG1, D3DTOP_BLENDTEXTUREALPHA, D3DTOP_MODULATE, D3DTOP_MODULATE };
+		SIZE_CHECK(gdParam, envOpMap);
+
+		device->SetTextureStageState(activeTextureUnit, D3DTSS_COLOROP, envOpMap[gdParam]);
+		device->SetTextureStageState(activeTextureUnit, D3DTSS_ALPHAOP, envOpMap[gdParam]);
+	}
+}
+
+void GLStateManager::TexEnv(uint32_t, uint32_t pname, float const* params)
+{
+	if (params == nullptr || pname != kGDTextureEnvParamType_Color) {
+		return;
+	}
+
+	std::memcpy(textureEnvColor, params, sizeof(textureEnvColor));
+	if (device != nullptr) {
+		device->SetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_COLORVALUE(params[0], params[1], params[2], params[3]));
+	}
+}
+
+void GLStateManager::TexParameter(uint32_t, uint32_t pname, int32_t param)
+{
+	static D3DSAMPLERSTATETYPE samplerNameMap[] = { D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV };
+	static DWORD samplerParamMap[] = { D3DTEXF_POINT, D3DTEXF_LINEAR, D3DTADDRESS_CLAMP, D3DTADDRESS_WRAP, D3DTEXF_POINT, D3DTEXF_LINEAR, D3DTEXF_POINT, D3DTEXF_LINEAR };
+	SIZE_CHECK(pname, samplerNameMap);
+	SIZE_CHECK(param, samplerParamMap);
+
+	if (device != nullptr) {
+		for (uint32_t i = 0; i < MAX_TEXTURE_UNITS; i++) {
+			device->SetSamplerState(i, samplerNameMap[pname], samplerParamMap[param]);
+			if (pname == 1 && param >= 4) {
+				device->SetSamplerState(i, D3DSAMP_MIPFILTER, param == 4 || param == 6 ? D3DTEXF_POINT : D3DTEXF_LINEAR);
+			}
+		}
+	}
+}
+
+void GLStateManager::TexStage(uint32_t texUnit)
+{
+	if (texUnit < MAX_TEXTURE_UNITS) {
+		activeTextureUnit = texUnit;
+	}
+}
+
+void GLStateManager::TexStageCoord(uint32_t gdTexCoordSource)
+{
+	textureCoordSource[activeTextureUnit] = gdTexCoordSource;
+}
+
+void GLStateManager::TexStageMatrix(float const* matrix, uint32_t, uint32_t, uint32_t gdTexMatFlags)
+{
+	if (device == nullptr) {
+		return;
+	}
+
+	if (matrix == nullptr) {
+		D3DMATRIX identity{};
+		identity._11 = 1.0f;
+		identity._22 = 1.0f;
+		identity._33 = 1.0f;
+		identity._44 = 1.0f;
+		device->SetTransform(static_cast<D3DTRANSFORMSTATETYPE>(D3DTS_TEXTURE0 + activeTextureUnit), &identity);
+		device->SetTextureStageState(activeTextureUnit, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+		return;
+	}
+
+	D3DMATRIX d3dMatrix = ToD3DMatrix(matrix);
+	device->SetTransform(static_cast<D3DTRANSFORMSTATETYPE>(D3DTS_TEXTURE0 + activeTextureUnit), &d3dMatrix);
+	device->SetTextureStageState(activeTextureUnit, D3DTSS_TEXTURETRANSFORMFLAGS, gdTexMatFlags & 3);
+}
+
+void GLStateManager::BindTexture(uint32_t textureId)
+{
+	SetTexture(textureId, activeTextureUnit);
+}
+
+void GLStateManager::SetTexture(uint32_t textureId, uint32_t texUnit)
+{
+	if (texUnit < MAX_TEXTURE_UNITS) {
+		textureHandles[texUnit] = textureId;
+	}
+}
+
+void GLStateManager::SetTextureImmediately(uint32_t textureId)
+{
+	SetTexture(textureId, activeTextureUnit);
+}
+
+intptr_t GLStateManager::GetTexture(uint32_t texUnit)
+{
+	if (texUnit >= MAX_TEXTURE_UNITS) {
+		return 0;
+	}
+
+	return textureHandles[texUnit];
+}
+
+uint32_t GLStateManager::GetActiveTextureUnit() const
+{
+	return activeTextureUnit;
 }

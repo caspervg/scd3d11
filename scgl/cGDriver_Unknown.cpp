@@ -17,7 +17,6 @@
  */
 
 #include "cGDriver.h"
-#include "GLSupport.h"
 
 namespace nSCGL
 {

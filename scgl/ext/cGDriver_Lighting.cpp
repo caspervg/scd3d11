@@ -1,76 +1,120 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
- *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
- *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation, under
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  */
 
 #include "../cGDriver.h"
-#include "../GLSupport.h"
 
 namespace nSCGL
 {
 	void cGDriver::EnableLighting(bool flag) {
-		flag ? glEnable(GL_LIGHTING) : glDisable(GL_LIGHTING);
+		if (d3dDevice != nullptr) {
+			d3dDevice->SetRenderState(D3DRS_LIGHTING, flag);
+		}
 	}
 
 	void cGDriver::EnableLight(uint32_t light, bool flag) {
-		flag ? glEnable(GL_LIGHT0 + light) : glDisable(GL_LIGHT0 + light);
+		if (d3dDevice != nullptr) {
+			d3dDevice->LightEnable(light, flag);
+		}
 	}
 
 	void cGDriver::LightModelAmbient(float r, float g, float b, float a) {
-		GLfloat params[] = { r, g, b, a };
-		glLightModelfv(GL_LIGHT_MODEL_AMBIENT, params);
+		if (d3dDevice != nullptr) {
+			d3dDevice->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_COLORVALUE(r, g, b, a));
+		}
 	}
 
 	void cGDriver::LightColor(uint32_t lightIndex, uint32_t gdParam, float const* color) {
-		static GLenum colorParamMap[] = { GL_AMBIENT, GL_DIFFUSE, GL_SPECULAR };
-		SIZE_CHECK(gdParam, colorParamMap);
+		if (d3dDevice == nullptr || color == nullptr) {
+			return;
+		}
 
-		GLenum param = colorParamMap[gdParam];
-		glLightfv(GL_LIGHT0 + lightIndex, param, color);
+		D3DLIGHT9 light{};
+		d3dDevice->GetLight(lightIndex, &light);
+
+		D3DCOLORVALUE value{ color[0], color[1], color[2], color[3] };
+		switch (gdParam) {
+		case 0: light.Ambient = value; break;
+		case 1: light.Diffuse = value; break;
+		case 2: light.Specular = value; break;
+		default: return;
+		}
+
+		d3dDevice->SetLight(lightIndex, &light);
 	}
 
 	void cGDriver::LightColor(uint32_t lightIndex, float const* ambient, float const* diffuse, float const* specular) {
-		GLenum light = GL_LIGHT0 + lightIndex;
+		if (d3dDevice == nullptr) {
+			return;
+		}
+
+		D3DLIGHT9 light{};
+		d3dDevice->GetLight(lightIndex, &light);
+
 		if (ambient) {
-			glLightfv(light, GL_AMBIENT, ambient);
+			light.Ambient = D3DCOLORVALUE{ ambient[0], ambient[1], ambient[2], ambient[3] };
 		}
 
 		if (diffuse) {
-			glLightfv(light, GL_DIFFUSE, diffuse);
+			light.Diffuse = D3DCOLORVALUE{ diffuse[0], diffuse[1], diffuse[2], diffuse[3] };
 		}
 
 		if (specular) {
-			glLightfv(light, GL_SPECULAR, specular);
+			light.Specular = D3DCOLORVALUE{ specular[0], specular[1], specular[2], specular[3] };
 		}
+
+		d3dDevice->SetLight(lightIndex, &light);
 	}
 
 	void cGDriver::LightPosition(uint32_t lightIndex, float const* position) {
-		glLightfv(GL_LIGHT0 + lightIndex, GL_POSITION, position);
+		if (d3dDevice == nullptr || position == nullptr) {
+			return;
+		}
+
+		D3DLIGHT9 light{};
+		d3dDevice->GetLight(lightIndex, &light);
+		light.Type = position[3] == 0.0f ? D3DLIGHT_DIRECTIONAL : D3DLIGHT_POINT;
+		light.Position.x = position[0];
+		light.Position.y = position[1];
+		light.Position.z = position[2];
+		light.Direction.x = -position[0];
+		light.Direction.y = -position[1];
+		light.Direction.z = -position[2];
+		d3dDevice->SetLight(lightIndex, &light);
 	}
 
 	void cGDriver::LightDirection(uint32_t lightIndex, float const* direction) {
-		NOTIMPL();
+		if (d3dDevice == nullptr || direction == nullptr) {
+			return;
+		}
+
+		D3DLIGHT9 light{};
+		d3dDevice->GetLight(lightIndex, &light);
+		light.Direction.x = direction[0];
+		light.Direction.y = direction[1];
+		light.Direction.z = direction[2];
+		d3dDevice->SetLight(lightIndex, &light);
 	}
 
 	void cGDriver::MaterialColor(uint32_t gdParam, float const* color) {
-		static GLenum materialParamMap[] = { GL_AMBIENT, GL_DIFFUSE, GL_SPECULAR, GL_EMISSION, GL_SHININESS };
-		SIZE_CHECK(gdParam, materialParamMap);
+		if (d3dDevice == nullptr || color == nullptr) {
+			return;
+		}
 
-		GLenum param = materialParamMap[gdParam];
-		glMaterialfv(GL_FRONT, param, color);
+		D3DMATERIAL9 material{};
+		d3dDevice->GetMaterial(&material);
+		D3DCOLORVALUE value{ color[0], color[1], color[2], color[3] };
+
+		switch (gdParam) {
+		case 0: material.Ambient = value; break;
+		case 1: material.Diffuse = value; break;
+		case 2: material.Specular = value; break;
+		case 3: material.Emissive = value; break;
+		case 4: material.Power = color[0]; break;
+		default: return;
+		}
+
+		d3dDevice->SetMaterial(&material);
 	}
 
 	void cGDriver::MaterialColor(
@@ -80,24 +124,34 @@ namespace nSCGL
 		float const* emission,
 		float shininess)
 	{
+		if (d3dDevice == nullptr) {
+			return;
+		}
+
+		D3DMATERIAL9 material{};
+		d3dDevice->GetMaterial(&material);
+
 		if (ambient) {
-			glMaterialfv(GL_FRONT, GL_AMBIENT, ambient);
+			material.Ambient = D3DCOLORVALUE{ ambient[0], ambient[1], ambient[2], ambient[3] };
 		}
 
 		if (diffuse) {
-			glMaterialfv(GL_FRONT, GL_DIFFUSE, diffuse);
+			material.Diffuse = D3DCOLORVALUE{ diffuse[0], diffuse[1], diffuse[2], diffuse[3] };
 		}
 
 		if (specular) {
-			glMaterialfv(GL_FRONT, GL_SPECULAR, specular);
+			material.Specular = D3DCOLORVALUE{ specular[0], specular[1], specular[2], specular[3] };
 		}
 
 		if (emission) {
-			glMaterialfv(GL_FRONT, GL_EMISSION, emission);
+			material.Emissive = D3DCOLORVALUE{ emission[0], emission[1], emission[2], emission[3] };
 		}
 
 		if (shininess >= 0.0f) {
-			glMaterialfv(GL_FRONT, GL_SHININESS, &shininess);
+			material.Power = shininess;
 		}
+
+		d3dDevice->SetMaterial(&material);
 	}
 }
+

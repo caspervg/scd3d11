@@ -1,56 +1,23 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
- *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
- *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation, under
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  */
 
 #include "cGDriver.h"
-#include "GLSupport.h"
+#include <cstring>
 
 namespace nSCGL
 {
-#ifndef NDEBUG
-	static void __stdcall LogGLMessage(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
-		if (type == GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR) {
-			// We know we're using the fixed function pipeline.
-			// FUTURE: but what if we weren't?
-			return;
-		}
-
-		static FILE* glMessageLog = nullptr;
-		if (glMessageLog == nullptr) {
-			glMessageLog = fopen("C:\\temp\\cGDriver.opengl.log", "w");
-		}
-
-		fprintf(glMessageLog, "[GLerr] [source: %x] [type: %x] [id: %x] [severity: %d] %s\n", source, type, id, severity, message);
-		fflush(glMessageLog);
-	}
-#endif
-
 	uint32_t cGDriver::CountVideoModes(void) const {
 		return videoModeCount;
 	}
 
 	void cGDriver::GetVideoModeInfo(uint32_t dwIndex, sGDMode& gdMode) {
-		if (dwIndex == -1 || dwIndex >= (uint32_t)videoModeCount) {
+		if (dwIndex == -1 || dwIndex >= static_cast<uint32_t>(videoModeCount)) {
 			SetLastError(DriverError::OUT_OF_RANGE);
 			return;
 		}
 
-		sGDMode tmp = videoModes[dwIndex];
-		gdMode = tmp;
+		gdMode = videoModes[dwIndex];
 	}
 
 	void cGDriver::GetVideoModeInfo(sGDMode& gdMode) {
@@ -59,289 +26,170 @@ namespace nSCGL
 
 	void cGDriver::SetVideoMode(int32_t newModeIndex, void* hwndProc, bool showWindow, bool) {
 		if (newModeIndex == -1) {
-			ShowWindow(static_cast<HWND>(windowHandle), SW_HIDE);
+			if (windowHandle != nullptr) {
+				ShowWindow(static_cast<HWND>(windowHandle), SW_HIDE);
+			}
 
 			currentVideoMode = -1;
 			windowWidth = 0;
 			windowHeight = 0;
-
 			SetLastError(DriverError::OK);
+			return;
 		}
-		else if (newModeIndex < videoModeCount) {
-			// Destroy the old window (if we have one) and create a new one, so
-			// Windows doesn't get mad at us if we call SetPixelFormat twice.
-			sGDMode const& newMode = videoModes[newModeIndex];
-			bool fullscreen = newMode.isFullscreen;
 
-			currentVideoMode = newModeIndex;
-			windowWidth = newMode.width;
-			windowHeight = newMode.height;
+		if (newModeIndex >= videoModeCount || d3d == nullptr) {
+			SetLastError(DriverError::OUT_OF_RANGE);
+			return;
+		}
 
-			if (hwndProc == nullptr) {
-				hwndProc = DefWindowProcA;
-			}
+		sGDMode const& newMode = videoModes[newModeIndex];
+		bool fullscreen = newMode.isFullscreen;
 
-			DestroyOpenGLContext();
+		currentVideoMode = newModeIndex;
+		windowWidth = newMode.width;
+		windowHeight = newMode.height;
 
-			// Try to transition to fullscreen. If we can't, fall back to windowed mode.
-			if (fullscreen) {
-				DEVMODE newScreenSettings{};
-				newScreenSettings.dmSize = sizeof(DEVMODE);
-				newScreenSettings.dmPelsWidth = windowWidth;
-				newScreenSettings.dmPelsHeight = windowHeight;
-				newScreenSettings.dmBitsPerPel = newMode.depth;
-				newScreenSettings.dmFields = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
+		if (hwndProc == nullptr) {
+			hwndProc = DefWindowProcA;
+		}
 
-				if (ChangeDisplaySettings(&newScreenSettings, CDS_FULLSCREEN) != DISP_CHANGE_SUCCESSFUL) {
-					MessageBoxA(NULL, "Failed to change display settings for fullscreen. Falling back to windowed mode.", "SCGL video mode error", MB_ICONWARNING);
-					fullscreen = false;
-				}
-			}
+		DestroyD3DDevice();
 
-			// Create the new window with desired width and height
-			DWORD dwStyle, dwExtStyle;
-			RECT wndRect{ 0, 0, windowWidth, windowHeight };
+		DWORD dwStyle, dwExtStyle;
+		RECT wndRect{ 0, 0, windowWidth, windowHeight };
 
-			if (fullscreen) {
-				dwStyle = WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_MAXIMIZE;
-				dwExtStyle = WS_EX_APPWINDOW | WS_EX_TOPMOST;
-			}
-			else {
-				dwStyle = WS_SYSMENU | WS_MINIMIZEBOX | WS_CAPTION | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-				dwExtStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
-
-				AdjustWindowRectEx(&wndRect, dwStyle, FALSE, dwExtStyle);
-				OffsetRect(&wndRect, 0, GetSystemMetrics(SM_CYCAPTION));
-			}
-
-			HWND hwnd = CreateWindowExA(
-				dwExtStyle,
-				"GDriverClass--OpenGL",
-				"GDriverWindow--OpenGL",
-				dwStyle,
-				wndRect.left,
-				wndRect.top,
-				wndRect.right - wndRect.left,
-				wndRect.bottom - wndRect.top,
-				nullptr,
-				nullptr,
-				GetModuleHandle(nullptr),
-				nullptr);
-
-			if (hwnd == nullptr) {
-				MessageBoxA(NULL, "Failed to create window.", "SCGL video mode error", MB_ICONWARNING);
-				return;
-			}
-
-			HDC hdc = GetDC(hwnd);
-			windowHandle = hwnd;
-			deviceContext = hdc;
-
-			// Try to set the new pixel format with the OpenGL extension, which lets us guarantee hardware
-			// acceleration. If we don't have it, we're probably on ancient hardware but fall back anyway.
-			PIXELFORMATDESCRIPTOR pfd{};
-			int pixelFormat;
-
-			if (supportedExtensions.pixelFormat) {
-				int attribIList[] = {
-					WGL_DRAW_TO_WINDOW_ARB, GL_TRUE,
-					WGL_SUPPORT_OPENGL_ARB, GL_TRUE,
-					WGL_DOUBLE_BUFFER_ARB, GL_TRUE,
-					WGL_ACCELERATION_ARB, WGL_FULL_ACCELERATION_ARB,
-					WGL_PIXEL_TYPE_ARB, WGL_TYPE_RGBA_ARB,
-					WGL_ALPHA_BITS_ARB, newMode.depth == 32 ? 8 : 1,
-					WGL_COLOR_BITS_ARB, newMode.depth == 32 ? 24 : 15,
-					WGL_DEPTH_BITS_ARB, newMode.depth == 32 ? 24 : 16,
-					WGL_STENCIL_BITS_ARB, 8,
-					0, 0, // Reserved for WGL_SAMPLE_BUFFERS_ARB
-					0, 0, // Reserved for WGL_SAMPLES_ARB
-					0,
-				};
-
-				// TODO: should have some way of disabling MSAA
-				if (supportedExtensions.multisample) {
-					attribIList[18] = WGL_SAMPLE_BUFFERS_ARB;
-					attribIList[19] = 1;
-					attribIList[20] = WGL_SAMPLES_ARB;
-					attribIList[21] = 4;
-				}
-
-				uint32_t numFormats;
-				if (!wglChoosePixelFormatARB(hdc, attribIList, nullptr, 1, &pixelFormat, &numFormats) || numFormats == 0) {
-					MessageBoxA(NULL, "No compatible video mode detected.", "SCGL video mode error", MB_ICONWARNING);
-					DestroyOpenGLContext();
-					return;
-				}
-
-				DescribePixelFormat(hdc, pixelFormat, sizeof(pfd), &pfd);
-			}
-			else {
-				pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
-				pfd.nVersion = 1;
-				pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-				pfd.iPixelType = PFD_TYPE_RGBA;
-				pfd.cAlphaBits = (newMode.depth == 32) ? 8 : 1;
-				pfd.cColorBits = (newMode.depth == 32) ? 24 : 15;
-				pfd.cDepthBits = (newMode.depth == 32) ? 24 : 16;
-				pfd.cStencilBits = 8;
-				pfd.iLayerType = PFD_MAIN_PLANE;
-
-				pixelFormat = ChoosePixelFormat(hdc, &pfd);
-			}
-
-			if (!SetPixelFormat(hdc, pixelFormat, &pfd)) {
-				MessageBoxA(NULL, "Failed to set video mode.", "SCGL video mode error", MB_ICONWARNING);
-				DestroyOpenGLContext();
-				return;
-			}
-
-			// Now try to create the OpenGL context itself
-			if (supportedExtensions.createContext) {
-				std::vector<int> contextAttribIList{
-					WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-					WGL_CONTEXT_MINOR_VERSION_ARB, 0,
-#ifndef NDEBUG
-					WGL_CONTEXT_FLAGS_ARB, supportedExtensions.debugOutput ? WGL_CONTEXT_DEBUG_BIT_ARB : 0,
-#endif
-				};
-
-#ifdef NDEBUG
-				if (supportedExtensions.createContextNoError) {
-					contextAttribIList.push_back(WGL_CONTEXT_OPENGL_NO_ERROR_ARB);
-					contextAttribIList.push_back(GL_TRUE);
-				}
-#endif
-
-				contextAttribIList.push_back(0);
-				glContext = wglCreateContextAttribsARB(hdc, nullptr, contextAttribIList.data());
-			}
-			else {
-				glContext = wglCreateContext(hdc);
-			}
-
-			if (glContext == nullptr) {
-				MessageBoxA(NULL, "Failed to create an OpenGL context", "SCGL video mode error", MB_ICONWARNING);
-				DestroyOpenGLContext();
-				return;
-			}
-
-#ifndef NDEBUG
-			{
-				HWND secondaryHwnd = CreateWindowExA(
-					dwExtStyle,
-					"GDriverClass--OpenGLDebug",
-					"GDriverWindow--OpenGLDebug",
-					(dwStyle) & ~(WS_EX_APPWINDOW | WS_POPUP | WS_SYSMENU),
-					wndRect.left,
-					wndRect.top,
-					wndRect.right - wndRect.left,
-					wndRect.bottom - wndRect.top,
-					nullptr,
-					nullptr,
-					GetModuleHandle(nullptr),
-					nullptr);
-
-				if (secondaryHwnd == nullptr) {
-					DWORD error = GetLastError();
-					MessageBoxA(NULL, "Failed to create window.", "SCGL video mode error", MB_ICONWARNING);
-					return;
-				}
-
-				HDC secondaryDC = GetDC(secondaryHwnd);
-				secondaryWindow = secondaryHwnd;
-				secondaryDeviceContext = secondaryDC;
-
-				pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
-				pfd.nVersion = 1;
-				pfd.dwFlags = PFD_DRAW_TO_WINDOW;
-				pfd.iPixelType = PFD_TYPE_RGBA;
-				pfd.cAlphaBits = (newMode.depth == 32) ? 8 : 1;
-				pfd.cColorBits = (newMode.depth == 32) ? 24 : 15;
-				pfd.cDepthBits = (newMode.depth == 32) ? 24 : 16;
-				pfd.cStencilBits = 8;
-				pfd.iLayerType = PFD_MAIN_PLANE;
-
-				pixelFormat = ChoosePixelFormat(secondaryDC, &pfd);
-
-				if (!SetPixelFormat(secondaryDC, pixelFormat, &pfd)) {
-					MessageBoxA(NULL, "Failed to set video mode on debug window.", "SCGL video mode error", MB_ICONWARNING);
-				}
-
-				ShowWindow(secondaryHwnd, SW_SHOWNORMAL);
-				pixels = new char[3 * newMode.width * newMode.height];
-				lineBrush = CreateSolidBrush(RGB(255, 0, 0));
-			}
-#endif
-
-			wglMakeCurrent(hdc, static_cast<HGLRC>(glContext));
-
-			if (supportedExtensions.swapControl) {
-				wglSwapIntervalEXT(1);
-			}
-
-			// Window should now be ready to go, show it and wrap up initialization
-			SetWindowLong(hwnd, GWL_WNDPROC, reinterpret_cast<LONG>(hwndProc));
-			ShowWindow(hwnd, SW_SHOWNORMAL);
-
-#ifndef NDEBUG
-			if (supportedExtensions.debugOutput && glDebugMessageCallback != nullptr) {
-				glDebugMessageCallback(LogGLMessage, nullptr);
-				glEnable(GL_DEBUG_OUTPUT);
-				glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
-			}
-#endif
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-
-			// SimCity 4 doesn't use the GZDriverLightingExtension, but it does expect
-			// there to be a light enabled and to 45deg above x/y.
-			GLfloat lightPos[] = { 1.0, 1.0, 0.0, 0.0 };
-			glEnable(GL_LIGHTING);
-			glEnable(GL_LIGHT0);
-			glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
-
-			GLfloat ambientLightParams[] = { 0.0f, 0.0f, 0.0f, 1.0f };
-			glLightfv(GL_LIGHT0, GL_AMBIENT, ambientLightParams);
-
-			GLfloat diffuseLightParams[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-			glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuseLightParams);
-			glLightfv(GL_LIGHT0, GL_SPECULAR, diffuseLightParams);
-
-			GLfloat ambientMaterialParams[] = { 1.0f, 0.0f, 0.0f, 1.0f };
-			glMaterialfv(GL_FRONT, GL_AMBIENT, ambientLightParams);
-
-			GLfloat diffuseMaterialParams[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			glMaterialfv(GL_FRONT, GL_DIFFUSE, diffuseLightParams);
-
-			SetViewport();
-			SetLastError(DriverError::OK);
+		if (fullscreen) {
+			dwStyle = WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_MAXIMIZE;
+			dwExtStyle = WS_EX_APPWINDOW | WS_EX_TOPMOST;
 		}
 		else {
-			SetLastError(DriverError::OUT_OF_RANGE);
+			dwStyle = WS_SYSMENU | WS_MINIMIZEBOX | WS_CAPTION | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+			dwExtStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
+			AdjustWindowRectEx(&wndRect, dwStyle, FALSE, dwExtStyle);
+			OffsetRect(&wndRect, 0, GetSystemMetrics(SM_CYCAPTION));
 		}
+
+		HWND hwnd = CreateWindowExA(
+			dwExtStyle,
+			"GDriverClass--Direct3D9",
+			"GDriverWindow--Direct3D9",
+			dwStyle,
+			wndRect.left,
+			wndRect.top,
+			wndRect.right - wndRect.left,
+			wndRect.bottom - wndRect.top,
+			nullptr,
+			nullptr,
+			GetModuleHandle(nullptr),
+			nullptr);
+
+		if (hwnd == nullptr) {
+			MessageBoxA(NULL, "Failed to create the Direct3D 9 window.", "SCGL video mode error", MB_ICONWARNING);
+			return;
+		}
+
+		windowHandle = hwnd;
+
+		memset(&presentParams, 0, sizeof(presentParams));
+		presentParams.BackBufferWidth = windowWidth;
+		presentParams.BackBufferHeight = windowHeight;
+		presentParams.BackBufferFormat = newMode.depth == 16 ? D3DFMT_R5G6B5 : D3DFMT_X8R8G8B8;
+		presentParams.BackBufferCount = 1;
+		presentParams.MultiSampleType = D3DMULTISAMPLE_NONE;
+		presentParams.SwapEffect = D3DSWAPEFFECT_DISCARD;
+		presentParams.hDeviceWindow = hwnd;
+		presentParams.Windowed = !fullscreen;
+		presentParams.EnableAutoDepthStencil = TRUE;
+		presentParams.AutoDepthStencilFormat = newMode.depth == 16 ? D3DFMT_D16 : D3DFMT_D24S8;
+		presentParams.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+
+		DWORD behaviorFlags = D3DCREATE_FPU_PRESERVE;
+		if (supportedFeatures.hardwareTransformAndLight) {
+			behaviorFlags |= D3DCREATE_HARDWARE_VERTEXPROCESSING;
+			if (supportedFeatures.pureDevice) {
+				behaviorFlags |= D3DCREATE_PUREDEVICE;
+			}
+		}
+		else {
+			behaviorFlags |= D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+		}
+
+		HRESULT hr = d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, behaviorFlags, &presentParams, &d3dDevice);
+		if (FAILED(hr) && (behaviorFlags & D3DCREATE_HARDWARE_VERTEXPROCESSING)) {
+			behaviorFlags &= ~(D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE);
+			behaviorFlags |= D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+			hr = d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, behaviorFlags, &presentParams, &d3dDevice);
+		}
+
+		if (FAILED(hr)) {
+			MessageBoxA(NULL, "Failed to create the Direct3D 9 device.", "SCGL video mode error", MB_ICONWARNING);
+			DestroyD3DDevice();
+			return;
+		}
+
+		SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(hwndProc));
+		ShowWindow(hwnd, showWindow ? SW_SHOWNORMAL : SW_HIDE);
+
+		state.SetDevice(d3dDevice);
+
+		D3DMATRIX identity{};
+		identity._11 = 1.0f;
+		identity._22 = 1.0f;
+		identity._33 = 1.0f;
+		identity._44 = 1.0f;
+		d3dDevice->SetTransform(D3DTS_WORLD, &identity);
+		d3dDevice->SetRenderState(D3DRS_LIGHTING, TRUE);
+		d3dDevice->SetRenderState(D3DRS_NORMALIZENORMALS, FALSE);
+		d3dDevice->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+
+		D3DLIGHT9 light{};
+		light.Type = D3DLIGHT_DIRECTIONAL;
+		light.Direction.x = -1.0f;
+		light.Direction.y = -1.0f;
+		light.Direction.z = 0.0f;
+		light.Diffuse.r = 1.0f;
+		light.Diffuse.g = 1.0f;
+		light.Diffuse.b = 1.0f;
+		light.Diffuse.a = 1.0f;
+		d3dDevice->SetLight(0, &light);
+		d3dDevice->LightEnable(0, TRUE);
+		d3dDevice->BeginScene();
+
+		SetViewport();
+		SetLastError(DriverError::OK);
 	}
 
 	bool cGDriver::IsDeviceReady(void) {
-		return glContext != nullptr && supportedExtensions.bgraColor;
+		return d3dDevice != nullptr;
 	}
 
 	void cGDriver::Flush(void) {
-		SwapBuffers(static_cast<HDC>(deviceContext));
+		if (d3dDevice != nullptr) {
+			d3dDevice->EndScene();
+			d3dDevice->Present(nullptr, nullptr, nullptr, nullptr);
+			d3dDevice->BeginScene();
+		}
 	}
 
 	void cGDriver::SetViewport(void) {
-		glViewport(0, 0, windowWidth, windowHeight);
-		glDisable(GL_SCISSOR_TEST);
-
-		viewportX = viewportY = 0;
-		viewportWidth = windowWidth;
-		viewportHeight = windowHeight;
+		SetViewport(0, 0, windowWidth, windowHeight);
 	}
 
-	void cGDriver::SetViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
-		glViewport(x, y, width, height);
-		glScissor(x, y, width, height);
-		glEnable(GL_SCISSOR_TEST);
+	void cGDriver::SetViewport(int32_t x, int32_t y, int32_t width, int32_t height) {
+		if (d3dDevice != nullptr) {
+			D3DVIEWPORT9 viewport{};
+			viewport.X = x;
+			viewport.Y = y;
+			viewport.Width = width;
+			viewport.Height = height;
+			viewport.MinZ = 0.0f;
+			viewport.MaxZ = 1.0f;
+			d3dDevice->SetViewport(&viewport);
+
+			RECT scissor{ x, y, x + width, y + height };
+			d3dDevice->SetScissorRect(&scissor);
+			d3dDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, x != 0 || y != 0 || width != windowWidth || height != windowHeight);
+		}
 
 		viewportX = x;
 		viewportY = y;

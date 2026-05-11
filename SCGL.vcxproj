@@ -23,8 +23,6 @@
     <ClCompile Include="scgl\ext\cGDriver_Snapshot.cpp" />
     <ClCompile Include="scgl\ext\cGDriver_VertexBuffers.cpp" />
     <ClCompile Include="scgl\GLStateManager.cpp" />
-    <ClCompile Include="scgl\GLSupport.cpp" />
-    <ClCompile Include="scgl\GLTextureUnit.cpp" />
     <ClCompile Include="scgl\VertexFormatUtils.cpp" />
     <ClCompile Include="vendor\framework\src\cRZCOMDllDirector.cpp" />
     <ClCompile Include="vendor\framework\src\cRZRefCount.cpp" />
@@ -38,6 +36,7 @@
     <ClInclude Include="scgl\ext\cIGZGDriverLightingExtension.h" />
     <ClInclude Include="scgl\ext\cIGZGDriverVertexBufferExtension.h" />
     <ClInclude Include="scgl\ext\cIGZGSnapshotExtension.h" />
+    <ClInclude Include="scgl\D3DSupport.h" />
     <ClInclude Include="scgl\GLShareableState.h" />
     <ClInclude Include="scgl\GLStateManager.h" />
     <ClInclude Include="scgl\GLSupport.h" />
@@ -104,7 +103,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>$(CoreLibraryDependencies);opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(CoreLibraryDependencies);d3d9.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -137,7 +136,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
-      <AdditionalDependencies>$(CoreLibraryDependencies);opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(CoreLibraryDependencies);d3d9.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

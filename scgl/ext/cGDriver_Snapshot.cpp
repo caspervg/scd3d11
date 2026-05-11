@@ -1,19 +1,5 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
- *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
- *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation, under
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  */
 
 #include <cIGZCOM.h>
@@ -23,7 +9,6 @@
 
 extern cRZCOMSlimDllDirector* RZGetCOMDllDirector();
 
-static const uint32_t GZCLSID_cGZBuffer = 0xC470D325;
 static const uint32_t GZIID_cIGZGraphicSystem = 0x73283c;
 static const uint32_t RZSRVID_GraphicSystem = 0xc416025c;
 
@@ -31,7 +16,6 @@ class cIGZGraphicSystem : public cIGZUnknown
 {
 public:
 	virtual bool CreateBuffer(cIGZBuffer** ppvObj) = 0;
-	// Don't need to declare the rest of the interface right now
 };
 
 namespace nSCGL
@@ -52,21 +36,23 @@ namespace nSCGL
 	}
 
 	cIGZBuffer* cGDriver::CopyColorBuffer(int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer* buffer) {
-		int32_t startX = x;
-		int32_t startY = y;
+		if (d3dDevice == nullptr) {
+			return buffer;
+		}
+
+		int32_t startX = x < 0 ? 0 : x;
+		int32_t startY = y < 0 ? 0 : y;
 		int32_t endX = x + width;
 		int32_t endY = y + height;
 
-		if (startX < 0) { x = 0; }
-		if (startY < 0) { y = 0; }
 		if (endX > viewportWidth) { endX = viewportWidth; }
 		if (endY > viewportHeight) { endY = viewportHeight; }
 
-		uint8_t* colorBytes = nullptr;
-		x = startX;
-		y = startY;
 		width = endX - startX;
 		height = endY - startY;
+		if (width <= 0 || height <= 0) {
+			return buffer;
+		}
 
 		if (buffer == nullptr || !buffer->IsReady()) {
 			buffer = CreateBufferFromGraphicsSystem();
@@ -78,34 +64,50 @@ namespace nSCGL
 			return nullptr;
 		}
 
-		colorBytes = new uint8_t[3 * width * height];
-		if (colorBytes == nullptr) {
+		IDirect3DSurface9* backBuffer = nullptr;
+		if (FAILED(d3dDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer))) {
 			return buffer;
 		}
 
-		glReadBuffer(GL_BACK);
-		glPixelStorei(GL_PACK_ALIGNMENT, 1);
-		glReadPixels(x, viewportHeight - startY - height, width, height, GL_RGB, GL_UNSIGNED_BYTE, colorBytes);
+		IDirect3DSurface9* systemSurface = nullptr;
+		HRESULT hr = d3dDevice->CreateOffscreenPlainSurface(windowWidth, windowHeight, presentParams.BackBufferFormat, D3DPOOL_SYSTEMMEM, &systemSurface, nullptr);
+		if (SUCCEEDED(hr)) {
+			hr = d3dDevice->GetRenderTargetData(backBuffer, systemSurface);
+		}
 
-		uint8_t const* colorBytesCursor = colorBytes;
+		backBuffer->Release();
+
+		if (FAILED(hr)) {
+			if (systemSurface != nullptr) {
+				systemSurface->Release();
+			}
+			return buffer;
+		}
+
+		RECT lockRect{ startX, startY, startX + width, startY + height };
+		D3DLOCKED_RECT locked{};
+		if (FAILED(systemSurface->LockRect(&locked, &lockRect, D3DLOCK_READONLY))) {
+			systemSurface->Release();
+			return buffer;
+		}
+
 		if ((buffer->IsReady() || buffer->Init(width, height, cGZBufferColorType::A8R8G8B8, 32)) && buffer->Lock(cIGZBuffer::eLockFlags::IsDirtyUpdate)) {
-			while (--height >= 0) {
-				for (int i = 0; i < width; i++) {
-					uint32_t color = 0xFF000000 | (colorBytesCursor[0] << 16) | (colorBytesCursor[1] << 8) | colorBytesCursor[2];
-					buffer->SetPixel(i, height, color);
-
-					colorBytesCursor += 3;
+			uint8_t const* row = reinterpret_cast<uint8_t const*>(locked.pBits);
+			for (int32_t yy = 0; yy < height; yy++) {
+				uint32_t const* pixels = reinterpret_cast<uint32_t const*>(row);
+				for (int32_t xx = 0; xx < width; xx++) {
+					buffer->SetPixel(xx, yy, 0xff000000 | (pixels[xx] & 0x00ffffff));
 				}
+
+				row += locked.Pitch;
 			}
 
 			buffer->Unlock(cIGZBuffer::eLockFlags::IsDirtyUpdate);
 		}
 
-#ifndef NDEBUG
-		glPixelStorei(GL_PACK_ALIGNMENT, 4);
-#endif
-
-		delete[] colorBytes;
+		systemSurface->UnlockRect();
+		systemSurface->Release();
 		return buffer;
 	}
 }
+

@@ -69,13 +69,7 @@
     <ClCompile Include="scgl\ext\cGDriver_Snapshot.cpp">
       <Filter>Source Files\ext</Filter>
     </ClCompile>
-    <ClCompile Include="scgl\GLSupport.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="scgl\GLStateManager.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="scgl\GLTextureUnit.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="scgl\VertexFormatUtils.cpp">
@@ -107,16 +101,13 @@
     <ClInclude Include="scgl\ext\cIGZGDriverVertexBufferExtension.h">
       <Filter>Header Files\ext</Filter>
     </ClInclude>
-    <ClInclude Include="scgl\GLSupport.h">
+    <ClInclude Include="scgl\D3DSupport.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="scgl\cGDCombiner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="scgl\GLStateManager.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="scgl\GLTextureUnit.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="scgl\VertexFormatUtils.h">

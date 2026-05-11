@@ -1,118 +1,144 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
- *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
- *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation, under
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  */
 
+#include <algorithm>
+#include <cstring>
 #include "cGDriver.h"
 #include "cGDCombiner.h"
-#include "GLSupport.h"
 
-#ifdef NDEBUG
-#define DBGLOGERR()
-#else
-#define DBGLOGERR() dbgLastError = glGetError();
-#endif
+namespace
+{
+	static D3DFORMAT internalFormatMap[8] = {
+		D3DFMT_R5G6B5,
+		D3DFMT_X8R8G8B8,
+		D3DFMT_A4R4G4B4,
+		D3DFMT_A1R5G5B5,
+		D3DFMT_A8R8G8B8,
+		D3DFMT_DXT1,
+		D3DFMT_DXT3,
+		D3DFMT_DXT5,
+	};
 
-extern GLenum typeMap[16];
-extern GLenum glBlendMap[11];
+	static uint32_t BytesPerSourcePixel(uint32_t gdTexFormat)
+	{
+		static uint32_t bppMap[] = { 3, 4, 3, 4, 1, 1, 2, 0, 0, 0, 0 };
+		if (gdTexFormat >= sizeof(bppMap) / sizeof(bppMap[0])) {
+			return 0;
+		}
+
+		return bppMap[gdTexFormat];
+	}
+
+	static uint32_t CompressedImageSize(uint32_t gdTexFormat, uint32_t width, uint32_t height)
+	{
+		uint32_t blockBytes = (gdTexFormat == 7 || gdTexFormat == 8) ? 8 : 16;
+		return ((width + 3) / 4) * ((height + 3) / 4) * blockBytes;
+	}
+
+	static D3DTextureHandle* TextureFromId(uint32_t textureId)
+	{
+		return reinterpret_cast<D3DTextureHandle*>(static_cast<uintptr_t>(textureId));
+	}
+
+	static uint32_t TextureIdFromHandle(D3DTextureHandle* handle)
+	{
+		return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(handle));
+	}
+
+	static uint32_t ReadSourcePixel(uint8_t const* src, uint32_t gdTexFormat)
+	{
+		switch (gdTexFormat) {
+		case 0: return 0xff000000 | (src[0] << 16) | (src[1] << 8) | src[2];
+		case 1: return (src[3] << 24) | (src[0] << 16) | (src[1] << 8) | src[2];
+		case 2: return 0xff000000 | (src[2] << 16) | (src[1] << 8) | src[0];
+		case 3: return (src[3] << 24) | (src[2] << 16) | (src[1] << 8) | src[0];
+		case 4: return src[0] << 24;
+		case 5: return 0xff000000 | (src[0] << 16) | (src[0] << 8) | src[0];
+		case 6: return (src[1] << 24) | (src[0] << 16) | (src[0] << 8) | src[0];
+		default: return 0xffffffff;
+		}
+	}
+}
 
 namespace nSCGL
 {
-	static GLenum texEnvParamMap[2] = { GL_TEXTURE_ENV_MODE, GL_TEXTURE_ENV_COLOR };
-	static GLenum internalFormatMap[8] = {
-		GL_RGB5, GL_RGB8, GL_RGBA4, GL_RGB5_A1,
-		GL_RGBA8, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
-		GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
-	};
-
-	static GLenum formatMap[11] = {
-		GL_RGB, GL_RGBA, GL_BGR, GL_BGRA, GL_ALPHA, GL_LUMINANCE, GL_LUMINANCE_ALPHA,
-		GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
-		GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
-	};
-
-	void cGDriver::GenTextures(GLsizei n, GLuint* textures) {
-		glGenTextures(n, textures);
-	}
-
-	void cGDriver::DeleteTextures(GLsizei n, GLuint const* textures) {
-		glDeleteTextures(n, textures);
-	}
-
-	bool cGDriver::IsTexture(GLuint texture) {
-		bool result = glIsTexture(texture) != 0;
-		return result;
-	}
-
-	void cGDriver::PrioritizeTextures(GLsizei n, GLuint const* textures, GLclampf const* priorities) {
-		glPrioritizeTextures(n, textures, priorities);
-	}
-
-	bool cGDriver::AreTexturesResident(GLsizei n, GLuint const* textures, bool* residences) {
-		bool result = glAreTexturesResident(n, textures, reinterpret_cast<GLboolean*>(residences)) != 0;
-		return result;
-	}
-
-	void cGDriver::BindTexture(GLenum target, GLuint texture) {
-#ifndef NDEBUG
-		if (target > 0) {
-			UNEXPECTED();
+	void cGDriver::GenTextures(int32_t n, uint32_t* textures) {
+		if (textures == nullptr) {
 			return;
 		}
-#endif
 
+		for (int32_t i = 0; i < n; i++) {
+			textures[i] = TextureIdFromHandle(new D3DTextureHandle());
+		}
+	}
+
+	void cGDriver::DeleteTextures(int32_t n, uint32_t const* textures) {
+		if (textures == nullptr) {
+			return;
+		}
+
+		for (int32_t i = 0; i < n; i++) {
+			ReleaseTexture(textures[i]);
+		}
+	}
+
+	bool cGDriver::IsTexture(uint32_t texture) {
+		D3DTextureHandle* handle = TextureFromId(texture);
+		return handle != nullptr && handle->texture != nullptr;
+	}
+
+	void cGDriver::PrioritizeTextures(int32_t, uint32_t const*, float const*) {
+	}
+
+	bool cGDriver::AreTexturesResident(int32_t n, uint32_t const*, bool* residences) {
+		if (residences != nullptr) {
+			for (int32_t i = 0; i < n; i++) {
+				residences[i] = true;
+			}
+		}
+
+		return true;
+	}
+
+	void cGDriver::BindTexture(uint32_t, uint32_t texture) {
 		state.BindTexture(texture);
 	}
 
-	void cGDriver::TexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, void const* pixels) {
-#ifndef NDEBUG
-		if (target > 0) {
-			UNEXPECTED();
+	void cGDriver::TexImage2D(uint32_t, int32_t level, int32_t gdInternalTexFormat, int32_t width, int32_t height, int32_t, uint32_t gdTexFormat, uint32_t gdType, void const* pixels) {
+		uint32_t texture = static_cast<uint32_t>(state.GetTexture(state.GetActiveTextureUnit()));
+		D3DTextureHandle* handle = TextureFromId(texture);
+		if (handle == nullptr || d3dDevice == nullptr) {
 			return;
 		}
-#endif
 
-		NOTIMPL();
-		glTexImage2D(GL_TEXTURE_2D, level, internalformat, width, height, border, format, type, pixels);
-	}
-
-	void cGDriver::PixelStore(GLenum pname, GLint param) {
-#ifndef NDEBUG
-		if (pname > 0) {
-			UNEXPECTED();
-			return;
+		if (handle->texture == nullptr) {
+			handle->format = internalFormatMap[gdInternalTexFormat];
+			handle->width = width;
+			handle->height = height;
+			handle->levels = 1;
+			d3dDevice->CreateTexture(width, height, 1, 0, handle->format, D3DPOOL_MANAGED, &handle->texture, nullptr);
 		}
-#endif
 
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, param);
+		LoadTextureLevel(texture, level, 0, 0, width, height, gdTexFormat, gdType, 0, pixels);
 	}
 
-	void cGDriver::TexEnv(GLenum target, GLenum pname, GLint gdParam) {
+	void cGDriver::PixelStore(uint32_t, int32_t) {
+	}
+
+	void cGDriver::TexEnv(uint32_t target, uint32_t pname, int32_t gdParam) {
 		state.TexEnv(target, pname, gdParam);
 	}
 
-	void cGDriver::TexEnv(GLenum target, GLenum pname, GLfloat const* params) {
+	void cGDriver::TexEnv(uint32_t target, uint32_t pname, float const* params) {
 		state.TexEnv(target, pname, params);
 	}
 
-	void cGDriver::TexParameter(GLenum target, GLenum pname, GLint param) {
+	void cGDriver::TexParameter(uint32_t target, uint32_t pname, int32_t param) {
 		state.TexParameter(target, pname, param);
 	}
 
-	void cGDriver::TexStage(GLenum texUnit) {
+	void cGDriver::TexStage(uint32_t texUnit) {
 		if (texUnit < MAX_TEXTURE_UNITS) {
 			state.TexStage(texUnit);
 			return;
@@ -125,153 +151,124 @@ namespace nSCGL
 		state.TexStageCoord(gdTexCoordSource);
 	}
 
-	void cGDriver::TexStageMatrix(GLfloat const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags) {
+	void cGDriver::TexStageMatrix(float const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags) {
 		state.TexStageMatrix(matrix, unknown0, unknown1, gdTexMatFlags);
 	}
 
 	void cGDriver::TexStageCombine(eGDTextureStageCombineParamType gdParamType, eGDTextureStageCombineModeParam gdParam) {
-		static GLenum pnameMap[] = { GL_COMBINE_RGB, GL_COMBINE_ALPHA };
-		static GLint paramMap[] = { GL_REPLACE, GL_MODULATE, GL_ADD, GL_ADD_SIGNED, GL_INTERPOLATE, GL_DOT3_RGB };
+		static D3DTEXTURESTAGESTATETYPE pnameMap[] = { D3DTSS_COLOROP, D3DTSS_ALPHAOP };
+		static D3DTEXTUREOP paramMap[] = { D3DTOP_SELECTARG1, D3DTOP_MODULATE, D3DTOP_ADD, D3DTOP_ADDSIGNED, D3DTOP_BLENDCURRENTALPHA, D3DTOP_DOTPRODUCT3 };
+		SIZE_CHECK(static_cast<int>(gdParamType), pnameMap);
+		SIZE_CHECK(static_cast<int>(gdParam), paramMap);
 
-		SIZE_CHECK((int)gdParamType, pnameMap);
-		SIZE_CHECK((int)gdParam, paramMap);
-
-		glTexEnvi(GL_TEXTURE_ENV, pnameMap[(int)gdParamType], paramMap[(int)gdParam]);
+		if (d3dDevice != nullptr) {
+			d3dDevice->SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], paramMap[static_cast<int>(gdParam)]);
+		}
 	}
 
 	void cGDriver::TexStageCombine(eGDTextureStageCombineSourceParamType gdParamType, eGDTextureStageCombineSourceParam gdParam) {
-		static GLenum pnameMap[] = { GL_SRC0_RGB, GL_SRC1_RGB, GL_SRC2_RGB, GL_SOURCE3_RGB_NV, GL_SRC0_ALPHA, GL_SRC1_ALPHA, GL_SRC2_ALPHA, GL_SOURCE3_ALPHA_NV };
-		static GLint paramMap[] = { GL_TEXTURE, GL_PREVIOUS, GL_CONSTANT, GL_PRIMARY_COLOR };
+		static D3DTEXTURESTAGESTATETYPE pnameMap[] = { D3DTSS_COLORARG1, D3DTSS_COLORARG2, D3DTSS_COLORARG0, D3DTSS_COLORARG0, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2, D3DTSS_ALPHAARG0, D3DTSS_ALPHAARG0 };
+		static DWORD paramMap[] = { D3DTA_TEXTURE, D3DTA_CURRENT, D3DTA_TFACTOR, D3DTA_DIFFUSE };
+		SIZE_CHECK(static_cast<int>(gdParamType), pnameMap);
+		SIZE_CHECK(static_cast<int>(gdParam), paramMap);
 
-		SIZE_CHECK((int)gdParamType, pnameMap);
-		SIZE_CHECK((int)gdParam, paramMap);
-
-		glTexEnvi(GL_TEXTURE_ENV, pnameMap[(int)gdParamType], paramMap[(int)gdParam]);
+		if (d3dDevice != nullptr) {
+			d3dDevice->SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], paramMap[static_cast<int>(gdParam)]);
+		}
 	}
 
 	void cGDriver::TexStageCombine(eGDTextureStageCombineOperandType gdParamType, eGDBlend gdBlend) {
-		static GLenum pnameMap[] = { GL_OPERAND0_RGB, GL_OPERAND1_RGB, GL_OPERAND2_RGB, GL_OPERAND3_RGB_NV, GL_OPERAND0_ALPHA, GL_OPERAND1_ALPHA, GL_OPERAND2_ALPHA, GL_OPERAND3_ALPHA_NV };
+		static D3DTEXTURESTAGESTATETYPE pnameMap[] = { D3DTSS_COLORARG1, D3DTSS_COLORARG2, D3DTSS_COLORARG0, D3DTSS_COLORARG0, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2, D3DTSS_ALPHAARG0, D3DTSS_ALPHAARG0 };
+		SIZE_CHECK(static_cast<int>(gdParamType), pnameMap);
 
-		SIZE_CHECK((int)gdParamType, pnameMap);
-		SIZE_CHECK((int)gdBlend, glBlendMap);
-
-		glTexEnvi(GL_TEXTURE_ENV, pnameMap[(int)gdParamType], glBlendMap[(int)gdBlend]);
+		if (d3dDevice != nullptr) {
+			DWORD currentValue = 0;
+			d3dDevice->GetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], &currentValue);
+			if (gdBlend == eGDBlend::OneMinusSrcColor || gdBlend == eGDBlend::OneMinusSrcAlpha) {
+				currentValue |= D3DTA_COMPLEMENT;
+			}
+			d3dDevice->SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], currentValue);
+		}
 	}
 
 	void cGDriver::TexStageCombine(eGDTextureStageCombineScaleParamType gdPname, eGDTextureStageCombineScaleParam gdParam) {
-		static GLenum pnameMap[] = { GL_RGB_SCALE, GL_ALPHA_SCALE };
-		static GLfloat paramMap[] = { 1.0f, 2.0f, 4.0f };
+		static D3DTEXTURESTAGESTATETYPE pnameMap[] = { D3DTSS_COLOROP, D3DTSS_ALPHAOP };
+		SIZE_CHECK(static_cast<int>(gdPname), pnameMap);
 
-		SIZE_CHECK((int)gdPname, pnameMap);
-		SIZE_CHECK((int)gdParam, paramMap);
-
-		glTexEnvfv(GL_TEXTURE_ENV, pnameMap[(int)gdPname], &paramMap[(int)gdParam]);
+		// Direct3D 9 exposes x2/x4 as separate MODULATE ops. Keep this conservative:
+		// SC4 mainly uses x1, and unsupported scale values degrade to the active op.
+		(void)gdParam;
 	}
 
-	void cGDriver::SetTexture(GLuint textureId, GLenum texUnit) {
+	void cGDriver::SetTexture(uint32_t textureId, uint32_t texUnit) {
 		state.SetTexture(textureId, texUnit);
 	}
 
-	intptr_t cGDriver::GetTexture(GLenum texUnit) {
+	intptr_t cGDriver::GetTexture(uint32_t texUnit) {
 		return state.GetTexture(texUnit);
 	}
 
-	intptr_t cGDriver::CreateTexture(uint32_t texformat, uint32_t width, uint32_t height, uint32_t levels, uint32_t texhints) {
-		GLuint textureId;
-		glGenTextures(1, &textureId);
-
-		glBindTexture(GL_TEXTURE_2D, textureId);
-		state.SetTextureImmediately(textureId);
-
-		int numLevels = 1;
-		if (levels != 0) {
-			numLevels = levels;
+	intptr_t cGDriver::CreateTexture(uint32_t texformat, uint32_t width, uint32_t height, uint32_t levels, uint32_t) {
+		if (d3dDevice == nullptr) {
+			return 0;
 		}
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, numLevels - 1);
+		D3DTextureHandle* handle = new D3DTextureHandle();
+		handle->format = internalFormatMap[texformat];
+		handle->width = width;
+		handle->height = height;
+		handle->levels = levels == 0 ? 1 : levels;
 
-		GLint internalFormat = internalFormatMap[texformat];
-		for (int i = 0; i < numLevels; i++) {
-			glTexImage2D(GL_TEXTURE_2D, i, internalFormat, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-			width = (width < 2) ? 1 : (width >> 1);
-			height = (height < 2) ? 1 : (height >> 1);
+		if (FAILED(d3dDevice->CreateTexture(width, height, handle->levels, 0, handle->format, D3DPOOL_MANAGED, &handle->texture, nullptr))) {
+			delete handle;
+			return 0;
 		}
 
-		return textureId;
+		return TextureIdFromHandle(handle);
 	}
 
-	void cGDriver::LoadTextureLevel(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, uint32_t gdTexFormat, uint32_t gdType, uint32_t rowLength, void const* pixels) {
-		GLenum glFormat = formatMap[gdTexFormat];
-		GLenum glType = typeMap[gdType];
+	void cGDriver::LoadTextureLevel(uint32_t texture, int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, uint32_t gdTexFormat, uint32_t, uint32_t rowLength, void const* pixels) {
+		D3DTextureHandle* handle = TextureFromId(texture);
+		if (handle == nullptr || handle->texture == nullptr || pixels == nullptr) {
+			return;
+		}
 
-		glBindTexture(GL_TEXTURE_2D, texture);
-		state.SetTextureImmediately(texture);
+		D3DLOCKED_RECT locked{};
+		RECT rect{ xoffset, yoffset, xoffset + width, yoffset + height };
+		if (FAILED(handle->texture->LockRect(level, &locked, &rect, 0))) {
+			return;
+		}
 
-		GLint texParamWidth, texParamHeight, internalFormat;
-		glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &texParamWidth);
+		if (handle->format == D3DFMT_DXT1 || handle->format == D3DFMT_DXT3 || handle->format == D3DFMT_DXT5) {
+			uint32_t size = CompressedImageSize(gdTexFormat, width, height);
+			memcpy(locked.pBits, pixels, size);
+		}
+		else {
+			uint32_t sourceBpp = BytesPerSourcePixel(gdTexFormat);
+			uint32_t sourcePitch = (rowLength == 0 ? width : rowLength) * sourceBpp;
+			uint8_t const* sourceRow = reinterpret_cast<uint8_t const*>(pixels);
+			uint8_t* destRow = reinterpret_cast<uint8_t*>(locked.pBits);
 
-		if (glGetError() == GL_NO_ERROR && texParamWidth != 0) {
-			glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &texParamHeight);
-			glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_INTERNAL_FORMAT, &internalFormat);
-
-			if (glFormat >= GL_COMPRESSED_RGB_S3TC_DXT1_EXT && glFormat <= GL_COMPRESSED_RGBA_S3TC_DXT5_EXT) {
-				GLsizei size = ((width + 3) >> 2) * ((height + 3) >> 2) * (8 + (glFormat >= GL_COMPRESSED_RGBA_S3TC_DXT3_EXT ? 8 : 0));
-				if (xoffset == 0 && yoffset == 0 && width == texParamWidth && height == texParamHeight) {
-					glCompressedTexImage2D(GL_TEXTURE_2D, level, internalFormat, width, height, 0, size, pixels);
+			for (int32_t y = 0; y < height; y++) {
+				uint32_t* dest = reinterpret_cast<uint32_t*>(destRow);
+				uint8_t const* source = sourceRow;
+				for (int32_t x = 0; x < width; x++) {
+					dest[x] = ReadSourcePixel(source, gdTexFormat);
+					source += sourceBpp;
 				}
-				else {
-					glCompressedTexSubImage2D(GL_TEXTURE_2D, level, xoffset, yoffset, width, height, glFormat, size, pixels);
-				}
 
-				return;
-			}
-
-			glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLength);
-
-			if (xoffset == 0 && yoffset == 0 && width == texParamWidth && height == texParamHeight) {
-				glTexImage2D(GL_TEXTURE_2D, level, internalFormat, width, height, 0, glFormat, glType, pixels);
-			}
-			else {
-				glTexSubImage2D(GL_TEXTURE_2D, level, xoffset, yoffset, width, height, glFormat, glType, pixels);
+				sourceRow += sourcePitch;
+				destRow += locked.Pitch;
 			}
 		}
+
+		handle->texture->UnlockRect(level);
 	}
 
 	void cGDriver::SetCombiner(cGDCombiner const& combiner, uint32_t texUnit) {
-		static eGDBlend colorOperandMap[] = {
-			eGDBlend::SrcColor,
-			eGDBlend::OneMinusSrcColor,
-			eGDBlend::SrcAlpha,
-			eGDBlend::OneMinusSrcAlpha,
-		};
-
-		static eGDBlend alphaOperandMap[] = {
-			eGDBlend::SrcAlpha,
-			eGDBlend::OneMinusSrcAlpha,
-			eGDBlend::SrcAlpha,
-			eGDBlend::OneMinusSrcAlpha,
-		};
-
 		TexStage(texUnit);
 		TexEnv(0, kGDTextureEnvParamType_Mode, kGDTextureEnvParam_Combine);
-
-		TexStageCombine(eGDTextureStageCombineParamType::RGB, (eGDTextureStageCombineModeParam)combiner.RGBCombineMode);
-		TexStageCombine(eGDTextureStageCombineScaleParamType::RGB, (eGDTextureStageCombineScaleParam)combiner.RGBScale);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand0RGB, (eGDBlend)colorOperandMap[combiner.RGBParams[0].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src0RGB, (eGDTextureStageCombineSourceParam)combiner.RGBParams[0].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand1RGB, (eGDBlend)colorOperandMap[combiner.RGBParams[1].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src1RGB, (eGDTextureStageCombineSourceParam)combiner.RGBParams[1].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand2RGB, (eGDBlend)colorOperandMap[combiner.RGBParams[2].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src2RGB, (eGDTextureStageCombineSourceParam)combiner.RGBParams[2].SourceType);
-
-		TexStageCombine(eGDTextureStageCombineScaleParamType::Alpha, (eGDTextureStageCombineScaleParam)combiner.AlphaScale);
-		TexStageCombine(eGDTextureStageCombineParamType::Alpha, (eGDTextureStageCombineModeParam)combiner.AlphaCombineMode);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand0Alpha, (eGDBlend)alphaOperandMap[combiner.AlphaParams[0].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src0Alpha, (eGDTextureStageCombineSourceParam)combiner.AlphaParams[0].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand1Alpha, (eGDBlend)alphaOperandMap[combiner.AlphaParams[1].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src1Alpha, (eGDTextureStageCombineSourceParam)combiner.AlphaParams[1].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand2Alpha, (eGDBlend)alphaOperandMap[combiner.AlphaParams[2].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src2Alpha, (eGDTextureStageCombineSourceParam)combiner.AlphaParams[2].SourceType);
+		TexStageCombine(eGDTextureStageCombineParamType::RGB, static_cast<eGDTextureStageCombineModeParam>(combiner.RGBCombineMode));
+		TexStageCombine(eGDTextureStageCombineParamType::Alpha, static_cast<eGDTextureStageCombineModeParam>(combiner.AlphaCombineMode));
 	}
 }
