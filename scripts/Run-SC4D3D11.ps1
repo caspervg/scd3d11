@@ -33,6 +33,11 @@ if (Test-Path -LiteralPath $PluginDll) {
 }
 New-Item -ItemType Directory -Path (Split-Path -Parent $PluginDll) -Force | Out-Null
 Copy-Item -LiteralPath $builtDll -Destination $PluginDll -Force
+$pluginRoot = Split-Path -Parent $PluginDll
+Get-ChildItem -LiteralPath $pluginRoot -Recurse -Filter '*.dll' | Sort-Object FullName | ForEach-Object {
+    $pluginHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+    "$pluginHash  $($_.FullName.Substring($pluginRoot.Length).TrimStart('\'))"
+} | Set-Content -LiteralPath (Join-Path $captureDir 'plugin-dlls.txt')
 
 $logs = @('SC4D3D11.log', 'SC4D3D11-states.log')
 foreach ($name in $logs) {
@@ -107,6 +112,9 @@ public static class SC4WindowCapture {
 }
 
 if ($WaitForExit -and -not $process.HasExited) { $process.WaitForExit() }
+if ($process.HasExited) {
+    Add-Content -LiteralPath (Join-Path $captureDir 'run.txt') -Value "exit_code=$($process.ExitCode)"
+}
 foreach ($name in $logs) {
     $path = Join-Path $gameDir $name
     if (Test-Path -LiteralPath $path) {

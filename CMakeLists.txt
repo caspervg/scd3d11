@@ -25,6 +25,7 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
 endif()
 
 add_library(SCGL SHARED
+            scgl/SCGL.def
             scgl/cGDriver.cpp
             scgl/cGDriver_Geometry.cpp
             scgl/cGDriversCOMDirector.cpp
@@ -36,6 +37,7 @@ add_library(SCGL SHARED
             scgl/cGDriver_Viewport.cpp
             scgl/D3D11Conversions.cpp
             scgl/Diagnostics.cpp
+            scgl/SCGLD3D11Service.cpp
             scgl/VideoModeUtils.cpp
             scgl/ext/cGDriver_BufferRegions.cpp
             scgl/ext/cGDriver_Lighting.cpp
@@ -88,4 +90,8 @@ if(BUILD_TESTING)
 	add_executable(VideoModeUtilsTest tests/VideoModeUtilsTest.cpp scgl/VideoModeUtils.cpp)
 	target_include_directories(VideoModeUtilsTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
 	add_test(NAME VideoModeUtilsTest COMMAND VideoModeUtilsTest)
+
+	add_executable(SCGLD3D11ServiceTest tests/SCGLD3D11ServiceTest.cpp scgl/SCGLD3D11Service.cpp)
+	target_include_directories(SCGLD3D11ServiceTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
+	add_test(NAME SCGLD3D11ServiceTest COMMAND SCGLD3D11ServiceTest)
 endif()

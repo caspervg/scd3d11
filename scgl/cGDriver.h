@@ -167,6 +167,11 @@ namespace nSCGL
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicIndexBuffer;
 		uint32_t dynamicVertexBufferCapacity;
 		uint32_t dynamicIndexBufferCapacity;
+		bool geometryPipelineBound;
+		bool textureBindingsValid;
+		D3D11_PRIMITIVE_TOPOLOGY appliedTopology;
+		ID3D11ShaderResourceView* appliedTextureViews[2];
+		ID3D11SamplerState* appliedSamplers[2];
 		uint32_t interleavedFormat;
 		uint32_t interleavedStride;
 		uint8_t const* interleavedPointer;
@@ -175,7 +180,10 @@ namespace nSCGL
 		std::vector<D3D11Vertex> vertexScratch;
 		std::vector<uint32_t> sourceIndexScratch;
 		std::vector<uint32_t> drawIndexScratch;
+		std::vector<uint8_t> textureUploadScratch;
+		std::vector<uint8_t> constantBufferCache;
 		std::unordered_map<uint32_t, TextureResource> textures;
+		std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11SamplerState>> samplerStates;
 		uint32_t nextTextureId;
 		uint32_t boundTextures[2];
 		uint8_t activeTextureStage;
@@ -224,7 +232,12 @@ namespace nSCGL
 		std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D11DepthStencilState>> depthStencilStates;
 		std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D11BlendState>> blendStates;
 		std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D11RasterizerState>> rasterizerStates;
+		uint64_t appliedDepthStateKey;
+		uint64_t appliedBlendStateKey;
+		uint64_t appliedRasterizerStateKey;
+		int32_t appliedStencilReference;
 		D3D_FEATURE_LEVEL featureLevel;
+		uint32_t deviceGeneration;
 		float clearColor[4];
 		float clearDepth;
 		uint8_t clearStencil;
@@ -245,6 +258,7 @@ namespace nSCGL
 		bool UploadIndices(std::vector<uint32_t> const& indices);
 		bool BindGeometryPipeline(uint32_t primitive);
 		bool ApplyRenderStates();
+		void InvalidateD3D11StateCache();
 		HRESULT CreateTextureResource(
 			TextureResource& resource,
 			uint32_t internalFormat,

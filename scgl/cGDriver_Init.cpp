@@ -10,6 +10,7 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
+#include "SCGLD3D11Service.h"
 #include "VideoModeUtils.h"
 
 #ifndef NDEBUG
@@ -72,6 +73,13 @@ namespace nSCGL
 	}
 
 	void cGDriver::DestroyD3D11Context(void) {
+		if (d3dDevice) {
+			SCGLD3D11FrameContext const frame{
+				sizeof(frame), 1, SCGL_D3D11_EVENT_BEFORE_DEVICE_DESTROY, deviceGeneration,
+				d3dDevice.Get(), d3dContext.Get(), swapChain.Get(), renderTargetView.Get(), static_cast<HWND>(windowHandle)
+			};
+			InvokeD3D11FrameCallback(frame);
+		}
 		if (d3dContext) {
 			d3dContext->OMSetRenderTargets(0, nullptr, nullptr);
 			d3dContext->ClearState();
@@ -84,10 +92,12 @@ namespace nSCGL
 		depthStencilTexture.Reset();
 		renderTargetView.Reset();
 		textures.clear();
+		samplerStates.clear();
 		boundTextures[0] = boundTextures[1] = 0;
 		depthStencilStates.clear();
 		blendStates.clear();
 		rasterizerStates.clear();
+		InvalidateD3D11StateCache();
 		defaultSampler.Reset();
 		depthRegionScratch.Reset();
 		dynamicIndexBuffer.Reset();

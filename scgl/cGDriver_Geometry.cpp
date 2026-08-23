@@ -331,6 +331,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 			buffer = replacement;
 			capacity = newCapacity;
+			if (bindFlags == D3D11_BIND_VERTEX_BUFFER) geometryPipelineBound = false;
 			Log(LogCategory::Resource, "dynamic buffer grew to %u bytes", newCapacity);
 		}
 
@@ -384,12 +385,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return false;
 		}
 
-		D3D11_MAPPED_SUBRESOURCE mapping{};
-		HRESULT const result = d3dContext->Map(transformBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
-			return false;
-		}
 		DriverConstants constants{};
 		memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
 		memcpy(constants.projection, matrices[1], sizeof(constants.projection));
@@ -436,22 +431,51 @@ float4 PSMain(PSInput input) : SV_TARGET
 			samplers[stage] = iterator->second.sampler.Get();
 			constants.flags |= 1u << stage;
 		}
-		memcpy(mapping.pData, &constants, sizeof(constants));
-		d3dContext->Unmap(transformBuffer.Get(), 0);
+		if (constantBufferCache.size() != sizeof(constants) ||
+			memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
+			D3D11_MAPPED_SUBRESOURCE mapping{};
+			HRESULT const result = d3dContext->Map(transformBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
+				return false;
+			}
+			memcpy(mapping.pData, &constants, sizeof(constants));
+			d3dContext->Unmap(transformBuffer.Get(), 0);
+			constantBufferCache.assign(
+				reinterpret_cast<uint8_t const*>(&constants),
+				reinterpret_cast<uint8_t const*>(&constants) + sizeof(constants));
+		}
 
 		UINT const stride = sizeof(D3D11Vertex);
 		UINT const offset = 0;
 		ID3D11Buffer* vertexBuffer = dynamicVertexBuffer.Get();
 		ID3D11Buffer* constantBuffer = transformBuffer.Get();
-		d3dContext->IASetInputLayout(inputLayout.Get());
-		d3dContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
-		d3dContext->IASetPrimitiveTopology(topology);
-		d3dContext->VSSetShader(vertexShader.Get(), nullptr, 0);
-		d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);
-		d3dContext->PSSetShader(pixelShader.Get(), nullptr, 0);
-		d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
-		d3dContext->PSSetShaderResources(0, 2, textureViews);
-		d3dContext->PSSetSamplers(0, 2, samplers);
+		if (!geometryPipelineBound) {
+			d3dContext->IASetInputLayout(inputLayout.Get());
+			d3dContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+			d3dContext->VSSetShader(vertexShader.Get(), nullptr, 0);
+			d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);
+			d3dContext->PSSetShader(pixelShader.Get(), nullptr, 0);
+			d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
+			geometryPipelineBound = true;
+		}
+		if (topology != appliedTopology) {
+			d3dContext->IASetPrimitiveTopology(topology);
+			appliedTopology = topology;
+		}
+		if (!textureBindingsValid ||
+			textureViews[0] != appliedTextureViews[0] || textureViews[1] != appliedTextureViews[1]) {
+			d3dContext->PSSetShaderResources(0, 2, textureViews);
+			appliedTextureViews[0] = textureViews[0];
+			appliedTextureViews[1] = textureViews[1];
+		}
+		if (!textureBindingsValid ||
+			samplers[0] != appliedSamplers[0] || samplers[1] != appliedSamplers[1]) {
+			d3dContext->PSSetSamplers(0, 2, samplers);
+			appliedSamplers[0] = samplers[0];
+			appliedSamplers[1] = samplers[1];
+		}
+		textureBindingsValid = true;
 		return ApplyRenderStates();
 	}
 
@@ -497,20 +521,22 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
-		sourceIndexScratch.resize(static_cast<size_t>(count));
+		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
+		bool const convertPrimitive = topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		if (convertPrimitive) sourceIndexScratch.resize(static_cast<size_t>(count));
 		uint32_t maximumIndex = 0;
 		if (type == 3) {
 			uint16_t const* source = static_cast<uint16_t const*>(indices);
 			for (int32_t i = 0; i < count; ++i) {
-				sourceIndexScratch[i] = source[i];
-				if (sourceIndexScratch[i] > maximumIndex) maximumIndex = sourceIndexScratch[i];
+				if (convertPrimitive) sourceIndexScratch[i] = source[i];
+				if (source[i] > maximumIndex) maximumIndex = source[i];
 			}
 		}
 		else {
 			uint32_t const* source = static_cast<uint32_t const*>(indices);
 			for (int32_t i = 0; i < count; ++i) {
-				sourceIndexScratch[i] = source[i];
-				if (sourceIndexScratch[i] > maximumIndex) maximumIndex = sourceIndexScratch[i];
+				if (convertPrimitive) sourceIndexScratch[i] = source[i];
+				if (source[i] > maximumIndex) maximumIndex = source[i];
 			}
 		}
 
@@ -518,8 +544,24 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
+		if (!convertPrimitive) {
+			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
+			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
+			if (indexBytes > UINT32_MAX) return;
+			if (FAILED(UploadDynamicBuffer(
+				dynamicIndexBuffer, dynamicIndexBufferCapacity,
+				static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices)) ||
+				!BindGeometryPipeline(primitive)) {
+				return;
+			}
+			d3dContext->IASetIndexBuffer(
+				dynamicIndexBuffer.Get(), type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, 0);
+			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, 0);
+			return;
+		}
+
 		std::vector<uint32_t> const* drawIndices = &sourceIndexScratch;
-		if (D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
+		{
 			if (!ConvertPrimitiveIndices(primitive, sourceIndexScratch, drawIndexScratch)) {
 				Log(LogCategory::Unsupported, "unsupported indexed primitive %u with %d indices", primitive, count);
 				return;

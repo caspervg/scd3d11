@@ -90,9 +90,24 @@ namespace nSCGL
 	}
 
 	bool BuildSequentialIndices(uint32_t primitive, uint32_t vertexCount, std::vector<uint32_t>& indices) {
-		std::vector<uint32_t> source(vertexCount);
-		for (uint32_t i = 0; i < vertexCount; ++i) source[i] = i;
-		return ConvertPrimitiveIndices(primitive, source, indices);
+		indices.clear();
+		if (primitive == 2) {
+			if (vertexCount < 3) return false;
+			indices.reserve((vertexCount - 2) * 3);
+			for (uint32_t i = 1; i + 1 < vertexCount; ++i) {
+				indices.insert(indices.end(), { 0, i, i + 1 });
+			}
+			return true;
+		}
+		if (primitive == 6) {
+			if (vertexCount < 4 || (vertexCount % 4) != 0) return false;
+			indices.reserve(vertexCount / 4 * 6);
+			for (uint32_t i = 0; i < vertexCount; i += 4) {
+				indices.insert(indices.end(), { i, i + 1, i + 2, i, i + 2, i + 3 });
+			}
+			return true;
+		}
+		return false;
 	}
 
 	bool ConvertPrimitiveIndices(

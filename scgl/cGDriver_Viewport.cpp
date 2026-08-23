@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
+#include "SCGLD3D11Service.h"
 
 #ifndef NDEBUG
 #include <d3d11sdklayers.h>
@@ -289,6 +290,7 @@ namespace nSCGL
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
+		deviceGeneration = NextD3D11DeviceGeneration();
 
 		currentVideoMode = newModeIndex;
 		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, BGRA support enabled", featureLevel);
@@ -316,6 +318,16 @@ namespace nSCGL
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
+
+		ID3D11RenderTargetView* renderTarget = renderTargetView.Get();
+		d3dContext->OMSetRenderTargets(1, &renderTarget, depthStencilView.Get());
+		SCGLD3D11FrameContext const frame{
+			sizeof(frame), 1, SCGL_D3D11_EVENT_RENDER, deviceGeneration,
+			d3dDevice.Get(), d3dContext.Get(), swapChain.Get(), renderTargetView.Get(), static_cast<HWND>(windowHandle)
+		};
+		InvokeD3D11FrameCallback(frame);
+		// The callback owns the immediate context for the duration of the event.
+		InvalidateD3D11StateCache();
 
 		result = swapChain->Present(1, 0);
 #ifndef NDEBUG

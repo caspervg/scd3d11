@@ -150,9 +150,22 @@ namespace nSCGL
 		description.ComparisonFunc = D3D11_COMPARISON_NEVER;
 		description.MaxLOD = FLT_MAX;
 
+		uint32_t const key = resource.magFilter |
+			(static_cast<uint32_t>(resource.minFilter) << 8) |
+			(static_cast<uint32_t>(resource.wrapU) << 16) |
+			(static_cast<uint32_t>(resource.wrapV) << 24);
+		auto const cached = samplerStates.find(key);
+		if (cached != samplerStates.end()) {
+			resource.sampler = cached->second;
+			return S_OK;
+		}
+
 		HRESULT const result = d3dDevice->CreateSamplerState(&description, &resource.sampler);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateSamplerState", result);
+		}
+		else {
+			samplerStates.emplace(key, resource.sampler);
 		}
 		return result;
 	}
@@ -428,7 +441,8 @@ namespace nSCGL
 		};
 		uint32_t pitch = 0;
 		void const* upload = pixels;
-		std::vector<uint8_t> converted;
+		std::vector<uint8_t>& converted = textureUploadScratch;
+		converted.clear();
 
 		if (IsCompressed(resource.format)) {
 			DXGI_FORMAT expected = DXGI_FORMAT_UNKNOWN;
