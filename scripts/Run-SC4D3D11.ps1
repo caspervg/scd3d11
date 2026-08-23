@@ -69,22 +69,35 @@ do {
 } while (-not $process.HasExited -and $process.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
 
 if (-not $process.HasExited -and $process.MainWindowHandle -ne 0) {
-    Start-Sleep -Seconds $ScreenshotDelaySeconds
     Add-Type -AssemblyName System.Drawing
     Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class SC4WindowCapture {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 '@
-    $rect = New-Object SC4WindowCapture+RECT
-    if ([SC4WindowCapture]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) {
-        $bitmap = New-Object System.Drawing.Bitmap ($rect.Right - $rect.Left), ($rect.Bottom - $rect.Top)
+    $window = New-Object SC4WindowCapture+RECT
+    $client = New-Object SC4WindowCapture+RECT
+    $origin = New-Object SC4WindowCapture+POINT
+    if ([SC4WindowCapture]::GetWindowRect($process.MainWindowHandle, [ref]$window) -and
+        [SC4WindowCapture]::ClientToScreen($process.MainWindowHandle, [ref]$origin)) {
+        [SC4WindowCapture]::SetWindowPos($process.MainWindowHandle, [IntPtr]::Zero,
+            -($origin.X - $window.Left), -($origin.Y - $window.Top), 0, 0, 0x15) | Out-Null
+    }
+    Start-Sleep -Seconds $ScreenshotDelaySeconds
+    $origin = New-Object SC4WindowCapture+POINT
+    if ([SC4WindowCapture]::GetClientRect($process.MainWindowHandle, [ref]$client) -and
+        [SC4WindowCapture]::ClientToScreen($process.MainWindowHandle, [ref]$origin)) {
+        $bitmap = New-Object System.Drawing.Bitmap ($client.Right - $client.Left), ($client.Bottom - $client.Top)
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         try {
-            $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+            $graphics.CopyFromScreen($origin.X, $origin.Y, 0, 0, $bitmap.Size)
             $bitmap.Save((Join-Path $captureDir 'startup.png'), [System.Drawing.Imaging.ImageFormat]::Png)
         } finally {
             $graphics.Dispose()

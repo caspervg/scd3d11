@@ -124,7 +124,6 @@ namespace nSCGL
 		resource.levels = levels;
 		RecordEncountered(ObservedCategory::TextureFormat,
 			(static_cast<uint64_t>(internalFormat) << 32) | static_cast<uint32_t>(format));
-		Log(LogCategory::Resource, "texture created: %ux%u, %u levels, DXGI format %u", width, height, levels, format);
 		return S_OK;
 	}
 
