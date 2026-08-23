@@ -1,29 +1,21 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
  *  License as published by the Free Software Foundation, under
  *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <cIGZCOM.h>
 #include <cRZCOMDllDirector.h>
 #include <cRZSysServPtr.h>
+
 #include "../cGDriver.h"
+#include "../Diagnostics.h"
 
 extern cRZCOMSlimDllDirector* RZGetCOMDllDirector();
 
-static const uint32_t GZCLSID_cGZBuffer = 0xC470D325;
 static const uint32_t GZIID_cIGZGraphicSystem = 0x73283c;
 static const uint32_t RZSRVID_GraphicSystem = 0xc416025c;
 
@@ -31,81 +23,103 @@ class cIGZGraphicSystem : public cIGZUnknown
 {
 public:
 	virtual bool CreateBuffer(cIGZBuffer** ppvObj) = 0;
-	// Don't need to declare the rest of the interface right now
 };
 
 namespace nSCGL
 {
-	static inline cIGZBuffer* CreateBufferFromGraphicsSystem()
-	{
-		cRZSysServPtr<cIGZGraphicSystem, GZIID_cIGZGraphicSystem, RZSRVID_GraphicSystem> pGraphicsSystem;
-		if ((cIGZGraphicSystem*)pGraphicsSystem == nullptr) {
-			return nullptr;
-		}
+	static cIGZBuffer* CreateBufferFromGraphicsSystem() {
+		cRZSysServPtr<cIGZGraphicSystem, GZIID_cIGZGraphicSystem, RZSRVID_GraphicSystem> graphicsSystem;
+		if (static_cast<cIGZGraphicSystem*>(graphicsSystem) == nullptr) return nullptr;
 
-		cIGZBuffer* newBuffer = nullptr;
-		if (!pGraphicsSystem->CreateBuffer(&newBuffer)) {
-			return nullptr;
-		}
-
-		return newBuffer;
+		cIGZBuffer* buffer = nullptr;
+		return graphicsSystem->CreateBuffer(&buffer) ? buffer : nullptr;
 	}
 
-	cIGZBuffer* cGDriver::CopyColorBuffer(int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer* buffer) {
-		int32_t startX = x;
-		int32_t startY = y;
-		int32_t endX = x + width;
-		int32_t endY = y + height;
+	cIGZBuffer* cGDriver::CopyColorBuffer(
+		int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer* buffer)
+	{
+		if (!d3dDevice || !d3dContext || !swapChain || width <= 0 || height <= 0) return nullptr;
 
-		if (startX < 0) { x = 0; }
-		if (startY < 0) { y = 0; }
-		if (endX > viewportWidth) { endX = viewportWidth; }
-		if (endY > viewportHeight) { endY = viewportHeight; }
+		int32_t const left = x < 0 ? 0 : x;
+		int32_t const top = y < 0 ? 0 : y;
+		int32_t const right = x + width > windowWidth ? windowWidth : x + width;
+		int32_t const bottom = y + height > windowHeight ? windowHeight : y + height;
+		if (right <= left || bottom <= top) return nullptr;
+		width = right - left;
+		height = bottom - top;
 
-		uint8_t* colorBytes = nullptr;
-		x = startX;
-		y = startY;
-		width = endX - startX;
-		height = endY - startY;
-
+		bool createdBuffer = false;
 		if (buffer == nullptr || !buffer->IsReady()) {
 			buffer = CreateBufferFromGraphicsSystem();
-			if (buffer == nullptr) {
+			if (buffer == nullptr) return nullptr;
+			createdBuffer = true;
+			if (!buffer->Init(width, height, cGZBufferColorType::A8R8G8B8, 32)) {
+				buffer->Release();
 				return nullptr;
 			}
 		}
-		else if (buffer->GetColorType() != cGZBufferColorType::A8R8G8B8) {
+		else if (buffer->GetColorType() != cGZBufferColorType::A8R8G8B8 ||
+			buffer->Width() != static_cast<uint32_t>(width) || buffer->Height() != static_cast<uint32_t>(height)) {
 			return nullptr;
 		}
 
-		colorBytes = new uint8_t[3 * width * height];
-		if (colorBytes == nullptr) {
-			return buffer;
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
+		HRESULT result = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "IDXGISwapChain::GetBuffer(snapshot)", result);
+			return nullptr;
 		}
 
-		glReadBuffer(GL_BACK);
-		glPixelStorei(GL_PACK_ALIGNMENT, 1);
-		glReadPixels(x, viewportHeight - startY - height, width, height, GL_RGB, GL_UNSIGNED_BYTE, colorBytes);
+		D3D11_TEXTURE2D_DESC stagingDescription{};
+		stagingDescription.Width = static_cast<UINT>(width);
+		stagingDescription.Height = static_cast<UINT>(height);
+		stagingDescription.MipLevels = 1;
+		stagingDescription.ArraySize = 1;
+		stagingDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		stagingDescription.SampleDesc.Count = 1;
+		stagingDescription.Usage = D3D11_USAGE_STAGING;
+		stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 
-		uint8_t const* colorBytesCursor = colorBytes;
-		if ((buffer->IsReady() || buffer->Init(width, height, cGZBufferColorType::A8R8G8B8, 32)) && buffer->Lock(cIGZBuffer::eLockFlags::IsDirtyUpdate)) {
-			while (--height >= 0) {
-				for (int i = 0; i < width; i++) {
-					uint32_t color = 0xFF000000 | (colorBytesCursor[0] << 16) | (colorBytesCursor[1] << 8) | colorBytesCursor[2];
-					buffer->SetPixel(i, height, color);
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+		result = d3dDevice->CreateTexture2D(&stagingDescription, nullptr, &staging);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(snapshot)", result);
+			return nullptr;
+		}
 
-					colorBytesCursor += 3;
+		D3D11_BOX const sourceBox{
+			static_cast<UINT>(left), static_cast<UINT>(top), 0,
+			static_cast<UINT>(right), static_cast<UINT>(bottom), 1
+		};
+		d3dContext->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, backBuffer.Get(), 0, &sourceBox);
+
+		D3D11_MAPPED_SUBRESOURCE mapping{};
+		result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapping);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(snapshot)", result);
+			return nullptr;
+		}
+
+		bool const locked = buffer->Lock(cIGZBuffer::eLockFlags::IsDirtyUpdate);
+		if (locked) {
+			for (int32_t row = 0; row < height; ++row) {
+				uint8_t const* source = static_cast<uint8_t const*>(mapping.pData) + static_cast<size_t>(row) * mapping.RowPitch;
+				for (int32_t column = 0; column < width; ++column) {
+					uint32_t const color = static_cast<uint32_t>(source[column * 4 + 3]) << 24 |
+						static_cast<uint32_t>(source[column * 4 + 0]) << 16 |
+						static_cast<uint32_t>(source[column * 4 + 1]) << 8 |
+						source[column * 4 + 2];
+					buffer->SetPixel(column, row, color);
 				}
 			}
-
 			buffer->Unlock(cIGZBuffer::eLockFlags::IsDirtyUpdate);
 		}
-
-#ifndef NDEBUG
-		glPixelStorei(GL_PACK_ALIGNMENT, 4);
-#endif
-
-		delete[] colorBytes;
+		d3dContext->Unmap(staging.Get(), 0);
+		if (!locked) {
+			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+			if (createdBuffer) buffer->Release();
+			return nullptr;
+		}
 		return buffer;
 	}
 }

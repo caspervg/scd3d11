@@ -1,277 +1,502 @@
 /*
- *  SCGL - a free OpenGL driver for SimCity 4's SimGL interface
+ *  SCGL - a free graphics driver for SimCity 4's SimGL interface
  *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
  *  License as published by the Free Software Foundation, under
  *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "cGDriver.h"
 #include "cGDCombiner.h"
-#include "GLSupport.h"
+#include "Diagnostics.h"
 
-#ifdef NDEBUG
-#define DBGLOGERR()
-#else
-#define DBGLOGERR() dbgLastError = glGetError();
-#endif
-
-extern GLenum typeMap[16];
-extern GLenum glBlendMap[11];
+#include <cfloat>
+#include <cstring>
+#include <vector>
 
 namespace nSCGL
 {
-	static GLenum texEnvParamMap[2] = { GL_TEXTURE_ENV_MODE, GL_TEXTURE_ENV_COLOR };
-	static GLenum internalFormatMap[8] = {
-		GL_RGB5, GL_RGB8, GL_RGBA4, GL_RGB5_A1,
-		GL_RGBA8, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
-		GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
-	};
+	namespace
+	{
+		bool IsCompressed(DXGI_FORMAT format) {
+			return format == DXGI_FORMAT_BC1_UNORM || format == DXGI_FORMAT_BC2_UNORM || format == DXGI_FORMAT_BC3_UNORM;
+		}
 
-	static GLenum formatMap[11] = {
-		GL_RGB, GL_RGBA, GL_BGR, GL_BGRA, GL_ALPHA, GL_LUMINANCE, GL_LUMINANCE_ALPHA,
-		GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
-		GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
-	};
+		uint32_t SourceComponents(uint32_t format) {
+			switch (format) {
+			case 0:
+			case 2:
+				return 3;
+			case 1:
+			case 3:
+				return 4;
+			case 4:
+			case 5:
+				return 1;
+			case 6:
+				return 2;
+			default:
+				return 0;
+			}
+		}
 
-	void cGDriver::GenTextures(GLsizei n, GLuint* textures) {
-		glGenTextures(n, textures);
+		void ReadUnsignedBytePixel(uint32_t format, uint8_t const* source, uint8_t rgba[4]) {
+			switch (format) {
+			case 0: rgba[0] = source[0]; rgba[1] = source[1]; rgba[2] = source[2]; rgba[3] = 0xff; break;
+			case 1: rgba[0] = source[0]; rgba[1] = source[1]; rgba[2] = source[2]; rgba[3] = source[3]; break;
+			case 2: rgba[0] = source[2]; rgba[1] = source[1]; rgba[2] = source[0]; rgba[3] = 0xff; break;
+			case 3: rgba[0] = source[2]; rgba[1] = source[1]; rgba[2] = source[0]; rgba[3] = source[3]; break;
+			case 4: rgba[0] = rgba[1] = rgba[2] = 0xff; rgba[3] = source[0]; break;
+			case 5: rgba[0] = rgba[1] = rgba[2] = source[0]; rgba[3] = 0xff; break;
+			case 6: rgba[0] = rgba[1] = rgba[2] = source[0]; rgba[3] = source[1]; break;
+			default: memset(rgba, 0xff, 4); break;
+			}
+		}
+
+		uint16_t Pack16BitPixel(DXGI_FORMAT format, uint8_t const rgba[4]) {
+			switch (format) {
+			case DXGI_FORMAT_B5G6R5_UNORM:
+				return static_cast<uint16_t>(((rgba[0] >> 3) << 11) | ((rgba[1] >> 2) << 5) | (rgba[2] >> 3));
+			case DXGI_FORMAT_B5G5R5A1_UNORM:
+				return static_cast<uint16_t>(((rgba[3] >= 128) ? 0x8000 : 0) |
+					((rgba[0] >> 3) << 10) | ((rgba[1] >> 3) << 5) | (rgba[2] >> 3));
+			case DXGI_FORMAT_B4G4R4A4_UNORM:
+				return static_cast<uint16_t>(((rgba[3] >> 4) << 12) |
+					((rgba[0] >> 4) << 8) | ((rgba[1] >> 4) << 4) | (rgba[2] >> 4));
+			default:
+				return 0;
+			}
+		}
 	}
 
-	void cGDriver::DeleteTextures(GLsizei n, GLuint const* textures) {
-		glDeleteTextures(n, textures);
+	HRESULT cGDriver::CreateTextureResource(
+		TextureResource& resource,
+		uint32_t internalFormat,
+		uint32_t width,
+		uint32_t height,
+		uint32_t levels)
+	{
+		DXGI_FORMAT const format = D3D11TextureFormat(internalFormat);
+		if (!d3dDevice || format == DXGI_FORMAT_UNKNOWN || width == 0 || height == 0 ||
+			width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+			return E_INVALIDARG;
+		}
+		if (levels == 0) levels = 1;
+
+		uint32_t maximumLevels = 1;
+		for (uint32_t dimension = width > height ? width : height; dimension > 1; dimension >>= 1) ++maximumLevels;
+		if (levels > maximumLevels) {
+			return E_INVALIDARG;
+		}
+
+		D3D11_TEXTURE2D_DESC description{};
+		description.Width = width;
+		description.Height = height;
+		description.MipLevels = levels;
+		description.ArraySize = 1;
+		description.Format = format;
+		description.SampleDesc.Count = 1;
+		description.Usage = D3D11_USAGE_DEFAULT;
+		description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+		HRESULT result = d3dDevice->CreateTexture2D(&description, nullptr, &texture);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(texture)", result);
+			return result;
+		}
+
+		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+		result = d3dDevice->CreateShaderResourceView(texture.Get(), nullptr, &view);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateShaderResourceView", result);
+			return result;
+		}
+
+		resource.texture = texture;
+		resource.view = view;
+		resource.sampler.Reset();
+		resource.format = format;
+		resource.width = width;
+		resource.height = height;
+		resource.levels = levels;
+		RecordEncountered(ObservedCategory::TextureFormat,
+			(static_cast<uint64_t>(internalFormat) << 32) | static_cast<uint32_t>(format));
+		Log(LogCategory::Resource, "texture created: %ux%u, %u levels, DXGI format %u", width, height, levels, format);
+		return S_OK;
 	}
 
-	bool cGDriver::IsTexture(GLuint texture) {
-		bool result = glIsTexture(texture) != 0;
+	HRESULT cGDriver::EnsureSampler(TextureResource& resource) {
+		if (resource.sampler) {
+			return S_OK;
+		}
+
+		D3D11_FILTER_TYPE const minimum =
+			(resource.minFilter == 1 || resource.minFilter == 5 || resource.minFilter == 7)
+			? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT;
+		D3D11_FILTER_TYPE const magnification =
+			resource.magFilter == 1 ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT;
+		D3D11_FILTER_TYPE const mip =
+			(resource.minFilter == 6 || resource.minFilter == 7)
+			? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT;
+
+		D3D11_SAMPLER_DESC description{};
+		description.Filter = static_cast<D3D11_FILTER>(
+			D3D11_ENCODE_BASIC_FILTER(minimum, magnification, mip, D3D11_FILTER_REDUCTION_TYPE_STANDARD));
+		description.AddressU = resource.wrapU == 2 ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_WRAP;
+		description.AddressV = resource.wrapV == 2 ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_WRAP;
+		description.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+		description.ComparisonFunc = D3D11_COMPARISON_NEVER;
+		description.MaxLOD = FLT_MAX;
+
+		HRESULT const result = d3dDevice->CreateSamplerState(&description, &resource.sampler);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateSamplerState", result);
+		}
 		return result;
 	}
 
-	void cGDriver::PrioritizeTextures(GLsizei n, GLuint const* textures, GLclampf const* priorities) {
-		glPrioritizeTextures(n, textures, priorities);
-	}
-
-	bool cGDriver::AreTexturesResident(GLsizei n, GLuint const* textures, bool* residences) {
-		bool result = glAreTexturesResident(n, textures, reinterpret_cast<GLboolean*>(residences)) != 0;
-		return result;
-	}
-
-	void cGDriver::BindTexture(GLenum target, GLuint texture) {
-#ifndef NDEBUG
-		if (target > 0) {
-			UNEXPECTED();
+	void cGDriver::GenTextures(int32_t count, uint32_t* textureIds) {
+		if (count < 0 || (count > 0 && textureIds == nullptr)) {
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
-#endif
-
-		state.BindTexture(texture);
+		for (int32_t i = 0; i < count; ++i) {
+			while (nextTextureId == 0 || textures.find(nextTextureId) != textures.end()) ++nextTextureId;
+			textureIds[i] = nextTextureId;
+			textures.emplace(nextTextureId++, TextureResource{});
+		}
 	}
 
-	void cGDriver::TexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, void const* pixels) {
-#ifndef NDEBUG
-		if (target > 0) {
-			UNEXPECTED();
+	void cGDriver::DeleteTextures(int32_t count, uint32_t const* textureIds) {
+		if (count < 0 || (count > 0 && textureIds == nullptr)) {
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
-#endif
-
-		NOTIMPL();
-		glTexImage2D(GL_TEXTURE_2D, level, internalformat, width, height, border, format, type, pixels);
+		for (int32_t i = 0; i < count; ++i) {
+			for (uint32_t& bound : boundTextures) if (bound == textureIds[i]) bound = 0;
+			textures.erase(textureIds[i]);
+		}
 	}
 
-	void cGDriver::PixelStore(GLenum pname, GLint param) {
-#ifndef NDEBUG
-		if (pname > 0) {
-			UNEXPECTED();
+	bool cGDriver::IsTexture(uint32_t texture) {
+		auto const iterator = textures.find(texture);
+		return iterator != textures.end() && iterator->second.texture;
+	}
+
+	void cGDriver::PrioritizeTextures(int32_t, uint32_t const*, float const*) {
+		// D3D11 residency is managed by the runtime.
+	}
+
+	bool cGDriver::AreTexturesResident(int32_t count, uint32_t const* textureIds, bool* residences) {
+		if (count < 0 || (count > 0 && (textureIds == nullptr || residences == nullptr))) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return false;
+		}
+		bool allResident = true;
+		for (int32_t i = 0; i < count; ++i) {
+			residences[i] = IsTexture(textureIds[i]);
+			allResident &= residences[i];
+		}
+		return allResident;
+	}
+
+	void cGDriver::BindTexture(uint32_t target, uint32_t texture) {
+		if (target != 0 || (texture != 0 && textures.find(texture) == textures.end())) {
+			SetLastError(DriverError::INVALID_VALUE);
+			Log(LogCategory::Unsupported, "BindTexture target %u texture %u", target, texture);
 			return;
 		}
-#endif
-
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, param);
+		boundTextures[activeTextureStage] = texture;
 	}
 
-	void cGDriver::TexEnv(GLenum target, GLenum pname, GLint gdParam) {
-		state.TexEnv(target, pname, gdParam);
+	void cGDriver::TexImage2D(
+		uint32_t target, int32_t level, int32_t internalFormat, int32_t width, int32_t height,
+		int32_t border, uint32_t format, uint32_t type, void const* pixels)
+	{
+		uint32_t const texture = boundTextures[activeTextureStage];
+		auto iterator = textures.find(texture);
+		if (target != 0 || level != 0 || border != 0 || width <= 0 || height <= 0 || iterator == textures.end()) {
+			SetLastError(DriverError::INVALID_VALUE);
+			Log(LogCategory::Unsupported, "unsupported TexImage2D target %u level %d border %d", target, level, border);
+			return;
+		}
+		HRESULT const result = CreateTextureResource(
+			iterator->second, static_cast<uint32_t>(internalFormat),
+			static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1);
+		if (FAILED(result)) {
+			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+			return;
+		}
+		if (pixels) {
+			LoadTextureLevel(texture, 0, 0, 0, width, height, format, type, pixelStoreRowLength, pixels);
+		}
 	}
 
-	void cGDriver::TexEnv(GLenum target, GLenum pname, GLfloat const* params) {
-		state.TexEnv(target, pname, params);
+	void cGDriver::PixelStore(uint32_t parameter, int32_t value) {
+		if (parameter != 0 || value < 0) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+		pixelStoreRowLength = static_cast<uint32_t>(value);
 	}
 
-	void cGDriver::TexParameter(GLenum target, GLenum pname, GLint param) {
-		state.TexParameter(target, pname, param);
+	void cGDriver::TexEnv(uint32_t target, uint32_t parameter, int32_t value) {
+		if (target != 0 || parameter != 0 || value < 0 || value > 5) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+		textureStages[activeTextureStage].environmentMode = static_cast<uint8_t>(value);
+		if (value == 5) Log(LogCategory::Unsupported, "NV combine4 texture environment requested");
 	}
 
-	void cGDriver::TexStage(GLenum texUnit) {
-		if (texUnit < MAX_TEXTURE_UNITS) {
-			state.TexStage(texUnit);
+	void cGDriver::TexEnv(uint32_t target, uint32_t parameter, float const* value) {
+		if (target != 0 || parameter != 1 || value == nullptr) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+		memcpy(textureStages[activeTextureStage].environmentColor, value,
+			sizeof(textureStages[activeTextureStage].environmentColor));
+	}
+
+	void cGDriver::TexParameter(uint32_t target, uint32_t parameter, int32_t value) {
+		auto iterator = textures.find(boundTextures[activeTextureStage]);
+		if (target != 0 || parameter >= 4 || value < 0 || value >= 8 || iterator == textures.end()) {
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
 
-		SetLastError(DriverError::INVALID_VALUE);
+		TextureResource& resource = iterator->second;
+		switch (parameter) {
+		case 0: resource.magFilter = static_cast<uint8_t>(value); break;
+		case 1: resource.minFilter = static_cast<uint8_t>(value); break;
+		case 2: resource.wrapU = static_cast<uint8_t>(value); break;
+		case 3: resource.wrapV = static_cast<uint8_t>(value); break;
+		}
+		resource.sampler.Reset();
 	}
 
-	void cGDriver::TexStageCoord(uint32_t gdTexCoordSource) {
-		state.TexStageCoord(gdTexCoordSource);
+	void cGDriver::TexStage(uint32_t stage) {
+		if (stage >= 2) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+		activeTextureStage = static_cast<uint8_t>(stage);
 	}
 
-	void cGDriver::TexStageMatrix(GLfloat const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags) {
-		state.TexStageMatrix(matrix, unknown0, unknown1, gdTexMatFlags);
+	void cGDriver::TexStageCoord(uint32_t source) {
+		textureStages[activeTextureStage].coordinateSource = source;
+		if ((source & 0xfffffff8) != 0 && (source & 0xfffffff8) != 0x10) {
+			Log(LogCategory::Unsupported, "texture coordinate source 0x%08X requested", source);
+		}
 	}
 
-	void cGDriver::TexStageCombine(eGDTextureStageCombineParamType gdParamType, eGDTextureStageCombineModeParam gdParam) {
-		static GLenum pnameMap[] = { GL_COMBINE_RGB, GL_COMBINE_ALPHA };
-		static GLint paramMap[] = { GL_REPLACE, GL_MODULATE, GL_ADD, GL_ADD_SIGNED, GL_INTERPOLATE, GL_DOT3_RGB };
-
-		SIZE_CHECK((int)gdParamType, pnameMap);
-		SIZE_CHECK((int)gdParam, paramMap);
-
-		glTexEnvi(GL_TEXTURE_ENV, pnameMap[(int)gdParamType], paramMap[(int)gdParam]);
+	void cGDriver::TexStageMatrix(float const* matrix, uint32_t rows, uint32_t columns, uint32_t flags) {
+		float* destination = textureStages[activeTextureStage].matrix;
+		memset(destination, 0, sizeof(textureStages[activeTextureStage].matrix));
+		if (matrix == nullptr) {
+			destination[0] = destination[5] = destination[10] = destination[15] = 1.0f;
+			return;
+		}
+		memcpy(destination, matrix, sizeof(textureStages[activeTextureStage].matrix));
+		if ((flags & 3) == 1 && rows == 4 && columns == 2) {
+			destination[2] = destination[6] = destination[14] = 0.0f;
+			destination[10] = destination[15] = 1.0f;
+			destination[3] = destination[7] = destination[11] = 0.0f;
+		}
+		else if ((flags & 1) != 0 && !(rows <= 3 || (columns <= 3 && (flags & 2) != 0))) {
+			Log(LogCategory::Unsupported, "texture matrix rows %u columns %u flags 0x%X", rows, columns, flags);
+		}
 	}
 
-	void cGDriver::TexStageCombine(eGDTextureStageCombineSourceParamType gdParamType, eGDTextureStageCombineSourceParam gdParam) {
-		static GLenum pnameMap[] = { GL_SRC0_RGB, GL_SRC1_RGB, GL_SRC2_RGB, GL_SOURCE3_RGB_NV, GL_SRC0_ALPHA, GL_SRC1_ALPHA, GL_SRC2_ALPHA, GL_SOURCE3_ALPHA_NV };
-		static GLint paramMap[] = { GL_TEXTURE, GL_PREVIOUS, GL_CONSTANT, GL_PRIMARY_COLOR };
-
-		SIZE_CHECK((int)gdParamType, pnameMap);
-		SIZE_CHECK((int)gdParam, paramMap);
-
-		glTexEnvi(GL_TEXTURE_ENV, pnameMap[(int)gdParamType], paramMap[(int)gdParam]);
+	void cGDriver::TexStageCombine(eGDTextureStageCombineParamType parameter, eGDTextureStageCombineModeParam value) {
+		uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
+		uint32_t const mode = static_cast<uint32_t>(value);
+		if (parameterIndex >= 2 || mode >= 6) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		if (parameterIndex == 0) textureStages[activeTextureStage].rgbMode = static_cast<uint8_t>(mode);
+		else textureStages[activeTextureStage].alphaMode = static_cast<uint8_t>(mode);
 	}
 
-	void cGDriver::TexStageCombine(eGDTextureStageCombineOperandType gdParamType, eGDBlend gdBlend) {
-		static GLenum pnameMap[] = { GL_OPERAND0_RGB, GL_OPERAND1_RGB, GL_OPERAND2_RGB, GL_OPERAND3_RGB_NV, GL_OPERAND0_ALPHA, GL_OPERAND1_ALPHA, GL_OPERAND2_ALPHA, GL_OPERAND3_ALPHA_NV };
-
-		SIZE_CHECK((int)gdParamType, pnameMap);
-		SIZE_CHECK((int)gdBlend, glBlendMap);
-
-		glTexEnvi(GL_TEXTURE_ENV, pnameMap[(int)gdParamType], glBlendMap[(int)gdBlend]);
+	void cGDriver::TexStageCombine(eGDTextureStageCombineSourceParamType parameter, eGDTextureStageCombineSourceParam value) {
+		uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
+		uint32_t const source = static_cast<uint32_t>(value);
+		if (parameterIndex >= 8 || source >= 4) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		uint8_t* parameters = parameterIndex < 4
+			? textureStages[activeTextureStage].rgbParameters
+			: textureStages[activeTextureStage].alphaParameters;
+		uint32_t const index = parameterIndex & 3;
+		if (index >= 3) {
+			Log(LogCategory::Unsupported, "fourth texture-combiner source requested");
+			return;
+		}
+		parameters[index] = static_cast<uint8_t>((parameters[index] & 0xf0) | source);
 	}
 
-	void cGDriver::TexStageCombine(eGDTextureStageCombineScaleParamType gdPname, eGDTextureStageCombineScaleParam gdParam) {
-		static GLenum pnameMap[] = { GL_RGB_SCALE, GL_ALPHA_SCALE };
-		static GLfloat paramMap[] = { 1.0f, 2.0f, 4.0f };
-
-		SIZE_CHECK((int)gdPname, pnameMap);
-		SIZE_CHECK((int)gdParam, paramMap);
-
-		glTexEnvfv(GL_TEXTURE_ENV, pnameMap[(int)gdPname], &paramMap[(int)gdParam]);
+	void cGDriver::TexStageCombine(eGDTextureStageCombineOperandType parameter, eGDBlend value) {
+		uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
+		uint32_t const blend = static_cast<uint32_t>(value);
+		if (parameterIndex >= 8 || blend < 2 || blend > 5) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		uint8_t* parameters = parameterIndex < 4
+			? textureStages[activeTextureStage].rgbParameters
+			: textureStages[activeTextureStage].alphaParameters;
+		uint32_t const index = parameterIndex & 3;
+		if (index >= 3) {
+			Log(LogCategory::Unsupported, "fourth texture-combiner operand requested");
+			return;
+		}
+		parameters[index] = static_cast<uint8_t>((parameters[index] & 0x0f) | ((blend - 2) << 4));
 	}
 
-	void cGDriver::SetTexture(GLuint textureId, GLenum texUnit) {
-		state.SetTexture(textureId, texUnit);
+	void cGDriver::TexStageCombine(eGDTextureStageCombineScaleParamType parameter, eGDTextureStageCombineScaleParam value) {
+		uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
+		uint32_t const scale = static_cast<uint32_t>(value);
+		if (parameterIndex >= 2 || scale >= 3) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		if (parameterIndex == 0) textureStages[activeTextureStage].rgbScale = static_cast<uint8_t>(scale);
+		else textureStages[activeTextureStage].alphaScale = static_cast<uint8_t>(scale);
 	}
 
-	intptr_t cGDriver::GetTexture(GLenum texUnit) {
-		return state.GetTexture(texUnit);
+	void cGDriver::SetTexture(uint32_t texture, uint32_t stage) {
+		if (stage >= 2 || (texture != 0 && textures.find(texture) == textures.end())) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+		boundTextures[stage] = texture;
 	}
 
-	intptr_t cGDriver::CreateTexture(uint32_t texformat, uint32_t width, uint32_t height, uint32_t levels, uint32_t texhints) {
-		GLuint textureId;
-		glGenTextures(1, &textureId);
+	intptr_t cGDriver::GetTexture(uint32_t stage) {
+		if (stage >= 2) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return 0;
+		}
+		return boundTextures[stage];
+	}
 
-		glBindTexture(GL_TEXTURE_2D, textureId);
-		state.SetTextureImmediately(textureId);
+	intptr_t cGDriver::CreateTexture(
+		uint32_t internalFormat, uint32_t width, uint32_t height, uint32_t levels, uint32_t)
+	{
+		uint32_t texture = 0;
+		GenTextures(1, &texture);
+		auto iterator = textures.find(texture);
+		HRESULT const result = CreateTextureResource(iterator->second, internalFormat, width, height, levels);
+		if (FAILED(result)) {
+			textures.erase(iterator);
+			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+			return 0;
+		}
+		boundTextures[activeTextureStage] = texture;
+		return texture;
+	}
 
-		int numLevels = 1;
-		if (levels != 0) {
-			numLevels = levels;
+	void cGDriver::LoadTextureLevel(
+		uint32_t texture, int32_t level, int32_t xOffset, int32_t yOffset, int32_t width, int32_t height,
+		uint32_t sourceFormat, uint32_t sourceType, uint32_t rowLength, void const* pixels)
+	{
+		auto iterator = textures.find(texture);
+		if (!d3dContext || iterator == textures.end() || !iterator->second.texture || pixels == nullptr ||
+			level < 0 || width <= 0 || height <= 0 || xOffset < 0 || yOffset < 0 ||
+			static_cast<uint32_t>(level) >= iterator->second.levels) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
 		}
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, numLevels - 1);
-
-		GLint internalFormat = internalFormatMap[texformat];
-		for (int i = 0; i < numLevels; i++) {
-			glTexImage2D(GL_TEXTURE_2D, i, internalFormat, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-			width = (width < 2) ? 1 : (width >> 1);
-			height = (height < 2) ? 1 : (height >> 1);
+		TextureResource& resource = iterator->second;
+		RecordEncountered(ObservedCategory::TextureFormat,
+			(static_cast<uint64_t>(sourceFormat) << 32) | sourceType);
+		uint32_t const mipWidth = resource.width >> level ? resource.width >> level : 1;
+		uint32_t const mipHeight = resource.height >> level ? resource.height >> level : 1;
+		if (static_cast<uint32_t>(xOffset + width) > mipWidth || static_cast<uint32_t>(yOffset + height) > mipHeight) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
 		}
 
-		return textureId;
-	}
+		D3D11_BOX box{
+			static_cast<UINT>(xOffset), static_cast<UINT>(yOffset), 0,
+			static_cast<UINT>(xOffset + width), static_cast<UINT>(yOffset + height), 1
+		};
+		uint32_t pitch = 0;
+		void const* upload = pixels;
+		std::vector<uint8_t> converted;
 
-	void cGDriver::LoadTextureLevel(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, uint32_t gdTexFormat, uint32_t gdType, uint32_t rowLength, void const* pixels) {
-		GLenum glFormat = formatMap[gdTexFormat];
-		GLenum glType = typeMap[gdType];
-
-		glBindTexture(GL_TEXTURE_2D, texture);
-		state.SetTextureImmediately(texture);
-
-		GLint texParamWidth, texParamHeight, internalFormat;
-		glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &texParamWidth);
-
-		if (glGetError() == GL_NO_ERROR && texParamWidth != 0) {
-			glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &texParamHeight);
-			glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_INTERNAL_FORMAT, &internalFormat);
-
-			if (glFormat >= GL_COMPRESSED_RGB_S3TC_DXT1_EXT && glFormat <= GL_COMPRESSED_RGBA_S3TC_DXT5_EXT) {
-				GLsizei size = ((width + 3) >> 2) * ((height + 3) >> 2) * (8 + (glFormat >= GL_COMPRESSED_RGBA_S3TC_DXT3_EXT ? 8 : 0));
-				if (xoffset == 0 && yoffset == 0 && width == texParamWidth && height == texParamHeight) {
-					glCompressedTexImage2D(GL_TEXTURE_2D, level, internalFormat, width, height, 0, size, pixels);
-				}
-				else {
-					glCompressedTexSubImage2D(GL_TEXTURE_2D, level, xoffset, yoffset, width, height, glFormat, size, pixels);
-				}
-
+		if (IsCompressed(resource.format)) {
+			DXGI_FORMAT expected = DXGI_FORMAT_UNKNOWN;
+			if (sourceFormat == 7 || sourceFormat == 8) expected = DXGI_FORMAT_BC1_UNORM;
+			if (sourceFormat == 9) expected = DXGI_FORMAT_BC2_UNORM;
+			if (sourceFormat == 10) expected = DXGI_FORMAT_BC3_UNORM;
+			if (expected != resource.format || (xOffset % 4) != 0 || (yOffset % 4) != 0) {
+				Log(LogCategory::Unsupported, "compressed texture upload mismatch: source %u destination %u", sourceFormat, resource.format);
+				SetLastError(DriverError::NOT_SUPPORTED);
+				return;
+			}
+			pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
+		}
+		else {
+			uint32_t const components = SourceComponents(sourceFormat);
+			if (sourceType != 1 || components == 0) {
+				Log(LogCategory::Unsupported, "texture upload format %u type %u is not implemented", sourceFormat, sourceType);
+				SetLastError(DriverError::NOT_SUPPORTED);
 				return;
 			}
 
-			glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLength);
-
-			if (xoffset == 0 && yoffset == 0 && width == texParamWidth && height == texParamHeight) {
-				glTexImage2D(GL_TEXTURE_2D, level, internalFormat, width, height, 0, glFormat, glType, pixels);
+			uint32_t const sourceWidth = rowLength ? rowLength : static_cast<uint32_t>(width);
+			uint32_t const sourcePitch = sourceWidth * components;
+			pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
+			converted.resize(static_cast<size_t>(pitch) * height);
+			uint8_t const* sourceRows = static_cast<uint8_t const*>(pixels);
+			for (int32_t y = 0; y < height; ++y) {
+				uint8_t const* source = sourceRows + static_cast<size_t>(y) * sourcePitch;
+				uint8_t* destination = converted.data() + static_cast<size_t>(y) * pitch;
+				for (int32_t x = 0; x < width; ++x, source += components) {
+					uint8_t rgba[4];
+					ReadUnsignedBytePixel(sourceFormat, source, rgba);
+					if (resource.format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+						destination[x * 4 + 0] = rgba[2];
+						destination[x * 4 + 1] = rgba[1];
+						destination[x * 4 + 2] = rgba[0];
+						destination[x * 4 + 3] = rgba[3];
+					}
+					else {
+						reinterpret_cast<uint16_t*>(destination)[x] = Pack16BitPixel(resource.format, rgba);
+					}
+				}
 			}
-			else {
-				glTexSubImage2D(GL_TEXTURE_2D, level, xoffset, yoffset, width, height, glFormat, glType, pixels);
-			}
+			upload = converted.data();
 		}
+
+		d3dContext->UpdateSubresource(
+			resource.texture.Get(), D3D11CalcSubresource(level, 0, resource.levels),
+			&box, upload, pitch, 0);
 	}
 
-	void cGDriver::SetCombiner(cGDCombiner const& combiner, uint32_t texUnit) {
-		static eGDBlend colorOperandMap[] = {
-			eGDBlend::SrcColor,
-			eGDBlend::OneMinusSrcColor,
-			eGDBlend::SrcAlpha,
-			eGDBlend::OneMinusSrcAlpha,
-		};
-
-		static eGDBlend alphaOperandMap[] = {
-			eGDBlend::SrcAlpha,
-			eGDBlend::OneMinusSrcAlpha,
-			eGDBlend::SrcAlpha,
-			eGDBlend::OneMinusSrcAlpha,
-		};
-
-		TexStage(texUnit);
-		TexEnv(0, kGDTextureEnvParamType_Mode, kGDTextureEnvParam_Combine);
-
-		TexStageCombine(eGDTextureStageCombineParamType::RGB, (eGDTextureStageCombineModeParam)combiner.RGBCombineMode);
-		TexStageCombine(eGDTextureStageCombineScaleParamType::RGB, (eGDTextureStageCombineScaleParam)combiner.RGBScale);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand0RGB, (eGDBlend)colorOperandMap[combiner.RGBParams[0].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src0RGB, (eGDTextureStageCombineSourceParam)combiner.RGBParams[0].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand1RGB, (eGDBlend)colorOperandMap[combiner.RGBParams[1].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src1RGB, (eGDTextureStageCombineSourceParam)combiner.RGBParams[1].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand2RGB, (eGDBlend)colorOperandMap[combiner.RGBParams[2].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src2RGB, (eGDTextureStageCombineSourceParam)combiner.RGBParams[2].SourceType);
-
-		TexStageCombine(eGDTextureStageCombineScaleParamType::Alpha, (eGDTextureStageCombineScaleParam)combiner.AlphaScale);
-		TexStageCombine(eGDTextureStageCombineParamType::Alpha, (eGDTextureStageCombineModeParam)combiner.AlphaCombineMode);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand0Alpha, (eGDBlend)alphaOperandMap[combiner.AlphaParams[0].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src0Alpha, (eGDTextureStageCombineSourceParam)combiner.AlphaParams[0].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand1Alpha, (eGDBlend)alphaOperandMap[combiner.AlphaParams[1].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src1Alpha, (eGDTextureStageCombineSourceParam)combiner.AlphaParams[1].SourceType);
-		TexStageCombine(eGDTextureStageCombineOperandType::Operand2Alpha, (eGDBlend)alphaOperandMap[combiner.AlphaParams[2].OperandType]);
-		TexStageCombine(eGDTextureStageCombineSourceParamType::Src2Alpha, (eGDTextureStageCombineSourceParam)combiner.AlphaParams[2].SourceType);
+	void cGDriver::SetCombiner(cGDCombiner const& combiner, uint32_t stage) {
+		if (stage >= 2) {
+			SetLastError(DriverError::OUT_OF_RANGE);
+			return;
+		}
+		TextureStageState& destination = textureStages[stage];
+		destination.environmentMode = 4;
+		destination.rgbMode = combiner.RGBCombineMode;
+		destination.alphaMode = combiner.AlphaCombineMode;
+		destination.rgbScale = combiner.RGBScale;
+		destination.alphaScale = combiner.AlphaScale;
+		for (uint32_t index = 0; index < 3; ++index) {
+			destination.rgbParameters[index] = static_cast<uint8_t>(
+				(combiner.RGBParams[index].OperandType << 4) | combiner.RGBParams[index].SourceType);
+			destination.alphaParameters[index] = static_cast<uint8_t>(
+				(combiner.AlphaParams[index].OperandType << 4) | combiner.AlphaParams[index].SourceType);
+		}
 	}
 }

@@ -26,19 +26,20 @@ endif()
 
 add_library(SCGL SHARED
             scgl/cGDriver.cpp
+            scgl/cGDriver_Geometry.cpp
             scgl/cGDriversCOMDirector.cpp
             scgl/cGDriver_Info.cpp
             scgl/cGDriver_Init.cpp
+            scgl/cGDriver_State.cpp
             scgl/cGDriver_Textures.cpp
             scgl/cGDriver_Unknown.cpp
             scgl/cGDriver_Viewport.cpp
+            scgl/D3D11Conversions.cpp
+            scgl/Diagnostics.cpp
             scgl/ext/cGDriver_BufferRegions.cpp
             scgl/ext/cGDriver_Lighting.cpp
             scgl/ext/cGDriver_Snapshot.cpp
             scgl/ext/cGDriver_VertexBuffers.cpp
-            scgl/GLStateManager.cpp
-            scgl/GLSupport.cpp
-            scgl/GLTextureUnit.cpp
             scgl/VertexFormatUtils.cpp
             vendor/framework/src/cRZCOMDllDirector.cpp
             vendor/framework/src/cRZRefCount.cpp
@@ -66,4 +67,11 @@ target_compile_definitions(SCGL PRIVATE
 )
 
 # Should come with MinGW
-target_link_libraries(SCGL opengl32.lib)
+target_link_libraries(SCGL d3d11.lib d3dcompiler.lib dxgi.lib)
+
+include(CTest)
+if(BUILD_TESTING)
+	add_executable(D3D11ConversionsTest tests/D3D11ConversionsTest.cpp scgl/D3D11Conversions.cpp scgl/VertexFormatUtils.cpp)
+	target_include_directories(D3D11ConversionsTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
+	add_test(NAME D3D11ConversionsTest COMMAND D3D11ConversionsTest)
+endif()

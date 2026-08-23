@@ -17,18 +17,18 @@
  */
 
 #include "cGDriver.h"
-#include "GLSupport.h"
 
 namespace nSCGL
 {
 	bool cGDriver::QueryInterface(uint32_t riid, void** ppvObj) {
+		if (ppvObj == nullptr) {
+			return false;
+		}
+		*ppvObj = nullptr;
 		switch (riid)
 		{
 		case GZIID_cIGZUnknown:
 		case GZIID_cIGZGDriver:
-#ifndef NDEBUG
-			MessageBoxA(NULL, "SCGL has arrived - attach your debugger now.", "cIGZGDriver - cGDriver::QueryInterface", 0);
-#endif
 			*ppvObj = static_cast<cIGZGDriver*>(this);
 			break;
 
@@ -68,7 +68,6 @@ namespace nSCGL
 	}
 
 	bool cGDriver::FinalRelease(void) {
-		NOTIMPL();
-		return false;
+		return true;
 	}
 }

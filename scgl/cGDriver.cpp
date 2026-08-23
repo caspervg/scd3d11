@@ -17,10 +17,13 @@
  */
 
 #include "cGDriver.h"
+#include "D3D11Conversions.h"
+#include "Diagnostics.h"
 #include "GLSupport.h"
 #include "VertexFormatUtils.h"
 
-FILE* gLogFile = nullptr;
+#include <cstring>
+
 cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() { }
 cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension() { }
 
@@ -49,37 +52,74 @@ namespace nSCGL
 		viewportWidth(0),
 		viewportHeight(0),
 		bufferRegionFlags(0),
-		framebufferHandles(),
-		renderbufferHandles(),
-		framebufferMasks(),
+		bufferRegions(),
 		supportedExtensions(),
 		windowHandle(nullptr),
-		deviceContext(nullptr),
-		glContext(nullptr)
+		dynamicVertexBufferCapacity(0),
+		dynamicIndexBufferCapacity(0),
+		interleavedFormat(UINT_MAX),
+		interleavedStride(0),
+		interleavedPointer(nullptr),
+		activeMatrixMode(0),
+		matrices{},
+		nextTextureId(1),
+		boundTextures{},
+		activeTextureStage(0),
+		textureStageEnabled{},
+		pixelStoreRowLength(0),
+		enabledCapabilities{},
+		colorWriteEnabled(true),
+		depthFunction(1),
+		depthWriteEnabled(true),
+		stencilFunction(7),
+		stencilReference(0),
+		stencilReadMask(0xff),
+		stencilWriteMask(0xff),
+		stencilFailOperation(0),
+		stencilDepthFailOperation(0),
+		stencilPassOperation(0),
+		sourceBlend(1),
+		destinationBlend(0),
+		alphaFunction(7),
+		alphaReference(0.0f),
+		shadeModel(1),
+		colorMultipliers{ 1.0f, 1.0f, 1.0f, 1.0f },
+		ambientVertexColors(false),
+		diffuseVertexColors(false),
+		polygonOffset(0),
+		scissorEnabled(false),
+		lightingEnabled(true),
+		lightsEnabled{ true },
+		globalAmbient{ 0.0f, 0.0f, 0.0f, 1.0f },
+		lightAmbient{ 0.0f, 0.0f, 0.0f, 1.0f },
+		lightDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f },
+		lightSpecular{ 1.0f, 1.0f, 1.0f, 1.0f },
+		lightDirection{ 1.0f, 1.0f, 0.0f, 0.0f },
+		materialAmbient{ 0.0f, 0.0f, 0.0f, 1.0f },
+		materialDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f },
+		materialSpecular{ 0.0f, 0.0f, 0.0f, 1.0f },
+		materialEmission{ 0.0f, 0.0f, 0.0f, 1.0f },
+		materialShininess(0.0f),
+		featureLevel(D3D_FEATURE_LEVEL_10_0),
+		clearColor{ 0.0f, 0.0f, 0.0f, 0.0f },
+		clearDepth(1.0f),
+		clearStencil(0)
 	{
+		for (float* matrix : matrices) {
+			matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
+		}
+		textureStageEnabled[0] = true;
+		for (TextureStageState& stage : textureStages) {
+			stage.matrix[0] = stage.matrix[5] = stage.matrix[10] = stage.matrix[15] = 1.0f;
+		}
 	}
 
 	cGDriver::~cGDriver() {
-	}
-
-	void cGDriver::DrawArrays(GLenum gdMode, GLint first, GLsizei count) {
-		state.DrawArrays(gdMode, first, count);
-	}
-
-	void cGDriver::DrawElements(GLenum gdMode, GLsizei count, GLenum gdType, void const* indices) {
-		state.DrawElements(gdMode, count, gdType, indices);
-	}
-
-	void cGDriver::InterleavedArrays(GLenum format, GLsizei stride, void const* pointer) {
-		if (stride == 0) {
-			stride = VertexFormatStride(format);
-		}
-
-		state.InterleavedArrays(format, stride, pointer);
+		DestroyD3D11Context();
 	}
 
 	uint32_t cGDriver::MakeVertexFormat(uint32_t, intptr_t gdElementTypePtr) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "custom vertex-format construction requested (element pointer %p)", reinterpret_cast<void*>(gdElementTypePtr));
 		return UINT_MAX;
 	}
 
@@ -100,151 +140,208 @@ namespace nSCGL
 	}
 
 	void cGDriver::Clear(GLbitfield mask) {
-		GLbitfield glMask = 0;
-		glMask  = (mask & 0x1000) >> 4; // GL_DEPTH_BUFFER_BIT   (0x100)
-		glMask |= (mask & 0x2000) >> 3; // GL_STENCIL_BUFFER_BIT (0x400)
-		glMask |= (mask & 0x4000);      // GL_COLOR_BUFFER_BIT   (0x4000)
-		glClear(glMask);
+		if (!d3dContext) {
+			return;
+		}
+
+		if (ClearsColor(mask) && renderTargetView) {
+			d3dContext->ClearRenderTargetView(renderTargetView.Get(), clearColor);
+		}
+
+		UINT const depthStencilFlags = D3D11DepthStencilClearFlags(mask);
+		if (depthStencilFlags != 0 && depthStencilView) {
+			d3dContext->ClearDepthStencilView(depthStencilView.Get(), depthStencilFlags, clearDepth, clearStencil);
+		}
 	}
 
 	void cGDriver::ClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha) {
-		//glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
-		glClearColor(red, green, blue, alpha);
+		clearColor[0] = red;
+		clearColor[1] = green;
+		clearColor[2] = blue;
+		clearColor[3] = alpha;
 	}
 
 	void cGDriver::ClearDepth(GLclampd depth) {
-		glClearDepth(depth);
+		clearDepth = static_cast<float>(depth < 0.0 ? 0.0 : (depth > 1.0 ? 1.0 : depth));
 	}
 
 	void cGDriver::ClearStencil(GLint s) {
-		glClearStencil(s);
+		clearStencil = static_cast<uint8_t>(s);
 	}
 
 	void cGDriver::ColorMask(bool flag) {
-		state.ColorMask(flag);
+		colorWriteEnabled = flag;
 	}
 
 	void cGDriver::DepthFunc(GLenum gdFunc) {
-		state.DepthFunc(gdFunc);
+		if (D3D11Comparison(gdFunc) == 0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		depthFunction = static_cast<uint8_t>(gdFunc);
 	}
 
 	void cGDriver::DepthMask(bool flag) {
-		state.DepthMask(flag);
+		depthWriteEnabled = flag;
 	}
 
 	void cGDriver::StencilFunc(GLenum gdFunc, GLint ref, GLuint mask) {
-		state.StencilFunc(gdFunc, ref, mask);
+		if (D3D11Comparison(gdFunc) == 0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		stencilFunction = static_cast<uint8_t>(gdFunc);
+		stencilReference = ref;
+		stencilReadMask = static_cast<uint8_t>(mask);
 	}
 
 	void cGDriver::StencilMask(GLuint mask) {
-		state.StencilMask(mask);
+		stencilWriteMask = static_cast<uint8_t>(mask);
 	}
 
 	void cGDriver::StencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
-		state.StencilOp(fail, zfail, zpass);
+		if (D3D11StencilOperation(fail) == 0 || D3D11StencilOperation(zfail) == 0 ||
+			D3D11StencilOperation(zpass) == 0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		stencilFailOperation = static_cast<uint8_t>(fail);
+		stencilDepthFailOperation = static_cast<uint8_t>(zfail);
+		stencilPassOperation = static_cast<uint8_t>(zpass);
 	}
 
 	void cGDriver::BlendFunc(GLenum sfactor, GLenum dfactor) {
-		state.BlendFunc(sfactor, dfactor);
+		if (D3D11Blend(sfactor) == 0 || D3D11Blend(dfactor) == 0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		sourceBlend = static_cast<uint8_t>(sfactor);
+		destinationBlend = static_cast<uint8_t>(dfactor);
 	}
 
 	void cGDriver::AlphaFunc(GLenum func, GLclampf ref) {
-		state.AlphaFunc(func, ref);
+		if (D3D11Comparison(func) == 0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		alphaFunction = static_cast<uint8_t>(func);
+		alphaReference = ref;
 	}
 
 	void cGDriver::ShadeModel(GLenum mode) {
-		state.ShadeModel(mode);
+		if (mode > 1) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		shadeModel = static_cast<uint8_t>(mode);
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, uint32_t gdFogParam) {
-		static GLenum fogParamMap[] = { GL_EXP, GL_EXP2, GL_LINEAR, GL_FOG_COORD, GL_ZERO };
-		SIZE_CHECK(gdFogParamType, fogParamTypeMap);
-		SIZE_CHECK(gdFogParam, fogParamMap);
-
-		glFogi(fogParamTypeMap[gdFogParamType], fogParamMap[gdFogParam]);
+		Log(LogCategory::Unsupported, "fog integer state %u=%u is not translated yet", gdFogParamType, gdFogParam);
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const* params) {
-		SIZE_CHECK(gdFogParamType, fogParamTypeMap);
-		glFogfv(fogParamTypeMap[gdFogParamType], params);
+		Log(LogCategory::Unsupported, "fog vector state %u (%p) is not translated yet", gdFogParamType, params);
 	}
 
 	void cGDriver::ColorMultiplier(float r, float g, float b) {
-		state.ColorMultiplier(r, g, b);
+		colorMultipliers[0] = r;
+		colorMultipliers[1] = g;
+		colorMultipliers[2] = b;
 	}
 
 	void cGDriver::AlphaMultiplier(float a) {
-		state.AlphaMultiplier(a);
+		colorMultipliers[3] = a;
 	}
 
 	void cGDriver::EnableVertexColors(bool ambient, bool diffuse) {
-		state.EnableVertexColors(ambient, diffuse);
+		ambientVertexColors = ambient;
+		diffuseVertexColors = diffuse;
 	}
 
 	void cGDriver::MatrixMode(GLenum mode) {
-		state.MatrixMode(mode);
+		if (mode < 2) {
+			activeMatrixMode = static_cast<uint8_t>(mode);
+		}
+		else {
+			SetLastError(DriverError::INVALID_ENUM);
+		}
 	}
 
 	void cGDriver::LoadMatrix(GLfloat const* m) {
-		state.LoadMatrix(m);
+		if (m != nullptr) {
+			memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
+		}
 	}
 
 	void cGDriver::LoadIdentity(void) {
-		state.LoadIdentity();
+		memset(matrices[activeMatrixMode], 0, sizeof(matrices[activeMatrixMode]));
+		matrices[activeMatrixMode][0] = matrices[activeMatrixMode][5] =
+			matrices[activeMatrixMode][10] = matrices[activeMatrixMode][15] = 1.0f;
 	}
 
 	void cGDriver::Enable(GLenum gdCap) {
-		state.Enable(gdCap);
+		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		if (gdCap == kGDCapability_Texture2D) {
+			textureStageEnabled[activeTextureStage] = true;
+		}
+		else {
+			enabledCapabilities[gdCap] = true;
+		}
 	}
 
 	void cGDriver::Disable(GLenum gdCap) {
-		state.Disable(gdCap);
+		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+		if (gdCap == kGDCapability_Texture2D) {
+			textureStageEnabled[activeTextureStage] = false;
+		}
+		else {
+			enabledCapabilities[gdCap] = false;
+		}
 	}
 
 	bool cGDriver::IsEnabled(GLenum gdCap) {
-		return state.IsEnabled(gdCap);
+		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
+			SetLastError(DriverError::INVALID_ENUM);
+			return false;
+		}
+		return gdCap == kGDCapability_Texture2D
+			? textureStageEnabled[activeTextureStage]
+			: enabledCapabilities[gdCap];
 	}
 
 	void cGDriver::GetBoolean(GLenum pname, bool* params) {
-#ifndef NDEBUG
-		if (pname != 0) {
-			UNEXPECTED();
+		if (pname != 0 || params == nullptr) {
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
-#endif
-
-		glGetBooleanv(GL_UNPACK_ROW_LENGTH, reinterpret_cast<GLboolean*>(params));
+		*params = pixelStoreRowLength != 0;
 	}
 
 	void cGDriver::GetInteger(GLenum pname, GLint* params) {
-#ifndef NDEBUG
-		if (pname != 0) {
-			UNEXPECTED();
+		if (pname != 0 || params == nullptr) {
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
-#endif
-
-		glGetIntegerv(GL_UNPACK_ROW_LENGTH, params);
+		*params = static_cast<int32_t>(pixelStoreRowLength);
 	}
 
 	void cGDriver::GetFloat(GLenum pname, GLfloat* params) {
-#ifndef NDEBUG
-		if (pname != 0) {
-			UNEXPECTED();
+		if (pname != 0 || params == nullptr) {
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
-#endif
-
-		glGetFloatv(GL_UNPACK_ROW_LENGTH, params);
+		*params = static_cast<float>(pixelStoreRowLength);
 	}
 
 	void cGDriver::PolygonOffset(int32_t offset) {
-		float fOffset = (float)offset;
-		if (offset < 0) {
-			fOffset += 4294967296.0f;
-		}
-
-		glPolygonOffset(0.0f, fOffset);
+		polygonOffset = offset;
 	}
 
 	void cGDriver::BitBlt(

@@ -17,47 +17,48 @@
  */
 
 #include "../cGDriver.h"
+#include "../Diagnostics.h"
 
 namespace nSCGL
 {
 	char const* cGDriver::GetVertexBufferName(uint32_t gdVertexFormat) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer extension name requested");
 		return nullptr;
 	}
 
 	uint32_t cGDriver::VertexBufferType(uint32_t) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer extension type requested");
 		return 0;
 	}
 
 	uint32_t cGDriver::MaxVertices(uint32_t) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer extension maximum requested");
 		return 0;
 	}
 
 	uint32_t cGDriver::GetVertices(int32_t, bool) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer allocation requested");
 		return 0;
 	}
 
 	uint32_t cGDriver::ContinueVertices(uint32_t, uint32_t) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer continuation requested");
 		return 0;
 	}
 
 	void cGDriver::ReleaseVertices(uint32_t) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer release requested");
 	}
 
 	void cGDriver::DrawPrims(uint32_t, uint32_t gdPrimType, void*, uint32_t) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer draw requested");
 	}
 
 	void cGDriver::DrawPrimsIndexed(uint32_t, uint32_t gdPrimType, uint32_t, uint16_t*, void*, uint32_t) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "indexed vertex-buffer draw requested");
 	}
 
 	void cGDriver::Reset(void) {
-		NOTIMPL();
+		Log(LogCategory::Unsupported, "vertex-buffer reset requested");
 	}
 }

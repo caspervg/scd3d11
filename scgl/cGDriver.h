@@ -17,21 +17,25 @@
  */
 
 #pragma once
-#include <cstdio>
+#include <d3d11.h>
+#include <dxgi.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include <wrl/client.h>
 #include <cRZRefCount.h>
 #include "cIGZGDriver.h"
+#include "D3D11Conversions.h"
 #include "sGDMode.h"
 #include "ext/cIGZGBufferRegionExtension.h"
 #include "ext/cIGZGDriverLightingExtension.h"
 #include "ext/cIGZGDriverVertexBufferExtension.h"
 #include "ext/cIGZGSnapshotExtension.h"
-#include "GLStateManager.h"
 
 namespace nSCGL
 {
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
+	constexpr size_t MAX_TEXTURE_UNITS = 2;
 
 	class cGDriver final :
 		public cIGZGDriver,
@@ -65,6 +69,12 @@ namespace nSCGL
 		};
 
 	private:
+		struct BufferRegionResource
+		{
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+			int32_t type = 0;
+		};
+
 		unsigned int refCount;
 		DriverError lastError;
 
@@ -83,9 +93,7 @@ namespace nSCGL
 		// We're not expecting to use a lot of buffer regions simultaneously, so we'll use an
 		// 8-bit mask to indicate which regions are allocated and free.
 		uint8_t bufferRegionFlags;
-		uint32_t framebufferHandles[MAX_BUFFER_REGIONS];
-		uint32_t renderbufferHandles[MAX_BUFFER_REGIONS];
-		uint32_t framebufferMasks[MAX_BUFFER_REGIONS];
+		BufferRegionResource bufferRegions[MAX_BUFFER_REGIONS];
 
 	private:
 		struct {
@@ -111,22 +119,132 @@ namespace nSCGL
 		} supportedExtensions;
 
 	private:
-		GLStateManager state;
-		void* windowHandle;
-		void* deviceContext;
-		void* glContext;
+		struct TextureResource
+		{
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+			DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+			uint32_t width = 0;
+			uint32_t height = 0;
+			uint32_t levels = 0;
+			uint8_t magFilter = 1;
+			uint8_t minFilter = 6;
+			uint8_t wrapU = 3;
+			uint8_t wrapV = 3;
+		};
 
-#ifndef NDEBUG
-		void* secondaryWindow;
-		void* secondaryDeviceContext;
-		void* pixels;
-		void* lineBrush;
-#endif
+		struct TextureStageState
+		{
+			uint8_t environmentMode = 1;
+			uint8_t rgbMode = 1;
+			uint8_t alphaMode = 1;
+			uint8_t rgbScale = 0;
+			uint8_t alphaScale = 0;
+			uint8_t rgbParameters[3]{ 0x00, 0x01, 0x02 };
+			uint8_t alphaParameters[3]{ 0x00, 0x01, 0x02 };
+			uint32_t coordinateSource = 0;
+			float environmentColor[4]{};
+			float matrix[16]{};
+		};
+
+		void* windowHandle;
+		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
+		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
+		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
+		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilTexture;
+		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilView;
+		Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+		Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+		Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffer;
+		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicVertexBuffer;
+		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicIndexBuffer;
+		uint32_t dynamicVertexBufferCapacity;
+		uint32_t dynamicIndexBufferCapacity;
+		uint32_t interleavedFormat;
+		uint32_t interleavedStride;
+		uint8_t const* interleavedPointer;
+		uint8_t activeMatrixMode;
+		float matrices[2][16];
+		std::vector<D3D11Vertex> vertexScratch;
+		std::vector<uint32_t> sourceIndexScratch;
+		std::vector<uint32_t> drawIndexScratch;
+		std::unordered_map<uint32_t, TextureResource> textures;
+		uint32_t nextTextureId;
+		uint32_t boundTextures[2];
+		uint8_t activeTextureStage;
+		bool textureStageEnabled[2];
+		TextureStageState textureStages[2];
+		uint32_t pixelStoreRowLength;
+		bool enabledCapabilities[kGDNumCapabilities];
+		bool colorWriteEnabled;
+		uint8_t depthFunction;
+		bool depthWriteEnabled;
+		uint8_t stencilFunction;
+		int32_t stencilReference;
+		uint8_t stencilReadMask;
+		uint8_t stencilWriteMask;
+		uint8_t stencilFailOperation;
+		uint8_t stencilDepthFailOperation;
+		uint8_t stencilPassOperation;
+		uint8_t sourceBlend;
+		uint8_t destinationBlend;
+		uint8_t alphaFunction;
+		float alphaReference;
+		uint8_t shadeModel;
+		float colorMultipliers[4];
+		bool ambientVertexColors;
+		bool diffuseVertexColors;
+		int32_t polygonOffset;
+		bool scissorEnabled;
+		bool lightingEnabled;
+		bool lightsEnabled[8];
+		float globalAmbient[4];
+		float lightAmbient[4];
+		float lightDiffuse[4];
+		float lightSpecular[4];
+		float lightDirection[4];
+		float materialAmbient[4];
+		float materialDiffuse[4];
+		float materialSpecular[4];
+		float materialEmission[4];
+		float materialShininess;
+		std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D11DepthStencilState>> depthStencilStates;
+		std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D11BlendState>> blendStates;
+		std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D11RasterizerState>> rasterizerStates;
+		D3D_FEATURE_LEVEL featureLevel;
+		float clearColor[4];
+		float clearDepth;
+		uint8_t clearStencil;
 
 	private:
 		void SetLastError(DriverError err);
-		void DestroyOpenGLContext();
+		void DestroyD3D11Context();
+		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);
+		HRESULT ResizeBackBufferIfNeeded();
+		HRESULT CreateGeometryPipeline();
+		HRESULT UploadDynamicBuffer(
+			Microsoft::WRL::ComPtr<ID3D11Buffer>& buffer,
+			uint32_t& capacity,
+			uint32_t requiredSize,
+			uint32_t bindFlags,
+			void const* data);
+		bool UploadVertices(uint32_t first, uint32_t count);
+		bool UploadIndices(std::vector<uint32_t> const& indices);
+		bool BindGeometryPipeline(uint32_t primitive);
+		bool ApplyRenderStates();
+		HRESULT CreateTextureResource(
+			TextureResource& resource,
+			uint32_t internalFormat,
+			uint32_t width,
+			uint32_t height,
+			uint32_t levels);
+		HRESULT EnsureSampler(TextureResource& resource);
 		int FindFreeBufferRegionIndex(void);
+		HRESULT CreateBufferRegionResource(uint32_t index, int32_t type);
+		HRESULT RecreateBufferRegions();
 		int InitializeVideoModeVector(void);
 
 	public:
