@@ -18,47 +18,101 @@
 
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
+#include "../VertexFormatUtils.h"
 
-namespace nSCGL
-{
-	char const* cGDriver::GetVertexBufferName(uint32_t gdVertexFormat) {
-		Log(LogCategory::Unsupported, "vertex-buffer extension name requested");
+#include <limits>
+
+namespace nSCGL {
+	char const *cGDriver::GetVertexBufferName(uint32_t gdVertexFormat) {
+		if (gdVertexFormat != kGDVertexFormat_V3F_C4UB_2T2F) {
+			Log(LogCategory::Unsupported, "vertex-buffer format %u requested", gdVertexFormat);
+		}
+		// SC4 treats zero as the name of the single terrain vertex buffer.
 		return nullptr;
 	}
 
-	uint32_t cGDriver::VertexBufferType(uint32_t) {
-		Log(LogCategory::Unsupported, "vertex-buffer extension type requested");
-		return 0;
+	uint32_t cGDriver::VertexBufferType(uint32_t name) {
+		return name == 0 ? kGDVertexFormat_V3F_C4UB_2T2F : UINT32_MAX;
 	}
 
-	uint32_t cGDriver::MaxVertices(uint32_t) {
-		Log(LogCategory::Unsupported, "vertex-buffer extension maximum requested");
-		return 0;
+	uint32_t cGDriver::MaxVertices(uint32_t name) {
+		return name == 0 ? 32768 : 0;
 	}
 
-	uint32_t cGDriver::GetVertices(int32_t, bool) {
-		Log(LogCategory::Unsupported, "vertex-buffer allocation requested");
-		return 0;
+	uint32_t cGDriver::GetVertices(int32_t name, uint32_t count) {
+		uint32_t const capacity = MaxVertices(static_cast<uint32_t>(name));
+		uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+		if (capacity == 0 || count == 0 || count > capacity || extensionVerticesLocked) return 0;
+		if (extensionVertexCursor + count > capacity) extensionVertexCursor = 0;
+		if (extensionVertexData.size() != static_cast<size_t>(capacity) * stride) {
+			extensionVertexData.resize(static_cast<size_t>(capacity) * stride);
+		}
+		extensionVertexStart = extensionVertexCursor;
+		extensionVertexCursor += count;
+		extensionVerticesLocked = true;
+		return reinterpret_cast<uint32_t>(
+			extensionVertexData.data() + static_cast<size_t>(extensionVertexStart) * stride);
 	}
 
-	uint32_t cGDriver::ContinueVertices(uint32_t, uint32_t) {
-		Log(LogCategory::Unsupported, "vertex-buffer continuation requested");
-		return 0;
+	uint32_t cGDriver::ContinueVertices(uint32_t name, uint32_t count) {
+		uint32_t const capacity = MaxVertices(name);
+		uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+		if (!extensionVerticesLocked || count == 0 || extensionVertexCursor + count > capacity) return 0;
+		uint8_t *result = extensionVertexData.data() + static_cast<size_t>(extensionVertexCursor) * stride;
+		extensionVertexCursor += count;
+		return reinterpret_cast<uint32_t>(result);
 	}
 
-	void cGDriver::ReleaseVertices(uint32_t) {
-		Log(LogCategory::Unsupported, "vertex-buffer release requested");
+	void cGDriver::ReleaseVertices(uint32_t name) {
+		if (name == 0) extensionVerticesLocked = false;
 	}
 
-	void cGDriver::DrawPrims(uint32_t, uint32_t gdPrimType, void*, uint32_t) {
-		Log(LogCategory::Unsupported, "vertex-buffer draw requested");
+	bool cGDriver::UploadExtensionVertices(uint32_t byteSize) {
+		uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
+		uint32_t const stride = RZVertexFormatStride(format);
+		size_t const offset = static_cast<size_t>(extensionVertexStart) * stride;
+		if (extensionVerticesLocked || byteSize == 0 || byteSize % stride != 0 ||
+		    offset + byteSize > extensionVertexData.size() ||
+		    !ConvertVertices(format, stride, extensionVertexData.data() + offset, byteSize / stride, vertexScratch)) {
+			return false;
+		}
+		return SUCCEEDED(UploadDynamicBuffer(
+			dynamicVertexBuffer, dynamicVertexBufferCapacity,
+			static_cast<uint32_t>(vertexScratch.size() * sizeof(D3D11Vertex)),
+			D3D11_BIND_VERTEX_BUFFER, vertexScratch.data()));
 	}
 
-	void cGDriver::DrawPrimsIndexed(uint32_t, uint32_t gdPrimType, uint32_t, uint16_t*, void*, uint32_t) {
-		Log(LogCategory::Unsupported, "indexed vertex-buffer draw requested");
+	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
+		if (name != 0 || !UploadExtensionVertices(byteSize)) return;
+		uint32_t const previousFormat = interleavedFormat;
+		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
+		if (BindGeometryPipeline(primitive)) {
+			d3dContext->Draw(byteSize / RZVertexFormatStride(interleavedFormat), 0);
+		}
+		interleavedFormat = previousFormat;
+	}
+
+	void cGDriver::DrawPrimsIndexed(
+		uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices, void *, uint32_t byteSize) {
+		uint64_t const indexBytes = static_cast<uint64_t>(count) * sizeof(uint16_t);
+		if (name != 0 || indices == nullptr || indexBytes > UINT32_MAX ||
+		    !UploadExtensionVertices(byteSize) ||
+		    FAILED(UploadDynamicBuffer(
+			    dynamicIndexBuffer, dynamicIndexBufferCapacity, static_cast<uint32_t>(indexBytes),
+			    D3D11_BIND_INDEX_BUFFER, indices))) {
+			return;
+		}
+		uint32_t const previousFormat = interleavedFormat;
+		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
+		if (BindGeometryPipeline(primitive)) {
+			d3dContext->IASetIndexBuffer(dynamicIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+			d3dContext->DrawIndexed(count, 0, 0);
+		}
+		interleavedFormat = previousFormat;
 	}
 
 	void cGDriver::Reset(void) {
-		Log(LogCategory::Unsupported, "vertex-buffer reset requested");
+		extensionVertexCursor = extensionVertexStart = 0;
+		extensionVerticesLocked = false;
 	}
 }

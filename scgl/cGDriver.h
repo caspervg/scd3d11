@@ -182,6 +182,10 @@ namespace nSCGL
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
 		std::vector<uint8_t> constantBufferCache;
+		std::vector<uint8_t> extensionVertexData;
+		uint32_t extensionVertexCursor;
+		uint32_t extensionVertexStart;
+		bool extensionVerticesLocked;
 		std::unordered_map<uint32_t, TextureResource> textures;
 		std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11SamplerState>> samplerStates;
 		uint32_t nextTextureId;
@@ -257,6 +261,7 @@ namespace nSCGL
 		bool UploadVertices(uint32_t first, uint32_t count);
 		bool UploadIndices(std::vector<uint32_t> const& indices);
 		bool BindGeometryPipeline(uint32_t primitive);
+		bool UploadExtensionVertices(uint32_t byteSize);
 		bool ApplyRenderStates();
 		void InvalidateD3D11StateCache();
 		HRESULT CreateTextureResource(
@@ -407,7 +412,7 @@ namespace nSCGL
 		virtual char const* GetVertexBufferName(uint32_t gdVertexFormat) override;
 		virtual uint32_t VertexBufferType(uint32_t) override;
 		virtual uint32_t MaxVertices(uint32_t) override;
-		virtual uint32_t GetVertices(int32_t, bool) override;
+		virtual uint32_t GetVertices(int32_t, uint32_t) override;
 		virtual uint32_t ContinueVertices(uint32_t, uint32_t) override;
 		virtual void ReleaseVertices(uint32_t) override;
 		virtual void DrawPrims(uint32_t, uint32_t gdPrimType, void*, uint32_t) override;

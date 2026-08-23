@@ -147,6 +147,17 @@ float4 PSMain(PSInput input) : SV_TARGET
 	float4 color = primary;
 	if ((flags & 1) != 0) color = ApplyStage(stage0, texture0.Sample(sampler0, input.texCoord0), color, primary);
 	if ((flags & 2) != 0) color = ApplyStage(stage1, texture1.Sample(sampler1, input.texCoord1), color, primary);
+	if ((flags & 8) != 0)
+	{
+		bool alphaPass = alphaFunction == 0 ? false :
+			alphaFunction == 1 ? color.a < alphaReference :
+			alphaFunction == 2 ? color.a == alphaReference :
+			alphaFunction == 3 ? color.a <= alphaReference :
+			alphaFunction == 4 ? color.a > alphaReference :
+			alphaFunction == 5 ? color.a != alphaReference :
+			alphaFunction == 6 ? color.a >= alphaReference : true;
+		clip(alphaPass ? 1.0f : -1.0f);
+	}
 	if ((flags & 4) != 0)
 	{
 		float diffuse = saturate(dot(normalize(input.normal), normalize(lightDirection.xyz)));
@@ -160,17 +171,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			(mode < 1.5f ? exp(-fogParameters.x * fogParameters.x * distance * distance) :
 			saturate((fogParameters.z - distance) / max(fogParameters.z - fogParameters.y, 0.000001f)));
 		color.rgb = lerp(fogColor.rgb, color.rgb, saturate(factor));
-	}
-	if ((flags & 8) != 0)
-	{
-		bool alphaPass = alphaFunction == 0 ? false :
-			alphaFunction == 1 ? color.a < alphaReference :
-			alphaFunction == 2 ? color.a == alphaReference :
-			alphaFunction == 3 ? color.a <= alphaReference :
-			alphaFunction == 4 ? color.a > alphaReference :
-			alphaFunction == 5 ? color.a != alphaReference :
-			alphaFunction == 6 ? color.a >= alphaReference : true;
-		clip(alphaPass ? 1.0f : -1.0f);
 	}
 	return color;
 }
@@ -524,11 +524,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		bool const convertPrimitive = topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 		if (convertPrimitive) sourceIndexScratch.resize(static_cast<size_t>(count));
+		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
 		if (type == 3) {
 			uint16_t const* source = static_cast<uint16_t const*>(indices);
 			for (int32_t i = 0; i < count; ++i) {
 				if (convertPrimitive) sourceIndexScratch[i] = source[i];
+				if (source[i] < minimumIndex) minimumIndex = source[i];
 				if (source[i] > maximumIndex) maximumIndex = source[i];
 			}
 		}
@@ -536,13 +538,16 @@ float4 PSMain(PSInput input) : SV_TARGET
 			uint32_t const* source = static_cast<uint32_t const*>(indices);
 			for (int32_t i = 0; i < count; ++i) {
 				if (convertPrimitive) sourceIndexScratch[i] = source[i];
+				if (source[i] < minimumIndex) minimumIndex = source[i];
 				if (source[i] > maximumIndex) maximumIndex = source[i];
 			}
 		}
 
-		if (maximumIndex == (std::numeric_limits<uint32_t>::max)() || !UploadVertices(0, maximumIndex + 1)) {
+		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX ||
+			!UploadVertices(minimumIndex, maximumIndex - minimumIndex + 1)) {
 			return;
 		}
+		INT const baseVertex = -static_cast<INT>(minimumIndex);
 
 		if (!convertPrimitive) {
 			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
@@ -556,7 +561,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 			d3dContext->IASetIndexBuffer(
 				dynamicIndexBuffer.Get(), type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, 0);
-			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, 0);
+			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, baseVertex);
 			return;
 		}
 
@@ -575,6 +580,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		ID3D11Buffer* indexBuffer = dynamicIndexBuffer.Get();
 		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);
-		d3dContext->DrawIndexed(static_cast<UINT>(drawIndices->size()), 0, 0);
+		d3dContext->DrawIndexed(static_cast<UINT>(drawIndices->size()), 0, baseVertex);
 	}
 }
