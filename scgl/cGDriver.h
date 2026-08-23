@@ -119,6 +119,8 @@ namespace nSCGL
 	private:
 		void SetLastError(DriverError err);
 		void DestroyD3DDevice();
+		void ConfigureD3DDeviceState();
+		bool ResetD3DDevice();
 		void ReleaseTexture(uint32_t texture);
 		int FindFreeBufferRegionIndex(void);
 		int InitializeVideoModeVector(void);

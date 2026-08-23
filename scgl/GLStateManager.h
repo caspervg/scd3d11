@@ -13,8 +13,16 @@
 
 class GLStateManager
 {
+private:
+	static constexpr uint32_t StreamingVertexBufferSize = 4U * 1024U * 1024U;
+	static constexpr uint32_t StreamingIndexBufferSize = 1U * 1024U * 1024U;
+	static constexpr uint32_t RenderStateCount = 256;
+	static constexpr uint32_t TextureStageStateCount = 64;
+	static constexpr uint32_t SamplerStateCount = 16;
+
 public:
 	GLStateManager();
+	~GLStateManager();
 
 public:
 	void SetDevice(IDirect3DDevice9* device);
@@ -63,15 +71,39 @@ public:
 	void SetTextureImmediately(uint32_t textureId);
 	intptr_t GetTexture(uint32_t texUnit);
 	uint32_t GetActiveTextureUnit() const;
+	void InvalidateDeviceState();
+
+public:
+	void SetRenderState(D3DRENDERSTATETYPE state, DWORD value);
+	void SetTextureStageState(uint32_t stage, D3DTEXTURESTAGESTATETYPE state, DWORD value);
+	DWORD GetTextureStageState(uint32_t stage, D3DTEXTURESTAGESTATETYPE state);
+	void SetSamplerState(uint32_t stage, D3DSAMPLERSTATETYPE state, DWORD value);
+	void SetTransform(D3DTRANSFORMSTATETYPE state, D3DMATRIX const& matrix);
+	void SetTextureNow(uint32_t stage, uint32_t textureId);
 
 private:
 	void ApplyVertexFormat();
 	void ApplyTextureStages();
 	void DrawIndexedConvertedQuads(uint32_t gdType, void const* indices, int32_t count);
+	bool EnsureStreamingBuffers();
+	bool StreamVertices(void const* source, uint32_t vertexCount, uint32_t stride, uint32_t& startVertex);
+	bool StreamIndices(void const* source, uint32_t indexCount, D3DFORMAT format, uint32_t& startIndex);
+	bool StreamConvertedArrayIndices(uint32_t gdMode, int32_t count, uint32_t& indexCount, uint32_t& startIndex);
 	DWORD CurrentFVF() const;
+	void ReleaseStreamingBuffers();
 
 private:
 	IDirect3DDevice9* device;
+	IDirect3DVertexBuffer9* streamingVertexBuffer;
+	IDirect3DIndexBuffer9* streamingIndexBuffer;
+	uint32_t streamingVertexOffset;
+	uint32_t streamingIndexOffset;
+	DWORD currentFVF;
+	IDirect3DVertexBuffer9* currentStream;
+	uint32_t currentStreamOffset;
+	uint32_t currentStreamStride;
+	IDirect3DIndexBuffer9* currentIndices;
+
 	uint32_t interleavedFormat;
 	uint32_t interleavedStride;
 	void const* interleavedPointer;
@@ -91,4 +123,30 @@ private:
 	bool isIdentityMatrix[2];
 
 	std::vector<uint32_t> convertedIndices;
+	DWORD renderStateCache[RenderStateCount];
+	bool renderStateKnown[RenderStateCount];
+	DWORD textureStageStateCache[MAX_TEXTURE_UNITS][TextureStageStateCount];
+	bool textureStageStateKnown[MAX_TEXTURE_UNITS][TextureStageStateCount];
+	DWORD samplerStateCache[MAX_TEXTURE_UNITS][SamplerStateCount];
+	bool samplerStateKnown[MAX_TEXTURE_UNITS][SamplerStateCount];
+	uint32_t boundTextureIds[MAX_TEXTURE_UNITS];
+
+public:
+	struct PerfCounters
+	{
+		uint64_t drawCalls;
+		uint64_t primitives;
+		uint64_t verticesStreamed;
+		uint64_t indicesStreamed;
+		uint64_t renderStateChanges;
+		uint64_t textureStageStateChanges;
+		uint64_t samplerStateChanges;
+		uint64_t textureBinds;
+		uint64_t fvfChanges;
+		uint64_t streamChanges;
+		uint64_t indexBufferChanges;
+		uint64_t fallbackUPDraws;
+	};
+
+	PerfCounters counters;
 };

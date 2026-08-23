@@ -144,7 +144,8 @@ namespace nSCGL
 			tempMode.supportsFogCoord = supportedFeatures.fogCoord;
 			tempMode.supportsDxtTextures = supportedFeatures.textureCompression;
 			tempMode.supportsNvTextureEnvCombine4 = supportedFeatures.nvTextureEnvCombine4;
-			tempMode.__unknown2 = true;
+			tempMode.is3DAccelerated = true;
+			tempMode.hasBackingStore = true;
 			tempMode.__unknown5[0] = false;
 			tempMode.__unknown5[1] = false;
 			tempMode.__unknown5[2] = false;

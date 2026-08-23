@@ -166,24 +166,22 @@ namespace nSCGL
 		SIZE_CHECK(gdFogParamType, fogParamTypeMap);
 		SIZE_CHECK(gdFogParam, fogParamMap);
 
-		if (d3dDevice != nullptr) {
-			d3dDevice->SetRenderState(fogParamTypeMap[gdFogParamType], fogParamMap[gdFogParam]);
-		}
+		state.SetRenderState(fogParamTypeMap[gdFogParamType], fogParamMap[gdFogParam]);
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, float const* params) {
 		SIZE_CHECK(gdFogParamType, fogParamTypeMap);
-		if (d3dDevice == nullptr || params == nullptr) {
+		if (params == nullptr) {
 			return;
 		}
 
 		if (gdFogParamType == 1) {
-			d3dDevice->SetRenderState(D3DRS_FOGCOLOR, D3DCOLOR_COLORVALUE(params[0], params[1], params[2], params[3]));
+			state.SetRenderState(D3DRS_FOGCOLOR, D3DCOLOR_COLORVALUE(params[0], params[1], params[2], params[3]));
 		}
 		else {
 			DWORD value;
 			memcpy(&value, params, sizeof(value));
-			d3dDevice->SetRenderState(fogParamTypeMap[gdFogParamType], value);
+			state.SetRenderState(fogParamTypeMap[gdFogParamType], value);
 		}
 	}
 
@@ -262,11 +260,9 @@ namespace nSCGL
 			fOffset += 4294967296.0f;
 		}
 
-		if (d3dDevice != nullptr) {
-			DWORD value;
-			memcpy(&value, &fOffset, sizeof(value));
-			d3dDevice->SetRenderState(D3DRS_DEPTHBIAS, value);
-		}
+		DWORD value;
+		memcpy(&value, &fOffset, sizeof(value));
+		state.SetRenderState(D3DRS_DEPTHBIAS, value);
 	}
 
 	void cGDriver::BitBlt(

@@ -31,8 +31,8 @@ struct sGDMode
 	uint32_t blueColorMask;            // 1c
 	bool isFullscreen;                 // 20
 	bool supportsStencilBuffer;        // 21
-	uint8_t __unknown2;                // 22
-	uint8_t __unknown3;                // 23
+	uint8_t is3DAccelerated;           // 22
+	uint8_t hasBackingStore;           // 23
 	uint32_t textureStageCount;        // 24
 	bool supportsMultitexture;         // 28 // GL_ARB_multitexture
 	bool supportsTextureEnvCombine;    // 29 // GL_EXT_texture_env_combine

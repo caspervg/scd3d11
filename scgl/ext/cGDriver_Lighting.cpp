@@ -7,9 +7,7 @@
 namespace nSCGL
 {
 	void cGDriver::EnableLighting(bool flag) {
-		if (d3dDevice != nullptr) {
-			d3dDevice->SetRenderState(D3DRS_LIGHTING, flag);
-		}
+		state.SetRenderState(D3DRS_LIGHTING, flag);
 	}
 
 	void cGDriver::EnableLight(uint32_t light, bool flag) {
@@ -19,9 +17,7 @@ namespace nSCGL
 	}
 
 	void cGDriver::LightModelAmbient(float r, float g, float b, float a) {
-		if (d3dDevice != nullptr) {
-			d3dDevice->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_COLORVALUE(r, g, b, a));
-		}
+		state.SetRenderState(D3DRS_AMBIENT, D3DCOLOR_COLORVALUE(r, g, b, a));
 	}
 
 	void cGDriver::LightColor(uint32_t lightIndex, uint32_t gdParam, float const* color) {
@@ -154,4 +150,3 @@ namespace nSCGL
 		d3dDevice->SetMaterial(&material);
 	}
 }
-

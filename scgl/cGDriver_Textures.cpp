@@ -79,6 +79,12 @@ namespace nSCGL
 		}
 
 		for (int32_t i = 0; i < n; i++) {
+			for (uint32_t stage = 0; stage < MAX_TEXTURE_UNITS; stage++) {
+				if (state.GetTexture(stage) == textures[i]) {
+					state.SetTexture(0, stage);
+				}
+			}
+
 			ReleaseTexture(textures[i]);
 		}
 	}
@@ -106,9 +112,10 @@ namespace nSCGL
 	}
 
 	void cGDriver::TexImage2D(uint32_t, int32_t level, int32_t gdInternalTexFormat, int32_t width, int32_t height, int32_t, uint32_t gdTexFormat, uint32_t gdType, void const* pixels) {
+		SIZE_CHECK(gdInternalTexFormat, internalFormatMap);
 		uint32_t texture = static_cast<uint32_t>(state.GetTexture(state.GetActiveTextureUnit()));
 		D3DTextureHandle* handle = TextureFromId(texture);
-		if (handle == nullptr || d3dDevice == nullptr) {
+		if (handle == nullptr || d3dDevice == nullptr || width <= 0 || height <= 0 || level < 0) {
 			return;
 		}
 
@@ -162,7 +169,7 @@ namespace nSCGL
 		SIZE_CHECK(static_cast<int>(gdParam), paramMap);
 
 		if (d3dDevice != nullptr) {
-			d3dDevice->SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], paramMap[static_cast<int>(gdParam)]);
+			state.SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], paramMap[static_cast<int>(gdParam)]);
 		}
 	}
 
@@ -173,7 +180,7 @@ namespace nSCGL
 		SIZE_CHECK(static_cast<int>(gdParam), paramMap);
 
 		if (d3dDevice != nullptr) {
-			d3dDevice->SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], paramMap[static_cast<int>(gdParam)]);
+			state.SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], paramMap[static_cast<int>(gdParam)]);
 		}
 	}
 
@@ -182,22 +189,30 @@ namespace nSCGL
 		SIZE_CHECK(static_cast<int>(gdParamType), pnameMap);
 
 		if (d3dDevice != nullptr) {
-			DWORD currentValue = 0;
-			d3dDevice->GetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], &currentValue);
+			DWORD currentValue = state.GetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)]);
+			currentValue &= ~(D3DTA_COMPLEMENT | D3DTA_ALPHAREPLICATE);
 			if (gdBlend == eGDBlend::OneMinusSrcColor || gdBlend == eGDBlend::OneMinusSrcAlpha) {
 				currentValue |= D3DTA_COMPLEMENT;
 			}
-			d3dDevice->SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], currentValue);
+
+			if (gdBlend == eGDBlend::SrcAlpha || gdBlend == eGDBlend::OneMinusSrcAlpha) {
+				currentValue |= D3DTA_ALPHAREPLICATE;
+			}
+
+			state.SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdParamType)], currentValue);
 		}
 	}
 
 	void cGDriver::TexStageCombine(eGDTextureStageCombineScaleParamType gdPname, eGDTextureStageCombineScaleParam gdParam) {
 		static D3DTEXTURESTAGESTATETYPE pnameMap[] = { D3DTSS_COLOROP, D3DTSS_ALPHAOP };
+		static D3DTEXTUREOP modulateOpMap[] = { D3DTOP_MODULATE, D3DTOP_MODULATE2X, D3DTOP_MODULATE4X };
 		SIZE_CHECK(static_cast<int>(gdPname), pnameMap);
+		SIZE_CHECK(static_cast<int>(gdParam), modulateOpMap);
 
-		// Direct3D 9 exposes x2/x4 as separate MODULATE ops. Keep this conservative:
-		// SC4 mainly uses x1, and unsupported scale values degrade to the active op.
-		(void)gdParam;
+		DWORD currentOp = state.GetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdPname)]);
+		if (currentOp == D3DTOP_MODULATE || currentOp == D3DTOP_MODULATE2X || currentOp == D3DTOP_MODULATE4X) {
+			state.SetTextureStageState(state.GetActiveTextureUnit(), pnameMap[static_cast<int>(gdPname)], modulateOpMap[static_cast<int>(gdParam)]);
+		}
 	}
 
 	void cGDriver::SetTexture(uint32_t textureId, uint32_t texUnit) {
@@ -209,6 +224,7 @@ namespace nSCGL
 	}
 
 	intptr_t cGDriver::CreateTexture(uint32_t texformat, uint32_t width, uint32_t height, uint32_t levels, uint32_t) {
+		SIZE_CHECK_RETVAL(texformat, internalFormatMap, 0);
 		if (d3dDevice == nullptr) {
 			return 0;
 		}
@@ -229,7 +245,7 @@ namespace nSCGL
 
 	void cGDriver::LoadTextureLevel(uint32_t texture, int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, uint32_t gdTexFormat, uint32_t, uint32_t rowLength, void const* pixels) {
 		D3DTextureHandle* handle = TextureFromId(texture);
-		if (handle == nullptr || handle->texture == nullptr || pixels == nullptr) {
+		if (handle == nullptr || handle->texture == nullptr || pixels == nullptr || level < 0 || width <= 0 || height <= 0) {
 			return;
 		}
 
@@ -245,20 +261,35 @@ namespace nSCGL
 		}
 		else {
 			uint32_t sourceBpp = BytesPerSourcePixel(gdTexFormat);
+			if (sourceBpp == 0) {
+				handle->texture->UnlockRect(level);
+				return;
+			}
+
 			uint32_t sourcePitch = (rowLength == 0 ? width : rowLength) * sourceBpp;
 			uint8_t const* sourceRow = reinterpret_cast<uint8_t const*>(pixels);
 			uint8_t* destRow = reinterpret_cast<uint8_t*>(locked.pBits);
 
-			for (int32_t y = 0; y < height; y++) {
-				uint32_t* dest = reinterpret_cast<uint32_t*>(destRow);
-				uint8_t const* source = sourceRow;
-				for (int32_t x = 0; x < width; x++) {
-					dest[x] = ReadSourcePixel(source, gdTexFormat);
-					source += sourceBpp;
+			if (handle->format == D3DFMT_A8R8G8B8 && gdTexFormat == 3) {
+				uint32_t copyBytes = width * 4;
+				for (int32_t y = 0; y < height; y++) {
+					memcpy(destRow, sourceRow, copyBytes);
+					sourceRow += sourcePitch;
+					destRow += locked.Pitch;
 				}
+			}
+			else {
+				for (int32_t y = 0; y < height; y++) {
+					uint32_t* dest = reinterpret_cast<uint32_t*>(destRow);
+					uint8_t const* source = sourceRow;
+					for (int32_t x = 0; x < width; x++) {
+						dest[x] = ReadSourcePixel(source, gdTexFormat);
+						source += sourceBpp;
+					}
 
-				sourceRow += sourcePitch;
-				destRow += locked.Pitch;
+					sourceRow += sourcePitch;
+					destRow += locked.Pitch;
+				}
 			}
 		}
 

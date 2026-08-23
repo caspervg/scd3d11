@@ -131,16 +131,46 @@ namespace nSCGL
 		ShowWindow(hwnd, showWindow ? SW_SHOWNORMAL : SW_HIDE);
 
 		state.SetDevice(d3dDevice);
+		ConfigureD3DDeviceState();
+		d3dDevice->BeginScene();
+
+		SetViewport();
+		SetLastError(DriverError::OK);
+	}
+
+	bool cGDriver::IsDeviceReady(void) {
+		return d3dDevice != nullptr && d3dDevice->TestCooperativeLevel() != D3DERR_DEVICELOST;
+	}
+
+	void cGDriver::Flush(void) {
+		if (d3dDevice != nullptr) {
+			d3dDevice->EndScene();
+			HRESULT hr = d3dDevice->Present(nullptr, nullptr, nullptr, nullptr);
+			if (hr == D3DERR_DEVICELOST) {
+				if (d3dDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET && ResetD3DDevice()) {
+					d3dDevice->BeginScene();
+				}
+				return;
+			}
+
+			d3dDevice->BeginScene();
+		}
+	}
+
+	void cGDriver::ConfigureD3DDeviceState(void) {
+		if (d3dDevice == nullptr) {
+			return;
+		}
 
 		D3DMATRIX identity{};
 		identity._11 = 1.0f;
 		identity._22 = 1.0f;
 		identity._33 = 1.0f;
 		identity._44 = 1.0f;
-		d3dDevice->SetTransform(D3DTS_WORLD, &identity);
-		d3dDevice->SetRenderState(D3DRS_LIGHTING, TRUE);
-		d3dDevice->SetRenderState(D3DRS_NORMALIZENORMALS, FALSE);
-		d3dDevice->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+		state.SetTransform(D3DTS_WORLD, identity);
+		state.SetRenderState(D3DRS_LIGHTING, TRUE);
+		state.SetRenderState(D3DRS_NORMALIZENORMALS, FALSE);
+		state.SetRenderState(D3DRS_SPECULARENABLE, FALSE);
 
 		D3DLIGHT9 light{};
 		light.Type = D3DLIGHT_DIRECTIONAL;
@@ -153,22 +183,26 @@ namespace nSCGL
 		light.Diffuse.a = 1.0f;
 		d3dDevice->SetLight(0, &light);
 		d3dDevice->LightEnable(0, TRUE);
-		d3dDevice->BeginScene();
-
-		SetViewport();
-		SetLastError(DriverError::OK);
 	}
 
-	bool cGDriver::IsDeviceReady(void) {
-		return d3dDevice != nullptr;
-	}
-
-	void cGDriver::Flush(void) {
-		if (d3dDevice != nullptr) {
-			d3dDevice->EndScene();
-			d3dDevice->Present(nullptr, nullptr, nullptr, nullptr);
-			d3dDevice->BeginScene();
+	bool cGDriver::ResetD3DDevice(void) {
+		if (d3dDevice == nullptr) {
+			return false;
 		}
+
+		DeleteAllBufferRegions();
+		state.SetDevice(nullptr);
+
+		HRESULT hr = d3dDevice->Reset(&presentParams);
+		if (FAILED(hr)) {
+			state.SetDevice(d3dDevice);
+			return false;
+		}
+
+		state.SetDevice(d3dDevice);
+		ConfigureD3DDeviceState();
+		SetViewport();
+		return true;
 	}
 
 	void cGDriver::SetViewport(void) {
@@ -188,7 +222,7 @@ namespace nSCGL
 
 			RECT scissor{ x, y, x + width, y + height };
 			d3dDevice->SetScissorRect(&scissor);
-			d3dDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, x != 0 || y != 0 || width != windowWidth || height != windowHeight);
+			state.SetRenderState(D3DRS_SCISSORTESTENABLE, x != 0 || y != 0 || width != windowWidth || height != windowHeight);
 		}
 
 		viewportX = x;
