@@ -14,6 +14,22 @@ ctest --test-dir build --output-on-failure
 
 Repeat with `-DCMAKE_BUILD_TYPE=Release`. The resulting DLL must be PE32/x86. Debug testing must use the D3D11 debug layer; absence of the layer is recorded in `SC4D3D11.log`.
 
+The repository currently leaves four runnable checks:
+
+- `D3D11ConversionsTest`: clear/state/format/vertex/topology mappings, including standard and packed vertex formats.
+- `D3D11ShaderCompileTest`: extracts the exact embedded shader and compiles both `VSMain` and `PSMain` with warnings treated as errors.
+- `D3D11DepthRegionCopyTest`: executes the full-copy/typeless-partial-copy depth-region path on the WARP device and fails on debug-layer warnings or errors when the layer is installed.
+- `VideoModeUtilsTest`: verifies stable, deduplicated windowed/fullscreen mode records and the requested high-resolution mapping.
+
+## Current automated evidence (2026-08-23)
+
+- MSVC x86 Debug build: passed.
+- MSVC x86 Release build: passed.
+- Debug and Release CTest: 4/4 passed.
+- Release `SCGL.dll`: PE32/x86 (`0x14C`), with D3D11/D3DCompiler graphics imports and no OpenGL import.
+- HLSL fog, texture-stage combiner, lighting, alpha-test, and transform paths compile for shader model 4.0.
+- No SC4 process was launched or attached. Registration, presentation, scene appearance, device recovery, resize behavior in-game, and screenshot parity remain unverified.
+
 ## Required capture set
 
 For every run, retain:

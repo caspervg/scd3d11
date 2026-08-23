@@ -36,6 +36,7 @@ add_library(SCGL SHARED
             scgl/cGDriver_Viewport.cpp
             scgl/D3D11Conversions.cpp
             scgl/Diagnostics.cpp
+            scgl/VideoModeUtils.cpp
             scgl/ext/cGDriver_BufferRegions.cpp
             scgl/ext/cGDriver_Lighting.cpp
             scgl/ext/cGDriver_Snapshot.cpp
@@ -74,4 +75,17 @@ if(BUILD_TESTING)
 	add_executable(D3D11ConversionsTest tests/D3D11ConversionsTest.cpp scgl/D3D11Conversions.cpp scgl/VertexFormatUtils.cpp)
 	target_include_directories(D3D11ConversionsTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
 	add_test(NAME D3D11ConversionsTest COMMAND D3D11ConversionsTest)
+
+	add_executable(D3D11ShaderCompileTest tests/D3D11ShaderCompileTest.cpp)
+	target_compile_definitions(D3D11ShaderCompileTest PRIVATE SC4D3D11_GEOMETRY_SOURCE="${CMAKE_SOURCE_DIR}/scgl/cGDriver_Geometry.cpp")
+	target_link_libraries(D3D11ShaderCompileTest d3dcompiler.lib)
+	add_test(NAME D3D11ShaderCompileTest COMMAND D3D11ShaderCompileTest)
+
+	add_executable(D3D11DepthRegionCopyTest tests/D3D11DepthRegionCopyTest.cpp)
+	target_link_libraries(D3D11DepthRegionCopyTest d3d11.lib)
+	add_test(NAME D3D11DepthRegionCopyTest COMMAND D3D11DepthRegionCopyTest)
+
+	add_executable(VideoModeUtilsTest tests/VideoModeUtilsTest.cpp scgl/VideoModeUtils.cpp)
+	target_include_directories(VideoModeUtilsTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
+	add_test(NAME VideoModeUtilsTest COMMAND VideoModeUtilsTest)
 endif()

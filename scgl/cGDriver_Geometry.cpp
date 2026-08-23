@@ -46,6 +46,8 @@ cbuffer DriverConstants : register(b0)
 	column_major float4x4 textureMatrix1;
 	StageState stage0;
 	StageState stage1;
+	float4 fogColor;
+	float4 fogParameters;
 };
 
 Texture2D texture0 : register(t0);
@@ -69,6 +71,7 @@ struct PSInput
 	float4 color : COLOR0;
 	float2 texCoord0 : TEXCOORD0;
 	float2 texCoord1 : TEXCOORD1;
+	float fogDistance : TEXCOORD2;
 };
 
 PSInput VSMain(VSInput input)
@@ -87,6 +90,7 @@ PSInput VSMain(VSInput input)
 		: float4(stage1.parameters1.w == 1 ? input.texCoord1 : input.texCoord0, 0.0f, 1.0f);
 	output.texCoord0 = mul(textureMatrix0, source0).xy;
 	output.texCoord1 = mul(textureMatrix1, source1).xy;
+	output.fogDistance = abs(viewPosition.z);
 	return output;
 }
 
@@ -128,12 +132,13 @@ float CombineAlpha(StageState state, float4 textureColor, float4 previous, float
 float4 ApplyStage(StageState state, float4 textureColor, float4 previous, float4 primary)
 {
 	uint mode = state.modes.x;
-	if (mode == 0) return textureColor;
-	if (mode == 1) return previous * textureColor;
-	if (mode == 2) return float4(lerp(previous.rgb, textureColor.rgb, textureColor.a), previous.a);
-	if (mode == 3) return float4(lerp(previous.rgb, state.environmentColor.rgb, textureColor.rgb), previous.a * textureColor.a);
-	return float4(CombineRGB(state, textureColor, previous, primary),
+	float4 result = textureColor;
+	if (mode == 1) result = previous * textureColor;
+	else if (mode == 2) result = float4(lerp(previous.rgb, textureColor.rgb, textureColor.a), previous.a);
+	else if (mode == 3) result = float4(lerp(previous.rgb, state.environmentColor.rgb, textureColor.rgb), previous.a * textureColor.a);
+	else if (mode != 0) result = float4(CombineRGB(state, textureColor, previous, primary),
 		CombineAlpha(state, textureColor, previous, primary));
+	return result;
 }
 
 float4 PSMain(PSInput input) : SV_TARGET
@@ -146,6 +151,15 @@ float4 PSMain(PSInput input) : SV_TARGET
 	{
 		float diffuse = saturate(dot(normalize(input.normal), normalize(lightDirection.xyz)));
 		color.rgb *= saturate(lightAmbient.rgb + lightDiffuse.rgb * diffuse);
+	}
+	if ((flags & 16) != 0)
+	{
+		float distance = input.fogDistance;
+		float mode = fogParameters.w;
+		float factor = mode < 0.5f ? exp(-fogParameters.x * distance) :
+			(mode < 1.5f ? exp(-fogParameters.x * fogParameters.x * distance * distance) :
+			saturate((fogParameters.z - distance) / max(fogParameters.z - fogParameters.y, 0.000001f)));
+		color.rgb = lerp(fogColor.rgb, color.rgb, saturate(factor));
 	}
 	if ((flags & 8) != 0)
 	{
@@ -183,6 +197,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 				uint32_t parameters0[4];
 				uint32_t parameters1[4];
 			} stages[2];
+			float fogColor[4];
+			float fogParameters[4];
 		};
 	}
 
@@ -259,6 +275,20 @@ float4 PSMain(PSInput input) : SV_TARGET
 		result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &transformBuffer);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
+			return result;
+		}
+
+		// Bound to empty texture stages so the debug layer never sees a NULL sampler.
+		D3D11_SAMPLER_DESC samplerDescription{};
+		samplerDescription.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		samplerDescription.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+		samplerDescription.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+		samplerDescription.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+		samplerDescription.ComparisonFunc = D3D11_COMPARISON_NEVER;
+		samplerDescription.MaxLOD = FLT_MAX;
+		result = d3dDevice->CreateSamplerState(&samplerDescription, &defaultSampler);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateSamplerState(default)", result);
 			return result;
 		}
 
@@ -390,8 +420,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (lightingEnabled && lightsEnabled[0] &&
 			RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) constants.flags |= 4;
+		if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
+		memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
+		constants.fogParameters[0] = fogDensity;
+		constants.fogParameters[1] = fogStart;
+		constants.fogParameters[2] = fogEnd;
+		constants.fogParameters[3] = static_cast<float>(fogMode);
 		ID3D11ShaderResourceView* textureViews[2]{};
-		ID3D11SamplerState* samplers[2]{};
+		ID3D11SamplerState* samplers[2]{ defaultSampler.Get(), defaultSampler.Get() };
 		for (uint32_t stage = 0; stage < 2; ++stage) {
 			if (!textureStageEnabled[stage]) continue;
 			auto iterator = textures.find(boundTextures[stage]);

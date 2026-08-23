@@ -9,6 +9,7 @@
  */
 
 #include "cGDriver.h"
+#include "D3D11Conversions.h"
 #include "Diagnostics.h"
 
 #ifndef NDEBUG
@@ -96,6 +97,8 @@ namespace nSCGL
 		}
 
 		result = d3dDevice->CreateDepthStencilView(depthStencilTexture.Get(), nullptr, &depthStencilView);
+		// Window size changed; force the depth region scratch to be recreated at the new size.
+		depthRegionScratch.Reset();
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateDepthStencilView", result);
 			depthStencilTexture.Reset();
@@ -355,15 +358,16 @@ namespace nSCGL
 		viewportHeight = height;
 
 		if (d3dContext) {
+			int32_t const top = D3D11TopLeftY(windowHeight, y, height);
 			D3D11_VIEWPORT viewport{};
 			viewport.TopLeftX = static_cast<float>(x);
-			viewport.TopLeftY = static_cast<float>(y);
+			viewport.TopLeftY = static_cast<float>(top);
 			viewport.Width = static_cast<float>(width);
 			viewport.Height = static_cast<float>(height);
 			viewport.MinDepth = 0.0f;
 			viewport.MaxDepth = 1.0f;
 			d3dContext->RSSetViewports(1, &viewport);
-			D3D11_RECT const scissor{ x, y, x + width, y + height };
+			D3D11_RECT const scissor{ x, top, x + width, top + height };
 			d3dContext->RSSetScissorRects(1, &scissor);
 		}
 	}

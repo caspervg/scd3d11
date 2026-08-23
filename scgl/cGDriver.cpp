@@ -34,8 +34,6 @@ static_assert(offsetof(sGDMode, _unknownFuncPtr) == 0x34);*/
 
 namespace nSCGL
 {
-	static GLenum fogParamTypeMap[] = { GL_FOG_MODE, GL_FOG_COLOR, GL_FOG_DENSITY, GL_FOG_START, GL_FOG_END, GL_FOG_COORD_SRC };
-
 	cGDriver::cGDriver() :
 		lastError(DriverError::OK),
 #ifndef NDEBUG
@@ -84,6 +82,12 @@ namespace nSCGL
 		alphaReference(0.0f),
 		shadeModel(1),
 		colorMultipliers{ 1.0f, 1.0f, 1.0f, 1.0f },
+		fogMode(0),
+		fogSource(4),
+		fogColor{ 0.0f, 0.0f, 0.0f, 0.0f },
+		fogDensity(1.0f),
+		fogStart(0.0f),
+		fogEnd(1.0f),
 		ambientVertexColors(false),
 		diffuseVertexColors(false),
 		polygonOffset(0),
@@ -237,11 +241,41 @@ namespace nSCGL
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, uint32_t gdFogParam) {
-		Log(LogCategory::Unsupported, "fog integer state %u=%u is not translated yet", gdFogParamType, gdFogParam);
+		if (gdFogParamType == 0 && gdFogParam <= 2) {
+			fogMode = static_cast<uint8_t>(gdFogParam);
+			return;
+		}
+		if (gdFogParamType == 5 && (gdFogParam == 3 || gdFogParam == 4)) {
+			fogSource = static_cast<uint8_t>(gdFogParam);
+			if (gdFogParam == 3) Log(LogCategory::Unsupported, "explicit vertex fog coordinates are not implemented; using eye-space depth");
+			return;
+		}
+		SetLastError(DriverError::INVALID_ENUM);
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const* params) {
-		Log(LogCategory::Unsupported, "fog vector state %u (%p) is not translated yet", gdFogParamType, params);
+		if (params == nullptr) {
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+		switch (gdFogParamType) {
+		case 1:
+			memcpy(fogColor, params, sizeof(fogColor));
+			break;
+		case 2:
+			if (*params < 0.0f) { SetLastError(DriverError::INVALID_VALUE); return; }
+			fogDensity = *params;
+			break;
+		case 3:
+			fogStart = *params;
+			break;
+		case 4:
+			fogEnd = *params;
+			break;
+		default:
+			SetLastError(DriverError::INVALID_ENUM);
+			break;
+		}
 	}
 
 	void cGDriver::ColorMultiplier(float r, float g, float b) {

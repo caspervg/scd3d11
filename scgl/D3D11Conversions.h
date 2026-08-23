@@ -25,6 +25,10 @@ namespace nSCGL
 			((mask & 0x2000) != 0 ? D3D11_CLEAR_STENCIL : 0);
 	}
 
+	constexpr int32_t D3D11TopLeftY(int32_t targetHeight, int32_t y, int32_t height) {
+		return targetHeight - y - height;
+	}
+
 	struct D3D11Vertex
 	{
 		float position[3];

@@ -10,6 +10,7 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
+#include "VideoModeUtils.h"
 
 #ifndef NDEBUG
 #include <d3d11sdklayers.h>
@@ -45,7 +46,7 @@ namespace nSCGL
 		supportedExtensions.stencilBuffer = true;
 		supportedExtensions.multitexture = true;
 		supportedExtensions.textureEnvCombine = true;
-		supportedExtensions.fogCoord = true;
+		supportedExtensions.fogCoord = false;
 		supportedExtensions.textureCompression = true;
 		supportedExtensions.nvTextureEnvCombine4 = false;
 
@@ -87,6 +88,8 @@ namespace nSCGL
 		depthStencilStates.clear();
 		blendStates.clear();
 		rasterizerStates.clear();
+		defaultSampler.Reset();
+		depthRegionScratch.Reset();
 		dynamicIndexBuffer.Reset();
 		dynamicVertexBuffer.Reset();
 		transformBuffer.Reset();
@@ -127,53 +130,17 @@ namespace nSCGL
 				continue;
 			}
 
-			bool duplicate = false;
-			for (sGDMode const& mode : videoModes) {
-				if (mode.isFullscreen && mode.width == displayMode.dmPelsWidth &&
-					mode.height == displayMode.dmPelsHeight && mode.depth == depth) {
-					duplicate = true;
-					break;
-				}
-			}
-			if (duplicate) {
-				continue;
-			}
-
-			sGDMode mode{};
-			mode.textureStageCount = MAX_TEXTURE_UNITS;
-			mode.isInitialized = true;
-			mode.supportsStencilBuffer = true;
-			mode.supportsMultitexture = true;
-			mode.supportsTextureEnvCombine = true;
-			mode.supportsFogCoord = true;
-			mode.supportsDxtTextures = true;
-			mode.supportsNvTextureEnvCombine4 = false;
-			mode.__unknown2 = true;
-
-			if (depth > 16) {
-				mode.alphaColorMask = 0xff000000;
-				mode.redColorMask = 0x00ff0000;
-				mode.greenColorMask = 0x0000ff00;
-				mode.blueColorMask = 0x000000ff;
-			}
-			else {
-				mode.alphaColorMask = 0x1;
-				mode.redColorMask = 0xf800;
-				mode.greenColorMask = 0x7c0;
-				mode.blueColorMask = 0x3e;
-			}
-
-			mode.width = static_cast<int32_t>(displayMode.dmPelsWidth);
-			mode.height = static_cast<int32_t>(displayMode.dmPelsHeight);
-			mode.depth = depth;
-			mode.index = videoModeCount++;
-			mode.isFullscreen = true;
-			videoModes.push_back(mode);
-
-			mode.index = videoModeCount++;
-			mode.isFullscreen = false;
-			videoModes.push_back(mode);
+			AppendVideoMode(videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, depth, true);
+			AppendVideoMode(videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, depth, false);
 		}
+
+		uint32_t const requiredWindowedModes[][2] = {
+			{ 1920, 1080 }, { 2048, 1152 }, { 2560, 1600 }, { 3200, 1800 }
+		};
+		for (auto const& dimensions : requiredWindowedModes) {
+			AppendVideoMode(videoModes, dimensions[0], dimensions[1], 32, false);
+		}
+		videoModeCount = static_cast<int32_t>(videoModes.size());
 
 		return videoModeCount;
 	}

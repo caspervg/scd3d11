@@ -1,0 +1,105 @@
+param(
+    [ValidateSet('Debug', 'Release')]
+    [string]$BuildType = 'Debug',
+    [int]$Width = 1920,
+    [int]$Height = 1080,
+    [int]$ScreenshotDelaySeconds = 20,
+    [switch]$WaitForExit,
+    [string]$GameExe = 'C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe',
+    [string]$PluginDll = "$env:USERPROFILE\Documents\SimCity 4\Plugins\SCGL.dll"
+)
+
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent $PSScriptRoot
+$buildDir = Join-Path $repo ("cmake-build-" + $BuildType.ToLowerInvariant())
+$builtDll = Join-Path $buildDir 'SCGL.dll'
+$vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat'
+$cmake = 'C:\Users\caspe\AppData\Local\Programs\CLion\bin\cmake\win\x64\bin\cmake.exe'
+$gameDir = Split-Path -Parent $GameExe
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$captureDir = Join-Path $repo "runtime-captures\$stamp-$($Width)x$Height-$BuildType"
+New-Item -ItemType Directory -Path $captureDir -Force | Out-Null
+
+if (-not (Test-Path -LiteralPath $GameExe)) { throw "SC4 executable not found: $GameExe" }
+if (-not (Test-Path -LiteralPath $vcvars)) { throw "MSVC environment script not found: $vcvars" }
+
+$buildCommand = 'call "{0}" x86 && "{1}" --build "{2}" --config {3} && ctest --test-dir "{2}" -C {3} --output-on-failure' -f $vcvars, $cmake, $buildDir, $BuildType
+& $env:ComSpec /d /s /c $buildCommand
+if ($LASTEXITCODE -ne 0) { throw "Build or tests failed with exit code $LASTEXITCODE" }
+if (-not (Test-Path -LiteralPath $builtDll)) { throw "Built DLL not found: $builtDll" }
+
+if (Test-Path -LiteralPath $PluginDll) {
+    Copy-Item -LiteralPath $PluginDll -Destination (Join-Path $captureDir 'SCGL.before.dll')
+}
+New-Item -ItemType Directory -Path (Split-Path -Parent $PluginDll) -Force | Out-Null
+Copy-Item -LiteralPath $builtDll -Destination $PluginDll -Force
+
+$logs = @('SC4D3D11.log', 'SC4D3D11-states.log')
+foreach ($name in $logs) {
+    $path = Join-Path $gameDir $name
+    if (Test-Path -LiteralPath $path) {
+        Copy-Item -LiteralPath $path -Destination (Join-Path $captureDir "$name.before")
+        Remove-Item -LiteralPath $path -Force
+    }
+}
+
+$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PluginDll).Hash
+$arguments = @('-CPUCount:1', '-w', '-CustomResolution:enabled', "-r${Width}x${Height}x32")
+@(
+    "started=$(Get-Date -Format o)"
+    "dll=$PluginDll"
+    "dll_sha256=$hash"
+    "exe=$GameExe"
+    "arguments=$($arguments -join ' ')"
+) | Set-Content -LiteralPath (Join-Path $captureDir 'run.txt')
+
+$oldRecording = $env:SC4D3D11_RECORD_STATES
+$env:SC4D3D11_RECORD_STATES = '1'
+try {
+    $process = Start-Process -FilePath $GameExe -ArgumentList $arguments -WorkingDirectory $gameDir -PassThru
+} finally {
+    $env:SC4D3D11_RECORD_STATES = $oldRecording
+}
+Add-Content -LiteralPath (Join-Path $captureDir 'run.txt') -Value "pid=$($process.Id)"
+
+$deadline = [DateTime]::UtcNow.AddSeconds(60)
+do {
+    Start-Sleep -Milliseconds 500
+    $process.Refresh()
+} while (-not $process.HasExited -and $process.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+
+if (-not $process.HasExited -and $process.MainWindowHandle -ne 0) {
+    Start-Sleep -Seconds $ScreenshotDelaySeconds
+    Add-Type -AssemblyName System.Drawing
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class SC4WindowCapture {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+}
+'@
+    $rect = New-Object SC4WindowCapture+RECT
+    if ([SC4WindowCapture]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) {
+        $bitmap = New-Object System.Drawing.Bitmap ($rect.Right - $rect.Left), ($rect.Bottom - $rect.Top)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+            $bitmap.Save((Join-Path $captureDir 'startup.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+        } finally {
+            $graphics.Dispose()
+            $bitmap.Dispose()
+        }
+    }
+}
+
+if ($WaitForExit -and -not $process.HasExited) { $process.WaitForExit() }
+foreach ($name in $logs) {
+    $path = Join-Path $gameDir $name
+    if (Test-Path -LiteralPath $path) {
+        Copy-Item -LiteralPath $path -Destination (Join-Path $captureDir $name) -Force
+    }
+}
+
+Write-Output "Capture: $captureDir"
+Write-Output "SC4 PID: $($process.Id)"

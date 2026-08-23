@@ -13,6 +13,24 @@
 
 namespace nSCGL
 {
+	HRESULT cGDriver::EnsureDepthRegionScratch(void) {
+		if (depthRegionScratch) return S_OK;
+		if (!d3dDevice || windowWidth <= 0 || windowHeight <= 0) return E_POINTER;
+
+		D3D11_TEXTURE2D_DESC description{};
+		description.Width = static_cast<UINT>(windowWidth);
+		description.Height = static_cast<UINT>(windowHeight);
+		description.MipLevels = 1;
+		description.ArraySize = 1;
+		description.Format = DXGI_FORMAT_R24G8_TYPELESS;
+		description.SampleDesc.Count = 1;
+		description.Usage = D3D11_USAGE_DEFAULT;
+
+		HRESULT const result = d3dDevice->CreateTexture2D(&description, nullptr, &depthRegionScratch);
+		if (FAILED(result)) LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(depthRegionScratch)", result);
+		return result;
+	}
+
 	int cGDriver::FindFreeBufferRegionIndex(void) {
 		for (uint32_t index = 0; index < MAX_BUFFER_REGIONS; ++index) {
 			if ((bufferRegionFlags & (1u << index)) == 0) return static_cast<int>(index);
@@ -31,7 +49,8 @@ namespace nSCGL
 		description.Height = static_cast<UINT>(windowHeight);
 		description.MipLevels = 1;
 		description.ArraySize = 1;
-		description.Format = type == 0 ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_D24_UNORM_S8_UINT;
+		// Depth regions stay typeless so partial copies never involve a depth-stencil resource.
+		description.Format = type == 0 ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R24G8_TYPELESS;
 		description.SampleDesc.Count = 1;
 		description.Usage = D3D11_USAGE_DEFAULT;
 
@@ -110,7 +129,12 @@ namespace nSCGL
 			source = backBuffer.Get();
 		}
 		else {
-			source = depthStencilTexture.Get();
+			// Partial copies touching a depth-stencil-bound resource are illegal; refresh the
+			// plain scratch copy and read from that instead.
+			HRESULT const result = EnsureDepthRegionScratch();
+			if (FAILED(result)) { SetLastError(DriverError::CREATE_CONTEXT_FAIL); return false; }
+			d3dContext->CopyResource(depthRegionScratch.Get(), depthStencilTexture.Get());
+			source = depthRegionScratch.Get();
 		}
 
 		D3D11_BOX const sourceBox{
@@ -147,7 +171,12 @@ namespace nSCGL
 			destination = backBuffer.Get();
 		}
 		else {
-			destination = depthStencilTexture.Get();
+			// Partial copies touching a depth-stencil-bound resource are illegal; patch the
+			// plain scratch copy instead, then replace the depth buffer wholesale.
+			HRESULT const result = EnsureDepthRegionScratch();
+			if (FAILED(result)) { SetLastError(DriverError::CREATE_CONTEXT_FAIL); return false; }
+			d3dContext->CopyResource(depthRegionScratch.Get(), depthStencilTexture.Get());
+			destination = depthRegionScratch.Get();
 		}
 
 		D3D11_BOX const sourceBox{
@@ -158,6 +187,9 @@ namespace nSCGL
 			destination, 0,
 			static_cast<UINT>(destinationX), static_cast<UINT>(destinationY), 0,
 			bufferRegions[index].texture.Get(), 0, &sourceBox);
+		if (bufferRegions[index].type == 1) {
+			d3dContext->CopyResource(depthStencilTexture.Get(), depthRegionScratch.Get());
+		}
 		return true;
 	}
 

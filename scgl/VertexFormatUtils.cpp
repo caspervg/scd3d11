@@ -33,7 +33,9 @@ uint32_t RZMakeVertexFormat(uint32_t gdVertexFormat) {
 		0x80008041, 0x80004141, 0x80008141,
 	};
 
-	return formatToPackedFormatMap[gdVertexFormat];
+	return gdVertexFormat < sizeof(formatToPackedFormatMap) / sizeof(formatToPackedFormatMap[0])
+		? formatToPackedFormatMap[gdVertexFormat]
+		: 0;
 }
 
 uint32_t RZVertexFormatStride(uint32_t gdVertexFormat) {

@@ -155,6 +155,10 @@ namespace nSCGL
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilTexture;
 		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilView;
+		// Plain (non-depth-stencil-bound) copy of the depth buffer; partial CopySubresourceRegion
+		// is illegal on D3D11_BIND_DEPTH_STENCIL resources, so depth region blits bounce through this.
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthRegionScratch;
+		Microsoft::WRL::ComPtr<ID3D11SamplerState> defaultSampler;
 		Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
 		Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
 		Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
@@ -195,6 +199,12 @@ namespace nSCGL
 		float alphaReference;
 		uint8_t shadeModel;
 		float colorMultipliers[4];
+		uint8_t fogMode;
+		uint8_t fogSource;
+		float fogColor[4];
+		float fogDensity;
+		float fogStart;
+		float fogEnd;
 		bool ambientVertexColors;
 		bool diffuseVertexColors;
 		int32_t polygonOffset;
@@ -242,6 +252,7 @@ namespace nSCGL
 			uint32_t height,
 			uint32_t levels);
 		HRESULT EnsureSampler(TextureResource& resource);
+		HRESULT EnsureDepthRegionScratch(void);
 		int FindFreeBufferRegionIndex(void);
 		HRESULT CreateBufferRegionResource(uint32_t index, int32_t type);
 		HRESULT RecreateBufferRegions();

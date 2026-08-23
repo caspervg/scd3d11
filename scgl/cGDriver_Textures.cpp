@@ -445,35 +445,56 @@ namespace nSCGL
 		}
 		else {
 			uint32_t const components = SourceComponents(sourceFormat);
-			if (sourceType != 1 || components == 0) {
+			// Type 13 is GL_UNSIGNED_SHORT_4_4_4_4_REV per the original driver's typeMap:
+			// with format 3 (BGRA) that's B in the low nibble — exactly DXGI B4G4R4A4 layout.
+			bool const packedBgra4444 = sourceType == 13;
+			if ((!packedBgra4444 && (sourceType != 1 || components == 0)) ||
+				(packedBgra4444 && resource.format != DXGI_FORMAT_B4G4R4A4_UNORM)) {
 				Log(LogCategory::Unsupported, "texture upload format %u type %u is not implemented", sourceFormat, sourceType);
 				SetLastError(DriverError::NOT_SUPPORTED);
 				return;
 			}
 
 			uint32_t const sourceWidth = rowLength ? rowLength : static_cast<uint32_t>(width);
-			uint32_t const sourcePitch = sourceWidth * components;
+			uint32_t const sourcePitch = sourceWidth * (packedBgra4444 ? 2u : components);
 			pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
-			converted.resize(static_cast<size_t>(pitch) * height);
 			uint8_t const* sourceRows = static_cast<uint8_t const*>(pixels);
-			for (int32_t y = 0; y < height; ++y) {
-				uint8_t const* source = sourceRows + static_cast<size_t>(y) * sourcePitch;
-				uint8_t* destination = converted.data() + static_cast<size_t>(y) * pitch;
-				for (int32_t x = 0; x < width; ++x, source += components) {
-					uint8_t rgba[4];
-					ReadUnsignedBytePixel(sourceFormat, source, rgba);
-					if (resource.format == DXGI_FORMAT_B8G8R8A8_UNORM) {
-						destination[x * 4 + 0] = rgba[2];
-						destination[x * 4 + 1] = rgba[1];
-						destination[x * 4 + 2] = rgba[0];
-						destination[x * 4 + 3] = rgba[3];
+			if (packedBgra4444) {
+				// Same nibble layout as B4G4R4A4; only row pitch needs normalizing.
+				if (sourcePitch == pitch) {
+					upload = pixels;
+				}
+				else {
+					converted.resize(static_cast<size_t>(pitch) * height);
+					for (int32_t y = 0; y < height; ++y) {
+						memcpy(converted.data() + static_cast<size_t>(y) * pitch,
+							sourceRows + static_cast<size_t>(y) * sourcePitch,
+							static_cast<size_t>(width) * 2);
 					}
-					else {
-						reinterpret_cast<uint16_t*>(destination)[x] = Pack16BitPixel(resource.format, rgba);
-					}
+					upload = converted.data();
 				}
 			}
-			upload = converted.data();
+			else {
+				converted.resize(static_cast<size_t>(pitch) * height);
+				for (int32_t y = 0; y < height; ++y) {
+					uint8_t const* source = sourceRows + static_cast<size_t>(y) * sourcePitch;
+					uint8_t* destination = converted.data() + static_cast<size_t>(y) * pitch;
+					for (int32_t x = 0; x < width; ++x, source += components) {
+						uint8_t rgba[4];
+						ReadUnsignedBytePixel(sourceFormat, source, rgba);
+						if (resource.format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+							destination[x * 4 + 0] = rgba[2];
+							destination[x * 4 + 1] = rgba[1];
+							destination[x * 4 + 2] = rgba[0];
+							destination[x * 4 + 3] = rgba[3];
+						}
+						else {
+							reinterpret_cast<uint16_t*>(destination)[x] = Pack16BitPixel(resource.format, rgba);
+						}
+					}
+				}
+				upload = converted.data();
+			}
 		}
 
 		d3dContext->UpdateSubresource(

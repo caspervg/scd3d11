@@ -16,19 +16,24 @@
 namespace nSCGL
 {
 	bool IsSupportedVertexFormat(uint32_t format) {
+		// SC4 passes both the small enum values and pre-packed bitfield formats;
+		// normalize through RZMakeVertexFormat before checking the whitelist.
+		if (format < 0x80000000) {
+			format = RZMakeVertexFormat(format);
+		}
 		switch (format) {
-		case kGDVertexFormat_V3F_C4UB:
-		case kGDVertexFormat_V3F_T2F:
-		case kGDVertexFormat_V3F_2T2F:
-		case kGDVertexFormat_V3F_C4UB_T2F:
-		case kGDVertexFormat_V3F_C4UB_2T2F:
-		case kGDVertexFormat_V3F:
-		case kGDVertexFormat_V3F_N3F:
-		case kGDVertexFormat_V3F_N3F_C4UB:
-		case kGDVertexFormat_V3F_N3F_T2F:
-		case kGDVertexFormat_V3F_N3F_2T2F:
-		case kGDVertexFormat_V3F_N3F_C4UB_T2F:
-		case kGDVertexFormat_V3F_N3F_C4UB_2T2F:
+		case 0x80000001: // V3F
+		case 0x80000101: // V3F_C4UB
+		case 0x80000041: // V3F_N3F
+		case 0x80004001: // V3F_T2F
+		case 0x80004101: // V3F_C4UB_T2F
+		case 0x80000141: // V3F_N3F_C4UB
+		case 0x80008001: // V3F_2T2F
+		case 0x80004041: // V3F_N3F_T2F
+		case 0x80008101: // V3F_C4UB_2T2F
+		case 0x80004141: // V3F_N3F_C4UB_T2F
+		case 0x80008041: // V3F_N3F_2T2F
+		case 0x80008141: // V3F_N3F_C4UB_2T2F
 			return true;
 		default:
 			return false;

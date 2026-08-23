@@ -11,6 +11,9 @@ int main() {
 	assert(nSCGL::D3D11DepthStencilClearFlags(0x1000) == D3D11_CLEAR_DEPTH);
 	assert(nSCGL::D3D11DepthStencilClearFlags(0x2000) == D3D11_CLEAR_STENCIL);
 	assert(nSCGL::D3D11DepthStencilClearFlags(0x7000) == (D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL));
+	assert(nSCGL::D3D11TopLeftY(1080, 0, 100) == 980);
+	assert(nSCGL::D3D11TopLeftY(1080, 980, 100) == 0);
+	assert(nSCGL::D3D11TopLeftY(1080, 0, 1080) == 0);
 
 	struct SourceVertex {
 		float position[3];
@@ -19,6 +22,10 @@ int main() {
 		float texCoord[2][2];
 	} source{ { 1.0f, 2.0f, 3.0f }, { 0.0f, 1.0f, 0.0f }, { 10, 20, 30, 40 }, { { 0.25f, 0.5f }, { 0.75f, 1.0f } } };
 	std::vector<nSCGL::D3D11Vertex> vertices;
+	assert(nSCGL::IsSupportedVertexFormat(kGDVertexFormat_V3F_N3F_C4UB_2T2F));
+	assert(nSCGL::IsSupportedVertexFormat(RZMakeVertexFormat(kGDVertexFormat_V3F_N3F_C4UB_2T2F)));
+	assert(!nSCGL::IsSupportedVertexFormat(39));
+	assert(!nSCGL::IsSupportedVertexFormat(0x7fffffff));
 	assert(nSCGL::ConvertVertices(kGDVertexFormat_V3F_N3F_C4UB_2T2F, sizeof(source), &source, 1, vertices));
 	assert(vertices.size() == 1);
 	assert(vertices[0].position[2] == 3.0f && vertices[0].normal[1] == 1.0f);

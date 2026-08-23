@@ -90,6 +90,10 @@ vtable and behavior still need recovery before it is implemented or advertised.
 - Required windowed validation sizes are 1920x1080, 2048x1152, 2560x1600, and 3200x1800. Texture caps
   and display dimensions are independent.
 
+The D3D11 mode list explicitly adds the four required 32-bit windowed sizes independently of
+fullscreen monitor-mode enumeration. `VideoModeUtilsTest` verifies mapping, deduplication, flags, and
+stable indices.
+
 ### Frame begin, end, and present
 
 - `Clear`, `ClearColor`, `ClearDepth`, and `ClearStencil` cache values and/or clear the bound color and
@@ -114,6 +118,9 @@ vtable and behavior still need recovery before it is implemented or advertised.
   min/mag filtering and U/V addressing.
 - Buffer regions copy color or depth rectangles to persistent offscreen storage. They are used by SC4
   to avoid full redraws and cannot be treated as optional merely because modern presentation differs.
+- The symbolized Mac D3D7 implementation leaves all six `BitBlt`/`StretchBlt` variants unsupported
+  (`0x0041ECBA` through `0x0041ED14`) and sets driver error 3. They remain unsupported here unless a
+  Windows caller or runtime capture proves that the D3D11 path needs them.
 - Swap-chain resize recreates only the backbuffer RTV, depth-stencil texture/view, and viewport-sized
   buffer-region resources. Immutable shaders, input layouts, and descriptor-cached states survive.
 - Palette behavior is not yet evidenced and remains an explicit investigation item.
