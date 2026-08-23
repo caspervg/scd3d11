@@ -286,10 +286,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 		constantDescription.Usage = D3D11_USAGE_DYNAMIC;
 		constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &transformBuffer);
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
-			return result;
+		for (auto &buffer: transformBuffers) {
+			result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &buffer);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
+				return result;
+			}
 		}
 
 		// Bound to empty texture stages so the debug layer never sees a NULL sampler.
@@ -457,7 +459,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		if (!IsDeviceReady() || !vertexShader || !pixelShader || !inputLayout ||
-		    !transformBuffer || !dynamicVertexBuffer || topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
+		    !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
+		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
 		}
 
@@ -534,14 +537,16 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (constantBufferCache.size() != sizeof(constants) ||
 		    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
+			activeTransformBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
 			D3D11_MAPPED_SUBRESOURCE mapping{};
-			HRESULT const result = d3dContext->Map(transformBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+			HRESULT const result = d3dContext->Map(
+				transformBuffers[activeTransformBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
 			if (FAILED(result)) {
 				LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
 				return false;
 			}
 			memcpy(mapping.pData, &constants, sizeof(constants));
-			d3dContext->Unmap(transformBuffer.Get(), 0);
+			d3dContext->Unmap(transformBuffers[activeTransformBuffer].Get(), 0);
 			constantBufferCache.assign(
 				reinterpret_cast<uint8_t const *>(&constants),
 				reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
@@ -550,14 +555,17 @@ float4 PSMain(PSInput input) : SV_TARGET
 		UINT const stride = sizeof(D3D11Vertex);
 		UINT const offset = dynamicVertexBufferOffset;
 		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
-		ID3D11Buffer *constantBuffer = transformBuffer.Get();
+		ID3D11Buffer *constantBuffer = transformBuffers[activeTransformBuffer].Get();
 		if (!geometryPipelineBound) {
 			d3dContext->IASetInputLayout(inputLayout.Get());
 			d3dContext->VSSetShader(vertexShader.Get(), nullptr, 0);
-			d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);
 			d3dContext->PSSetShader(pixelShader.Get(), nullptr, 0);
-			d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
 			geometryPipelineBound = true;
+		}
+		if (constantBuffer != appliedTransformBuffer) {
+			d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);
+			d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
+			appliedTransformBuffer = constantBuffer;
 		}
 		if (vertexBuffer != appliedVertexBuffer || offset != appliedVertexBufferOffset) {
 			d3dContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
@@ -637,9 +645,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (convertPrimitive) sourceIndexScratch.resize(static_cast<size_t>(count));
 		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
+		uint64_t indexKey = HashBytes(&type, sizeof(type));
 		if (type == 3) {
 			uint16_t const *source = static_cast<uint16_t const *>(indices);
 			for (int32_t i = 0; i < count; ++i) {
+				indexKey = (indexKey ^ source[i]) * 1099511628211ull;
+				indexKey = (indexKey ^ (source[i] >> 8)) * 1099511628211ull;
 				if (convertPrimitive) sourceIndexScratch[i] = source[i];
 				if (source[i] < minimumIndex) minimumIndex = source[i];
 				if (source[i] > maximumIndex) maximumIndex = source[i];
@@ -647,6 +658,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 		} else {
 			uint32_t const *source = static_cast<uint32_t const *>(indices);
 			for (int32_t i = 0; i < count; ++i) {
+				for (uint32_t shift = 0; shift < 32; shift += 8)
+					indexKey = (indexKey ^ ((source[i] >> shift) & 0xff)) * 1099511628211ull;
 				if (convertPrimitive) sourceIndexScratch[i] = source[i];
 				if (source[i] < minimumIndex) minimumIndex = source[i];
 				if (source[i] > maximumIndex) maximumIndex = source[i];
@@ -663,12 +676,10 @@ float4 PSMain(PSInput input) : SV_TARGET
 			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
 			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
 			if (indexBytes > UINT32_MAX) return;
-			uint64_t key = HashBytes(&type, sizeof(type));
-			key = HashBytes(indices, static_cast<size_t>(indexBytes), key);
 			uint32_t indexOffset = 0;
 			if (!UploadCachedBuffer(
 				    indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
-				    key, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+				    indexKey, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
 				    dynamicIndexBuffer, indexOffset) ||
 			    !BindGeometryPipeline(primitive)) {
 				return;

@@ -49,6 +49,7 @@ namespace nSCGL {
 		}
 		extensionVertexStart = extensionVertexCursor;
 		extensionVertexCursor += count;
+		++extensionVertexGeneration;
 		extensionVerticesLocked = true;
 		return reinterpret_cast<uint32_t>(
 			extensionVertexData.data() + static_cast<size_t>(extensionVertexStart) * stride);
@@ -76,8 +77,8 @@ namespace nSCGL {
 			return false;
 		}
 		uint8_t const *source = extensionVertexData.data() + offset;
-		uint64_t key = HashBytes(&format, sizeof(format));
-		key = HashBytes(source, byteSize, key);
+		uint64_t key = HashBytes(&extensionVertexGeneration, sizeof(extensionVertexGeneration));
+		key = HashBytes(&byteSize, sizeof(byteSize), key);
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 		if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
@@ -104,15 +105,15 @@ namespace nSCGL {
 			return;
 		}
 		uint16_t maximumIndex = 0;
+		uint64_t key = HashBytes(&count, sizeof(count));
 		for (uint32_t i = 0; i < count; ++i) {
+			key = (key ^ indices[i]) * 1099511628211ull;
+			key = (key ^ (indices[i] >> 8)) * 1099511628211ull;
 			if (indices[i] > maximumIndex) maximumIndex = indices[i];
 		}
 		uint32_t const byteSize =
 			(static_cast<uint32_t>(maximumIndex) + 1) * RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
 		if (!UploadExtensionVertices(byteSize)) return;
-		uint32_t const indexType = 3;
-		uint64_t key = HashBytes(&indexType, sizeof(indexType));
-		key = HashBytes(indices, static_cast<size_t>(indexBytes), key);
 		if (!UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 			key, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,

@@ -117,7 +117,8 @@ namespace nSCGL {
 		for (GeometryCacheSegment &segment: vertexBufferSegments) segment = {};
 		indexBufferCache.clear();
 		vertexBufferCache.clear();
-		transformBuffer.Reset();
+		for (auto &buffer: transformBuffers) buffer.Reset();
+		activeTransformBuffer = 0;
 		inputLayout.Reset();
 		pixelShader.Reset();
 		vertexShader.Reset();

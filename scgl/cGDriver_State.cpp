@@ -17,6 +17,7 @@ namespace nSCGL {
         appliedStencilReference = INT32_MIN;
         geometryPipelineBound = false;
 		appliedVertexBuffer = nullptr;
+		appliedTransformBuffer = nullptr;
         appliedVertexBufferOffset = UINT32_MAX;
         textureBindingsValid = false;
         appliedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;

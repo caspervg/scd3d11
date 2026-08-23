@@ -36,6 +36,7 @@ namespace nSCGL {
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
 	constexpr size_t MAX_TEXTURE_UNITS = 2;
 	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 8;
+	constexpr size_t CONSTANT_BUFFER_COUNT = 8;
 
 	class cGDriver final :
 			public cIGZGDriver,
@@ -171,7 +172,9 @@ namespace nSCGL {
 		Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
 		Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
 		Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffer;
+		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffers[CONSTANT_BUFFER_COUNT];
+		uint8_t activeTransformBuffer;
+		ID3D11Buffer *appliedTransformBuffer;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicVertexBuffer;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicIndexBuffer;
 		GeometryCacheSegment vertexBufferSegments[GEOMETRY_CACHE_SEGMENTS];
@@ -206,6 +209,7 @@ namespace nSCGL {
 		std::vector<uint8_t> extensionVertexData;
 		uint32_t extensionVertexCursor;
 		uint32_t extensionVertexStart;
+		uint64_t extensionVertexGeneration;
 		bool extensionVerticesLocked;
 		std::unordered_map<uint32_t, TextureResource> textures;
 		std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11SamplerState> > samplerStates;

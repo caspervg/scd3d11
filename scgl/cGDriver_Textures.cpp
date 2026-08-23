@@ -529,7 +529,10 @@ namespace nSCGL {
             uint32_t const sourcePitch = sourceWidth * (packedBgra4444 ? 2u : components);
             pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
             uint8_t const *sourceRows = static_cast<uint8_t const *>(pixels);
-            if (packedBgra4444) {
+			if (sourceFormat == 3 && sourceType == 1 &&
+			    resource.format == DXGI_FORMAT_B8G8R8A8_UNORM && sourcePitch == pitch) {
+				upload = pixels;
+			} else if (packedBgra4444) {
                 // Same nibble layout as B4G4R4A4; only row pitch needs normalizing.
                 if (sourcePitch == pitch) {
                     upload = pixels;
