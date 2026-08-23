@@ -72,14 +72,19 @@ namespace nSCGL {
 		uint32_t const stride = RZVertexFormatStride(format);
 		size_t const offset = static_cast<size_t>(extensionVertexStart) * stride;
 		if (extensionVerticesLocked || byteSize == 0 || byteSize % stride != 0 ||
-		    offset + byteSize > extensionVertexData.size() ||
-		    !ConvertVertices(format, stride, extensionVertexData.data() + offset, byteSize / stride, vertexScratch)) {
+		    offset + byteSize > extensionVertexData.size()) {
 			return false;
 		}
-		return SUCCEEDED(UploadDynamicBuffer(
-			dynamicVertexBuffer, dynamicVertexBufferCapacity,
-			static_cast<uint32_t>(vertexScratch.size() * sizeof(D3D11Vertex)),
-			D3D11_BIND_VERTEX_BUFFER, vertexScratch.data()));
+		uint8_t const *source = extensionVertexData.data() + offset;
+		uint64_t key = HashBytes(&format, sizeof(format));
+		key = HashBytes(source, byteSize, key);
+		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
+		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
+		if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
+		return UploadCachedBuffer(
+			vertexBufferSegments, activeVertexBufferSegment, vertexBufferCache,
+			key, static_cast<uint32_t>(vertexScratch.size() * sizeof(D3D11Vertex)),
+			D3D11_BIND_VERTEX_BUFFER, vertexScratch.data(), dynamicVertexBuffer, dynamicVertexBufferOffset);
 	}
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
@@ -93,19 +98,32 @@ namespace nSCGL {
 	}
 
 	void cGDriver::DrawPrimsIndexed(
-		uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices, void *, uint32_t byteSize) {
+		uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices) {
 		uint64_t const indexBytes = static_cast<uint64_t>(count) * sizeof(uint16_t);
-		if (name != 0 || indices == nullptr || indexBytes > UINT32_MAX ||
-		    !UploadExtensionVertices(byteSize) ||
-		    FAILED(UploadDynamicBuffer(
-			    dynamicIndexBuffer, dynamicIndexBufferCapacity, static_cast<uint32_t>(indexBytes),
-			    D3D11_BIND_INDEX_BUFFER, indices))) {
+		if (name != 0 || count == 0 || indices == nullptr || indexBytes > UINT32_MAX) {
+			return;
+		}
+		uint16_t maximumIndex = 0;
+		for (uint32_t i = 0; i < count; ++i) {
+			if (indices[i] > maximumIndex) maximumIndex = indices[i];
+		}
+		uint32_t const byteSize =
+			(static_cast<uint32_t>(maximumIndex) + 1) * RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+		if (!UploadExtensionVertices(byteSize)) return;
+		uint32_t const indexType = 3;
+		uint64_t key = HashBytes(&indexType, sizeof(indexType));
+		key = HashBytes(indices, static_cast<size_t>(indexBytes), key);
+		if (!UploadCachedBuffer(
+			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
+			key, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+			dynamicIndexBuffer, dynamicIndexBufferOffset)) {
 			return;
 		}
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
-			d3dContext->IASetIndexBuffer(dynamicIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+			d3dContext->IASetIndexBuffer(
+				dynamicIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, dynamicIndexBufferOffset);
 			d3dContext->DrawIndexed(count, 0, 0);
 		}
 		interleavedFormat = previousFormat;

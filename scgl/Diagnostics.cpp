@@ -23,7 +23,7 @@ namespace nSCGL
 		std::unordered_set<uint64_t> observed[static_cast<unsigned int>(ObservedCategory::Count)];
 
 		char const* CategoryName(LogCategory category) {
-			static char const* names[] = { "init", "caps", "swapchain", "resource", "unsupported" };
+			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported" };
 			return names[static_cast<unsigned int>(category)];
 		}
 	}

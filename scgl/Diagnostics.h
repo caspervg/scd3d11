@@ -21,6 +21,7 @@ namespace nSCGL
 		Capabilities,
 		SwapChain,
 		Resource,
+		Grid,
 		Unsupported,
 		Count
 	};

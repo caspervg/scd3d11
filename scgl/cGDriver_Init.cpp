@@ -17,11 +17,9 @@
 #include <d3d11sdklayers.h>
 #endif
 
-namespace nSCGL
-{
-	namespace
-	{
-		char const* kWindowClassName = "GDriverClass--Direct3D11";
+namespace nSCGL {
+	namespace {
+		char const *kWindowClassName = "GDriverClass--Direct3D11";
 	}
 
 	bool cGDriver::Init(void) {
@@ -64,6 +62,16 @@ namespace nSCGL
 	}
 
 	bool cGDriver::Shutdown(void) {
+		if (vertexBufferCacheHits + vertexBufferCacheMisses + indexBufferCacheHits + indexBufferCacheMisses != 0) {
+			Log(LogCategory::Initialization,
+			    "geometry cache: vertices %llu hits/%llu misses, indices %llu hits/%llu misses",
+			    static_cast<unsigned long long>(vertexBufferCacheHits),
+			    static_cast<unsigned long long>(vertexBufferCacheMisses),
+			    static_cast<unsigned long long>(indexBufferCacheHits),
+			    static_cast<unsigned long long>(indexBufferCacheMisses));
+		}
+		vertexBufferCacheHits = vertexBufferCacheMisses = 0;
+		indexBufferCacheHits = indexBufferCacheMisses = 0;
 		DestroyD3D11Context();
 		UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
 		currentVideoMode = -1;
@@ -76,7 +84,8 @@ namespace nSCGL
 		if (d3dDevice) {
 			SCGLD3D11FrameContext const frame{
 				sizeof(frame), 1, SCGL_D3D11_EVENT_BEFORE_DEVICE_DESTROY, deviceGeneration,
-				d3dDevice.Get(), d3dContext.Get(), swapChain.Get(), renderTargetView.Get(), static_cast<HWND>(windowHandle)
+				d3dDevice.Get(), d3dContext.Get(), swapChain.Get(), renderTargetView.Get(),
+				static_cast<HWND>(windowHandle)
 			};
 			InvokeD3D11FrameCallback(frame);
 		}
@@ -86,11 +95,12 @@ namespace nSCGL
 			d3dContext->Flush();
 		}
 
-		for (BufferRegionResource& region : bufferRegions) region.texture.Reset();
+		for (BufferRegionResource &region: bufferRegions) region.texture.Reset();
 		bufferRegionFlags = 0;
 		depthStencilView.Reset();
 		depthStencilTexture.Reset();
 		renderTargetView.Reset();
+		backBufferTexture.Reset();
 		textures.clear();
 		samplerStates.clear();
 		boundTextures[0] = boundTextures[1] = 0;
@@ -100,14 +110,19 @@ namespace nSCGL
 		InvalidateD3D11StateCache();
 		defaultSampler.Reset();
 		depthRegionScratch.Reset();
+		depthRegionScratchValid = false;
 		dynamicIndexBuffer.Reset();
 		dynamicVertexBuffer.Reset();
+		for (GeometryCacheSegment &segment: indexBufferSegments) segment = {};
+		for (GeometryCacheSegment &segment: vertexBufferSegments) segment = {};
+		indexBufferCache.clear();
+		vertexBufferCache.clear();
 		transformBuffer.Reset();
 		inputLayout.Reset();
 		pixelShader.Reset();
 		vertexShader.Reset();
-		dynamicIndexBufferCapacity = 0;
-		dynamicVertexBufferCapacity = 0;
+		activeIndexBufferSegment = 0;
+		activeVertexBufferSegment = 0;
 		swapChain.Reset();
 		d3dContext.Reset();
 #ifndef NDEBUG
@@ -145,9 +160,9 @@ namespace nSCGL
 		}
 
 		uint32_t const requiredWindowedModes[][2] = {
-			{ 1920, 1080 }, { 2048, 1152 }, { 2560, 1600 }, { 3200, 1800 }
+			{1920, 1080}, {2048, 1152}, {2560, 1600}, {3200, 1800}
 		};
-		for (auto const& dimensions : requiredWindowedModes) {
+		for (auto const &dimensions: requiredWindowedModes) {
 			AppendVideoMode(videoModes, dimensions[0], dimensions[1], 32, false);
 		}
 		videoModeCount = static_cast<int32_t>(videoModes.size());

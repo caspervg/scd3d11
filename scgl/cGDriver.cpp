@@ -24,109 +24,120 @@
 
 #include <cstring>
 
-cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() { }
-cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension() { }
+cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() {
+}
+
+cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension() {
+}
 
 /*static_assert(sizeof(sGDMode) == 56U);
 static_assert(offsetof(sGDMode, fullscreen) == 0x20);
 static_assert(offsetof(sGDMode, is3DAccelerated) == 0x22);
 static_assert(offsetof(sGDMode, _unknownFuncPtr) == 0x34);*/
 
-namespace nSCGL
-{
-	cGDriver::cGDriver() :
-		lastError(DriverError::OK),
+namespace nSCGL {
+	cGDriver::cGDriver() : lastError(DriverError::OK),
 #ifndef NDEBUG
-		dbgLastError(GL_NO_ERROR),
+	                       dbgLastError(GL_NO_ERROR),
 #endif
-		currentVideoMode(-1),
-		driverInfo("Maxis 3D GDriver\nOpenGL\n3.0\n"),
-		videoModeCount(0),
-		refCount(0),
-		windowWidth(0),
-		windowHeight(0),
-		viewportX(0),
-		viewportY(0),
-		viewportWidth(0),
-		viewportHeight(0),
-		bufferRegionFlags(0),
-		bufferRegions(),
-		supportedExtensions(),
-		windowHandle(nullptr),
-		dynamicVertexBufferCapacity(0),
-		dynamicIndexBufferCapacity(0),
-		geometryPipelineBound(false),
-		textureBindingsValid(false),
-		appliedTopology(D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED),
-		appliedTextureViews{},
-		appliedSamplers{},
-		interleavedFormat(UINT_MAX),
-		interleavedStride(0),
-		interleavedPointer(nullptr),
-		activeMatrixMode(0),
-		matrices{},
-		extensionVertexCursor(0),
-		extensionVertexStart(0),
-		extensionVerticesLocked(false),
-		nextTextureId(1),
-		boundTextures{},
-		activeTextureStage(0),
-		textureStageEnabled{},
-		pixelStoreRowLength(0),
-		enabledCapabilities{},
-		colorWriteEnabled(true),
-		depthFunction(1),
-		depthWriteEnabled(true),
-		stencilFunction(7),
-		stencilReference(0),
-		stencilReadMask(0xff),
-		stencilWriteMask(0xff),
-		stencilFailOperation(0),
-		stencilDepthFailOperation(0),
-		stencilPassOperation(0),
-		sourceBlend(1),
-		destinationBlend(0),
-		alphaFunction(7),
-		alphaReference(0.0f),
-		shadeModel(1),
-		colorMultipliers{ 1.0f, 1.0f, 1.0f, 1.0f },
-		fogMode(0),
-		fogSource(4),
-		fogColor{ 0.0f, 0.0f, 0.0f, 0.0f },
-		fogDensity(1.0f),
-		fogStart(0.0f),
-		fogEnd(1.0f),
-		ambientVertexColors(false),
-		diffuseVertexColors(false),
-		polygonOffset(0),
-		scissorEnabled(false),
-		lightingEnabled(true),
-		lightsEnabled{ true },
-		globalAmbient{ 0.0f, 0.0f, 0.0f, 1.0f },
-		lightAmbient{ 0.0f, 0.0f, 0.0f, 1.0f },
-		lightDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f },
-		lightSpecular{ 1.0f, 1.0f, 1.0f, 1.0f },
-		lightDirection{ 1.0f, 1.0f, 0.0f, 0.0f },
-		materialAmbient{ 0.0f, 0.0f, 0.0f, 1.0f },
-		materialDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f },
-		materialSpecular{ 0.0f, 0.0f, 0.0f, 1.0f },
-		materialEmission{ 0.0f, 0.0f, 0.0f, 1.0f },
-		materialShininess(0.0f),
-		appliedDepthStateKey(UINT64_MAX),
-		appliedBlendStateKey(UINT64_MAX),
-		appliedRasterizerStateKey(UINT64_MAX),
-		appliedStencilReference(INT32_MIN),
-		featureLevel(D3D_FEATURE_LEVEL_10_0),
-		deviceGeneration(0),
-		clearColor{ 0.0f, 0.0f, 0.0f, 0.0f },
-		clearDepth(1.0f),
-		clearStencil(0)
-	{
-		for (float* matrix : matrices) {
+	                       currentVideoMode(-1),
+	                       driverInfo("Maxis 3D GDriver\nOpenGL\n3.0\n"),
+	                       videoModeCount(0),
+	                       refCount(0),
+	                       windowWidth(0),
+	                       windowHeight(0),
+	                       viewportX(0),
+	                       viewportY(0),
+	                       viewportWidth(0),
+	                       viewportHeight(0),
+	                       bufferRegionFlags(0),
+	                       bufferRegions(),
+	                       supportedExtensions(),
+	                       windowHandle(nullptr),
+	                       depthRegionScratchValid(false),
+	                       vertexBufferSegments{},
+	                       indexBufferSegments{},
+	                       activeVertexBufferSegment(0),
+	                       activeIndexBufferSegment(0),
+	                       dynamicVertexBufferOffset(0),
+	                       dynamicIndexBufferOffset(0),
+	                       appliedVertexBuffer(nullptr),
+	                       appliedVertexBufferOffset(UINT32_MAX),
+	                       vertexBufferCacheHits(0),
+	                       vertexBufferCacheMisses(0),
+	                       indexBufferCacheHits(0),
+	                       indexBufferCacheMisses(0),
+	                       geometryPipelineBound(false),
+	                       textureBindingsValid(false),
+	                       appliedTopology(D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED),
+	                       appliedTextureViews{},
+	                       appliedSamplers{},
+	                       interleavedFormat(UINT_MAX),
+	                       interleavedStride(0),
+	                       interleavedPointer(nullptr),
+	                       activeMatrixMode(0),
+	                       matrices{},
+	                       extensionVertexCursor(0),
+	                       extensionVertexStart(0),
+	                       extensionVerticesLocked(false),
+	                       nextTextureId(1),
+	                       boundTextures{},
+	                       activeTextureStage(0),
+	                       textureStageEnabled{},
+	                       pixelStoreRowLength(0),
+	                       enabledCapabilities{},
+	                       colorWriteEnabled(true),
+	                       depthFunction(1),
+	                       depthWriteEnabled(true),
+	                       stencilFunction(7),
+	                       stencilReference(0),
+	                       stencilReadMask(0xff),
+	                       stencilWriteMask(0xff),
+	                       stencilFailOperation(0),
+	                       stencilDepthFailOperation(0),
+	                       stencilPassOperation(0),
+	                       sourceBlend(1),
+	                       destinationBlend(0),
+	                       alphaFunction(7),
+	                       alphaReference(0.0f),
+	                       shadeModel(1),
+	                       colorMultipliers{1.0f, 1.0f, 1.0f, 1.0f},
+	                       fogMode(0),
+	                       fogSource(4),
+	                       fogColor{0.0f, 0.0f, 0.0f, 0.0f},
+	                       fogDensity(1.0f),
+	                       fogStart(0.0f),
+	                       fogEnd(1.0f),
+	                       ambientVertexColors(false),
+	                       diffuseVertexColors(false),
+	                       polygonOffset(0),
+	                       scissorEnabled(false),
+	                       lightingEnabled(true),
+	                       lightsEnabled{true},
+	                       globalAmbient{0.0f, 0.0f, 0.0f, 1.0f},
+	                       lightAmbient{0.0f, 0.0f, 0.0f, 1.0f},
+	                       lightDiffuse{1.0f, 1.0f, 1.0f, 1.0f},
+	                       lightSpecular{1.0f, 1.0f, 1.0f, 1.0f},
+	                       lightDirection{1.0f, 1.0f, 0.0f, 0.0f},
+	                       materialAmbient{0.0f, 0.0f, 0.0f, 1.0f},
+	                       materialDiffuse{1.0f, 1.0f, 1.0f, 1.0f},
+	                       materialSpecular{0.0f, 0.0f, 0.0f, 1.0f},
+	                       materialEmission{0.0f, 0.0f, 0.0f, 1.0f},
+	                       materialShininess(0.0f),
+	                       appliedDepthStateKey(UINT64_MAX),
+	                       appliedBlendStateKey(UINT64_MAX),
+	                       appliedRasterizerStateKey(UINT64_MAX),
+	                       appliedStencilReference(INT32_MIN),
+	                       featureLevel(D3D_FEATURE_LEVEL_10_0),
+	                       deviceGeneration(0),
+	                       clearColor{0.0f, 0.0f, 0.0f, 0.0f},
+	                       clearDepth(1.0f),
+	                       clearStencil(0) {
+		for (float *matrix: matrices) {
 			matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
 		}
 		textureStageEnabled[0] = true;
-		for (TextureStageState& stage : textureStages) {
+		for (TextureStageState &stage: textureStages) {
 			stage.matrix[0] = stage.matrix[5] = stage.matrix[10] = stage.matrix[15] = 1.0f;
 		}
 	}
@@ -136,7 +147,8 @@ namespace nSCGL
 	}
 
 	uint32_t cGDriver::MakeVertexFormat(uint32_t, intptr_t gdElementTypePtr) {
-		Log(LogCategory::Unsupported, "custom vertex-format construction requested (element pointer %p)", reinterpret_cast<void*>(gdElementTypePtr));
+		Log(LogCategory::Unsupported, "custom vertex-format construction requested (element pointer %p)",
+		    reinterpret_cast<void *>(gdElementTypePtr));
 		return UINT_MAX;
 	}
 
@@ -168,6 +180,7 @@ namespace nSCGL
 		UINT const depthStencilFlags = D3D11DepthStencilClearFlags(mask);
 		if (depthStencilFlags != 0 && depthStencilView) {
 			d3dContext->ClearDepthStencilView(depthStencilView.Get(), depthStencilFlags, clearDepth, clearStencil);
+			depthRegionScratchValid = false;
 		}
 	}
 
@@ -218,7 +231,7 @@ namespace nSCGL
 
 	void cGDriver::StencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
 		if (D3D11StencilOperation(fail) == 0 || D3D11StencilOperation(zfail) == 0 ||
-			D3D11StencilOperation(zpass) == 0) {
+		    D3D11StencilOperation(zpass) == 0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
 		}
@@ -228,7 +241,7 @@ namespace nSCGL
 	}
 
 	void cGDriver::BlendFunc(GLenum sfactor, GLenum dfactor) {
-		if (D3D11Blend(sfactor) == 0 || D3D11Blend(dfactor) == 0) {
+		if (!IsValidBlendFunction(sfactor, dfactor)) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
 		}
@@ -260,34 +273,39 @@ namespace nSCGL
 		}
 		if (gdFogParamType == 5 && (gdFogParam == 3 || gdFogParam == 4)) {
 			fogSource = static_cast<uint8_t>(gdFogParam);
-			if (gdFogParam == 3) Log(LogCategory::Unsupported, "explicit vertex fog coordinates are not implemented; using eye-space depth");
+			if (gdFogParam == 3)
+				Log(LogCategory::Unsupported,
+				    "explicit vertex fog coordinates are not implemented; using eye-space depth");
 			return;
 		}
 		SetLastError(DriverError::INVALID_ENUM);
 	}
 
-	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const* params) {
+	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const *params) {
 		if (params == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
 		switch (gdFogParamType) {
-		case 1:
-			memcpy(fogColor, params, sizeof(fogColor));
-			break;
-		case 2:
-			if (*params < 0.0f) { SetLastError(DriverError::INVALID_VALUE); return; }
-			fogDensity = *params;
-			break;
-		case 3:
-			fogStart = *params;
-			break;
-		case 4:
-			fogEnd = *params;
-			break;
-		default:
-			SetLastError(DriverError::INVALID_ENUM);
-			break;
+			case 1:
+				memcpy(fogColor, params, sizeof(fogColor));
+				break;
+			case 2:
+				if (*params < 0.0f) {
+					SetLastError(DriverError::INVALID_VALUE);
+					return;
+				}
+				fogDensity = *params;
+				break;
+			case 3:
+				fogStart = *params;
+				break;
+			case 4:
+				fogEnd = *params;
+				break;
+			default:
+				SetLastError(DriverError::INVALID_ENUM);
+				break;
 		}
 	}
 
@@ -309,13 +327,12 @@ namespace nSCGL
 	void cGDriver::MatrixMode(GLenum mode) {
 		if (mode < 2) {
 			activeMatrixMode = static_cast<uint8_t>(mode);
-		}
-		else {
+		} else {
 			SetLastError(DriverError::INVALID_ENUM);
 		}
 	}
 
-	void cGDriver::LoadMatrix(GLfloat const* m) {
+	void cGDriver::LoadMatrix(GLfloat const *m) {
 		if (m != nullptr) {
 			memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
 		}
@@ -324,7 +341,7 @@ namespace nSCGL
 	void cGDriver::LoadIdentity(void) {
 		memset(matrices[activeMatrixMode], 0, sizeof(matrices[activeMatrixMode]));
 		matrices[activeMatrixMode][0] = matrices[activeMatrixMode][5] =
-			matrices[activeMatrixMode][10] = matrices[activeMatrixMode][15] = 1.0f;
+		                                matrices[activeMatrixMode][10] = matrices[activeMatrixMode][15] = 1.0f;
 	}
 
 	void cGDriver::Enable(GLenum gdCap) {
@@ -334,8 +351,7 @@ namespace nSCGL
 		}
 		if (gdCap == kGDCapability_Texture2D) {
 			textureStageEnabled[activeTextureStage] = true;
-		}
-		else {
+		} else {
 			enabledCapabilities[gdCap] = true;
 		}
 	}
@@ -347,8 +363,7 @@ namespace nSCGL
 		}
 		if (gdCap == kGDCapability_Texture2D) {
 			textureStageEnabled[activeTextureStage] = false;
-		}
-		else {
+		} else {
 			enabledCapabilities[gdCap] = false;
 		}
 	}
@@ -359,11 +374,11 @@ namespace nSCGL
 			return false;
 		}
 		return gdCap == kGDCapability_Texture2D
-			? textureStageEnabled[activeTextureStage]
-			: enabledCapabilities[gdCap];
+			       ? textureStageEnabled[activeTextureStage]
+			       : enabledCapabilities[gdCap];
 	}
 
-	void cGDriver::GetBoolean(GLenum pname, bool* params) {
+	void cGDriver::GetBoolean(GLenum pname, bool *params) {
 		if (pname != 0 || params == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
@@ -371,7 +386,7 @@ namespace nSCGL
 		*params = pixelStoreRowLength != 0;
 	}
 
-	void cGDriver::GetInteger(GLenum pname, GLint* params) {
+	void cGDriver::GetInteger(GLenum pname, GLint *params) {
 		if (pname != 0 || params == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
@@ -379,7 +394,7 @@ namespace nSCGL
 		*params = static_cast<int32_t>(pixelStoreRowLength);
 	}
 
-	void cGDriver::GetFloat(GLenum pname, GLfloat* params) {
+	void cGDriver::GetFloat(GLenum pname, GLfloat *params) {
 		if (pname != 0 || params == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
@@ -398,12 +413,11 @@ namespace nSCGL
 		int32_t unknownHeight1,
 		uint32_t gdTexFormat,
 		uint32_t gdType,
-		void const* unknownBuffer1,
+		void const *unknownBuffer1,
 		bool unknown5,
-		void const* unknownBuffer2)
-	{
-		uint8_t const* unknownUintBuffer1 = reinterpret_cast<uint8_t const*>(unknownBuffer1);
-		uint8_t const* unknownUintBuffer2 = reinterpret_cast<uint8_t const*>(unknownBuffer2);
+		void const *unknownBuffer2) {
+		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
+		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
 
 		SetLastError(DriverError::NOT_SUPPORTED);
 	}
@@ -417,12 +431,11 @@ namespace nSCGL
 		int32_t unknownHeight2,
 		uint32_t gdTexFormat,
 		uint32_t gdType,
-		void const* unknownBuffer1,
+		void const *unknownBuffer1,
 		bool unknownBool,
-		void const* unknownBuffer2)
-	{
-		uint8_t const* unknownUintBuffer1 = reinterpret_cast<uint8_t const*>(unknownBuffer1);
-		uint8_t const* unknownUintBuffer2 = reinterpret_cast<uint8_t const*>(unknownBuffer2);
+		void const *unknownBuffer2) {
+		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
+		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
 
 		SetLastError(DriverError::NOT_SUPPORTED);
 	}
@@ -434,13 +447,12 @@ namespace nSCGL
 		int32_t unknown3,
 		uint32_t gdTexFormat,
 		uint32_t gdType,
-		void const* unknownBuffer1,
+		void const *unknownBuffer1,
 		bool unknown5,
-		void const* unknownBuffer2,
-		uint32_t unknown7)
-	{
-		uint8_t const* unknownUintBuffer1 = reinterpret_cast<uint8_t const*>(unknownBuffer1);
-		uint8_t const* unknownUintBuffer2 = reinterpret_cast<uint8_t const*>(unknownBuffer2);
+		void const *unknownBuffer2,
+		uint32_t unknown7) {
+		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
+		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
 
 		SetLastError(DriverError::NOT_SUPPORTED);
 	}
@@ -454,13 +466,12 @@ namespace nSCGL
 		int32_t unknownHeight2,
 		uint32_t gdTexFormat,
 		uint32_t gdType,
-		void const* unknownBuffer1,
+		void const *unknownBuffer1,
 		bool unknown7,
-		void const* unknownBuffer2,
-		uint32_t unknown9)
-	{
-		uint8_t const* unknownUintBuffer1 = reinterpret_cast<uint8_t const*>(unknownBuffer1);
-		uint8_t const* unknownUintBuffer2 = reinterpret_cast<uint8_t const*>(unknownBuffer2);
+		void const *unknownBuffer2,
+		uint32_t unknown9) {
+		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
+		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
 
 		SetLastError(DriverError::NOT_SUPPORTED);
 	}
@@ -471,13 +482,12 @@ namespace nSCGL
 		int32_t unknown2,
 		uint32_t gdTexFormat,
 		uint32_t gdType,
-		void const* unknownBuffer1,
+		void const *unknownBuffer1,
 		bool unknown4,
-		void const* unknownBuffer2,
-		uint32_t unknown6)
-	{
-		uint8_t const* unknownUintBuffer1 = reinterpret_cast<uint8_t const*>(unknownBuffer1);
-		uint8_t const* unknownUintBuffer2 = reinterpret_cast<uint8_t const*>(unknownBuffer2);
+		void const *unknownBuffer2,
+		uint32_t unknown6) {
+		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
+		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
 
 		SetLastError(DriverError::NOT_SUPPORTED);
 	}
@@ -491,18 +501,17 @@ namespace nSCGL
 		int32_t unknownHeight2,
 		uint32_t gdTexFormat,
 		uint32_t gdType,
-		void const* unknownBuffer1,
+		void const *unknownBuffer1,
 		bool unknown7,
-		void const* unknownBuffer2,
-		uint32_t unknown9)
-	{
-		uint8_t const* unknownUintBuffer1 = reinterpret_cast<uint8_t const*>(unknownBuffer1);
-		uint8_t const* unknownUintBuffer2 = reinterpret_cast<uint8_t const*>(unknownBuffer2);
+		void const *unknownBuffer2,
+		uint32_t unknown9) {
+		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
+		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
 
 		SetLastError(DriverError::NOT_SUPPORTED);
 	}
 
-	bool cGDriver::Punt(uint32_t, void*) {
+	bool cGDriver::Punt(uint32_t, void *) {
 		return false;
 	}
 }

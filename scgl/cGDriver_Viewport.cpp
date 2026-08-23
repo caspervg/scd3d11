@@ -13,19 +13,19 @@
 #include "Diagnostics.h"
 #include "SCGLD3D11Service.h"
 
+#include <cstring>
+
 #ifndef NDEBUG
 #include <d3d11sdklayers.h>
 #include <vector>
 #endif
 
-namespace nSCGL
-{
-	namespace
-	{
-		char const* kWindowClassName = "GDriverClass--Direct3D11";
+namespace nSCGL {
+	namespace {
+		char const *kWindowClassName = "GDriverClass--Direct3D11";
 
 #ifndef NDEBUG
-		void LogDebugLayerMessages(ID3D11Device* device) {
+		void LogDebugLayerMessages(ID3D11Device *device) {
 			Microsoft::WRL::ComPtr<ID3D11InfoQueue> queue;
 			if (device == nullptr || FAILED(device->QueryInterface(IID_PPV_ARGS(&queue)))) return;
 
@@ -34,11 +34,11 @@ namespace nSCGL
 				SIZE_T size = 0;
 				if (FAILED(queue->GetMessage(index, nullptr, &size)) || size == 0) continue;
 				std::vector<uint8_t> storage(size);
-				D3D11_MESSAGE* message = reinterpret_cast<D3D11_MESSAGE*>(storage.data());
+				D3D11_MESSAGE *message = reinterpret_cast<D3D11_MESSAGE *>(storage.data());
 				if (FAILED(queue->GetMessage(index, message, &size))) continue;
 				if (message->Severity <= D3D11_MESSAGE_SEVERITY_WARNING) {
 					Log(LogCategory::Resource, "D3D11 debug [%u/%u]: %s",
-						message->Severity, message->ID, message->pDescription);
+					    message->Severity, message->ID, message->pDescription);
 				}
 			}
 			queue->ClearStoredMessages();
@@ -50,7 +50,7 @@ namespace nSCGL
 		return videoModeCount;
 	}
 
-	void cGDriver::GetVideoModeInfo(uint32_t index, sGDMode& mode) {
+	void cGDriver::GetVideoModeInfo(uint32_t index, sGDMode &mode) {
 		if (index >= static_cast<uint32_t>(videoModeCount)) {
 			SetLastError(DriverError::OUT_OF_RANGE);
 			return;
@@ -58,7 +58,7 @@ namespace nSCGL
 		mode = videoModes[index];
 	}
 
-	void cGDriver::GetVideoModeInfo(sGDMode& mode) {
+	void cGDriver::GetVideoModeInfo(sGDMode &mode) {
 		GetVideoModeInfo(currentVideoMode, mode);
 	}
 
@@ -100,6 +100,7 @@ namespace nSCGL
 		result = d3dDevice->CreateDepthStencilView(depthStencilTexture.Get(), nullptr, &depthStencilView);
 		// Window size changed; force the depth region scratch to be recreated at the new size.
 		depthRegionScratch.Reset();
+		depthRegionScratchValid = false;
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateDepthStencilView", result);
 			depthStencilTexture.Reset();
@@ -107,8 +108,9 @@ namespace nSCGL
 			return result;
 		}
 
-		ID3D11RenderTargetView* renderTarget = renderTargetView.Get();
+		ID3D11RenderTargetView *renderTarget = renderTargetView.Get();
 		d3dContext->OMSetRenderTargets(1, &renderTarget, depthStencilView.Get());
+		backBufferTexture = backBuffer;
 
 		windowWidth = static_cast<int>(width);
 		windowHeight = static_cast<int>(height);
@@ -139,7 +141,7 @@ namespace nSCGL
 			return S_FALSE;
 		}
 		if (renderTargetView && depthStencilView &&
-			width == static_cast<uint32_t>(windowWidth) && height == static_cast<uint32_t>(windowHeight)) {
+		    width == static_cast<uint32_t>(windowWidth) && height == static_cast<uint32_t>(windowHeight)) {
 			return S_OK;
 		}
 
@@ -147,6 +149,7 @@ namespace nSCGL
 		depthStencilView.Reset();
 		depthStencilTexture.Reset();
 		renderTargetView.Reset();
+		backBufferTexture.Reset();
 
 		HRESULT const result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
 		if (FAILED(result)) {
@@ -156,7 +159,7 @@ namespace nSCGL
 		return CreateBackBufferTargets(width, height);
 	}
 
-	void cGDriver::SetVideoMode(int32_t newModeIndex, void* windowProcedure, bool showWindow, bool) {
+	void cGDriver::SetVideoMode(int32_t newModeIndex, void *windowProcedure, bool showWindow, bool) {
 		if (newModeIndex == -1) {
 			DestroyD3D11Context();
 			currentVideoMode = -1;
@@ -171,14 +174,15 @@ namespace nSCGL
 
 		sGDMode const mode = videoModes[newModeIndex];
 		if (mode.isFullscreen) {
-			Log(LogCategory::Unsupported, "fullscreen mode %dx%d requested; using a windowed swap chain", mode.width, mode.height);
+			Log(LogCategory::Unsupported, "fullscreen mode %dx%d requested; using a windowed swap chain", mode.width,
+			    mode.height);
 		}
 
 		DestroyD3D11Context();
 
 		DWORD const style = WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
 		DWORD const extendedStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
-		RECT windowRectangle{ 0, 0, static_cast<LONG>(mode.width), static_cast<LONG>(mode.height) };
+		RECT windowRectangle{0, 0, static_cast<LONG>(mode.width), static_cast<LONG>(mode.height)};
 		if (!AdjustWindowRectEx(&windowRectangle, style, FALSE, extendedStyle)) {
 			Log(LogCategory::Initialization, "AdjustWindowRectEx failed (Win32 error %lu)", ::GetLastError());
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
@@ -208,7 +212,7 @@ namespace nSCGL
 		if (windowProcedure != nullptr) {
 			::SetLastError(ERROR_SUCCESS);
 			if (SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(windowProcedure)) == 0 &&
-				::GetLastError() != ERROR_SUCCESS) {
+			    ::GetLastError() != ERROR_SUCCESS) {
 				Log(LogCategory::Initialization, "SetWindowLongPtrA failed (Win32 error %lu)", ::GetLastError());
 				DestroyD3D11Context();
 				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
@@ -319,7 +323,7 @@ namespace nSCGL
 			return;
 		}
 
-		ID3D11RenderTargetView* renderTarget = renderTargetView.Get();
+		ID3D11RenderTargetView *renderTarget = renderTargetView.Get();
 		d3dContext->OMSetRenderTargets(1, &renderTarget, depthStencilView.Get());
 		SCGLD3D11FrameContext const frame{
 			sizeof(frame), 1, SCGL_D3D11_EVENT_RENDER, deviceGeneration,
@@ -329,14 +333,16 @@ namespace nSCGL
 		// The callback owns the immediate context for the duration of the event.
 		InvalidateD3D11StateCache();
 
-		result = swapChain->Present(1, 0);
+		static bool const vsyncEnabled = std::strstr(GetCommandLineA(), "-VSync:off") == nullptr;
+		result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
 #ifndef NDEBUG
 		LogDebugLayerMessages(d3dDevice.Get());
 #endif
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::Present", result);
 			if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
-				LogHRESULT(LogCategory::Resource, "ID3D11Device::GetDeviceRemovedReason", d3dDevice->GetDeviceRemovedReason());
+				LogHRESULT(LogCategory::Resource, "ID3D11Device::GetDeviceRemovedReason",
+				           d3dDevice->GetDeviceRemovedReason());
 				DestroyD3D11Context();
 			}
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
@@ -379,7 +385,7 @@ namespace nSCGL
 			viewport.MinDepth = 0.0f;
 			viewport.MaxDepth = 1.0f;
 			d3dContext->RSSetViewports(1, &viewport);
-			D3D11_RECT const scissor{ x, top, x + width, top + height };
+			D3D11_RECT const scissor{x, top, x + width, top + height};
 			d3dContext->RSSetScissorRects(1, &scissor);
 		}
 	}

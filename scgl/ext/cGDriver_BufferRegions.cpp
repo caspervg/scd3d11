@@ -11,8 +11,7 @@
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
 
-namespace nSCGL
-{
+namespace nSCGL {
 	HRESULT cGDriver::EnsureDepthRegionScratch(void) {
 		if (depthRegionScratch) return S_OK;
 		if (!d3dDevice || windowWidth <= 0 || windowHeight <= 0) return E_POINTER;
@@ -27,7 +26,8 @@ namespace nSCGL
 		description.Usage = D3D11_USAGE_DEFAULT;
 
 		HRESULT const result = d3dDevice->CreateTexture2D(&description, nullptr, &depthRegionScratch);
-		if (FAILED(result)) LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(depthRegionScratch)", result);
+		if (FAILED(result)) LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(depthRegionScratch)",
+		                               result);
 		return result;
 	}
 
@@ -40,7 +40,7 @@ namespace nSCGL
 
 	HRESULT cGDriver::CreateBufferRegionResource(uint32_t index, int32_t type) {
 		if (!d3dDevice || index >= MAX_BUFFER_REGIONS || type < 0 || type > 1 ||
-			windowWidth <= 0 || windowHeight <= 0) {
+		    windowWidth <= 0 || windowHeight <= 0) {
 			return E_INVALIDARG;
 		}
 
@@ -108,32 +108,31 @@ namespace nSCGL
 
 	bool cGDriver::ReadBufferRegion(
 		uint32_t region, int32_t destinationX, int32_t destinationY, int32_t width, int32_t height,
-		int32_t sourceX, int32_t sourceY)
-	{
+		int32_t sourceX, int32_t sourceY) {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
-			sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
-			sourceX + width > windowWidth || sourceY + height > windowHeight) {
+		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
+		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
 
 		uint32_t const index = region - 1;
-		ID3D11Resource* source = nullptr;
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
+		ID3D11Resource *source = nullptr;
 		if (bufferRegions[index].type == 0) {
-			HRESULT const result = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-			if (FAILED(result)) {
-				LogHRESULT(LogCategory::Resource, "IDXGISwapChain::GetBuffer(buffer region)", result);
-				return false;
-			}
-			source = backBuffer.Get();
-		}
-		else {
+			if (!backBufferTexture) return false;
+			source = backBufferTexture.Get();
+		} else {
 			// Partial copies touching a depth-stencil-bound resource are illegal; refresh the
 			// plain scratch copy and read from that instead.
 			HRESULT const result = EnsureDepthRegionScratch();
-			if (FAILED(result)) { SetLastError(DriverError::CREATE_CONTEXT_FAIL); return false; }
-			d3dContext->CopyResource(depthRegionScratch.Get(), depthStencilTexture.Get());
+			if (FAILED(result)) {
+				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+				return false;
+			}
+			if (!depthRegionScratchValid) {
+				d3dContext->CopyResource(depthRegionScratch.Get(), depthStencilTexture.Get());
+				depthRegionScratchValid = true;
+			}
 			source = depthRegionScratch.Get();
 		}
 
@@ -150,32 +149,31 @@ namespace nSCGL
 
 	bool cGDriver::DrawBufferRegion(
 		uint32_t region, int32_t sourceX, int32_t sourceY, int32_t width, int32_t height,
-		int32_t destinationX, int32_t destinationY)
-	{
+		int32_t destinationX, int32_t destinationY) {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
-			sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
-			sourceX + width > windowWidth || sourceY + height > windowHeight) {
+		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
+		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
 
 		uint32_t const index = region - 1;
-		ID3D11Resource* destination = nullptr;
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
+		ID3D11Resource *destination = nullptr;
 		if (bufferRegions[index].type == 0) {
-			HRESULT const result = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-			if (FAILED(result)) {
-				LogHRESULT(LogCategory::Resource, "IDXGISwapChain::GetBuffer(buffer region draw)", result);
-				return false;
-			}
-			destination = backBuffer.Get();
-		}
-		else {
+			if (!backBufferTexture) return false;
+			destination = backBufferTexture.Get();
+		} else {
 			// Partial copies touching a depth-stencil-bound resource are illegal; patch the
 			// plain scratch copy instead, then replace the depth buffer wholesale.
 			HRESULT const result = EnsureDepthRegionScratch();
-			if (FAILED(result)) { SetLastError(DriverError::CREATE_CONTEXT_FAIL); return false; }
-			d3dContext->CopyResource(depthRegionScratch.Get(), depthStencilTexture.Get());
+			if (FAILED(result)) {
+				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+				return false;
+			}
+			if (!depthRegionScratchValid) {
+				d3dContext->CopyResource(depthRegionScratch.Get(), depthStencilTexture.Get());
+				depthRegionScratchValid = true;
+			}
 			destination = depthRegionScratch.Get();
 		}
 
@@ -189,14 +187,15 @@ namespace nSCGL
 			bufferRegions[index].texture.Get(), 0, &sourceBox);
 		if (bufferRegions[index].type == 1) {
 			d3dContext->CopyResource(depthStencilTexture.Get(), depthRegionScratch.Get());
+			depthRegionScratchValid = true;
 		}
 		return true;
 	}
 
 	bool cGDriver::IsBufferRegion(uint32_t region) {
 		return region >= 1 && region <= MAX_BUFFER_REGIONS &&
-			(bufferRegionFlags & (1u << (region - 1))) != 0 &&
-			bufferRegions[region - 1].texture != nullptr;
+		       (bufferRegionFlags & (1u << (region - 1))) != 0 &&
+		       bufferRegions[region - 1].texture != nullptr;
 	}
 
 	bool cGDriver::CanDoPartialRegionWrites(void) {

@@ -12,16 +12,18 @@
 #include "Diagnostics.h"
 
 namespace nSCGL {
-	void cGDriver::InvalidateD3D11StateCache() {
-		appliedDepthStateKey = appliedBlendStateKey = appliedRasterizerStateKey = UINT64_MAX;
-		appliedStencilReference = INT32_MIN;
-		geometryPipelineBound = false;
-		textureBindingsValid = false;
-		appliedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-		appliedTextureViews[0] = appliedTextureViews[1] = nullptr;
-		appliedSamplers[0] = appliedSamplers[1] = nullptr;
-		constantBufferCache.clear();
-	}
+    void cGDriver::InvalidateD3D11StateCache() {
+        appliedDepthStateKey = appliedBlendStateKey = appliedRasterizerStateKey = UINT64_MAX;
+        appliedStencilReference = INT32_MIN;
+        geometryPipelineBound = false;
+		appliedVertexBuffer = nullptr;
+        appliedVertexBufferOffset = UINT32_MAX;
+        textureBindingsValid = false;
+        appliedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+        appliedTextureViews[0] = appliedTextureViews[1] = nullptr;
+        appliedSamplers[0] = appliedSamplers[1] = nullptr;
+        constantBufferCache.clear();
+    }
 
     bool cGDriver::ApplyRenderStates() {
         uint64_t const depthKey =
@@ -83,8 +85,8 @@ namespace nSCGL {
                 target.SrcBlend = D3D11Blend(sourceBlend);
                 target.DestBlend = D3D11Blend(destinationBlend);
                 target.BlendOp = D3D11_BLEND_OP_ADD;
-                target.SrcBlendAlpha = D3D11Blend(sourceBlend);
-                target.DestBlendAlpha = D3D11Blend(destinationBlend);
+                target.SrcBlendAlpha = D3D11AlphaBlend(sourceBlend);
+                target.DestBlendAlpha = D3D11AlphaBlend(destinationBlend);
                 target.BlendOpAlpha = D3D11_BLEND_OP_ADD;
                 target.RenderTargetWriteMask = colorWriteEnabled ? D3D11_COLOR_WRITE_ENABLE_ALL : 0;
 

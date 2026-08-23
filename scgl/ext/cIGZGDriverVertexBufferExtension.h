@@ -43,7 +43,7 @@ public:
 
     virtual void DrawPrims(uint32_t, uint32_t gdPrimType, void *, uint32_t) = 0;
 
-    virtual void DrawPrimsIndexed(uint32_t, uint32_t gdPrimType, uint32_t, uint16_t *, void *, uint32_t) = 0;
+    virtual void DrawPrimsIndexed(uint32_t, uint32_t gdPrimType, uint32_t, uint16_t *) = 0;
 
     virtual void Reset(void) = 0;
 

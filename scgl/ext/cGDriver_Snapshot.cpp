@@ -14,30 +14,27 @@
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
 
-extern cRZCOMSlimDllDirector* RZGetCOMDllDirector();
+extern cRZCOMSlimDllDirector *RZGetCOMDllDirector();
 
 static const uint32_t GZIID_cIGZGraphicSystem = 0x73283c;
 static const uint32_t RZSRVID_GraphicSystem = 0xc416025c;
 
-class cIGZGraphicSystem : public cIGZUnknown
-{
+class cIGZGraphicSystem : public cIGZUnknown {
 public:
-	virtual bool CreateBuffer(cIGZBuffer** ppvObj) = 0;
+	virtual bool CreateBuffer(cIGZBuffer **ppvObj) = 0;
 };
 
-namespace nSCGL
-{
-	static cIGZBuffer* CreateBufferFromGraphicsSystem() {
+namespace nSCGL {
+	static cIGZBuffer *CreateBufferFromGraphicsSystem() {
 		cRZSysServPtr<cIGZGraphicSystem, GZIID_cIGZGraphicSystem, RZSRVID_GraphicSystem> graphicsSystem;
-		if (static_cast<cIGZGraphicSystem*>(graphicsSystem) == nullptr) return nullptr;
+		if (static_cast<cIGZGraphicSystem *>(graphicsSystem) == nullptr) return nullptr;
 
-		cIGZBuffer* buffer = nullptr;
+		cIGZBuffer *buffer = nullptr;
 		return graphicsSystem->CreateBuffer(&buffer) ? buffer : nullptr;
 	}
 
-	cIGZBuffer* cGDriver::CopyColorBuffer(
-		int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer* buffer)
-	{
+	cIGZBuffer *cGDriver::CopyColorBuffer(
+		int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer *buffer) {
 		if (!d3dDevice || !d3dContext || !swapChain || width <= 0 || height <= 0) return nullptr;
 
 		int32_t const left = x < 0 ? 0 : x;
@@ -57,18 +54,13 @@ namespace nSCGL
 				buffer->Release();
 				return nullptr;
 			}
-		}
-		else if (buffer->GetColorType() != cGZBufferColorType::A8R8G8B8 ||
-			buffer->Width() != static_cast<uint32_t>(width) || buffer->Height() != static_cast<uint32_t>(height)) {
+		} else if (buffer->GetColorType() != cGZBufferColorType::A8R8G8B8 ||
+		           buffer->Width() != static_cast<uint32_t>(width) || buffer->Height() != static_cast<uint32_t>(
+			           height)) {
 			return nullptr;
 		}
 
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
-		HRESULT result = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "IDXGISwapChain::GetBuffer(snapshot)", result);
-			return nullptr;
-		}
+		if (!backBufferTexture) return nullptr;
 
 		D3D11_TEXTURE2D_DESC stagingDescription{};
 		stagingDescription.Width = static_cast<UINT>(width);
@@ -81,7 +73,7 @@ namespace nSCGL
 		stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
-		result = d3dDevice->CreateTexture2D(&stagingDescription, nullptr, &staging);
+		HRESULT result = d3dDevice->CreateTexture2D(&stagingDescription, nullptr, &staging);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(snapshot)", result);
 			return nullptr;
@@ -91,7 +83,7 @@ namespace nSCGL
 			static_cast<UINT>(left), static_cast<UINT>(top), 0,
 			static_cast<UINT>(right), static_cast<UINT>(bottom), 1
 		};
-		d3dContext->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, backBuffer.Get(), 0, &sourceBox);
+		d3dContext->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, backBufferTexture.Get(), 0, &sourceBox);
 
 		D3D11_MAPPED_SUBRESOURCE mapping{};
 		result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapping);
@@ -103,12 +95,13 @@ namespace nSCGL
 		bool const locked = buffer->Lock(cIGZBuffer::eLockFlags::IsDirtyUpdate);
 		if (locked) {
 			for (int32_t row = 0; row < height; ++row) {
-				uint8_t const* source = static_cast<uint8_t const*>(mapping.pData) + static_cast<size_t>(row) * mapping.RowPitch;
+				uint8_t const *source = static_cast<uint8_t const *>(mapping.pData) + static_cast<size_t>(row) * mapping
+				                        .RowPitch;
 				for (int32_t column = 0; column < width; ++column) {
 					uint32_t const color = static_cast<uint32_t>(source[column * 4 + 3]) << 24 |
-						static_cast<uint32_t>(source[column * 4 + 0]) << 16 |
-						static_cast<uint32_t>(source[column * 4 + 1]) << 8 |
-						source[column * 4 + 2];
+					                       static_cast<uint32_t>(source[column * 4 + 0]) << 16 |
+					                       static_cast<uint32_t>(source[column * 4 + 1]) << 8 |
+					                       source[column * 4 + 2];
 					buffer->SetPixel(column, row, color);
 				}
 			}
