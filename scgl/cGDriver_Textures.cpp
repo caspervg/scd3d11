@@ -488,6 +488,11 @@ namespace nSCGL {
                 SetLastError(DriverError::NOT_SUPPORTED);
                 return;
             }
+            // D3D11 wants block-compressed update boxes expressed in whole blocks. The 2x2 and
+            // 1x1 tail mips of a BC chain still occupy one full block, so round the right and
+            // bottom edges up instead of passing the logical mip size.
+            box.right = (box.right + 3) & ~3u;
+            box.bottom = (box.bottom + 3) & ~3u;
             pitch = D3D11TextureRowPitch(resource.format, sourceWidth);
         } else {
 			uint32_t const sourcePixelBytes = TextureSourcePixelBytes(sourceFormat, sourceType);

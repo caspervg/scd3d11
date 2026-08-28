@@ -97,7 +97,7 @@ if (BUILD_TESTING)
 	target_include_directories(TextureUploadUtilsTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
 	add_test(NAME TextureUploadUtilsTest COMMAND TextureUploadUtilsTest)
 
-    add_executable(SCGLD3D11ServiceTest tests/SCGLD3D11ServiceTest.cpp scgl/SCGLD3D11Service.cpp)
+    add_executable(SCGLD3D11ServiceTest tests/SCGLD3D11ServiceTest.cpp scgl/SCGLD3D11Service.cpp scgl/Diagnostics.cpp)
     target_include_directories(SCGLD3D11ServiceTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
     add_test(NAME SCGLD3D11ServiceTest COMMAND SCGLD3D11ServiceTest)
 

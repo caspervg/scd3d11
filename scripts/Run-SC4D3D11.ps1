@@ -7,13 +7,16 @@ param(
 	[string]$PresentationMode = 'Windowed',
     [int]$ScreenshotDelaySeconds = 20,
     [switch]$WaitForExit,
-    [string]$GameExe = 'C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe',
-    [string]$PluginDll = "$env:USERPROFILE\Documents\SimCity 4\Plugins\SCGL.dll"
+    [string]$GameExe = 'C:\Program Files (x86)\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe',
+    [string]$UserDir = 'D:\OneDrive - Maplix\SimCity 4\',
+    [string]$PluginDll = 'D:\OneDrive - Maplix\SimCity 4\Plugins\SCGL.dll'
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$buildDir = Join-Path $repo ("cmake-build-" + $BuildType.ToLowerInvariant())
+# cmake-build-debug is CLion's x64 tree; SimCity 4 is x86, so use the x86 build trees.
+if ($BuildType -eq 'Debug') { $buildDir = Join-Path $repo 'build\review' }
+else { $buildDir = Join-Path $repo 'build\final-minrelease' }
 $builtDll = Join-Path $buildDir 'SCGL.dll'
 $vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat'
 $cmake = 'C:\Users\caspe\AppData\Local\Programs\CLion\bin\cmake\win\x64\bin\cmake.exe'
@@ -25,8 +28,14 @@ New-Item -ItemType Directory -Path $captureDir -Force | Out-Null
 if (-not (Test-Path -LiteralPath $GameExe)) { throw "SC4 executable not found: $GameExe" }
 if (-not (Test-Path -LiteralPath $vcvars)) { throw "MSVC environment script not found: $vcvars" }
 
-$buildCommand = 'call "{0}" x86 && "{1}" --build "{2}" --config {3} && ctest --test-dir "{2}" -C {3} --output-on-failure' -f $vcvars, $cmake, $buildDir, $BuildType
-& $env:ComSpec /d /s /c $buildCommand
+# --no-tests=ignore keeps the release tree, which is configured with BUILD_TESTING=OFF,
+# from failing the run just because it has no tests to execute.
+$buildCommand = 'call "{0}" x86 && "{1}" --build "{2}" --config {3} && ctest --test-dir "{2}" -C {3} --no-tests=ignore --output-on-failure' -f $vcvars, $cmake, $buildDir, $BuildType
+# vcvarsall writes harmless warnings to stderr, which -ErrorActionPreference Stop would
+# turn into a terminating error; judge the build by its exit code instead.
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try { & $env:ComSpec /d /s /c $buildCommand } finally { $ErrorActionPreference = $previousPreference }
 if ($LASTEXITCODE -ne 0) { throw "Build or tests failed with exit code $LASTEXITCODE" }
 if (-not (Test-Path -LiteralPath $builtDll)) { throw "Built DLL not found: $builtDll" }
 
@@ -51,7 +60,12 @@ foreach ($name in $logs) {
 }
 
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PluginDll).Hash
-$arguments = @('-CPUCount:1', '-CustomResolution:enabled', "-r${Width}x${Height}x32")
+# -UserDir selects the plugin/user folder SC4 loads SCGL.dll from; without it the game
+# falls back to the Documents folder and never loads this driver.
+# The value must stay quoted: Start-Process passes the list through verbatim, and an
+# unquoted path with spaces makes SC4 parse only "D:\OneDrive", load the wrong plugin
+# folder, and silently fall back to its DirectX driver instead of SCGL.
+$arguments = @("-UserDir:`"$UserDir`"", '-CPUCount:1', '-CustomResolution:enabled', "-r${Width}x${Height}x32")
 switch ($PresentationMode) {
     'Windowed' { $arguments += '-w' }
     'Fullscreen' { $arguments += '-f' }
@@ -92,8 +106,12 @@ public static class SC4WindowCapture {
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 '@
+    # Without this the client rect comes back in logical pixels while CopyFromScreen works in
+    # physical ones, so the capture is a cropped top-left corner on a scaled display.
+    [SC4WindowCapture]::SetProcessDPIAware() | Out-Null
     $window = New-Object SC4WindowCapture+RECT
     $client = New-Object SC4WindowCapture+RECT
     $origin = New-Object SC4WindowCapture+POINT

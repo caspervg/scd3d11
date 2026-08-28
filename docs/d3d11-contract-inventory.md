@@ -158,7 +158,26 @@ stable indices.
   vocabulary, four sources/operands, RGB/alpha scales, texture coordinate selection, and texture
   matrices.
 - Windows vtable slots `0xD8` through `0xE4` are scale, source, operand, then mode. The C++ interface
-  declaration must retain that order because all four operations are overloaded under one name.
+  must declare them in the *opposite* order, because MSVC emits same-name virtual overloads in
+  reverse declaration order. The same rule governs the `GetVideoModeInfo` (`0x100`/`0x104`) and
+  `SetViewport` (`0x128`/`0x12C`) pairs: sorting any of these groups by slot number silently
+  swaps them at runtime, and for `SetViewport` it also corrupts the caller's stack.
+- **Open question — `TexStageCombine` slots `0xDC` and `0xE0`.** Under MSVC's reversal the
+  upstream declaration order lands operand at `0xDC` and source at `0xE0`, which is the opposite
+  of what the per-line comments claim. The outer two slots (`0xD8` scale, `0xE4` mode) are
+  self-consistent. This discrepancy predates the D3D11 port, so the upstream order is kept
+  deliberately: it is what shipped and worked in the OpenGL driver. Resolving it needs evidence
+  of which overload SC4 calls at each slot, and a live trace
+  (`scripts\Debug-SC4D3D11.ps1 -ScriptFile scripts\trace-combiner.cdb`) recorded **zero** calls to
+  any of the four slots, and zero calls to `SetCombiner`, across a full region-view session
+  (133 driver-log lines, steady frame submission). Combiner state there comes from `TexEnv`
+  alone. City-view coverage, where two-stage terrain texturing should exercise the combiner,
+  is still untested — that is the experiment that would settle it.
+- The other overload groups are confirmed correct by construction: `MakeVertexFormat`
+  (`0x18`/`0x1C`) and `GetVideoModeInfo` differ in argument count, so a swap would unbalance the
+  caller's stack, and `TexEnv` (`0x6C`/`0x70`) and `Fog` (`0x78`/`0x7C`) differ in whether the last
+  argument is a pointer or an integer, so a swap would dereference an enum. None of these
+  faults occurs at runtime.
 - The initial fixed-function emulation uses one generic shader pair plus constants where correct.
   Additional shader variants are added only when an observed state cannot be represented safely.
 - Rasterizer, blend, depth-stencil, and sampler objects are cached by their actual D3D11 descriptors

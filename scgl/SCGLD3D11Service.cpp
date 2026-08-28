@@ -1,4 +1,5 @@
 #include "SCGLD3D11Service.h"
+#include "Diagnostics.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -19,6 +20,8 @@ extern "C" BOOL __stdcall SCGLRegisterD3D11FrameCallback(
 	SCGLD3D11FrameCallback callback, void* userData)
 {
 	if (callback == nullptr) return FALSE;
+	nSCGL::Log(nSCGL::LogCategory::Grid, "SCGLRegisterD3D11FrameCallback(callback=%p, userData=%p)",
+	           reinterpret_cast<void*>(callback), userData);
 	std::lock_guard<std::mutex> const lock(g_callbackMutex);
 	if (g_callback != nullptr) return g_callback == callback && g_userData == userData;
 	g_callback = callback;
