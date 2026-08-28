@@ -1,0 +1,794 @@
+/*
+ *  SCD3D11 - a free graphics driver for SimCity 4's SimGL interface
+ *  Copyright (C) 2025  Nelson Gomez (nsgomez) <nelson@ngomez.me>
+ *
+ *  This library is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU Lesser General Public
+ *  License as published by the Free Software Foundation, under
+ *  version 2.1 of the License, or (at your option) any later version.
+ */
+
+#include "cGDriver.h"
+#include "Diagnostics.h"
+#include "VertexFormatUtils.h"
+
+#include <cstddef>
+#include <cstring>
+#include <d3dcompiler.h>
+#include <limits>
+#include <cmath>
+
+namespace nSCD3D11 {
+	constexpr uint32_t VERTEX_CACHE_SEGMENT_BYTES = 64u * 1024u * 1024u;
+	constexpr uint32_t INDEX_CACHE_SEGMENT_BYTES = 16u * 1024u * 1024u;
+
+	namespace {
+		char const kShaderSource[] = R"(
+#ifndef SCD3D11_INTERPOLATION
+#define SCD3D11_INTERPOLATION
+#endif
+struct StageState
+{
+	float4 environmentColor;
+	uint4 modes;
+	uint4 parameters0;
+	uint4 parameters1;
+};
+
+cbuffer DriverConstants : register(b0)
+{
+	column_major float4x4 modelView;
+	column_major float4x4 projection;
+	column_major float4x4 normalMatrix;
+	float4 colorMultiplier;
+	uint flags;
+	uint alphaFunction;
+	float alphaReference;
+	uint enabledLights;
+	float4 globalAmbient;
+	float4 lightAmbient[8];
+	float4 lightDiffuse[8];
+	float4 lightSpecular[8];
+	float4 lightPosition[8];
+	float4 materialAmbient;
+	float4 materialDiffuse;
+	float4 materialSpecular;
+	float4 materialEmission;
+	float4 materialParameters;
+	column_major float4x4 textureMatrix0;
+	column_major float4x4 textureMatrix1;
+	StageState stage0;
+	StageState stage1;
+	float4 fogColor;
+	float4 fogParameters;
+};
+
+Texture2D texture0 : register(t0);
+Texture2D texture1 : register(t1);
+SamplerState sampler0 : register(s0);
+SamplerState sampler1 : register(s1);
+
+struct VSInput
+{
+	float3 position : POSITION;
+	float3 normal : NORMAL;
+	float4 color : COLOR0;
+	float2 texCoord0 : TEXCOORD0;
+	float2 texCoord1 : TEXCOORD1;
+};
+
+struct PSInput
+{
+	float4 position : SV_POSITION;
+	SCD3D11_INTERPOLATION float3 normal : NORMAL;
+	SCD3D11_INTERPOLATION float4 color : COLOR0;
+	SCD3D11_INTERPOLATION float3 viewPosition : TEXCOORD3;
+	float2 texCoord0 : TEXCOORD0;
+	float2 texCoord1 : TEXCOORD1;
+	float fogDistance : TEXCOORD2;
+};
+
+PSInput VSMain(VSInput input)
+{
+	PSInput output;
+	float4 viewPosition = mul(modelView, float4(input.position, 1.0f));
+	output.position = mul(projection, viewPosition);
+	output.position.z = (output.position.z + output.position.w) * 0.5f;
+	output.normal = mul((float3x3)normalMatrix, input.normal);
+	output.color = input.color;
+	output.viewPosition = viewPosition.xyz;
+	float4 source0 = (stage0.parameters1.w & 0xfffffff8) == 0x10
+		? viewPosition
+		: float4(stage0.parameters1.w == 1 ? input.texCoord1 : input.texCoord0, 0.0f, 1.0f);
+	float4 source1 = (stage1.parameters1.w & 0xfffffff8) == 0x10
+		? viewPosition
+		: float4(stage1.parameters1.w == 1 ? input.texCoord1 : input.texCoord0, 0.0f, 1.0f);
+	output.texCoord0 = mul(textureMatrix0, source0).xy;
+	output.texCoord1 = mul(textureMatrix1, source1).xy;
+	output.fogDistance = abs(viewPosition.z);
+	return output;
+}
+
+float4 CombinerArgument(uint packed, float4 textureColor, float4 previous, float4 constantColor, float4 primary)
+{
+	uint source = packed & 15;
+	uint operand = packed >> 4;
+	float4 value = source == 0 ? textureColor : (source == 1 ? previous : (source == 2 ? constantColor : primary));
+	return operand == 0 ? value : (operand == 1 ? 1.0f - value :
+		(operand == 2 ? value.aaaa : 1.0f - value.aaaa));
+}
+
+float3 CombineRGB(StageState state, float4 textureColor, float4 previous, float4 primary)
+{
+	float4 a = CombinerArgument(state.parameters0.y, textureColor, previous, state.environmentColor, primary);
+	float4 b = CombinerArgument(state.parameters0.z, textureColor, previous, state.environmentColor, primary);
+	float4 c = CombinerArgument(state.parameters0.w, textureColor, previous, state.environmentColor, primary);
+	uint mode = state.modes.y;
+	float3 result = mode == 0 ? a.rgb :
+		(mode == 1 ? a.rgb * b.rgb :
+		(mode == 2 ? a.rgb + b.rgb :
+		(mode == 3 ? a.rgb + b.rgb - 0.5f :
+		(mode == 4 ? a.rgb * c.rgb + b.rgb * (1.0f - c.rgb) :
+		4.0f * dot(a.rgb - 0.5f, b.rgb - 0.5f)))));
+	return saturate(result * (1u << state.modes.w));
+}
+
+float CombineAlpha(StageState state, float4 textureColor, float4 previous, float4 primary)
+{
+	float a = CombinerArgument(state.parameters1.x, textureColor, previous, state.environmentColor, primary).a;
+	float b = CombinerArgument(state.parameters1.y, textureColor, previous, state.environmentColor, primary).a;
+	float c = CombinerArgument(state.parameters1.z, textureColor, previous, state.environmentColor, primary).a;
+	uint mode = state.modes.z;
+	float result = mode == 0 ? a : (mode == 1 ? a * b :
+		(mode == 2 ? a + b : (mode == 3 ? a + b - 0.5f : a * c + b * (1.0f - c))));
+	return saturate(result * (1u << state.parameters0.x));
+}
+
+float4 ApplyStage(StageState state, float4 textureColor, float4 previous, float4 primary)
+{
+	uint mode = state.modes.x;
+	float4 result = textureColor;
+	if (mode == 1) result = previous * textureColor;
+	else if (mode == 2) result = float4(lerp(previous.rgb, textureColor.rgb, textureColor.a), previous.a);
+	else if (mode == 3) result = float4(lerp(previous.rgb, state.environmentColor.rgb, textureColor.rgb), previous.a * textureColor.a);
+	else if (mode != 0) result = float4(CombineRGB(state, textureColor, previous, primary),
+		CombineAlpha(state, textureColor, previous, primary));
+	return result;
+}
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+	float4 primary = input.color;
+	if ((flags & 4) != 0)
+	{
+		float4 ambientMaterial = (flags & 32) != 0 ? input.color : materialAmbient;
+		float4 diffuseMaterial = (flags & 64) != 0 ? input.color : materialDiffuse;
+		float3 normal = normalize(input.normal);
+		float3 view = normalize(-input.viewPosition);
+		primary = materialEmission + globalAmbient * ambientMaterial;
+		[unroll] for (uint light = 0; light < 8; ++light)
+		{
+			if ((enabledLights & (1u << light)) == 0) continue;
+			float3 vectorToLight = lightPosition[light].w == 0.0f
+				? normalize(lightPosition[light].xyz)
+				: normalize(lightPosition[light].xyz / lightPosition[light].w - input.viewPosition);
+			float diffuse = saturate(dot(normal, vectorToLight));
+			float specular = diffuse > 0.0f
+				? pow(saturate(dot(normal, normalize(vectorToLight + view))), materialParameters.x) : 0.0f;
+			primary += lightAmbient[light] * ambientMaterial +
+				lightDiffuse[light] * diffuseMaterial * diffuse + lightSpecular[light] * materialSpecular * specular;
+		}
+		primary.a = diffuseMaterial.a;
+	}
+	primary *= colorMultiplier;
+	float4 color = primary;
+	if ((flags & 1) != 0) color = ApplyStage(stage0, texture0.Sample(sampler0, input.texCoord0), color, primary);
+	if ((flags & 2) != 0) color = ApplyStage(stage1, texture1.Sample(sampler1, input.texCoord1), color, primary);
+	if ((flags & 8) != 0)
+	{
+		bool alphaPass = alphaFunction == 0 ? false :
+			alphaFunction == 1 ? color.a < alphaReference :
+			alphaFunction == 2 ? color.a == alphaReference :
+			alphaFunction == 3 ? color.a <= alphaReference :
+			alphaFunction == 4 ? color.a > alphaReference :
+			alphaFunction == 5 ? color.a != alphaReference :
+			alphaFunction == 6 ? color.a >= alphaReference : true;
+		clip(alphaPass ? 1.0f : -1.0f);
+	}
+	if ((flags & 16) != 0)
+	{
+		float distance = input.fogDistance;
+		float mode = fogParameters.w;
+		float factor = mode < 0.5f ? exp(-fogParameters.x * distance) :
+			(mode < 1.5f ? exp(-fogParameters.x * fogParameters.x * distance * distance) :
+			saturate((fogParameters.z - distance) / max(fogParameters.z - fogParameters.y, 0.000001f)));
+		color.rgb = lerp(fogColor.rgb, color.rgb, saturate(factor));
+	}
+	return color;
+}
+)";
+
+		struct DriverConstants {
+			float modelView[16];
+			float projection[16];
+			float normalMatrix[16];
+			float colorMultiplier[4];
+			uint32_t flags;
+			uint32_t alphaFunction;
+			float alphaReference;
+			uint32_t enabledLights;
+			float globalAmbient[4];
+			float lightAmbient[8][4];
+			float lightDiffuse[8][4];
+			float lightSpecular[8][4];
+			float lightPosition[8][4];
+			float materialAmbient[4];
+			float materialDiffuse[4];
+			float materialSpecular[4];
+			float materialEmission[4];
+			float materialParameters[4];
+			float textureMatrices[2][16];
+
+			struct StageConstants {
+				float environmentColor[4];
+				uint32_t modes[4];
+				uint32_t parameters0[4];
+				uint32_t parameters1[4];
+			} stages[2];
+
+			float fogColor[4];
+			float fogParameters[4];
+		};
+
+		void MakeNormalMatrix(float const *m, float *out) {
+			float const a00=m[0], a01=m[4], a02=m[8], a10=m[1], a11=m[5], a12=m[9];
+			float const a20=m[2], a21=m[6], a22=m[10];
+			float const c00=a11*a22-a12*a21, c01=a12*a20-a10*a22, c02=a10*a21-a11*a20;
+			float const c10=a02*a21-a01*a22, c11=a00*a22-a02*a20, c12=a01*a20-a00*a21;
+			float const c20=a01*a12-a02*a11, c21=a02*a10-a00*a12, c22=a00*a11-a01*a10;
+			float const determinant = a00*c00 + a01*c01 + a02*c02;
+			memset(out, 0, sizeof(float) * 16);
+			if (std::fabs(determinant) < 1.0e-12f) {
+				out[0]=out[5]=out[10]=out[15]=1.0f;
+				return;
+			}
+			float const scale=1.0f/determinant;
+			out[0]=c00*scale; out[4]=c01*scale; out[8]=c02*scale;
+			out[1]=c10*scale; out[5]=c11*scale; out[9]=c12*scale;
+			out[2]=c20*scale; out[6]=c21*scale; out[10]=c22*scale; out[15]=1.0f;
+		}
+	}
+
+	HRESULT cGDriver::CreateGeometryPipeline() {
+		if (!d3dDevice) {
+			return E_POINTER;
+		}
+
+		UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+#ifndef NDEBUG
+		compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+		Microsoft::WRL::ComPtr<ID3DBlob> vertexBytecode;
+		Microsoft::WRL::ComPtr<ID3DBlob> pixelBytecode;
+		Microsoft::WRL::ComPtr<ID3DBlob> flatPixelBytecode;
+		Microsoft::WRL::ComPtr<ID3DBlob> messages;
+
+		HRESULT result = D3DCompile(
+			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", nullptr, nullptr,
+			"VSMain", "vs_4_0", compileFlags, 0, &vertexBytecode, &messages);
+		if (messages) {
+			Log(LogCategory::Resource, "vertex shader compiler: %s",
+			    static_cast<char const *>(messages->GetBufferPointer()));
+			messages.Reset();
+		}
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "D3DCompile(VSMain)", result);
+			return result;
+		}
+		D3D_SHADER_MACRO const flatMacros[] = {{"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+		result = D3DCompile(
+			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", flatMacros, nullptr,
+			"PSMain", "ps_4_0", compileFlags, 0, &flatPixelBytecode, &messages);
+		if (messages) messages.Reset();
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "D3DCompile(PSMain flat)", result);
+			return result;
+		}
+
+		result = D3DCompile(
+			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", nullptr, nullptr,
+			"PSMain", "ps_4_0", compileFlags, 0, &pixelBytecode, &messages);
+		if (messages) {
+			Log(LogCategory::Resource, "pixel shader compiler: %s",
+			    static_cast<char const *>(messages->GetBufferPointer()));
+			messages.Reset();
+		}
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "D3DCompile(PSMain)", result);
+			return result;
+		}
+
+		result = d3dDevice->CreateVertexShader(
+			vertexBytecode->GetBufferPointer(), vertexBytecode->GetBufferSize(), nullptr, &vertexShader);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateVertexShader", result);
+			return result;
+		}
+		result = d3dDevice->CreatePixelShader(
+			pixelBytecode->GetBufferPointer(), pixelBytecode->GetBufferSize(), nullptr, &pixelShader);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreatePixelShader", result);
+			return result;
+		}
+		result = d3dDevice->CreatePixelShader(
+			flatPixelBytecode->GetBufferPointer(), flatPixelBytecode->GetBufferSize(), nullptr, &flatPixelShader);
+		if (FAILED(result)) return result;
+
+		D3D11_INPUT_ELEMENT_DESC const elements[] = {
+			{
+				"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(D3D11Vertex, position),
+				D3D11_INPUT_PER_VERTEX_DATA, 0
+			},
+			{
+				"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(D3D11Vertex, normal), D3D11_INPUT_PER_VERTEX_DATA,
+				0
+			},
+			{"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, offsetof(D3D11Vertex, color), D3D11_INPUT_PER_VERTEX_DATA, 0},
+			{
+				"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(D3D11Vertex, texCoord[0]),
+				D3D11_INPUT_PER_VERTEX_DATA, 0
+			},
+			{
+				"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(D3D11Vertex, texCoord[1]),
+				D3D11_INPUT_PER_VERTEX_DATA, 0
+			}
+		};
+		result = d3dDevice->CreateInputLayout(
+			elements, static_cast<UINT>(sizeof(elements) / sizeof(elements[0])),
+			vertexBytecode->GetBufferPointer(), vertexBytecode->GetBufferSize(), &inputLayout);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateInputLayout", result);
+			return result;
+		}
+
+		D3D11_BUFFER_DESC constantDescription{};
+		constantDescription.ByteWidth = sizeof(DriverConstants);
+		constantDescription.Usage = D3D11_USAGE_DYNAMIC;
+		constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		for (auto &buffer: transformBuffers) {
+			result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &buffer);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
+				return result;
+			}
+		}
+
+		// Bound to empty texture stages so the debug layer never sees a NULL sampler.
+		D3D11_SAMPLER_DESC samplerDescription{};
+		samplerDescription.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		samplerDescription.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+		samplerDescription.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+		samplerDescription.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+		samplerDescription.ComparisonFunc = D3D11_COMPARISON_NEVER;
+		samplerDescription.MaxLOD = FLT_MAX;
+		result = d3dDevice->CreateSamplerState(&samplerDescription, &defaultSampler);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateSamplerState(default)", result);
+			return result;
+		}
+
+		Log(LogCategory::Resource, "generic geometry pipeline created");
+		return S_OK;
+	}
+
+	bool cGDriver::UseCachedBuffer(
+		GeometryCacheSegment *segments,
+		std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
+		uint64_t key,
+		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+		uint32_t &offset,
+		uint32_t bindFlags) {
+		auto const cached = cache.find(key);
+		if (cached == cache.end() || cached->second.segment >= GEOMETRY_CACHE_SEGMENTS ||
+		    !segments[cached->second.segment].buffer) {
+			return false;
+		}
+		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheHits;
+		else ++indexBufferCacheHits;
+		buffer = segments[cached->second.segment].buffer;
+		offset = cached->second.offset;
+		return true;
+	}
+
+	bool cGDriver::UploadCachedBuffer(
+		GeometryCacheSegment *segments,
+		uint8_t &activeSegment,
+		std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
+		uint64_t key,
+		uint32_t requiredSize,
+		uint32_t bindFlags,
+		void const *data,
+		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+		uint32_t &offset) {
+		if (!d3dDevice || !d3dContext || data == nullptr || requiredSize == 0) {
+			return false;
+		}
+
+		if (UseCachedBuffer(segments, cache, key, buffer, offset, bindFlags)) return true;
+		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheMisses;
+		else ++indexBufferCacheMisses;
+
+		GeometryCacheSegment *segment = &segments[activeSegment];
+		if (!segment->buffer || static_cast<uint64_t>(segment->cursor) + requiredSize > segment->capacity) {
+			if (segment->buffer && segment->cursor != 0) {
+				activeSegment = static_cast<uint8_t>((activeSegment + 1) % GEOMETRY_CACHE_SEGMENTS);
+				segment = &segments[activeSegment];
+				Log(LogCategory::Resource, "%s cache advanced to segment %u",
+				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment);
+			}
+
+			for (uint64_t oldKey: segment->keys) {
+				auto const old = cache.find(oldKey);
+				if (old != cache.end() && old->second.segment == activeSegment) cache.erase(old);
+			}
+			segment->keys.clear();
+			segment->cursor = 0;
+
+			if (!segment->buffer || segment->capacity < requiredSize) {
+				uint32_t const normalCapacity = bindFlags == D3D11_BIND_VERTEX_BUFFER
+					                                ? VERTEX_CACHE_SEGMENT_BYTES
+					                                : INDEX_CACHE_SEGMENT_BYTES;
+				uint32_t const newCapacity = (std::max)(normalCapacity, requiredSize);
+
+				D3D11_BUFFER_DESC description{};
+				description.ByteWidth = newCapacity;
+				description.Usage = D3D11_USAGE_DYNAMIC;
+				description.BindFlags = bindFlags;
+				description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+				Microsoft::WRL::ComPtr<ID3D11Buffer> replacement;
+				HRESULT const result = d3dDevice->CreateBuffer(&description, nullptr, &replacement);
+				if (FAILED(result)) {
+					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(dynamic segment)", result);
+					return false;
+				}
+				segment->buffer = replacement;
+				segment->capacity = newCapacity;
+				Log(LogCategory::Resource, "%s cache segment %u allocated at %u bytes",
+				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment, newCapacity);
+			}
+		}
+
+		D3D11_MAPPED_SUBRESOURCE mapping{};
+		HRESULT const result = d3dContext->Map(
+			segment->buffer.Get(), 0,
+			segment->cursor == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map", result);
+			return false;
+		}
+		offset = segment->cursor;
+		memcpy(static_cast<uint8_t *>(mapping.pData) + offset, data, requiredSize);
+		d3dContext->Unmap(segment->buffer.Get(), 0);
+		segment->cursor = (segment->cursor + requiredSize + 3u) & ~3u;
+		segment->keys.push_back(key);
+		cache.emplace(key, GeometryCacheEntry{activeSegment, offset});
+		buffer = segment->buffer;
+		return true;
+	}
+
+	bool cGDriver::UploadVertices(uint32_t first, uint32_t count) {
+		if (interleavedPointer == nullptr || interleavedStride == 0 || count == 0) {
+			Log(LogCategory::Unsupported, "draw without valid interleaved vertex data");
+			return false;
+		}
+
+		uint64_t const byteOffset = static_cast<uint64_t>(first) * interleavedStride;
+		uint32_t const packedStride = RZVertexFormatStride(interleavedFormat);
+		uint64_t const byteSize = static_cast<uint64_t>(count) * sizeof(D3D11Vertex);
+		if (byteOffset > (std::numeric_limits<size_t>::max)() || byteSize > (std::numeric_limits<uint32_t>::max)()) {
+			Log(LogCategory::Unsupported, "vertex upload exceeds 32-bit limits");
+			return false;
+		}
+
+		uint8_t const *source = interleavedPointer + byteOffset;
+		uint64_t key = HashBytes(&interleavedFormat, sizeof(interleavedFormat));
+		key = HashBytes(&count, sizeof(count), key);
+		for (uint32_t i = 0; i < count; ++i) {
+			key = HashBytes(source + static_cast<size_t>(i) * interleavedStride, packedStride, key);
+		}
+		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
+		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
+
+		if (!ConvertVertices(interleavedFormat, interleavedStride, source, count, vertexScratch)) {
+			Log(LogCategory::Unsupported, "unsupported vertex format 0x%08X stride %u", interleavedFormat,
+			    interleavedStride);
+			return false;
+		}
+		return UploadCachedBuffer(
+			vertexBufferSegments, activeVertexBufferSegment, vertexBufferCache,
+			key, static_cast<uint32_t>(byteSize), D3D11_BIND_VERTEX_BUFFER, vertexScratch.data(),
+			dynamicVertexBuffer,
+			dynamicVertexBufferOffset);
+	}
+
+	bool cGDriver::UploadIndices(std::vector<uint32_t> const &indices) {
+		uint64_t const byteSize = static_cast<uint64_t>(indices.size()) * sizeof(uint32_t);
+		if (indices.empty() || byteSize > (std::numeric_limits<uint32_t>::max)()) {
+			return false;
+		}
+		uint64_t key = HashBytes(indices.data(), static_cast<size_t>(byteSize));
+		return UploadCachedBuffer(
+			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
+			key, static_cast<uint32_t>(byteSize), D3D11_BIND_INDEX_BUFFER, indices.data(),
+			dynamicIndexBuffer,
+			dynamicIndexBufferOffset);
+	}
+
+	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
+		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
+		if (!IsDeviceReady() || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
+		    !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
+		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
+			return false;
+		}
+
+		DriverConstants constants{};
+		memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
+		memcpy(constants.projection, matrices[1], sizeof(constants.projection));
+		MakeNormalMatrix(matrices[0], constants.normalMatrix);
+		memcpy(constants.colorMultiplier, colorMultipliers, sizeof(constants.colorMultiplier));
+		constants.alphaFunction = alphaFunction;
+		constants.alphaReference = alphaReference;
+		if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
+		memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
+		memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
+		memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
+		memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
+		memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+		memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
+		memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
+		memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
+		memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
+		constants.materialParameters[0] = materialShininess;
+		for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
+			TextureStageState const &source = textureStages[stageIndex];
+			DriverConstants::StageConstants &destination = constants.stages[stageIndex];
+			memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
+			memcpy(destination.environmentColor, source.environmentColor, sizeof(source.environmentColor));
+			destination.modes[0] = source.environmentMode;
+			destination.modes[1] = source.rgbMode;
+			destination.modes[2] = source.alphaMode;
+			destination.modes[3] = source.rgbScale;
+			destination.parameters0[0] = source.alphaScale;
+			for (uint32_t parameter = 0; parameter < 3; ++parameter) {
+				destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
+				destination.parameters1[parameter] = source.alphaParameters[parameter];
+			}
+			destination.parameters1[3] = source.coordinateSource;
+		}
+		if (lightingEnabled && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) {
+			constants.flags |= 4;
+			if (ambientVertexColors) constants.flags |= 32;
+			if (diffuseVertexColors) constants.flags |= 64;
+			for (uint32_t light = 0; light < 8; ++light)
+				if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
+		}
+		if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
+		memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
+		constants.fogParameters[0] = fogDensity;
+		constants.fogParameters[1] = fogStart;
+		constants.fogParameters[2] = fogEnd;
+		constants.fogParameters[3] = static_cast<float>(fogMode);
+		ID3D11ShaderResourceView *textureViews[2]{};
+		ID3D11SamplerState *samplers[2]{defaultSampler.Get(), defaultSampler.Get()};
+		for (uint32_t stage = 0; stage < 2; ++stage) {
+			if (!textureStageEnabled[stage]) continue;
+			auto iterator = textures.find(boundTextures[stage]);
+			if (iterator == textures.end() || !iterator->second.view || FAILED(EnsureSampler(textureStages[stage])))
+				continue;
+			textureViews[stage] = iterator->second.view.Get();
+			samplers[stage] = textureStages[stage].sampler.Get();
+			constants.flags |= 1u << stage;
+		}
+		static bool const gridDebug = std::strstr(GetCommandLineA(), "-GridDebug") != nullptr;
+		if (gridDebug && textureStageEnabled[0] &&
+		    (textureStages[0].coordinateSource & 0xfffffff8u) == 0x10u) {
+			auto const gridTexture = textures.find(boundTextures[0]);
+			if (gridTexture != textures.end()) {
+				static ULONGLONG lastGridLog = 0;
+				ULONGLONG const now = GetTickCount64();
+				if (now - lastGridLog >= 1000) {
+					TextureResource const &texture = gridTexture->second;
+					float const *matrix = textureStages[0].matrix;
+					Log(LogCategory::Grid,
+					    "texture=%u size=%ux%u mips=%u uploaded=0x%X filter=%u/%u wrap=%u/%u "
+					    "vb=%p+%u matrix=[%.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g; "
+					    "%.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g]",
+					    boundTextures[0], texture.width, texture.height, texture.levels,
+					    texture.uploadedMipLevels, textureStages[0].magFilter, textureStages[0].minFilter,
+					    textureStages[0].wrapU, textureStages[0].wrapV, dynamicVertexBuffer.Get(), dynamicVertexBufferOffset,
+					    matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5], matrix[6], matrix[7],
+					    matrix[8], matrix[9], matrix[10], matrix[11], matrix[12], matrix[13], matrix[14], matrix[15]);
+					lastGridLog = now;
+				}
+			}
+		}
+		if (constantBufferCache.size() != sizeof(constants) ||
+		    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
+			activeTransformBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
+			D3D11_MAPPED_SUBRESOURCE mapping{};
+			HRESULT const result = d3dContext->Map(
+				transformBuffers[activeTransformBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
+				return false;
+			}
+			memcpy(mapping.pData, &constants, sizeof(constants));
+			d3dContext->Unmap(transformBuffers[activeTransformBuffer].Get(), 0);
+			constantBufferCache.assign(
+				reinterpret_cast<uint8_t const *>(&constants),
+				reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
+		}
+
+		UINT const stride = sizeof(D3D11Vertex);
+		UINT const offset = dynamicVertexBufferOffset;
+		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
+		ID3D11Buffer *constantBuffer = transformBuffers[activeTransformBuffer].Get();
+		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
+		if (!geometryPipelineBound) {
+			d3dContext->IASetInputLayout(inputLayout.Get());
+			d3dContext->VSSetShader(vertexShader.Get(), nullptr, 0);
+			geometryPipelineBound = true;
+		}
+		if (desiredPixelShader != appliedPixelShader) {
+			d3dContext->PSSetShader(desiredPixelShader, nullptr, 0);
+			appliedPixelShader = desiredPixelShader;
+		}
+		if (constantBuffer != appliedTransformBuffer) {
+			d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);
+			d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
+			appliedTransformBuffer = constantBuffer;
+		}
+		if (vertexBuffer != appliedVertexBuffer || offset != appliedVertexBufferOffset) {
+			d3dContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+			appliedVertexBuffer = vertexBuffer;
+			appliedVertexBufferOffset = offset;
+		}
+		if (topology != appliedTopology) {
+			d3dContext->IASetPrimitiveTopology(topology);
+			appliedTopology = topology;
+		}
+		if (!textureBindingsValid ||
+		    textureViews[0] != appliedTextureViews[0] || textureViews[1] != appliedTextureViews[1]) {
+			d3dContext->PSSetShaderResources(0, 2, textureViews);
+			appliedTextureViews[0] = textureViews[0];
+			appliedTextureViews[1] = textureViews[1];
+		}
+		if (!textureBindingsValid ||
+		    samplers[0] != appliedSamplers[0] || samplers[1] != appliedSamplers[1]) {
+			d3dContext->PSSetSamplers(0, 2, samplers);
+			appliedSamplers[0] = samplers[0];
+			appliedSamplers[1] = samplers[1];
+		}
+		textureBindingsValid = true;
+		if (!ApplyRenderStates()) return false;
+		if ((enabledCapabilities[kGDCapability_DepthTest] && depthWriteEnabled) ||
+		    enabledCapabilities[kGDCapability_StencilTest]) {
+			depthRegionScratchValid = false;
+		}
+		return true;
+	}
+
+	void cGDriver::InterleavedArrays(uint32_t format, int32_t stride, void const *pointer) {
+		uint32_t const packedStride = RZVertexFormatStride(format);
+		if (!IsSupportedVertexFormat(format) || pointer == nullptr || stride < 0 ||
+		    (stride != 0 && static_cast<uint32_t>(stride) < packedStride)) {
+			Log(LogCategory::Unsupported, "invalid InterleavedArrays format 0x%08X stride %d pointer %p", format,
+			    stride, pointer);
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+		interleavedFormat = format;
+		RecordEncountered(ObservedCategory::VertexFormat, format);
+		interleavedStride = stride == 0 ? packedStride : static_cast<uint32_t>(stride);
+		interleavedPointer = static_cast<uint8_t const *>(pointer);
+	}
+
+	void cGDriver::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
+		if (first < 0 || count <= 0 || !UploadVertices(static_cast<uint32_t>(first), static_cast<uint32_t>(count))) {
+			return;
+		}
+
+		if (D3D11Topology(primitive) != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
+			if (BindGeometryPipeline(primitive)) {
+				d3dContext->Draw(static_cast<UINT>(count), 0);
+			}
+			return;
+		}
+
+		if (!BuildSequentialIndices(primitive, static_cast<uint32_t>(count), drawIndexScratch) ||
+		    !UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
+			Log(LogCategory::Unsupported, "unsupported array primitive %u with %d vertices", primitive, count);
+			return;
+		}
+		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();
+		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, dynamicIndexBufferOffset);
+		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), 0, 0);
+	}
+
+	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
+		if (count <= 0 || indices == nullptr || (type != 3 && type != 5)) {
+			Log(LogCategory::Unsupported, "invalid indexed draw type %u count %d pointer %p", type, count, indices);
+			return;
+		}
+
+		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
+		bool const convertPrimitive = topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		if (convertPrimitive) sourceIndexScratch.resize(static_cast<size_t>(count));
+		uint32_t minimumIndex = UINT32_MAX;
+		uint32_t maximumIndex = 0;
+		uint64_t indexKey = HashBytes(&type, sizeof(type));
+		if (type == 3) {
+			uint16_t const *source = static_cast<uint16_t const *>(indices);
+			for (int32_t i = 0; i < count; ++i) {
+				indexKey = (indexKey ^ source[i]) * 1099511628211ull;
+				indexKey = (indexKey ^ (source[i] >> 8)) * 1099511628211ull;
+				if (convertPrimitive) sourceIndexScratch[i] = source[i];
+				if (source[i] < minimumIndex) minimumIndex = source[i];
+				if (source[i] > maximumIndex) maximumIndex = source[i];
+			}
+		} else {
+			uint32_t const *source = static_cast<uint32_t const *>(indices);
+			for (int32_t i = 0; i < count; ++i) {
+				for (uint32_t shift = 0; shift < 32; shift += 8)
+					indexKey = (indexKey ^ ((source[i] >> shift) & 0xff)) * 1099511628211ull;
+				if (convertPrimitive) sourceIndexScratch[i] = source[i];
+				if (source[i] < minimumIndex) minimumIndex = source[i];
+				if (source[i] > maximumIndex) maximumIndex = source[i];
+			}
+		}
+
+		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX ||
+		    !UploadVertices(minimumIndex, maximumIndex - minimumIndex + 1)) {
+			return;
+		}
+		INT const baseVertex = -static_cast<INT>(minimumIndex);
+
+		if (!convertPrimitive) {
+			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
+			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
+			if (indexBytes > UINT32_MAX) return;
+			uint32_t indexOffset = 0;
+			if (!UploadCachedBuffer(
+				    indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
+				    indexKey, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+				    dynamicIndexBuffer, indexOffset) ||
+			    !BindGeometryPipeline(primitive)) {
+				return;
+			}
+			d3dContext->IASetIndexBuffer(
+				dynamicIndexBuffer.Get(), type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, indexOffset);
+			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, baseVertex);
+			return;
+		}
+
+		std::vector<uint32_t> const *drawIndices = &sourceIndexScratch;
+		{
+			if (!ConvertPrimitiveIndices(primitive, sourceIndexScratch, drawIndexScratch)) {
+				Log(LogCategory::Unsupported, "unsupported indexed primitive %u with %d indices", primitive, count);
+				return;
+			}
+			drawIndices = &drawIndexScratch;
+			primitive = 0;
+		}
+
+		if (!UploadIndices(*drawIndices) || !BindGeometryPipeline(primitive)) {
+			return;
+		}
+		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();
+		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, dynamicIndexBufferOffset);
+		d3dContext->DrawIndexed(static_cast<UINT>(drawIndices->size()), 0, baseVertex);
+	}
+}

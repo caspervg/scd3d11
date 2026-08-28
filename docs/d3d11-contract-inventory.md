@@ -1,12 +1,12 @@
 # Native D3D11 driver contract inventory
 
-This document is the implementation gate for replacing SCGL's OpenGL backend with a native
+This document is the implementation gate for replacing the project's original OpenGL backend with a native
 Direct3D 11/DXGI backend. It records what is known, what is only inferred, and the validation
 required before broader rendering work.
 
 ## Sources and confidence
 
-- **Confirmed:** SCGL source in this repository, including every driver and extension implementation.
+- **Confirmed:** SCD3D11 source in this repository, including every driver and extension implementation.
 - **Confirmed:** symbolized Mac `nSGLDX7::cGDriver` names and intent.
 - **Confirmed:** Windows `SimCity 4.exe` 1.1.641 functions, offsets, IIDs, and calling behavior cited below.
 - **Confirmed:** current `sc4-render-services` and its `gzcom-dll` interfaces, inspected from commit
@@ -23,14 +23,14 @@ No Ghidra database changes were made.
 - `cGDriversCOMDirector` derives from `cRZCOMSlimDllDirector` and exports through
   `RZGetCOMDllDirector()`.
 - It registers one class, `0xBADB6906`, using `cGDriver::FactoryFunctionPtr2`, and enumerates it with
-  version/priority `1,000,000`. This is the native DirectX driver's class ID, so GZCOM selects SCGL as
+  version/priority `1,000,000`. This is the native DirectX driver's class ID, so GZCOM selects SCD3D11 as
   the higher-version DirectX implementation without requiring `-d:OpenGL`.
 - The factory allocates the driver, calls `QueryInterface`, and deletes it if the requested interface
   is unavailable. `GetGZCLSID()` returns the same `0xBADB6906` class ID.
 
 ### Interfaces queried by SC4
 
-| Interface | IID | SCGL status | Windows 1.1.641 evidence |
+| Interface | IID | SCD3D11 status | Windows 1.1.641 evidence |
 |---|---:|---|---|
 | `cIGZUnknown` | `0x00000001` | implemented | not returned by the native DirectX QueryInterface path inspected |
 | `cIGZGDriver` | `0xA4554849` | implemented | returned at `this + 0x0C` |
@@ -63,7 +63,7 @@ to the OpenGL implementation, not `nSGLDX7`.
 - Windows viewport initialization at `0x00888A30` registers `GDriverClass--DirectX`, probes the API,
   builds driver information, and enumerates modes. Shutdown at `0x008880F0` first deselects the mode,
   destroys its window, unregisters the class, and releases API objects.
-- D3D11 does not need SCGL's hidden bootstrap window/context. `Init` should probe D3D11 capability and
+- D3D11 does not need the OpenGL predecessor's hidden bootstrap window/context. `Init` should probe D3D11 capability and
   enumerate modes without creating a swap chain. `SetVideoMode` creates the actual device and swap
   chain. All ABI entry points catch failures internally; exceptions never cross into SC4.
 
@@ -82,7 +82,7 @@ to the OpenGL implementation, not `nSGLDX7`.
 
 - `sGDMode` is 52 bytes (`0x34`) with width/height/depth, color masks, fullscreen flag, feature flags,
   texture-stage count, and `isInitialized` at `0x30`.
-- SCGL enumerates desktop modes with `EnumDisplaySettings`, deduplicates width/height/depth, and emits
+- SCD3D11 enumerates desktop modes with `EnumDisplaySettings`, deduplicates width/height/depth, and emits
   fullscreen and windowed entries. The D3D11 driver initially retains this contract but must not cap
   width at 2048.
 - Required windowed validation sizes are 1920x1080, 2048x1152, 2560x1600, and 3200x1800. Texture caps
@@ -97,7 +97,7 @@ stable indices.
 - `Clear`, `ClearColor`, `ClearDepth`, and `ClearStencil` cache values and/or clear the bound color and
   depth-stencil targets according to SC4's mask bits (`0x4000` color, `0x1000` depth, `0x2000`
   stencil).
-- `Flush` is SC4's externally visible frame boundary. SCGL swaps buffers there. The native D3D7
+- `Flush` is SC4's externally visible frame boundary. SCD3D11 swaps buffers there. The native D3D7
   implementation ends queued scene work, presents, restarts scene work, and performs device-loss
   recovery there (Mac intent: `Flush` at `0x004225E2`).
 - D3D11 `Flush` presents through DXGI. It must report `DXGI_ERROR_DEVICE_REMOVED` and
@@ -106,7 +106,7 @@ stable indices.
 
 ### Textures, surfaces, palettes, and render targets
 
-- Observed SCGL internal texture formats: RGB5, RGB8, RGBA4, RGB5A1, RGBA8, BC1/DXT1, BC2/DXT3,
+- Observed SCD3D11 internal texture formats: RGB5, RGB8, RGBA4, RGB5A1, RGBA8, BC1/DXT1, BC2/DXT3,
   BC3/DXT5.
 - Observed upload formats: RGB, RGBA, BGR, BGRA, alpha, luminance, luminance-alpha, and BC1/2/3,
   combined with the 16 SC4 scalar/packed element types.
@@ -187,7 +187,7 @@ stable indices.
 
 - The lighting extension exposes global enable, individual lights, ambient model, ambient/diffuse/
   specular colors, position/direction, and material ambient/diffuse/specular/emission/shininess.
-- SCGL notes SC4 does not query the extension in its observed path but still expects a default
+- SCD3D11 notes SC4 does not query the extension in its observed path but still expects a default
   directional light. Windows QI nevertheless exposes it, so D3D11 must preserve the contract.
 
 ### Capability reporting
@@ -198,11 +198,11 @@ stable indices.
 - Do not report the obsolete D3D7 2048 texture/display limit. D3D11 feature-level limits are reported
   truthfully and independently from window dimensions.
 - The meanings of `sGDMode::__unknown2`, `__unknown3`, and `__unknown5` still need Windows caller
-  recovery. SCGL's copied values are hypotheses, not proof.
+  recovery. SCD3D11's copied values are hypotheses, not proof.
 
 ### Readback, screenshots, cursors, and GDI
 
-- The snapshot extension is mandatory; SCGL states omission crashes during load.
+- The snapshot extension is mandatory; SCD3D11 states omission crashes during load.
 - `CopyColorBuffer` creates or reuses an SC4 `cIGZBuffer`, requires A8R8G8B8, clips to the viewport,
   reads the backbuffer, vertically normalizes the result, and writes opaque pixels.
 - D3D11 implements this with a staging texture and row-pitch-aware copy. It must preserve the supplied

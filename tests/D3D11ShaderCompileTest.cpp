@@ -36,7 +36,7 @@ int main() {
 	}
 
 	std::string const shader = cpp.substr(begin + marker.size(), end - begin - marker.size());
-	D3D_SHADER_MACRO const flat[] = {{"SCGL_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+	D3D_SHADER_MACRO const flat[] = {{"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
 	return Compile(shader, "VSMain", "vs_4_0") && Compile(shader, "PSMain", "ps_4_0") &&
 	       Compile(shader, "PSMain", "ps_4_0", flat) ? 0 : 1;
 }

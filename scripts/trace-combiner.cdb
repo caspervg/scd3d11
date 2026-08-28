@@ -13,11 +13,11 @@ $$   - Avoid .printf here. Its nested \" quoting inside a breakpoint command str
 $$     fragile; .echo / r / dds / dd need no inner quotes.
 $$ Allow ~5 minutes for SC4 to finish loading plugins before the scene renders.
 
-sxe ld:SCGL
+sxe ld:SCD3D11
 g
-.echo ===SCGL-LOADED===
-bm SCGL!nSCGL::cGDriver::SetVideoMode ".echo ===SLOTMAP-BEGIN===; .echo --slot-d8--; dds poi(@ecx)+0xd8 L1; u poi(poi(@ecx)+0xd8) L1; .echo --slot-dc--; dds poi(@ecx)+0xdc L1; u poi(poi(@ecx)+0xdc) L1; .echo --slot-e0--; dds poi(@ecx)+0xe0 L1; u poi(poi(@ecx)+0xe0) L1; .echo --slot-e4--; dds poi(@ecx)+0xe4 L1; u poi(poi(@ecx)+0xe4) L1; .echo ===SLOTMAP-END===; bd 0; gc"
-bm SCGL!nSCGL::cGDriver::TexStageCombine "r $t1 = @$t1 + 1; .echo --TSC--; r eip; dds @esp L1; dd @esp+4 L2; .if (@$t1 >= 200) { .echo ===TSC-CAP===; bd 1; bd 2; bd 3; bd 4 }; gc"
-bm SCGL!nSCGL::cGDriver::SetCombiner "r $t2 = @$t2 + 1; .echo --SETCOMBINER--; dds @esp L1; .if (@$t2 >= 30) { .echo ===SC-CAP===; bd 5 }; gc"
+.echo ===SCD3D11-LOADED===
+bm SCD3D11!nSCD3D11::cGDriver::SetVideoMode ".echo ===SLOTMAP-BEGIN===; .echo --slot-d8--; dds poi(@ecx)+0xd8 L1; u poi(poi(@ecx)+0xd8) L1; .echo --slot-dc--; dds poi(@ecx)+0xdc L1; u poi(poi(@ecx)+0xdc) L1; .echo --slot-e0--; dds poi(@ecx)+0xe0 L1; u poi(poi(@ecx)+0xe0) L1; .echo --slot-e4--; dds poi(@ecx)+0xe4 L1; u poi(poi(@ecx)+0xe4) L1; .echo ===SLOTMAP-END===; bd 0; gc"
+bm SCD3D11!nSCD3D11::cGDriver::TexStageCombine "r $t1 = @$t1 + 1; .echo --TSC--; r eip; dds @esp L1; dd @esp+4 L2; .if (@$t1 >= 200) { .echo ===TSC-CAP===; bd 1; bd 2; bd 3; bd 4 }; gc"
+bm SCD3D11!nSCD3D11::cGDriver::SetCombiner "r $t2 = @$t2 + 1; .echo --SETCOMBINER--; dds @esp L1; .if (@$t2 >= 30) { .echo ===SC-CAP===; bd 5 }; gc"
 g
 q

@@ -1,0 +1,3 @@
+EXPORTS
+    SCD3D11RegisterFrameCallback=_SCD3D11RegisterFrameCallback@8
+    SCD3D11UnregisterFrameCallback=_SCD3D11UnregisterFrameCallback@8

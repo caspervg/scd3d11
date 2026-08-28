@@ -1,11 +1,11 @@
 param(
     [string]$GameExe = 'C:\Program Files (x86)\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe',
     [string]$UserDir = 'D:\OneDrive - Maplix\SimCity 4\',
-    [string]$SymbolDir = 'C:\Users\caspe\CLionProjects\scgl\build\review',
+    [string]$SymbolDir = 'C:\Users\caspe\CLionProjects\scd3d11\build\review',
     [string]$LogPath = "$env:TEMP\cdb-sc4.log",
     [int]$Width = 1024,
     [int]$Height = 768,
-    [string]$Commands = 'sxe av; g; .echo ===CRASH===; r; kb 60; .ecxr; kb 60; lm m SCGL; q',
+    [string]$Commands = 'sxe av; g; .echo ===CRASH===; r; kb 60; .ecxr; kb 60; lm m SCD3D11; q',
     [string]$ScriptFile = ''
 )
 

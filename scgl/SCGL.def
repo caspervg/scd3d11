@@ -1,3 +1,0 @@
-EXPORTS
-    SCGLRegisterD3D11FrameCallback=_SCGLRegisterD3D11FrameCallback@8
-    SCGLUnregisterD3D11FrameCallback=_SCGLUnregisterD3D11FrameCallback@8

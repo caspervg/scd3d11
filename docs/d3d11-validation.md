@@ -26,7 +26,7 @@ The repository currently leaves four runnable checks:
 - MSVC x86 Debug build: passed.
 - MSVC x86 Release build: passed.
 - Debug and Release CTest: 4/4 passed.
-- Release `SCGL.dll`: PE32/x86 (`0x14C`), with D3D11/D3DCompiler graphics imports and no OpenGL import.
+- Release `SCD3D11.dll`: PE32/x86 (`0x14C`), with D3D11/D3DCompiler graphics imports and no OpenGL import.
 - HLSL fog, texture-stage combiner, lighting, alpha-test, and transform paths compile for shader model 4.0.
 - No SC4 process was launched or attached. Registration, presentation, scene appearance, device recovery, resize behavior in-game, and screenshot parity remain unverified.
 

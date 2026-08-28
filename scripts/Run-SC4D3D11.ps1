@@ -9,7 +9,7 @@ param(
     [switch]$WaitForExit,
     [string]$GameExe = 'C:\Program Files (x86)\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe',
     [string]$UserDir = 'D:\OneDrive - Maplix\SimCity 4\',
-    [string]$PluginDll = 'D:\OneDrive - Maplix\SimCity 4\Plugins\SCGL.dll'
+    [string]$PluginDll = 'D:\OneDrive - Maplix\SimCity 4\Plugins\SCD3D11.dll'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 # cmake-build-debug is CLion's x64 tree; SimCity 4 is x86, so use the x86 build trees.
 if ($BuildType -eq 'Debug') { $buildDir = Join-Path $repo 'build\review' }
 else { $buildDir = Join-Path $repo 'build\final-minrelease' }
-$builtDll = Join-Path $buildDir 'SCGL.dll'
+$builtDll = Join-Path $buildDir 'SCD3D11.dll'
 $vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat'
 $cmake = 'C:\Users\caspe\AppData\Local\Programs\CLion\bin\cmake\win\x64\bin\cmake.exe'
 $gameDir = Split-Path -Parent $GameExe
@@ -40,7 +40,7 @@ if ($LASTEXITCODE -ne 0) { throw "Build or tests failed with exit code $LASTEXIT
 if (-not (Test-Path -LiteralPath $builtDll)) { throw "Built DLL not found: $builtDll" }
 
 if (Test-Path -LiteralPath $PluginDll) {
-    Copy-Item -LiteralPath $PluginDll -Destination (Join-Path $captureDir 'SCGL.before.dll')
+    Copy-Item -LiteralPath $PluginDll -Destination (Join-Path $captureDir 'SCD3D11.before.dll')
 }
 New-Item -ItemType Directory -Path (Split-Path -Parent $PluginDll) -Force | Out-Null
 Copy-Item -LiteralPath $builtDll -Destination $PluginDll -Force
@@ -60,11 +60,11 @@ foreach ($name in $logs) {
 }
 
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PluginDll).Hash
-# -UserDir selects the plugin/user folder SC4 loads SCGL.dll from; without it the game
+# -UserDir selects the plugin/user folder SC4 loads SCD3D11.dll from; without it the game
 # falls back to the Documents folder and never loads this driver.
 # The value must stay quoted: Start-Process passes the list through verbatim, and an
 # unquoted path with spaces makes SC4 parse only "D:\OneDrive", load the wrong plugin
-# folder, and silently fall back to its DirectX driver instead of SCGL.
+# folder, and silently fall back to its DirectX driver instead of SCD3D11.
 $arguments = @("-UserDir:`"$UserDir`"", '-CPUCount:1', '-CustomResolution:enabled', "-r${Width}x${Height}x32")
 switch ($PresentationMode) {
     'Windowed' { $arguments += '-w' }
