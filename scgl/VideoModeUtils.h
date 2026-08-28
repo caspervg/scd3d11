@@ -16,5 +16,7 @@
 
 namespace nSCGL
 {
-	bool AppendVideoMode(std::vector<sGDMode>& modes, uint32_t width, uint32_t height, uint32_t depth, bool fullscreen);
+	bool AppendVideoMode(
+		std::vector<sGDMode>& modes, uint32_t width, uint32_t height, uint32_t depth, bool fullscreen,
+		bool supportsStencil, bool supportsDxt);
 }

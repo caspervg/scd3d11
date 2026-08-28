@@ -20,6 +20,33 @@
 namespace nSCGL {
 	namespace {
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
+
+		bool SupportsFormat(ID3D11Device *device, DXGI_FORMAT format, UINT requiredSupport) {
+			UINT support = 0;
+			return device != nullptr && SUCCEEDED(device->CheckFormatSupport(format, &support)) &&
+			       (support & requiredSupport) == requiredSupport;
+		}
+
+		HRESULT ProbeD3D11Device(Microsoft::WRL::ComPtr<ID3D11Device> &device, D3D_FEATURE_LEVEL &level) {
+			D3D_FEATURE_LEVEL const levels[] = {
+				D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
+				D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
+			};
+			D3D_FEATURE_LEVEL const legacyLevels[] = {
+				D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
+			};
+			HRESULT result = D3D11CreateDevice(
+				nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+				levels, static_cast<UINT>(sizeof(levels) / sizeof(levels[0])), D3D11_SDK_VERSION,
+				&device, &level, nullptr);
+			if (result == E_INVALIDARG) {
+				result = D3D11CreateDevice(
+					nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+					legacyLevels, static_cast<UINT>(sizeof(legacyLevels) / sizeof(legacyLevels[0])), D3D11_SDK_VERSION,
+					&device, &level, nullptr);
+			}
+			return result;
+		}
 	}
 
 	bool cGDriver::Init(void) {
@@ -39,16 +66,32 @@ namespace nSCGL {
 			return false;
 		}
 
-		// These capabilities are implemented by the D3D11 target. Keep the existing
-		// sGDMode mapping until its unknown fields are recovered from the Windows game.
+		Microsoft::WRL::ComPtr<ID3D11Device> probeDevice;
+		D3D_FEATURE_LEVEL probeLevel{};
+		HRESULT const probeResult = ProbeD3D11Device(probeDevice, probeLevel);
+		if (FAILED(probeResult)) {
+			LogHRESULT(LogCategory::Initialization, "D3D11CreateDevice(capability probe)", probeResult);
+			UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
+			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+			return false;
+		}
+
 		supportedExtensions.bgraColor = true;
-		supportedExtensions.stencilBuffer = true;
+		supportedExtensions.stencilBuffer = SupportsFormat(
+			probeDevice.Get(), DXGI_FORMAT_D24_UNORM_S8_UINT, D3D11_FORMAT_SUPPORT_DEPTH_STENCIL);
 		supportedExtensions.multitexture = true;
 		supportedExtensions.textureEnvCombine = true;
 		supportedExtensions.fogCoord = false;
-		supportedExtensions.textureCompression = true;
+		UINT const bcSupport = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+		supportedExtensions.textureCompression =
+			SupportsFormat(probeDevice.Get(), DXGI_FORMAT_BC1_UNORM, bcSupport) &&
+			SupportsFormat(probeDevice.Get(), DXGI_FORMAT_BC2_UNORM, bcSupport) &&
+			SupportsFormat(probeDevice.Get(), DXGI_FORMAT_BC3_UNORM, bcSupport);
 		supportedExtensions.nvTextureEnvCombine4 = false;
 
+		depthStencilFormat = supportedExtensions.stencilBuffer
+			                     ? DXGI_FORMAT_D24_UNORM_S8_UINT
+			                     : DXGI_FORMAT_D32_FLOAT;
 		driverInfo = "Maxis 3D GDriver\nDirect3D 11\n11.0\n";
 		if (InitializeVideoModeVector() == 0) {
 			Log(LogCategory::Capabilities, "no compatible display modes were enumerated");
@@ -167,19 +210,25 @@ namespace nSCGL {
 		DWORD index = 0;
 		while (EnumDisplaySettingsA(nullptr, index++, &displayMode)) {
 			int const depth = static_cast<int>(displayMode.dmBitsPerPel);
-			if (depth < 15) {
+			if (depth < 24) {
 				continue;
 			}
 
-			AppendVideoMode(videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, depth, true);
-			AppendVideoMode(videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, depth, false);
+			AppendVideoMode(
+				videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, 32, true,
+				supportedExtensions.stencilBuffer, supportedExtensions.textureCompression);
+			AppendVideoMode(
+				videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, 32, false,
+				supportedExtensions.stencilBuffer, supportedExtensions.textureCompression);
 		}
 
 		uint32_t const requiredWindowedModes[][2] = {
 			{1920, 1080}, {2048, 1152}, {2560, 1600}, {3200, 1800}
 		};
 		for (auto const &dimensions: requiredWindowedModes) {
-			AppendVideoMode(videoModes, dimensions[0], dimensions[1], 32, false);
+			AppendVideoMode(
+				videoModes, dimensions[0], dimensions[1], 32, false,
+				supportedExtensions.stencilBuffer, supportedExtensions.textureCompression);
 		}
 		videoModeCount = static_cast<int32_t>(videoModes.size());
 

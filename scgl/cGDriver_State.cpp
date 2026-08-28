@@ -49,7 +49,8 @@ namespace nSCGL {
                                                  ? D3D11_DEPTH_WRITE_MASK_ALL
                                                  : D3D11_DEPTH_WRITE_MASK_ZERO;
                 description.DepthFunc = D3D11Comparison(depthFunction);
-                description.StencilEnable = enabledCapabilities[kGDCapability_StencilTest];
+                description.StencilEnable = supportedExtensions.stencilBuffer &&
+				                           enabledCapabilities[kGDCapability_StencilTest];
                 description.StencilReadMask = stencilReadMask;
                 description.StencilWriteMask = stencilWriteMask;
                 description.FrontFace.StencilFunc = D3D11Comparison(stencilFunction);

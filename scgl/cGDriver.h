@@ -173,6 +173,7 @@ namespace nSCGL {
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilTexture;
 		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilView;
+		DXGI_FORMAT depthStencilFormat;
 		// Plain (non-depth-stencil-bound) copy of the depth buffer; partial CopySubresourceRegion
 		// is illegal on D3D11_BIND_DEPTH_STENCIL resources, so depth region blits bounce through this.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthRegionScratch;

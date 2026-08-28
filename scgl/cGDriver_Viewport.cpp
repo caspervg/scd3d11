@@ -102,7 +102,7 @@ namespace nSCGL {
 		depthDescription.Height = height;
 		depthDescription.MipLevels = 1;
 		depthDescription.ArraySize = 1;
-		depthDescription.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+		depthDescription.Format = depthStencilFormat;
 		depthDescription.SampleDesc.Count = 1;
 		depthDescription.Usage = D3D11_USAGE_DEFAULT;
 		depthDescription.BindFlags = D3D11_BIND_DEPTH_STENCIL;

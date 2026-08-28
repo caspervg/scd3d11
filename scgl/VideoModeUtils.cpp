@@ -12,7 +12,9 @@
 
 namespace nSCGL
 {
-	bool AppendVideoMode(std::vector<sGDMode>& modes, uint32_t width, uint32_t height, uint32_t depth, bool fullscreen) {
+	bool AppendVideoMode(
+		std::vector<sGDMode>& modes, uint32_t width, uint32_t height, uint32_t depth, bool fullscreen,
+		bool supportsStencil, bool supportsDxt) {
 		for (sGDMode const& mode : modes) {
 			if (mode.width == width && mode.height == height && mode.depth == depth && mode.isFullscreen == fullscreen) return false;
 		}
@@ -23,26 +25,19 @@ namespace nSCGL
 		mode.height = height;
 		mode.depth = depth;
 		mode.isFullscreen = fullscreen;
-		mode.supportsStencilBuffer = true;
+		mode.supportsStencilBuffer = supportsStencil;
 		mode.__unknown2 = true;
 		mode.textureStageCount = 2;
 		mode.supportsMultitexture = true;
 		mode.supportsTextureEnvCombine = true;
-		mode.supportsFogCoord = true;
-		mode.supportsDxtTextures = true;
+		mode.supportsFogCoord = false;
+		mode.supportsDxtTextures = supportsDxt;
 		mode.isInitialized = true;
-		if (depth > 16) {
-			mode.alphaColorMask = 0xff000000;
-			mode.redColorMask = 0x00ff0000;
-			mode.greenColorMask = 0x0000ff00;
-			mode.blueColorMask = 0x000000ff;
-		}
-		else {
-			mode.alphaColorMask = 0x1;
-			mode.redColorMask = 0xf800;
-			mode.greenColorMask = 0x7c0;
-			mode.blueColorMask = 0x3e;
-		}
+		// Every D3D11 swap chain uses DXGI_FORMAT_R8G8B8A8_UNORM.
+		mode.alphaColorMask = 0xff000000;
+		mode.redColorMask = 0x00ff0000;
+		mode.greenColorMask = 0x0000ff00;
+		mode.blueColorMask = 0x000000ff;
 		modes.push_back(mode);
 		return true;
 	}
