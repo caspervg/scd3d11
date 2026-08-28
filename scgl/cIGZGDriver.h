@@ -219,10 +219,11 @@ public:
 	virtual void TexStage(uint32_t) = 0; // cc
 	virtual void TexStageCoord(uint32_t gdTexCoordSource) = 0; // d0
 	virtual void TexStageMatrix(float const*, uint32_t, uint32_t, uint32_t gdTexMatFlags) = 0; // d4
-	virtual void TexStageCombine(eGDTextureStageCombineParamType gdParamType, eGDTextureStageCombineModeParam gdParam) = 0; // e4
+	// Keep this overload order aligned with the native Windows vtable.
+	virtual void TexStageCombine(eGDTextureStageCombineScaleParamType gdParamType, eGDTextureStageCombineScaleParam gdParam) = 0; // d8
 	virtual void TexStageCombine(eGDTextureStageCombineSourceParamType gdParamType, eGDTextureStageCombineSourceParam gdParam) = 0; // dc
 	virtual void TexStageCombine(eGDTextureStageCombineOperandType gdParamType, eGDBlend gdBlend) = 0; // e0
-	virtual void TexStageCombine(eGDTextureStageCombineScaleParamType gdParamType, eGDTextureStageCombineScaleParam gdParam) = 0; // d8
+	virtual void TexStageCombine(eGDTextureStageCombineParamType gdParamType, eGDTextureStageCombineModeParam gdParam) = 0; // e4
 
 	virtual void SetTexture(uint32_t, uint32_t) = 0;
 	virtual intptr_t GetTexture(uint32_t) = 0;
@@ -244,8 +245,8 @@ public:
 	virtual void BitBltAlphaModulate(int32_t, int32_t, int32_t, uint32_t gdTexFormat, uint32_t gdType, void const*, bool, void const*, uint32_t) = 0; // 120
 	virtual void StretchBltAlphaModulate(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t gdTexFormat, uint32_t gdType, void const*, bool, void const*, uint32_t) = 0;
 
-	virtual void SetViewport(void) = 0;
 	virtual void SetViewport(int32_t x, int32_t y, int32_t width, int32_t height) = 0;
+	virtual void SetViewport(void) = 0;
 	virtual void GetViewport(int32_t dimensions[4]) = 0;
 
 	virtual char const* GetDriverInfo(void) const = 0;

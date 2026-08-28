@@ -521,9 +521,9 @@ namespace nSCGL {
 		virtual void StretchBltAlphaModulate(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t gdTexFormat,
 		                                     uint32_t gdType, void const *, bool, void const *, uint32_t) override;
 
-		virtual void SetViewport(void) override;
-
 		virtual void SetViewport(int32_t x, int32_t y, int32_t width, int32_t height) override;
+
+		virtual void SetViewport(void) override;
 
 		virtual void GetViewport(int32_t dimensions[4]) override;
 

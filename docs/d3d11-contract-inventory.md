@@ -157,6 +157,8 @@ stable indices.
 - Two texture stages support replace, modulate, add, add-signed, interpolate, dot3, and NV combine4
   vocabulary, four sources/operands, RGB/alpha scales, texture coordinate selection, and texture
   matrices.
+- Windows vtable slots `0xD8` through `0xE4` are scale, source, operand, then mode. The C++ interface
+  declaration must retain that order because all four operations are overloaded under one name.
 - The initial fixed-function emulation uses one generic shader pair plus constants where correct.
   Additional shader variants are added only when an observed state cannot be represented safely.
 - Rasterizer, blend, depth-stencil, and sampler objects are cached by their actual D3D11 descriptors
