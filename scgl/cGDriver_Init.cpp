@@ -49,6 +49,28 @@ namespace nSCGL {
 		}
 	}
 
+	LRESULT CALLBACK cGDriver::DriverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+		cGDriver *driver = reinterpret_cast<cGDriver *>(GetWindowLongPtrA(window, GWLP_USERDATA));
+		if (message == WM_NCCREATE) {
+			CREATESTRUCTA const *creation = reinterpret_cast<CREATESTRUCTA const *>(lParam);
+			driver = creation == nullptr ? nullptr : static_cast<cGDriver *>(creation->lpCreateParams);
+			SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(driver));
+		}
+
+		WNDPROC procedure = driver == nullptr ? nullptr : reinterpret_cast<WNDPROC>(driver->windowProcedure);
+		if (procedure != nullptr) {
+			MEMORY_BASIC_INFORMATION memory{};
+			if (VirtualQuery(reinterpret_cast<void *>(procedure), &memory, sizeof(memory)) == sizeof(memory)) {
+				DWORD const protection = memory.Protect & 0xff;
+				bool const executable = memory.State == MEM_COMMIT &&
+					(protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ ||
+					 protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY);
+				if (executable) return CallWindowProcA(procedure, window, message, wParam, lParam);
+			}
+		}
+		return DefWindowProcA(window, message, wParam, lParam);
+	}
+
 	bool cGDriver::Init(void) {
 		if (initialized) {
 			return true;
@@ -56,7 +78,7 @@ namespace nSCGL {
 
 		WNDCLASSA windowClass{};
 		windowClass.style = CS_OWNDC;
-		windowClass.lpfnWndProc = DefWindowProcA;
+		windowClass.lpfnWndProc = DriverWindowProcedure;
 		windowClass.hInstance = GetModuleHandleA(nullptr);
 		windowClass.lpszClassName = kWindowClassName;
 

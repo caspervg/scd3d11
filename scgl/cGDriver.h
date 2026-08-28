@@ -292,6 +292,8 @@ namespace nSCGL {
 	private:
 		void SetLastError(DriverError err);
 
+		static LRESULT CALLBACK DriverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+
 		void DestroyD3D11Context(bool preserveResources = false);
 
 		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);

@@ -236,6 +236,8 @@ namespace nSCGL {
 		}
 		this->windowProcedure = windowProcedure;
 		showDriverWindow = showWindow;
+		Log(LogCategory::Initialization, "SetVideoMode(%d, wndProc=%p, show=%u)",
+		    newModeIndex, windowProcedure, showWindow ? 1u : 0u);
 		int const windowX = windowed ? CW_USEDEFAULT : monitorRectangle.left;
 		int const windowY = windowed ? CW_USEDEFAULT : monitorRectangle.top;
 
@@ -251,24 +253,13 @@ namespace nSCGL {
 			nullptr,
 			nullptr,
 			GetModuleHandleA(nullptr),
-			nullptr);
+			this);
 		if (window == nullptr) {
 			Log(LogCategory::Initialization, "CreateWindowExA failed (Win32 error %lu)", ::GetLastError());
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
 		windowHandle = window;
-
-		if (windowProcedure != nullptr) {
-			::SetLastError(ERROR_SUCCESS);
-			if (SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(windowProcedure)) == 0 &&
-			    ::GetLastError() != ERROR_SUCCESS) {
-				Log(LogCategory::Initialization, "SetWindowLongPtrA failed (Win32 error %lu)", ::GetLastError());
-				DestroyD3D11Context(recoveringDevice);
-				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
-				return;
-			}
-		}
 
 		DXGI_SWAP_CHAIN_DESC swapChainDescription{};
 		swapChainDescription.BufferDesc.Width = static_cast<UINT>(mode.width);
