@@ -47,9 +47,6 @@ The callback receives an `SCD3D11FrameContext` for either `SCD3D11_EVENT_RENDER`
 immediate context borrowed for the duration of the call) or `SCD3D11_EVENT_BEFORE_DEVICE_DESTROY`. `deviceGeneration`
 increments whenever the device is recreated, so stale resources can be detected and dropped.
 
-> **Renamed in this release.** These were `SCGLRegisterD3D11FrameCallback` / `SCGLUnregisterD3D11FrameCallback` in
-> `SCGL.dll`. Consumers that resolve the module by filename or the functions by export name must be updated.
-
 ## Diagnostics
 
 The driver appends to `SC4D3D11.log` in the game's working directory (normally the `Apps` folder next to
