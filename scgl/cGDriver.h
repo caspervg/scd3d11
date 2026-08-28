@@ -164,6 +164,9 @@ namespace nSCGL {
 		};
 
 		void *windowHandle;
+		void *windowProcedure;
+		bool showDriverWindow;
+		bool recoveringDevice;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
@@ -289,6 +292,8 @@ namespace nSCGL {
 		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);
 
 		HRESULT ResizeBackBufferIfNeeded();
+
+		bool RecoverD3D11Device();
 
 		HRESULT CreateGeometryPipeline();
 

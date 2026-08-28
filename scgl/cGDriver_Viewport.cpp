@@ -178,9 +178,23 @@ namespace nSCGL {
 		HRESULT const result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::ResizeBuffers", result);
+			// Keep rendering at the old size after a transient resize failure.
+			CreateBackBufferTargets(static_cast<uint32_t>(windowWidth), static_cast<uint32_t>(windowHeight));
 			return result;
 		}
 		return CreateBackBufferTargets(width, height);
+	}
+
+	bool cGDriver::RecoverD3D11Device() {
+		if (recoveringDevice || currentVideoMode < 0 || currentVideoMode >= videoModeCount) return false;
+		recoveringDevice = true;
+		int32_t const mode = currentVideoMode;
+		void *const procedure = windowProcedure;
+		bool const show = showDriverWindow;
+		Log(LogCategory::Initialization, "recreating D3D11 device after device loss");
+		SetVideoMode(mode, procedure, show, false);
+		recoveringDevice = false;
+		return IsDeviceReady();
 	}
 
 	void cGDriver::SetVideoMode(int32_t newModeIndex, void *windowProcedure, bool showWindow, bool) {
@@ -220,6 +234,8 @@ namespace nSCGL {
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
+		this->windowProcedure = windowProcedure;
+		showDriverWindow = showWindow;
 		int const windowX = windowed ? CW_USEDEFAULT : monitorRectangle.left;
 		int const windowY = windowed ? CW_USEDEFAULT : monitorRectangle.top;
 
@@ -381,6 +397,7 @@ namespace nSCGL {
 
 	void cGDriver::Flush(void) {
 		if (!IsDeviceReady()) {
+			RecoverD3D11Device();
 			return;
 		}
 
@@ -420,6 +437,7 @@ namespace nSCGL {
 				LogHRESULT(LogCategory::Resource, "ID3D11Device::GetDeviceRemovedReason",
 				           d3dDevice->GetDeviceRemovedReason());
 				DestroyD3D11Context();
+				RecoverD3D11Device();
 			}
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 		}
