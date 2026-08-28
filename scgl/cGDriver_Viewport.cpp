@@ -241,37 +241,39 @@ namespace nSCGL {
 			D3D_FEATURE_LEVEL_10_1,
 			D3D_FEATURE_LEVEL_10_0
 		};
+		D3D_FEATURE_LEVEL const legacyRequestedLevels[] = {
+			D3D_FEATURE_LEVEL_11_0,
+			D3D_FEATURE_LEVEL_10_1,
+			D3D_FEATURE_LEVEL_10_0
+		};
 
-		HRESULT result = D3D11CreateDeviceAndSwapChain(
-			nullptr,
-			D3D_DRIVER_TYPE_HARDWARE,
-			nullptr,
-			creationFlags,
-			requestedLevels,
-			static_cast<UINT>(sizeof(requestedLevels) / sizeof(requestedLevels[0])),
-			D3D11_SDK_VERSION,
-			&swapChainDescription,
-			&swapChain,
-			&d3dDevice,
-			&featureLevel,
-			&d3dContext);
+		auto createDevice = [&](D3D_FEATURE_LEVEL const *levels, UINT levelCount) {
+			swapChain.Reset();
+			d3dContext.Reset();
+			d3dDevice.Reset();
+			return D3D11CreateDeviceAndSwapChain(
+				nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags,
+				levels, levelCount, D3D11_SDK_VERSION, &swapChainDescription,
+				&swapChain, &d3dDevice, &featureLevel, &d3dContext);
+		};
+		auto createForAvailableRuntime = [&]() {
+			HRESULT createResult = createDevice(
+				requestedLevels, static_cast<UINT>(sizeof(requestedLevels) / sizeof(requestedLevels[0])));
+			if (createResult == E_INVALIDARG) {
+				Log(LogCategory::Initialization, "D3D11.1 runtime unavailable; retrying without feature level 11_1");
+				createResult = createDevice(
+					legacyRequestedLevels,
+					static_cast<UINT>(sizeof(legacyRequestedLevels) / sizeof(legacyRequestedLevels[0])));
+			}
+			return createResult;
+		};
+
+		HRESULT result = createForAvailableRuntime();
 #ifndef NDEBUG
 		if (result == DXGI_ERROR_SDK_COMPONENT_MISSING) {
 			Log(LogCategory::Initialization, "D3D11 debug layer unavailable; retrying without it");
 			creationFlags &= ~D3D11_CREATE_DEVICE_DEBUG;
-			result = D3D11CreateDeviceAndSwapChain(
-				nullptr,
-				D3D_DRIVER_TYPE_HARDWARE,
-				nullptr,
-				creationFlags,
-				requestedLevels,
-				static_cast<UINT>(sizeof(requestedLevels) / sizeof(requestedLevels[0])),
-				D3D11_SDK_VERSION,
-				&swapChainDescription,
-				&swapChain,
-				&d3dDevice,
-				&featureLevel,
-				&d3dContext);
+			result = createForAvailableRuntime();
 		}
 #endif
 		if (FAILED(result)) {
