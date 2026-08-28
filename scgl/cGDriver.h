@@ -184,6 +184,8 @@ namespace nSCGL {
 		Microsoft::WRL::ComPtr<ID3D11SamplerState> defaultSampler;
 		Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
 		Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+		Microsoft::WRL::ComPtr<ID3D11PixelShader> flatPixelShader;
+		ID3D11PixelShader *appliedPixelShader;
 		Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffers[CONSTANT_BUFFER_COUNT];
 		uint8_t activeTransformBuffer;
@@ -262,10 +264,10 @@ namespace nSCGL {
 		bool lightingEnabled;
 		bool lightsEnabled[8];
 		float globalAmbient[4];
-		float lightAmbient[4];
-		float lightDiffuse[4];
-		float lightSpecular[4];
-		float lightDirection[4];
+		float lightAmbient[8][4];
+		float lightDiffuse[8][4];
+		float lightSpecular[8][4];
+		float lightPosition[8][4];
 		float materialAmbient[4];
 		float materialDiffuse[4];
 		float materialSpecular[4];

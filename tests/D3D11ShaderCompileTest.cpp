@@ -7,11 +7,12 @@
 
 namespace
 {
-	bool Compile(std::string const& source, char const* entryPoint, char const* target) {
+	bool Compile(std::string const& source, char const* entryPoint, char const* target,
+	             D3D_SHADER_MACRO const* macros = nullptr) {
 		ID3DBlob* bytecode = nullptr;
 		ID3DBlob* messages = nullptr;
 		HRESULT const result = D3DCompile(
-			source.data(), source.size(), "SC4D3D11", nullptr, nullptr, entryPoint, target,
+			source.data(), source.size(), "SC4D3D11", macros, nullptr, entryPoint, target,
 			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS |
 			D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &bytecode, &messages);
 		if (messages) {
@@ -35,5 +36,7 @@ int main() {
 	}
 
 	std::string const shader = cpp.substr(begin + marker.size(), end - begin - marker.size());
-	return Compile(shader, "VSMain", "vs_4_0") && Compile(shader, "PSMain", "ps_4_0") ? 0 : 1;
+	D3D_SHADER_MACRO const flat[] = {{"SCGL_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+	return Compile(shader, "VSMain", "vs_4_0") && Compile(shader, "PSMain", "ps_4_0") &&
+	       Compile(shader, "PSMain", "ps_4_0", flat) ? 0 : 1;
 }

@@ -16,6 +16,7 @@
 #include <cstring>
 #include <d3dcompiler.h>
 #include <limits>
+#include <cmath>
 
 namespace nSCGL {
 	constexpr uint32_t VERTEX_CACHE_SEGMENT_BYTES = 64u * 1024u * 1024u;
@@ -23,6 +24,9 @@ namespace nSCGL {
 
 	namespace {
 		char const kShaderSource[] = R"(
+#ifndef SCGL_INTERPOLATION
+#define SCGL_INTERPOLATION
+#endif
 struct StageState
 {
 	float4 environmentColor;
@@ -35,14 +39,22 @@ cbuffer DriverConstants : register(b0)
 {
 	column_major float4x4 modelView;
 	column_major float4x4 projection;
+	column_major float4x4 normalMatrix;
 	float4 colorMultiplier;
 	uint flags;
 	uint alphaFunction;
 	float alphaReference;
-	float padding;
-	float4 lightDirection;
-	float4 lightAmbient;
-	float4 lightDiffuse;
+	uint enabledLights;
+	float4 globalAmbient;
+	float4 lightAmbient[8];
+	float4 lightDiffuse[8];
+	float4 lightSpecular[8];
+	float4 lightPosition[8];
+	float4 materialAmbient;
+	float4 materialDiffuse;
+	float4 materialSpecular;
+	float4 materialEmission;
+	float4 materialParameters;
 	column_major float4x4 textureMatrix0;
 	column_major float4x4 textureMatrix1;
 	StageState stage0;
@@ -68,8 +80,9 @@ struct VSInput
 struct PSInput
 {
 	float4 position : SV_POSITION;
-	float3 normal : NORMAL;
-	float4 color : COLOR0;
+	SCGL_INTERPOLATION float3 normal : NORMAL;
+	SCGL_INTERPOLATION float4 color : COLOR0;
+	SCGL_INTERPOLATION float3 viewPosition : TEXCOORD3;
 	float2 texCoord0 : TEXCOORD0;
 	float2 texCoord1 : TEXCOORD1;
 	float fogDistance : TEXCOORD2;
@@ -81,8 +94,9 @@ PSInput VSMain(VSInput input)
 	float4 viewPosition = mul(modelView, float4(input.position, 1.0f));
 	output.position = mul(projection, viewPosition);
 	output.position.z = (output.position.z + output.position.w) * 0.5f;
-	output.normal = mul((float3x3)modelView, input.normal);
-	output.color = input.color * colorMultiplier;
+	output.normal = mul((float3x3)normalMatrix, input.normal);
+	output.color = input.color;
+	output.viewPosition = viewPosition.xyz;
 	float4 source0 = (stage0.parameters1.w & 0xfffffff8) == 0x10
 		? viewPosition
 		: float4(stage0.parameters1.w == 1 ? input.texCoord1 : input.texCoord0, 0.0f, 1.0f);
@@ -145,6 +159,28 @@ float4 ApplyStage(StageState state, float4 textureColor, float4 previous, float4
 float4 PSMain(PSInput input) : SV_TARGET
 {
 	float4 primary = input.color;
+	if ((flags & 4) != 0)
+	{
+		float4 ambientMaterial = (flags & 32) != 0 ? input.color : materialAmbient;
+		float4 diffuseMaterial = (flags & 64) != 0 ? input.color : materialDiffuse;
+		float3 normal = normalize(input.normal);
+		float3 view = normalize(-input.viewPosition);
+		primary = materialEmission + globalAmbient * ambientMaterial;
+		[unroll] for (uint light = 0; light < 8; ++light)
+		{
+			if ((enabledLights & (1u << light)) == 0) continue;
+			float3 vectorToLight = lightPosition[light].w == 0.0f
+				? normalize(lightPosition[light].xyz)
+				: normalize(lightPosition[light].xyz / lightPosition[light].w - input.viewPosition);
+			float diffuse = saturate(dot(normal, vectorToLight));
+			float specular = diffuse > 0.0f
+				? pow(saturate(dot(normal, normalize(vectorToLight + view))), materialParameters.x) : 0.0f;
+			primary += lightAmbient[light] * ambientMaterial +
+				lightDiffuse[light] * diffuseMaterial * diffuse + lightSpecular[light] * materialSpecular * specular;
+		}
+		primary.a = diffuseMaterial.a;
+	}
+	primary *= colorMultiplier;
 	float4 color = primary;
 	if ((flags & 1) != 0) color = ApplyStage(stage0, texture0.Sample(sampler0, input.texCoord0), color, primary);
 	if ((flags & 2) != 0) color = ApplyStage(stage1, texture1.Sample(sampler1, input.texCoord1), color, primary);
@@ -158,11 +194,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			alphaFunction == 5 ? color.a != alphaReference :
 			alphaFunction == 6 ? color.a >= alphaReference : true;
 		clip(alphaPass ? 1.0f : -1.0f);
-	}
-	if ((flags & 4) != 0)
-	{
-		float diffuse = saturate(dot(normalize(input.normal), normalize(lightDirection.xyz)));
-		color.rgb *= saturate(lightAmbient.rgb + lightDiffuse.rgb * diffuse);
 	}
 	if ((flags & 16) != 0)
 	{
@@ -180,14 +211,22 @@ float4 PSMain(PSInput input) : SV_TARGET
 		struct DriverConstants {
 			float modelView[16];
 			float projection[16];
+			float normalMatrix[16];
 			float colorMultiplier[4];
 			uint32_t flags;
 			uint32_t alphaFunction;
 			float alphaReference;
-			float padding;
-			float lightDirection[4];
-			float lightAmbient[4];
-			float lightDiffuse[4];
+			uint32_t enabledLights;
+			float globalAmbient[4];
+			float lightAmbient[8][4];
+			float lightDiffuse[8][4];
+			float lightSpecular[8][4];
+			float lightPosition[8][4];
+			float materialAmbient[4];
+			float materialDiffuse[4];
+			float materialSpecular[4];
+			float materialEmission[4];
+			float materialParameters[4];
 			float textureMatrices[2][16];
 
 			struct StageConstants {
@@ -200,6 +239,24 @@ float4 PSMain(PSInput input) : SV_TARGET
 			float fogColor[4];
 			float fogParameters[4];
 		};
+
+		void MakeNormalMatrix(float const *m, float *out) {
+			float const a00=m[0], a01=m[4], a02=m[8], a10=m[1], a11=m[5], a12=m[9];
+			float const a20=m[2], a21=m[6], a22=m[10];
+			float const c00=a11*a22-a12*a21, c01=a12*a20-a10*a22, c02=a10*a21-a11*a20;
+			float const c10=a02*a21-a01*a22, c11=a00*a22-a02*a20, c12=a01*a20-a00*a21;
+			float const c20=a01*a12-a02*a11, c21=a02*a10-a00*a12, c22=a00*a11-a01*a10;
+			float const determinant = a00*c00 + a01*c01 + a02*c02;
+			memset(out, 0, sizeof(float) * 16);
+			if (std::fabs(determinant) < 1.0e-12f) {
+				out[0]=out[5]=out[10]=out[15]=1.0f;
+				return;
+			}
+			float const scale=1.0f/determinant;
+			out[0]=c00*scale; out[4]=c01*scale; out[8]=c02*scale;
+			out[1]=c10*scale; out[5]=c11*scale; out[9]=c12*scale;
+			out[2]=c20*scale; out[6]=c21*scale; out[10]=c22*scale; out[15]=1.0f;
+		}
 	}
 
 	HRESULT cGDriver::CreateGeometryPipeline() {
@@ -213,6 +270,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 #endif
 		Microsoft::WRL::ComPtr<ID3DBlob> vertexBytecode;
 		Microsoft::WRL::ComPtr<ID3DBlob> pixelBytecode;
+		Microsoft::WRL::ComPtr<ID3DBlob> flatPixelBytecode;
 		Microsoft::WRL::ComPtr<ID3DBlob> messages;
 
 		HRESULT result = D3DCompile(
@@ -225,6 +283,15 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "D3DCompile(VSMain)", result);
+			return result;
+		}
+		D3D_SHADER_MACRO const flatMacros[] = {{"SCGL_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+		result = D3DCompile(
+			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", flatMacros, nullptr,
+			"PSMain", "ps_4_0", compileFlags, 0, &flatPixelBytecode, &messages);
+		if (messages) messages.Reset();
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "D3DCompile(PSMain flat)", result);
 			return result;
 		}
 
@@ -253,6 +320,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreatePixelShader", result);
 			return result;
 		}
+		result = d3dDevice->CreatePixelShader(
+			flatPixelBytecode->GetBufferPointer(), flatPixelBytecode->GetBufferSize(), nullptr, &flatPixelShader);
+		if (FAILED(result)) return result;
 
 		D3D11_INPUT_ELEMENT_DESC const elements[] = {
 			{
@@ -458,7 +528,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
-		if (!IsDeviceReady() || !vertexShader || !pixelShader || !inputLayout ||
+		if (!IsDeviceReady() || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
 		    !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
 		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
@@ -467,15 +537,21 @@ float4 PSMain(PSInput input) : SV_TARGET
 		DriverConstants constants{};
 		memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
 		memcpy(constants.projection, matrices[1], sizeof(constants.projection));
+		MakeNormalMatrix(matrices[0], constants.normalMatrix);
 		memcpy(constants.colorMultiplier, colorMultipliers, sizeof(constants.colorMultiplier));
 		constants.alphaFunction = alphaFunction;
 		constants.alphaReference = alphaReference;
 		if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
-		memcpy(constants.lightDirection, lightDirection, sizeof(constants.lightDirection));
-		for (uint32_t component = 0; component < 4; ++component) {
-			constants.lightAmbient[component] = globalAmbient[component] + lightAmbient[component];
-			constants.lightDiffuse[component] = lightDiffuse[component];
-		}
+		memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
+		memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
+		memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
+		memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
+		memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+		memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
+		memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
+		memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
+		memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
+		constants.materialParameters[0] = materialShininess;
 		for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
 			TextureStageState const &source = textureStages[stageIndex];
 			DriverConstants::StageConstants &destination = constants.stages[stageIndex];
@@ -492,9 +568,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 			destination.parameters1[3] = source.coordinateSource;
 		}
-		if (lightingEnabled && lightsEnabled[0] &&
-		    RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0)
+		if (lightingEnabled && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) {
 			constants.flags |= 4;
+			if (ambientVertexColors) constants.flags |= 32;
+			if (diffuseVertexColors) constants.flags |= 64;
+			for (uint32_t light = 0; light < 8; ++light)
+				if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
+		}
 		if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
 		memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
 		constants.fogParameters[0] = fogDensity;
@@ -556,11 +636,15 @@ float4 PSMain(PSInput input) : SV_TARGET
 		UINT const offset = dynamicVertexBufferOffset;
 		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
 		ID3D11Buffer *constantBuffer = transformBuffers[activeTransformBuffer].Get();
+		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
 			d3dContext->IASetInputLayout(inputLayout.Get());
 			d3dContext->VSSetShader(vertexShader.Get(), nullptr, 0);
-			d3dContext->PSSetShader(pixelShader.Get(), nullptr, 0);
 			geometryPipelineBound = true;
+		}
+		if (desiredPixelShader != appliedPixelShader) {
+			d3dContext->PSSetShader(desiredPixelShader, nullptr, 0);
+			appliedPixelShader = desiredPixelShader;
 		}
 		if (constantBuffer != appliedTransformBuffer) {
 			d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);

@@ -176,7 +176,9 @@ namespace nSCGL {
 		for (auto &buffer: transformBuffers) buffer.Reset();
 		activeTransformBuffer = 0;
 		inputLayout.Reset();
+		flatPixelShader.Reset();
 		pixelShader.Reset();
+		appliedPixelShader = nullptr;
 		vertexShader.Reset();
 		activeIndexBufferSegment = 0;
 		activeVertexBufferSegment = 0;

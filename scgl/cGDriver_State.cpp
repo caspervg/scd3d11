@@ -16,6 +16,7 @@ namespace nSCGL {
         appliedDepthStateKey = appliedBlendStateKey = appliedRasterizerStateKey = UINT64_MAX;
         appliedStencilReference = INT32_MIN;
         geometryPipelineBound = false;
+		appliedPixelShader = nullptr;
 		appliedVertexBuffer = nullptr;
 		appliedTransformBuffer = nullptr;
         appliedVertexBufferOffset = UINT32_MAX;

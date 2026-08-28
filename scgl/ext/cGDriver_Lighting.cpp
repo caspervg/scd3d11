@@ -25,7 +25,6 @@ namespace nSCGL
 			return;
 		}
 		lightsEnabled[light] = enabled;
-		if (light != 0 && enabled) Log(LogCategory::Unsupported, "light %u enabled; generic shader currently evaluates light 0", light);
 	}
 
 	void cGDriver::LightModelAmbient(float red, float green, float blue, float alpha) {
@@ -36,13 +35,13 @@ namespace nSCGL
 	}
 
 	void cGDriver::LightColor(uint32_t light, uint32_t parameter, float const* color) {
-		if (light != 0 || parameter > 2 || color == nullptr) {
-			if (light != 0) Log(LogCategory::Unsupported, "color for light %u is not translated", light);
-			else SetLastError(DriverError::INVALID_VALUE);
+		if (light >= 8 || parameter > 2 || color == nullptr) {
+			SetLastError(light >= 8 ? DriverError::OUT_OF_RANGE : DriverError::INVALID_VALUE);
 			return;
 		}
-		float* destination = parameter == 0 ? lightAmbient : (parameter == 1 ? lightDiffuse : lightSpecular);
-		memcpy(destination, color, sizeof(lightAmbient));
+		float* destination = parameter == 0 ? lightAmbient[light] :
+		                     (parameter == 1 ? lightDiffuse[light] : lightSpecular[light]);
+		memcpy(destination, color, sizeof(lightAmbient[light]));
 	}
 
 	void cGDriver::LightColor(
@@ -54,25 +53,20 @@ namespace nSCGL
 	}
 
 	void cGDriver::LightPosition(uint32_t light, float const* position) {
-		if (light != 0 || position == nullptr) {
-			if (light != 0) Log(LogCategory::Unsupported, "position for light %u is not translated", light);
-			else SetLastError(DriverError::INVALID_VALUE);
+		if (light >= 8 || position == nullptr) {
+			SetLastError(light >= 8 ? DriverError::OUT_OF_RANGE : DriverError::INVALID_VALUE);
 			return;
 		}
-		if (position[3] != 0.0f) {
-			Log(LogCategory::Unsupported, "positional light requested; generic shader currently supports directional light 0");
-		}
-		memcpy(lightDirection, position, sizeof(lightDirection));
+		memcpy(lightPosition[light], position, sizeof(lightPosition[light]));
 	}
 
 	void cGDriver::LightDirection(uint32_t light, float const* direction) {
-		if (light != 0 || direction == nullptr) {
-			if (light != 0) Log(LogCategory::Unsupported, "direction for light %u is not translated", light);
-			else SetLastError(DriverError::INVALID_VALUE);
+		if (light >= 8 || direction == nullptr) {
+			SetLastError(light >= 8 ? DriverError::OUT_OF_RANGE : DriverError::INVALID_VALUE);
 			return;
 		}
-		memcpy(lightDirection, direction, sizeof(float) * 3);
-		lightDirection[3] = 0.0f;
+		memcpy(lightPosition[light], direction, sizeof(float) * 3);
+		lightPosition[light][3] = 0.0f;
 	}
 
 	void cGDriver::MaterialColor(uint32_t parameter, float const* color) {

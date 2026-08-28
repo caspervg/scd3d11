@@ -77,6 +77,7 @@ namespace nSCGL {
 	                       indexBufferCacheHits(0),
 	                       indexBufferCacheMisses(0),
 	                       geometryPipelineBound(false),
+	                       appliedPixelShader(nullptr),
 	                       textureBindingsValid(false),
 	                       appliedTopology(D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED),
 	                       appliedTextureViews{},
@@ -125,10 +126,10 @@ namespace nSCGL {
 	                       lightingEnabled(true),
 	                       lightsEnabled{true},
 	                       globalAmbient{0.0f, 0.0f, 0.0f, 1.0f},
-	                       lightAmbient{0.0f, 0.0f, 0.0f, 1.0f},
-	                       lightDiffuse{1.0f, 1.0f, 1.0f, 1.0f},
-	                       lightSpecular{1.0f, 1.0f, 1.0f, 1.0f},
-	                       lightDirection{1.0f, 1.0f, 0.0f, 0.0f},
+	                       lightAmbient{},
+	                       lightDiffuse{},
+	                       lightSpecular{},
+	                       lightPosition{},
 	                       materialAmbient{0.0f, 0.0f, 0.0f, 1.0f},
 	                       materialDiffuse{1.0f, 1.0f, 1.0f, 1.0f},
 	                       materialSpecular{0.0f, 0.0f, 0.0f, 1.0f},
@@ -147,6 +148,10 @@ namespace nSCGL {
 			matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
 		}
 		textureStageEnabled[0] = true;
+		lightAmbient[0][3] = 1.0f;
+		lightDiffuse[0][0] = lightDiffuse[0][1] = lightDiffuse[0][2] = lightDiffuse[0][3] = 1.0f;
+		lightSpecular[0][0] = lightSpecular[0][1] = lightSpecular[0][2] = lightSpecular[0][3] = 1.0f;
+		lightPosition[0][0] = lightPosition[0][1] = 1.0f;
 		for (TextureStageState &stage: textureStages) {
 			stage.matrix[0] = stage.matrix[5] = stage.matrix[10] = stage.matrix[15] = 1.0f;
 		}
