@@ -46,13 +46,16 @@ namespace nSCGL {
 		height = bottom - top;
 
 		bool createdBuffer = false;
+		auto fail = [&]() -> cIGZBuffer * {
+			if (createdBuffer && buffer != nullptr) buffer->Release();
+			return nullptr;
+		};
 		if (buffer == nullptr || !buffer->IsReady()) {
 			buffer = CreateBufferFromGraphicsSystem();
 			if (buffer == nullptr) return nullptr;
 			createdBuffer = true;
 			if (!buffer->Init(width, height, cGZBufferColorType::A8R8G8B8, 32)) {
-				buffer->Release();
-				return nullptr;
+				return fail();
 			}
 		} else if (buffer->GetColorType() != cGZBufferColorType::A8R8G8B8 ||
 		           buffer->Width() != static_cast<uint32_t>(width) || buffer->Height() != static_cast<uint32_t>(
@@ -60,7 +63,7 @@ namespace nSCGL {
 			return nullptr;
 		}
 
-		if (!backBufferTexture) return nullptr;
+		if (!backBufferTexture) return fail();
 
 		D3D11_TEXTURE2D_DESC stagingDescription{};
 		stagingDescription.Width = static_cast<UINT>(width);
@@ -76,7 +79,7 @@ namespace nSCGL {
 		HRESULT result = d3dDevice->CreateTexture2D(&stagingDescription, nullptr, &staging);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(snapshot)", result);
-			return nullptr;
+			return fail();
 		}
 
 		D3D11_BOX const sourceBox{
@@ -89,7 +92,7 @@ namespace nSCGL {
 		result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapping);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(snapshot)", result);
-			return nullptr;
+			return fail();
 		}
 
 		bool const locked = buffer->Lock(cIGZBuffer::eLockFlags::IsDirtyUpdate);
@@ -98,7 +101,7 @@ namespace nSCGL {
 				uint8_t const *source = static_cast<uint8_t const *>(mapping.pData) + static_cast<size_t>(row) * mapping
 				                        .RowPitch;
 				for (int32_t column = 0; column < width; ++column) {
-					uint32_t const color = static_cast<uint32_t>(source[column * 4 + 3]) << 24 |
+					uint32_t const color = 0xff000000u |
 					                       static_cast<uint32_t>(source[column * 4 + 0]) << 16 |
 					                       static_cast<uint32_t>(source[column * 4 + 1]) << 8 |
 					                       source[column * 4 + 2];
@@ -110,8 +113,7 @@ namespace nSCGL {
 		d3dContext->Unmap(staging.Get(), 0);
 		if (!locked) {
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
-			if (createdBuffer) buffer->Release();
-			return nullptr;
+			return fail();
 		}
 		return buffer;
 	}
