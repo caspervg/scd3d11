@@ -47,6 +47,7 @@ namespace nSCGL {
         uint32_t height,
         uint32_t levels) {
         DXGI_FORMAT const format = D3D11TextureFormat(internalFormat);
+		bool const preserveMipData = resource.format == format && resource.width == width && resource.height == height;
         if (!d3dDevice || format == DXGI_FORMAT_UNKNOWN || width == 0 || height == 0 ||
             width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
             return E_INVALIDARG;
@@ -89,10 +90,35 @@ namespace nSCGL {
 		resource.height = height;
 		resource.levels = levels;
 		resource.uploadedMipLevels = 0;
+		resource.internalFormat = internalFormat;
+		if (!preserveMipData) {
+			resource.mipData.clear();
+			resource.mipPitch.clear();
+		}
+		resource.mipData.resize(levels);
+		resource.mipPitch.resize(levels);
         RecordEncountered(ObservedCategory::TextureFormat,
                           (static_cast<uint64_t>(internalFormat) << 32) | static_cast<uint32_t>(format));
         return S_OK;
     }
+
+	HRESULT cGDriver::RecreateTextureResources() {
+		for (auto &entry: textures) {
+			TextureResource &resource = entry.second;
+			uint32_t const uploaded = resource.uploadedMipLevels;
+			if (resource.width == 0) continue;
+			HRESULT const result = CreateTextureResource(
+				resource, resource.internalFormat, resource.width, resource.height, resource.levels);
+			if (FAILED(result)) return result;
+			for (uint32_t level = 0; level < resource.levels; ++level) {
+				if (level >= resource.mipData.size() || resource.mipData[level].empty()) continue;
+				d3dContext->UpdateSubresource(resource.texture.Get(), level, nullptr,
+					resource.mipData[level].data(), resource.mipPitch[level], 0);
+			}
+			resource.uploadedMipLevels = uploaded;
+		}
+		return S_OK;
+	}
 
     HRESULT cGDriver::EnsureSampler(TextureStageState &stage) {
         if (stage.sampler) {
@@ -533,6 +559,22 @@ namespace nSCGL {
 		d3dContext->UpdateSubresource(
 			resource.texture.Get(), D3D11CalcSubresource(level, 0, resource.levels),
 			&box, upload, pitch, 0);
+		uint32_t const levelIndex = static_cast<uint32_t>(level);
+		uint32_t const destinationPitch = D3D11TextureRowPitch(resource.format, mipWidth);
+		uint32_t const destinationRows = IsCompressed(resource.format) ? (mipHeight + 3) / 4 : mipHeight;
+		resource.mipPitch[levelIndex] = destinationPitch;
+		resource.mipData[levelIndex].resize(static_cast<size_t>(destinationPitch) * destinationRows);
+		uint32_t const copyRows = IsCompressed(resource.format) ? (static_cast<uint32_t>(height) + 3) / 4 : static_cast<uint32_t>(height);
+		uint32_t const copyBytes = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
+		uint32_t const destinationY = IsCompressed(resource.format) ? static_cast<uint32_t>(yOffset) / 4 : static_cast<uint32_t>(yOffset);
+		uint32_t const destinationX = IsCompressed(resource.format)
+			? (static_cast<uint32_t>(xOffset) / 4) * (resource.format == DXGI_FORMAT_BC1_UNORM ? 8u : 16u)
+			: static_cast<uint32_t>(xOffset) * D3D11TextureRowPitch(resource.format, 1);
+		uint8_t const *backupSource = static_cast<uint8_t const *>(upload);
+		for (uint32_t row = 0; row < copyRows; ++row) {
+			memcpy(resource.mipData[levelIndex].data() + static_cast<size_t>(destinationY + row) * destinationPitch + destinationX,
+			       backupSource + static_cast<size_t>(row) * pitch, copyBytes);
+		}
 		resource.uploadedMipLevels |= 1u << static_cast<uint32_t>(level);
 	}
 

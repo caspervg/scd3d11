@@ -132,7 +132,7 @@ namespace nSCGL {
 		return true;
 	}
 
-	void cGDriver::DestroyD3D11Context(void) {
+	void cGDriver::DestroyD3D11Context(bool preserveResources) {
 		if (d3dDevice) {
 			SCGLD3D11FrameContext const frame{
 				sizeof(frame), 1, SCGL_D3D11_EVENT_BEFORE_DEVICE_DESTROY, deviceGeneration,
@@ -152,14 +152,22 @@ namespace nSCGL {
 		}
 
 		for (BufferRegionResource &region: bufferRegions) region.texture.Reset();
-		bufferRegionFlags = 0;
+		if (!preserveResources) bufferRegionFlags = 0;
 		depthStencilView.Reset();
 		depthStencilTexture.Reset();
 		renderTargetView.Reset();
 		backBufferTexture.Reset();
-		textures.clear();
+		if (preserveResources) {
+			for (auto &entry: textures) {
+				entry.second.texture.Reset();
+				entry.second.view.Reset();
+			}
+			for (TextureStageState &stage: textureStages) stage.sampler.Reset();
+		} else {
+			textures.clear();
+			boundTextures[0] = boundTextures[1] = 0;
+		}
 		samplerStates.clear();
-		boundTextures[0] = boundTextures[1] = 0;
 		depthStencilStates.clear();
 		blendStates.clear();
 		rasterizerStates.clear();

@@ -217,7 +217,7 @@ namespace nSCGL {
 			                                                     ? PresentationMode::BorderlessFullscreen
 			                                                     : PresentationMode::ExclusiveFullscreen;
 
-		DestroyD3D11Context();
+		DestroyD3D11Context(recoveringDevice);
 		presentationMode = requestedPresentationMode;
 
 		bool const windowed = presentationMode == PresentationMode::Windowed;
@@ -264,7 +264,7 @@ namespace nSCGL {
 			if (SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(windowProcedure)) == 0 &&
 			    ::GetLastError() != ERROR_SUCCESS) {
 				Log(LogCategory::Initialization, "SetWindowLongPtrA failed (Win32 error %lu)", ::GetLastError());
-				DestroyD3D11Context();
+				DestroyD3D11Context(recoveringDevice);
 				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 				return;
 			}
@@ -332,7 +332,7 @@ namespace nSCGL {
 #endif
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Initialization, "D3D11CreateDeviceAndSwapChain", result);
-			DestroyD3D11Context();
+			DestroyD3D11Context(recoveringDevice);
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
@@ -357,7 +357,7 @@ namespace nSCGL {
 			}
 			if (FAILED(result)) {
 				LogHRESULT(LogCategory::SwapChain, "enter exclusive fullscreen", result);
-				DestroyD3D11Context();
+				DestroyD3D11Context(recoveringDevice);
 				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 				return;
 			}
@@ -365,14 +365,19 @@ namespace nSCGL {
 
 		result = CreateGeometryPipeline();
 		if (FAILED(result)) {
-			DestroyD3D11Context();
+			DestroyD3D11Context(recoveringDevice);
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
 
 		result = CreateBackBufferTargets(static_cast<uint32_t>(mode.width), static_cast<uint32_t>(mode.height));
 		if (FAILED(result)) {
-			DestroyD3D11Context();
+			DestroyD3D11Context(recoveringDevice);
+			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+			return;
+		}
+		if (recoveringDevice && FAILED(RecreateTextureResources())) {
+			DestroyD3D11Context(true);
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
@@ -436,7 +441,7 @@ namespace nSCGL {
 			if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
 				LogHRESULT(LogCategory::Resource, "ID3D11Device::GetDeviceRemovedReason",
 				           d3dDevice->GetDeviceRemovedReason());
-				DestroyD3D11Context();
+				DestroyD3D11Context(true);
 				RecoverD3D11Device();
 			}
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);

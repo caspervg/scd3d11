@@ -131,6 +131,9 @@ namespace nSCGL {
 			uint32_t height = 0;
 			uint32_t levels = 0;
 			uint32_t uploadedMipLevels = 0;
+			uint32_t internalFormat = 0;
+			std::vector<std::vector<uint8_t>> mipData;
+			std::vector<uint32_t> mipPitch;
 		};
 
 		struct TextureStageState {
@@ -289,7 +292,7 @@ namespace nSCGL {
 	private:
 		void SetLastError(DriverError err);
 
-		void DestroyD3D11Context();
+		void DestroyD3D11Context(bool preserveResources = false);
 
 		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);
 
@@ -336,6 +339,8 @@ namespace nSCGL {
 			uint32_t width,
 			uint32_t height,
 			uint32_t levels);
+
+		HRESULT RecreateTextureResources();
 
 		HRESULT EnsureSampler(TextureStageState &stage);
 
