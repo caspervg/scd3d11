@@ -80,6 +80,7 @@ namespace nSCGL {
 #endif
 
 		std::vector<sGDMode> videoModes;
+		bool initialized;
 		int videoModeCount;
 		int currentVideoMode;
 		std::string driverInfo;

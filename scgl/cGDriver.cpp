@@ -36,14 +36,15 @@ static_assert(offsetof(sGDMode, is3DAccelerated) == 0x22);
 static_assert(offsetof(sGDMode, _unknownFuncPtr) == 0x34);*/
 
 namespace nSCGL {
-	cGDriver::cGDriver() : lastError(DriverError::OK),
+	cGDriver::cGDriver() : refCount(0),
+	                       lastError(DriverError::OK),
 #ifndef NDEBUG
 	                       dbgLastError(GL_NO_ERROR),
 #endif
-	                       currentVideoMode(-1),
-	                       driverInfo("Maxis 3D GDriver\nOpenGL\n3.0\n"),
+	                       initialized(false),
 	                       videoModeCount(0),
-	                       refCount(0),
+	                       currentVideoMode(-1),
+	                       driverInfo("Maxis 3D GDriver\nDirect3D 11\n11.0\n"),
 	                       windowWidth(0),
 	                       windowHeight(0),
 	                       viewportX(0),
@@ -146,7 +147,7 @@ namespace nSCGL {
 	}
 
 	cGDriver::~cGDriver() {
-		DestroyD3D11Context();
+		Shutdown();
 	}
 
 	uint32_t cGDriver::MakeVertexFormat(uint32_t, intptr_t gdElementTypePtr) {

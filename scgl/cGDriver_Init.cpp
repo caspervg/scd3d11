@@ -23,7 +23,7 @@ namespace nSCGL {
 	}
 
 	bool cGDriver::Init(void) {
-		if (videoModeCount != 0) {
+		if (initialized) {
 			return true;
 		}
 
@@ -52,16 +52,22 @@ namespace nSCGL {
 		driverInfo = "Maxis 3D GDriver\nDirect3D 11\n11.0\n";
 		if (InitializeVideoModeVector() == 0) {
 			Log(LogCategory::Capabilities, "no compatible display modes were enumerated");
+			UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return false;
 		}
 
+		initialized = true;
 		Log(LogCategory::Initialization, "initialized; %d display modes available", videoModeCount);
 		SetLastError(DriverError::OK);
 		return true;
 	}
 
 	bool cGDriver::Shutdown(void) {
+		if (!initialized) {
+			DestroyD3D11Context();
+			return true;
+		}
 		if (vertexBufferCacheHits + vertexBufferCacheMisses + indexBufferCacheHits + indexBufferCacheMisses != 0) {
 			Log(LogCategory::Initialization,
 			    "geometry cache: vertices %llu hits/%llu misses, indices %llu hits/%llu misses",
@@ -74,8 +80,11 @@ namespace nSCGL {
 		indexBufferCacheHits = indexBufferCacheMisses = 0;
 		DestroyD3D11Context();
 		UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
+		videoModes.clear();
+		videoModeCount = 0;
 		currentVideoMode = -1;
 		windowWidth = windowHeight = 0;
+		initialized = false;
 		Log(LogCategory::Initialization, "shutdown complete");
 		return true;
 	}
