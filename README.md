@@ -16,6 +16,13 @@ will create a Debug folder in the repository containing a `SCGL.dll` build.
 
 Note: Debug builds will run slower due to additional logging and error checking.
 
+## Presentation modes
+
+SCGL implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` (or
+`-FullscreenMode:Borderless`) when launching a fullscreen SC4 mode to use a monitor-sized borderless window instead;
+the selected game resolution is scaled to that window. The validation script exposes the same choice through
+`-PresentationMode Windowed`, `Fullscreen`, or `Borderless`.
+
 ## Third-party components
 
 SCGL depends on these third-party projects, which are already included in the `vendor` folder:

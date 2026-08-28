@@ -66,6 +66,12 @@ namespace nSCGL {
 			NUM_MATRIX_MODES = COLOR + 1,
 		};
 
+		enum class PresentationMode : uint8_t {
+			Windowed,
+			ExclusiveFullscreen,
+			BorderlessFullscreen,
+		};
+
 	private:
 		struct BufferRegionResource {
 			Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
@@ -161,6 +167,8 @@ namespace nSCGL {
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
+		PresentationMode presentationMode;
+		UINT swapChainFlags;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBufferTexture;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilTexture;

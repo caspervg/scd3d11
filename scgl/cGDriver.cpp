@@ -55,6 +55,8 @@ namespace nSCGL {
 	                       bufferRegions(),
 	                       supportedExtensions(),
 	                       windowHandle(nullptr),
+	                       presentationMode(PresentationMode::Windowed),
+	                       swapChainFlags(0),
 	                       depthRegionScratchValid(false),
 	                       activeTransformBuffer(0),
 	                       appliedTransformBuffer(nullptr),

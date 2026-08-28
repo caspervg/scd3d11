@@ -103,6 +103,10 @@ namespace nSCGL {
 			d3dContext->ClearState();
 			d3dContext->Flush();
 		}
+		if (swapChain && presentationMode == PresentationMode::ExclusiveFullscreen) {
+			HRESULT const result = swapChain->SetFullscreenState(FALSE, nullptr);
+			if (FAILED(result)) LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::SetFullscreenState(windowed)", result);
+		}
 
 		for (BufferRegionResource &region: bufferRegions) region.texture.Reset();
 		bufferRegionFlags = 0;
@@ -134,6 +138,8 @@ namespace nSCGL {
 		activeIndexBufferSegment = 0;
 		activeVertexBufferSegment = 0;
 		swapChain.Reset();
+		presentationMode = PresentationMode::Windowed;
+		swapChainFlags = 0;
 		d3dContext.Reset();
 #ifndef NDEBUG
 		if (d3dDevice) {

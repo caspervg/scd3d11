@@ -14,6 +14,7 @@
 #include "SCGLD3D11Service.h"
 
 #include <cstring>
+#include <string>
 
 #ifndef NDEBUG
 #include <d3d11sdklayers.h>
@@ -23,6 +24,22 @@
 namespace nSCGL {
 	namespace {
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
+
+		bool BorderlessFullscreenRequested() {
+			std::string commandLine = GetCommandLineA();
+			for (char &character: commandLine) {
+				if (character >= 'A' && character <= 'Z') character = static_cast<char>(character - 'A' + 'a');
+			}
+			return commandLine.find("-borderless") != std::string::npos ||
+			       commandLine.find("-fullscreenmode:borderless") != std::string::npos;
+		}
+
+		RECT PrimaryMonitorRectangle() {
+			MONITORINFO monitorInfo{sizeof(monitorInfo)};
+			HMONITOR const monitor = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+			if (monitor != nullptr && GetMonitorInfoA(monitor, &monitorInfo)) return monitorInfo.rcMonitor;
+			return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+		}
 
 #ifndef NDEBUG
 		void LogDebugLayerMessages(ID3D11Device *device) {
@@ -128,6 +145,10 @@ namespace nSCGL {
 			return E_POINTER;
 		}
 
+		// Borderless mode intentionally allows DXGI to scale the selected render
+		// resolution to the monitor-sized client area.
+		if (presentationMode == PresentationMode::BorderlessFullscreen) return S_OK;
+
 		RECT client{};
 		if (!GetClientRect(static_cast<HWND>(windowHandle), &client)) {
 			HRESULT const result = HRESULT_FROM_WIN32(::GetLastError());
@@ -154,7 +175,7 @@ namespace nSCGL {
 		renderTargetView.Reset();
 		backBufferTexture.Reset();
 
-		HRESULT const result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+		HRESULT const result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::ResizeBuffers", result);
 			return result;
@@ -176,29 +197,39 @@ namespace nSCGL {
 		}
 
 		sGDMode const mode = videoModes[newModeIndex];
-		if (mode.isFullscreen) {
-			Log(LogCategory::Unsupported, "fullscreen mode %dx%d requested; using a windowed swap chain", mode.width,
-			    mode.height);
-		}
+		PresentationMode const requestedPresentationMode = !mode.isFullscreen
+			                                                   ? PresentationMode::Windowed
+			                                                   : BorderlessFullscreenRequested()
+			                                                     ? PresentationMode::BorderlessFullscreen
+			                                                     : PresentationMode::ExclusiveFullscreen;
 
 		DestroyD3D11Context();
+		presentationMode = requestedPresentationMode;
 
-		DWORD const style = WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-		DWORD const extendedStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
-		RECT windowRectangle{0, 0, static_cast<LONG>(mode.width), static_cast<LONG>(mode.height)};
-		if (!AdjustWindowRectEx(&windowRectangle, style, FALSE, extendedStyle)) {
+		bool const windowed = presentationMode == PresentationMode::Windowed;
+		RECT const monitorRectangle = PrimaryMonitorRectangle();
+		DWORD const style = windowed
+			                        ? WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN
+			                        : WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+		DWORD const extendedStyle = windowed ? WS_EX_APPWINDOW | WS_EX_WINDOWEDGE : WS_EX_APPWINDOW;
+		RECT windowRectangle = presentationMode == PresentationMode::BorderlessFullscreen
+			                       ? monitorRectangle
+			                       : RECT{0, 0, static_cast<LONG>(mode.width), static_cast<LONG>(mode.height)};
+		if (windowed && !AdjustWindowRectEx(&windowRectangle, style, FALSE, extendedStyle)) {
 			Log(LogCategory::Initialization, "AdjustWindowRectEx failed (Win32 error %lu)", ::GetLastError());
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;
 		}
+		int const windowX = windowed ? CW_USEDEFAULT : monitorRectangle.left;
+		int const windowY = windowed ? CW_USEDEFAULT : monitorRectangle.top;
 
 		HWND const window = CreateWindowExA(
 			extendedStyle,
 			kWindowClassName,
 			"SimCity 4 (Direct3D 11)",
 			style,
-			CW_USEDEFAULT,
-			CW_USEDEFAULT,
+			windowX,
+			windowY,
 			windowRectangle.right - windowRectangle.left,
 			windowRectangle.bottom - windowRectangle.top,
 			nullptr,
@@ -233,6 +264,10 @@ namespace nSCGL {
 		swapChainDescription.OutputWindow = window;
 		swapChainDescription.Windowed = TRUE;
 		swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+		swapChainFlags = presentationMode == PresentationMode::ExclusiveFullscreen
+			                 ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
+			                 : 0;
+		swapChainDescription.Flags = swapChainFlags;
 
 		UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #ifndef NDEBUG
@@ -286,6 +321,32 @@ namespace nSCGL {
 			return;
 		}
 
+		Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
+		Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+		Microsoft::WRL::ComPtr<IDXGIFactory> factory;
+		if (SUCCEEDED(d3dDevice.As(&dxgiDevice)) && SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) &&
+		    SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
+			factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+		}
+
+		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
+			DXGI_MODE_DESC targetMode = swapChainDescription.BufferDesc;
+			targetMode.RefreshRate = DXGI_RATIONAL{0, 0};
+			result = swapChain->ResizeTarget(&targetMode);
+			if (SUCCEEDED(result)) result = swapChain->SetFullscreenState(TRUE, nullptr);
+			if (SUCCEEDED(result)) {
+				result = swapChain->ResizeBuffers(
+					0, static_cast<UINT>(mode.width), static_cast<UINT>(mode.height),
+					DXGI_FORMAT_UNKNOWN, swapChainFlags);
+			}
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::SwapChain, "enter exclusive fullscreen", result);
+				DestroyD3D11Context();
+				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+				return;
+			}
+		}
+
 		result = CreateGeometryPipeline();
 		if (FAILED(result)) {
 			DestroyD3D11Context();
@@ -302,11 +363,15 @@ namespace nSCGL {
 		deviceGeneration = NextD3D11DeviceGeneration();
 
 		currentVideoMode = newModeIndex;
-		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, BGRA support enabled", featureLevel);
-		// SC4 manages visibility itself and may pass showWindow=false; the proven OpenGL
-		// driver always showed its window, so do the same.
-		ShowWindow(window, SW_SHOWNORMAL);
-		UpdateWindow(window);
+		char const *modeName = presentationMode == PresentationMode::Windowed ? "windowed" :
+		                       presentationMode == PresentationMode::BorderlessFullscreen ? "borderless fullscreen" :
+		                       "exclusive fullscreen";
+		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, %s at %dx%d", featureLevel, modeName,
+		    mode.width, mode.height);
+		if (showWindow) {
+			ShowWindow(window, SW_SHOWNORMAL);
+			UpdateWindow(window);
+		}
 		SetLastError(DriverError::OK);
 	}
 

@@ -3,6 +3,8 @@ param(
     [string]$BuildType = 'Debug',
     [int]$Width = 1920,
     [int]$Height = 1080,
+	[ValidateSet('Windowed', 'Fullscreen', 'Borderless')]
+	[string]$PresentationMode = 'Windowed',
     [int]$ScreenshotDelaySeconds = 20,
     [switch]$WaitForExit,
     [string]$GameExe = 'C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe',
@@ -49,7 +51,12 @@ foreach ($name in $logs) {
 }
 
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PluginDll).Hash
-$arguments = @('-CPUCount:1', '-w', '-CustomResolution:enabled', "-r${Width}x${Height}x32")
+$arguments = @('-CPUCount:1', '-CustomResolution:enabled', "-r${Width}x${Height}x32")
+switch ($PresentationMode) {
+    'Windowed' { $arguments += '-w' }
+    'Fullscreen' { $arguments += '-f' }
+    'Borderless' { $arguments += @('-f', '-Borderless') }
+}
 @(
     "started=$(Get-Date -Format o)"
     "dll=$PluginDll"
