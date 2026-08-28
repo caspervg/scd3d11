@@ -145,7 +145,10 @@ namespace nSCGL {
 			return S_OK;
 		}
 
-		d3dContext->OMSetRenderTargets(0, nullptr, nullptr);
+		// Clear every direct context binding before releasing backbuffer views.
+		// This covers state a frame callback may have installed outside SCGL's caches.
+		d3dContext->ClearState();
+		InvalidateD3D11StateCache();
 		depthStencilView.Reset();
 		depthStencilTexture.Reset();
 		renderTargetView.Reset();
@@ -333,7 +336,13 @@ namespace nSCGL {
 		};
 		InvokeD3D11FrameCallback(frame);
 		// The callback owns the immediate context for the duration of the event.
+		// Clear all of its bindings, then restore the output state that SCGL owns.
+		d3dContext->ClearState();
 		InvalidateD3D11StateCache();
+		ID3D11RenderTargetView *restoredRenderTarget = renderTargetView.Get();
+		d3dContext->OMSetRenderTargets(1, &restoredRenderTarget, depthStencilView.Get());
+		if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+		else SetViewport();
 
 		static bool const vsyncEnabled = std::strstr(GetCommandLineA(), "-VSync:off") == nullptr;
 		result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
