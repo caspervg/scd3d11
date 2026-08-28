@@ -38,6 +38,7 @@ add_library(SCGL SHARED
         scgl/D3D11Conversions.cpp
         scgl/Diagnostics.cpp
         scgl/SCGLD3D11Service.cpp
+		scgl/TextureUploadUtils.cpp
         scgl/VideoModeUtils.cpp
         scgl/ext/cGDriver_BufferRegions.cpp
         scgl/ext/cGDriver_Lighting.cpp
@@ -92,11 +93,15 @@ if (BUILD_TESTING)
     target_include_directories(VideoModeUtilsTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
     add_test(NAME VideoModeUtilsTest COMMAND VideoModeUtilsTest)
 
+	add_executable(TextureUploadUtilsTest tests/TextureUploadUtilsTest.cpp scgl/TextureUploadUtils.cpp)
+	target_include_directories(TextureUploadUtilsTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
+	add_test(NAME TextureUploadUtilsTest COMMAND TextureUploadUtilsTest)
+
     add_executable(SCGLD3D11ServiceTest tests/SCGLD3D11ServiceTest.cpp scgl/SCGLD3D11Service.cpp)
     target_include_directories(SCGLD3D11ServiceTest PRIVATE "${CMAKE_SOURCE_DIR}/scgl")
     add_test(NAME SCGLD3D11ServiceTest COMMAND SCGLD3D11ServiceTest)
 
-    foreach (assert_test D3D11ConversionsTest VideoModeUtilsTest SCGLD3D11ServiceTest)
+	foreach (assert_test D3D11ConversionsTest VideoModeUtilsTest TextureUploadUtilsTest SCGLD3D11ServiceTest)
         target_compile_options(${assert_test} PRIVATE
                 $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
                 $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)

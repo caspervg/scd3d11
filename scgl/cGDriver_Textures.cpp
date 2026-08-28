@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "cGDCombiner.h"
 #include "Diagnostics.h"
+#include "TextureUploadUtils.h"
 
 #include <cfloat>
 #include <cstring>
@@ -21,60 +22,6 @@ namespace nSCGL {
         bool IsCompressed(DXGI_FORMAT format) {
             return format == DXGI_FORMAT_BC1_UNORM || format == DXGI_FORMAT_BC2_UNORM || format ==
                    DXGI_FORMAT_BC3_UNORM;
-        }
-
-        uint32_t SourceComponents(uint32_t format) {
-            switch (format) {
-                case 0:
-                case 2:
-                    return 3;
-                case 1:
-                case 3:
-                    return 4;
-                case 4:
-                case 5:
-                    return 1;
-                case 6:
-                    return 2;
-                default:
-                    return 0;
-            }
-        }
-
-        void ReadUnsignedBytePixel(uint32_t format, uint8_t const *source, uint8_t rgba[4]) {
-            switch (format) {
-                case 0: rgba[0] = source[0];
-                    rgba[1] = source[1];
-                    rgba[2] = source[2];
-                    rgba[3] = 0xff;
-                    break;
-                case 1: rgba[0] = source[0];
-                    rgba[1] = source[1];
-                    rgba[2] = source[2];
-                    rgba[3] = source[3];
-                    break;
-                case 2: rgba[0] = source[2];
-                    rgba[1] = source[1];
-                    rgba[2] = source[0];
-                    rgba[3] = 0xff;
-                    break;
-                case 3: rgba[0] = source[2];
-                    rgba[1] = source[1];
-                    rgba[2] = source[0];
-                    rgba[3] = source[3];
-                    break;
-                case 4: rgba[0] = rgba[1] = rgba[2] = 0xff;
-                    rgba[3] = source[0];
-                    break;
-                case 5: rgba[0] = rgba[1] = rgba[2] = source[0];
-                    rgba[3] = 0xff;
-                    break;
-                case 6: rgba[0] = rgba[1] = rgba[2] = source[0];
-                    rgba[3] = source[1];
-                    break;
-                default: memset(rgba, 0xff, 4);
-                    break;
-            }
         }
 
         uint16_t Pack16BitPixel(DXGI_FORMAT format, uint8_t const rgba[4]) {
@@ -505,20 +452,24 @@ namespace nSCGL {
             if (sourceFormat == 7 || sourceFormat == 8) expected = DXGI_FORMAT_BC1_UNORM;
             if (sourceFormat == 9) expected = DXGI_FORMAT_BC2_UNORM;
             if (sourceFormat == 10) expected = DXGI_FORMAT_BC3_UNORM;
-            if (expected != resource.format || (xOffset % 4) != 0 || (yOffset % 4) != 0) {
+            uint32_t const sourceWidth = rowLength ? rowLength : static_cast<uint32_t>(width);
+            if (sourceWidth < static_cast<uint32_t>(width) || expected != resource.format ||
+                !IsValidBlockCompressedUpdate(
+	                mipWidth, mipHeight, static_cast<uint32_t>(xOffset), static_cast<uint32_t>(yOffset),
+	                static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
                 Log(LogCategory::Unsupported, "compressed texture upload mismatch: source %u destination %u",
                     sourceFormat, resource.format);
                 SetLastError(DriverError::NOT_SUPPORTED);
                 return;
             }
-            pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
+            pitch = D3D11TextureRowPitch(resource.format, sourceWidth);
         } else {
-            uint32_t const components = SourceComponents(sourceFormat);
+			uint32_t const sourcePixelBytes = TextureSourcePixelBytes(sourceFormat, sourceType);
             // Type 13 is GL_UNSIGNED_SHORT_4_4_4_4_REV per the original driver's typeMap:
             // with format 3 (BGRA) that's B in the low nibble — exactly DXGI B4G4R4A4 layout.
-            bool const packedBgra4444 = sourceType == 13;
-            if ((!packedBgra4444 && (sourceType != 1 || components == 0)) ||
-                (packedBgra4444 && resource.format != DXGI_FORMAT_B4G4R4A4_UNORM)) {
+			bool const packedBgra4444 = sourceFormat == 3 && sourceType == 13 &&
+			                                resource.format == DXGI_FORMAT_B4G4R4A4_UNORM;
+			if (sourcePixelBytes == 0) {
                 Log(LogCategory::Unsupported, "texture upload format %u type %u is not implemented", sourceFormat,
                     sourceType);
                 SetLastError(DriverError::NOT_SUPPORTED);
@@ -526,7 +477,16 @@ namespace nSCGL {
             }
 
             uint32_t const sourceWidth = rowLength ? rowLength : static_cast<uint32_t>(width);
-            uint32_t const sourcePitch = sourceWidth * (packedBgra4444 ? 2u : components);
+			if (sourceWidth < static_cast<uint32_t>(width)) {
+				SetLastError(DriverError::INVALID_VALUE);
+				return;
+			}
+			uint64_t const sourcePitch64 = static_cast<uint64_t>(sourceWidth) * sourcePixelBytes;
+			if (sourcePitch64 > UINT32_MAX) {
+				SetLastError(DriverError::INVALID_VALUE);
+				return;
+			}
+			uint32_t const sourcePitch = static_cast<uint32_t>(sourcePitch64);
             pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
             uint8_t const *sourceRows = static_cast<uint8_t const *>(pixels);
 			if (sourceFormat == 3 && sourceType == 1 &&
@@ -550,9 +510,12 @@ namespace nSCGL {
                 for (int32_t y = 0; y < height; ++y) {
                     uint8_t const *source = sourceRows + static_cast<size_t>(y) * sourcePitch;
                     uint8_t *destination = converted.data() + static_cast<size_t>(y) * pitch;
-                    for (int32_t x = 0; x < width; ++x, source += components) {
+					for (int32_t x = 0; x < width; ++x, source += sourcePixelBytes) {
                         uint8_t rgba[4];
-                        ReadUnsignedBytePixel(sourceFormat, source, rgba);
+						if (!ConvertTextureSourcePixel(sourceFormat, sourceType, source, rgba)) {
+							SetLastError(DriverError::NOT_SUPPORTED);
+							return;
+						}
                         if (resource.format == DXGI_FORMAT_B8G8R8A8_UNORM) {
                             destination[x * 4 + 0] = rgba[2];
                             destination[x * 4 + 1] = rgba[1];
