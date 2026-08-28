@@ -22,28 +22,26 @@ No Ghidra database changes were made.
 
 - `cGDriversCOMDirector` derives from `cRZCOMSlimDllDirector` and exports through
   `RZGetCOMDllDirector()`.
-- It registers one class, `0xC4554841`, using `cGDriver::FactoryFunctionPtr2`, and enumerates it with
-  version/priority `1,000,000`. SCGL deliberately uses the original OpenGL driver's class ID with a
-  higher version so GZCOM selects it.
+- It registers one class, `0xBADB6906`, using `cGDriver::FactoryFunctionPtr2`, and enumerates it with
+  version/priority `1,000,000`. This is the native DirectX driver's class ID, so GZCOM selects SCGL as
+  the higher-version DirectX implementation without requiring `-d:OpenGL`.
 - The factory allocates the driver, calls `QueryInterface`, and deletes it if the requested interface
-  is unavailable.
-- The native DirectX driver identifies itself as `0xBADB6906`; that ID is not suitable for the
-  replacement registration because it would not override SC4's selected OpenGL implementation.
+  is unavailable. `GetGZCLSID()` returns the same `0xBADB6906` class ID.
 
 ### Interfaces queried by SC4
 
 | Interface | IID | SCGL status | Windows 1.1.641 evidence |
 |---|---:|---|---|
-| `cIGZUnknown` | `0x00000001` | implemented | returned as primary driver subobject at `this + 0x0C` |
+| `cIGZUnknown` | `0x00000001` | implemented | not returned by the native DirectX QueryInterface path inspected |
 | `cIGZGDriver` | `0xA4554849` | implemented | returned at `this + 0x0C` |
 | buffer-region extension | `0x669565FE` | implemented | returned at `this + 0x00` |
 | lighting extension | `0x87E2B87D` | implemented | returned at `this + 0x08` |
 | snapshot extension | `0xE69BFE2A` | mandatory and implemented | returned at `this + 0x04` |
-| vertex-buffer extension | `0x09CD86F9` | implementation exists but QI is disabled | not returned by Windows 1.1.641 QueryInterface |
-| unknown driver extension | `0xA455484A` | missing | returned at `this + 0x10` |
+| vertex-buffer extension | `0x09CD86F9` | implemented and exposed | native DirectX returns the separately held interface pointer at object offset `0x1C` |
 
-Windows evidence: `nSGLDX7::cGDriver::QueryInterface` at `0x0087D670`. The unknown extension's
-vtable and behavior still need recovery before it is implemented or advertised.
+Windows evidence: the native DirectX primary-interface thunk at `0x00886440` adjusts `this` by
+`-0x0C` and enters QueryInterface at `0x00882A00`. The previously cited `0x0087D670` function belongs
+to the OpenGL implementation, not `nSGLDX7`.
 
 ### Ownership and reference counting
 
@@ -142,8 +140,8 @@ stable indices.
 - SC4 supplies model-view, projection, and per-stage texture matrices. The native D3D7 initialization
   establishes a top-left 2D projection: X maps to `[-1,1]`, Y is inverted, and Z is reversed for its
   chosen convention.
-- SCGL exposes a top-left public viewport but converts buffer-region/readback Y coordinates for
-  OpenGL. D3D11 should keep the public top-left convention directly.
+- Native DirectX `SetViewport(x, y, width, height)` at `0x008837E0` converts the public bottom-left Y
+  coordinate to DirectX's top-left coordinate. The D3D11 implementation must preserve that conversion.
 - `SetViewport()` selects the full client area and disables clipping. The rectangle overload sets both
   viewport and scissor. `GetViewport` returns left/top/right/bottom, not x/y/width/height.
 - Half-pixel behavior and the exact GL/D3D depth conversion require screenshot/runtime evidence before

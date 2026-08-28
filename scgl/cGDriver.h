@@ -337,9 +337,9 @@ namespace nSCGL {
 
 		virtual ~cGDriver() override;
 
-		// We're taking the GZCLSID of the original GL driver and overriding
-		// it by presenting a higher version number to the GZCOM.
-		static const uint32_t kSCGLGDriverGZCLSID = 0xc4554841;
+		// Override SC4's native DirectX driver by presenting its GZCLSID with a
+		// higher version number to GZCOM.
+		static const uint32_t kSCGLGDriverGZCLSID = 0x0badb6906;
 
 		static bool FactoryFunctionPtr2(uint32_t riid, void **ppvObj) {
 			cGDriver *pDriver = new cGDriver();
