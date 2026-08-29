@@ -10,6 +10,7 @@
 
 #include "Diagnostics.h"
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <unordered_set>
@@ -53,8 +54,10 @@ namespace nSCD3D11
 		}
 
 		OutputDebugStringA(message);
+		static std::atomic<bool> opened{false};
+		char const* const mode = opened.exchange(true) ? "a" : "w";
 		FILE* file = nullptr;
-		if (fopen_s(&file, "SC4D3D11.log", "a") == 0) {
+		if (fopen_s(&file, "SC4D3D11.log", mode) == 0) {
 			fputs(message, file);
 			fclose(file);
 		}

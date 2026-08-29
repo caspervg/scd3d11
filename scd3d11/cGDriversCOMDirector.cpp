@@ -27,6 +27,7 @@
 #include "Diagnostics.h"
 #include "StartupProgress.h"
 #include "StartupResourceLoadPatches.h"
+#include "ParallelRenderCull.h"
 
 namespace nSCD3D11
 {
@@ -128,11 +129,13 @@ namespace nSCD3D11
 				messageServer = nullptr;
 			}
 			StartupResourceLoadPatches::Uninstall();
+			ParallelRenderCull::Uninstall();
 			return true;
 		}
 
 		bool OnStart(cIGZCOM* pCOM) {
 			StartupResourceLoadPatches::Install();
+			ParallelRenderCull::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePostAppInit) {

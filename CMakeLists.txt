@@ -56,6 +56,7 @@ add_library(SCD3D11 SHARED
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriversCOMDirector.cpp
+        scd3d11/ParallelRenderCull.cpp
         scd3d11/cGDriver_Info.cpp
         scd3d11/cGDriver_Init.cpp
         scd3d11/cGDriver_State.cpp

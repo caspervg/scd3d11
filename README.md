@@ -47,6 +47,24 @@ The callback receives an `SCD3D11FrameContext` for either `SCD3D11_EVENT_RENDER`
 immediate context borrowed for the duration of the call) or `SCD3D11_EVENT_BEFORE_DEVICE_DESTROY`. `deviceGeneration`
 increments whenever the device is recreated, so stale resources can be detected and dropped.
 
+## Parallel render cull
+
+SCD3D11 hooks SimCity 4's 3D-view redraw (`cSC43DRender::DrawStaticView` /
+`DrawDynamicView`) and runs the quad-grid visibility gather + sort-key computation
+across a worker pool instead of on the render thread. Sorting and draw submission
+are unchanged, so the rendered image is identical to the stock path. It engages
+only on large scenes and falls back to the stock code on anything unexpected.
+
+Requires SimCity 4 1.1.641. Control it with the `-ParallelCull:<mode>` command
+line argument (`parallel` is the default):
+
+| Mode | Effect |
+|------|--------|
+| `parallel` | gather on the worker pool for large scenes, render thread otherwise |
+| `serial` | reimplemented gather, always on the render thread |
+| `off` | do not hook; stock code runs untouched |
+| `passthru`, `tailonly` | hook diagnostics |
+
 ## Diagnostics
 
 The driver appends to `SC4D3D11.log` in the game's working directory (normally the `Apps` folder next to
