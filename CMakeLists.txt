@@ -65,6 +65,9 @@ add_library(SCD3D11 SHARED
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
         scd3d11/SCD3D11Service.cpp
+        scd3d11/StartupOverlay.cpp
+        scd3d11/StartupProgress.cpp
+        scd3d11/StartupResourceLoadPatches.cpp
         scd3d11/TextureUploadUtils.cpp
         scd3d11/VideoModeUtils.cpp
         scd3d11/VertexFormatUtils.cpp
@@ -82,7 +85,7 @@ set_target_properties(SCD3D11 PROPERTIES PREFIX "")
 target_include_directories(SCD3D11 PRIVATE "${PROJECT_SOURCE_DIR}/vendor/framework/include")
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
-target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi)
+target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version)
 
 include(CTest)
 if (BUILD_TESTING)
@@ -122,4 +125,8 @@ if (BUILD_TESTING)
             tests/SCD3D11ServiceTest.cpp
             scd3d11/SCD3D11Service.cpp
             scd3d11/Diagnostics.cpp)
+
+    scd3d11_add_test(StartupProgressTest
+            tests/StartupProgressTest.cpp
+            scd3d11/StartupProgress.cpp)
 endif ()

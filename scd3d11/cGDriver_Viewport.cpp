@@ -136,6 +136,11 @@ namespace nSCD3D11 {
 		if (FAILED(result)) {
 			return result;
 		}
+		result = startupOverlay.Initialize(d3dDevice.Get(), width, height);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "StartupOverlay::Initialize", result);
+			return result;
+		}
 		Log(LogCategory::SwapChain, "back buffer ready at %ux%u", width, height);
 		return S_OK;
 	}
@@ -380,15 +385,49 @@ namespace nSCD3D11 {
 		                       "exclusive fullscreen";
 		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, %s at %dx%d", featureLevel, modeName,
 		    mode.width, mode.height);
-		if (showWindow) {
-			ShowWindow(window, SW_SHOWNORMAL);
-			UpdateWindow(window);
+		// SC4 passes showWindow=false on the only SetVideoMode call it makes, but its own DirectX
+		// driver (and upstream SCGL) put the window on screen as soon as the mode is set. Honouring
+		// the flag leaves nothing visible until the game shows the window itself, which does not
+		// happen until loading finishes - the game looks like it failed to start.
+		(void) showWindow;
+		// A device-loss recovery mid-game must not drop back to the startup notice.
+		if (!recoveringDevice) {
+			presentedFirstFrame = false;
+			startupWindowMessages = 0;
 		}
+		startupOverlay.SetActive(ShouldShowStartupOverlay());
+		ShowWindow(window, SW_SHOWNORMAL);
+		SetForegroundWindow(window);
+		// UpdateWindow dispatches WM_PAINT directly, so the notice appears even though the game is
+		// not pumping its message queue yet.
+		UpdateWindow(window);
+		if (FAILED(PresentStartupOverlay())) PaintStartupNotice(window);
 		SetLastError(DriverError::OK);
 	}
 
 	bool cGDriver::IsDeviceReady(void) {
 		return d3dDevice && d3dContext && swapChain && renderTargetView && depthStencilView;
+	}
+
+	HRESULT cGDriver::PresentStartupOverlay() {
+		if (!IsDeviceReady() || !startupOverlay.IsActive()) return S_FALSE;
+
+		d3dContext->ClearState();
+		InvalidateD3D11StateCache();
+		ID3D11RenderTargetView *renderTarget = renderTargetView.Get();
+		d3dContext->OMSetRenderTargets(1, &renderTarget, nullptr);
+		SetViewport();
+		startupOverlay.Draw(d3dContext.Get());
+		static bool startupOverlayFlushLogged = false;
+		if (startupOverlay.IsActive() && !startupOverlayFlushLogged) {
+			Log(LogCategory::SwapChain, "startup overlay rendered during game Flush");
+			startupOverlayFlushLogged = true;
+		}
+
+		HRESULT const result = swapChain->Present(0, 0);
+		if (SUCCEEDED(result)) Log(LogCategory::SwapChain, "initial startup overlay presented");
+		else LogHRESULT(LogCategory::SwapChain, "Present(initial startup overlay)", result);
+		return result;
 	}
 
 	void cGDriver::Flush(void) {
@@ -421,6 +460,7 @@ namespace nSCD3D11 {
 		d3dContext->OMSetRenderTargets(1, &restoredRenderTarget, depthStencilView.Get());
 		if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
 		else SetViewport();
+		startupOverlay.Draw(d3dContext.Get());
 
 		static bool const vsyncEnabled = std::strstr(GetCommandLineA(), "-VSync:off") == nullptr;
 		result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);

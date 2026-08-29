@@ -14,3 +14,5 @@ cmake-build-debug/
 .idea
 runtime-captures/
 docs/
+.mcp.json
+.claude

@@ -36,6 +36,12 @@ static_assert(offsetof(sGDMode, is3DAccelerated) == 0x22);
 static_assert(offsetof(sGDMode, _unknownFuncPtr) == 0x34);*/
 
 namespace nSCD3D11 {
+	namespace {
+		bool g_postAppInit = false;
+		bool g_startupComplete = false;
+		cGDriver *g_driverInstance = nullptr;
+	}
+
 	cGDriver::cGDriver() : refCount(0),
 	                       lastError(DriverError::OK),
 #ifndef NDEBUG
@@ -58,6 +64,8 @@ namespace nSCD3D11 {
 	                       windowProcedure(nullptr),
 	                       showDriverWindow(false),
 	                       recoveringDevice(false),
+	                       presentedFirstFrame(false),
+	                       startupWindowMessages(0),
 	                       presentationMode(PresentationMode::Windowed),
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
@@ -144,6 +152,8 @@ namespace nSCD3D11 {
 	                       clearColor{0.0f, 0.0f, 0.0f, 0.0f},
 	                       clearDepth(1.0f),
 	                       clearStencil(0) {
+		g_driverInstance = this;
+		presentedFirstFrame = g_startupComplete;
 		for (float *matrix: matrices) {
 			matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
 		}
@@ -158,7 +168,34 @@ namespace nSCD3D11 {
 	}
 
 	cGDriver::~cGDriver() {
+		if (g_driverInstance == this) g_driverInstance = nullptr;
 		Shutdown();
+	}
+
+	void cGDriver::MarkPostAppInit(void) {
+		g_postAppInit = true;
+		Log(LogCategory::Initialization, "PostAppInit received; startup overlay remains active until region init");
+	}
+
+	bool cGDriver::HasPostAppInit(void) {
+		return g_postAppInit;
+	}
+
+	bool cGDriver::ShouldShowStartupOverlay(void) {
+		return !g_startupComplete;
+	}
+
+	void cGDriver::MarkStartupComplete(void) {
+		g_startupComplete = true;
+		CompleteStartupOverlay();
+		Log(LogCategory::Initialization, "startup completion message received; ending startup notice");
+	}
+
+	void cGDriver::CompleteStartupOverlay(void) {
+		if (g_driverInstance != nullptr) {
+			g_driverInstance->startupOverlay.SetActive(false);
+			g_driverInstance->presentedFirstFrame = true;
+		}
 	}
 
 	uint32_t cGDriver::MakeVertexFormat(uint32_t, intptr_t gdElementTypePtr) {

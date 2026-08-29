@@ -31,6 +31,7 @@
 #include "ext/cIGZGDriverLightingExtension.h"
 #include "ext/cIGZGDriverVertexBufferExtension.h"
 #include "ext/cIGZGSnapshotExtension.h"
+#include "StartupOverlay.h"
 
 namespace nSCD3D11 {
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
@@ -170,9 +171,14 @@ namespace nSCD3D11 {
 		void *windowProcedure;
 		bool showDriverWindow;
 		bool recoveringDevice;
+		// The driver paints its own startup notice until the GZCOM PostAppInit lifecycle hook
+		// reports that application initialization has completed.
+		bool presentedFirstFrame;
+		uint32_t startupWindowMessages;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
+		StartupOverlay startupOverlay;
 		PresentationMode presentationMode;
 		UINT swapChainFlags;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBufferTexture;
@@ -294,11 +300,16 @@ namespace nSCD3D11 {
 
 		static LRESULT CALLBACK DriverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
+		static void DrawStartupNotice(HWND window, HDC deviceContext);
+		void PaintStartupNotice(HWND window);
+
 		void DestroyD3D11Context(bool preserveResources = false);
 
 		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);
 
 		HRESULT ResizeBackBufferIfNeeded();
+
+		HRESULT PresentStartupOverlay();
 
 		bool RecoverD3D11Device();
 
@@ -364,6 +375,13 @@ namespace nSCD3D11 {
 		// Override SC4's native DirectX driver by presenting its GZCLSID with a
 		// higher version number to GZCOM.
 		static const uint32_t kSCD3D11GDriverGZCLSID = 0x0badb6906;
+
+		// Called by the GZCOM director when application initialization completes.
+		static void MarkPostAppInit(void);
+		static bool HasPostAppInit(void);
+		static void MarkStartupComplete(void);
+		static void CompleteStartupOverlay(void);
+		static bool ShouldShowStartupOverlay(void);
 
 		static bool FactoryFunctionPtr2(uint32_t riid, void **ppvObj) {
 			cGDriver *pDriver = new cGDriver();

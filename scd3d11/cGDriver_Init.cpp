@@ -49,12 +49,73 @@ namespace nSCD3D11 {
 		}
 	}
 
+	// Painted into the window between mode set and the game's first presented frame. SC4 spends
+	// that time loading plugins and game data without touching the driver, so a bare window reads
+	// as a hung process; this at least says which renderer is live and that startup is in progress.
+	void cGDriver::DrawStartupNotice(HWND window, HDC deviceContext) {
+		RECT client{};
+		if (deviceContext == nullptr || !GetClientRect(window, &client)) return;
+
+		HBRUSH const background = CreateSolidBrush(RGB(14, 16, 20));
+		if (background != nullptr) {
+			FillRect(deviceContext, &client, background);
+			DeleteObject(background);
+		}
+
+		LONG const height = client.bottom - client.top;
+		LONG const titleHeight = height / 24 < 15 ? 15 : height / 24;
+		LONG const detailHeight = titleHeight * 5 / 8 < 12 ? 12 : titleHeight * 5 / 8;
+
+		auto drawLine = [&](char const *text, LONG fontHeight, COLORREF color, LONG centerOffset) {
+			HFONT const font = CreateFontA(
+				-fontHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+				OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, VARIABLE_PITCH, "Segoe UI");
+			HGDIOBJ const previousFont = font == nullptr ? nullptr : SelectObject(deviceContext, font);
+			RECT line = client;
+			line.top = (client.top + client.bottom) / 2 + centerOffset;
+			line.bottom = line.top + fontHeight * 2;
+			SetBkMode(deviceContext, TRANSPARENT);
+			SetTextColor(deviceContext, color);
+			DrawTextA(deviceContext, text, -1, &line, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+			if (font != nullptr) {
+				SelectObject(deviceContext, previousFont);
+				DeleteObject(font);
+			}
+		};
+
+		drawLine("Starting SimCity 4", titleHeight, RGB(236, 239, 244), -titleHeight * 3 / 2);
+		drawLine("Loading plugins and game data. This can take a while.",
+		         detailHeight, RGB(150, 158, 170), titleHeight / 4);
+		drawLine("Direct3D 11 renderer (SCD3D11)", detailHeight, RGB(104, 112, 126), titleHeight * 2);
+	}
+
+	void cGDriver::PaintStartupNotice(HWND window) {
+		if (presentedFirstFrame || window == nullptr) return;
+		HDC const deviceContext = GetDC(window);
+		if (deviceContext == nullptr) return;
+		DrawStartupNotice(window, deviceContext);
+		ReleaseDC(window, deviceContext);
+	}
+
 	LRESULT CALLBACK cGDriver::DriverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
 		cGDriver *driver = reinterpret_cast<cGDriver *>(GetWindowLongPtrA(window, GWLP_USERDATA));
 		if (message == WM_NCCREATE) {
 			CREATESTRUCTA const *creation = reinterpret_cast<CREATESTRUCTA const *>(lParam);
 			driver = creation == nullptr ? nullptr : static_cast<cGDriver *>(creation->lpCreateParams);
 			SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(driver));
+		}
+
+		// Own repaints only until the game presents; after that the swap chain owns the window.
+		if (driver != nullptr && !driver->presentedFirstFrame) {
+			driver->startupWindowMessages++;
+			if (message == WM_ERASEBKGND) return 1;
+			if (message == WM_PAINT) {
+				PAINTSTRUCT paint{};
+				HDC const deviceContext = BeginPaint(window, &paint);
+				DrawStartupNotice(window, deviceContext);
+				EndPaint(window, &paint);
+				return 0;
+			}
 		}
 
 		WNDPROC procedure = driver == nullptr ? nullptr : reinterpret_cast<WNDPROC>(driver->windowProcedure);
@@ -174,6 +235,7 @@ namespace nSCD3D11 {
 		}
 
 		for (BufferRegionResource &region: bufferRegions) region.texture.Reset();
+		startupOverlay.Shutdown();
 		if (!preserveResources) bufferRegionFlags = 0;
 		depthStencilView.Reset();
 		depthStencilTexture.Reset();
