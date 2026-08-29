@@ -65,6 +65,19 @@ line argument (`parallel` is the default):
 | `off` | do not hook; stock code runs untouched |
 | `passthru`, `tailonly` | hook diagnostics |
 
+## Sim tick budget
+
+`cSC4Simulator::OnTick` busy-loops the simulation for up to a speed-dependent
+budget (33/50/66 ms) before returning to the frame loop, so a heavy sim on the
+faster speeds starves rendering and input. SCD3D11 clamps that per-tick budget to
+a fixed ceiling — the sim still advances every frame, just less per frame, and the
+frame loop presents in between. On a large city the sim clock can lag wall-clock a
+little more in exchange for a steady frame rate.
+
+Requires SimCity 4 1.1.641. Tune with `-SimTickCap:<ms>` (default `32`;
+`-SimTickCap:off` disables the patch). Lower values favour frame rate over sim
+speed.
+
 ## Diagnostics
 
 The driver appends to `SC4D3D11.log` in the game's working directory (normally the `Apps` folder next to

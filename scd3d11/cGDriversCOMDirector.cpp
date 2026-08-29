@@ -28,6 +28,7 @@
 #include "StartupProgress.h"
 #include "StartupResourceLoadPatches.h"
 #include "ParallelRenderCull.h"
+#include "SimTickBudget.h"
 
 namespace nSCD3D11
 {
@@ -130,12 +131,14 @@ namespace nSCD3D11
 			}
 			StartupResourceLoadPatches::Uninstall();
 			ParallelRenderCull::Uninstall();
+			SimTickBudget::Uninstall();
 			return true;
 		}
 
 		bool OnStart(cIGZCOM* pCOM) {
 			StartupResourceLoadPatches::Install();
 			ParallelRenderCull::Install();
+			SimTickBudget::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePostAppInit) {
