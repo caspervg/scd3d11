@@ -62,8 +62,17 @@ line argument (`parallel` is the default):
 |------|--------|
 | `parallel` | gather on the worker pool for large scenes, render thread otherwise |
 | `serial` | reimplemented gather, always on the render thread |
-| `off` | do not hook; stock code runs untouched |
+| `off` (also `0`, `false`) | do not hook; stock code runs untouched |
 | `passthru`, `tailonly` | hook diagnostics |
+
+The worker pool only helps if the game process is allowed to run on more than one
+core. The `SC4CPUOptions` plugin pins SimCity 4 to a single core by default, which
+leaves the workers time-slicing the render thread's core and cancels any benefit —
+remove that plugin, or configure it to allow multiple cores, if you want the
+parallel path to do anything.
+
+To confirm what engaged, check `SC4D3D11.log` (see Diagnostics below) for a line
+like `parallel cull installed: mode=parallel workers=7 static=ok dynamic=ok`.
 
 ## Sim tick budget
 
@@ -74,9 +83,11 @@ a fixed ceiling — the sim still advances every frame, just less per frame, and
 frame loop presents in between. On a large city the sim clock can lag wall-clock a
 little more in exchange for a steady frame rate.
 
-Requires SimCity 4 1.1.641. Tune with `-SimTickCap:<ms>` (default `32`;
-`-SimTickCap:off` disables the patch). Lower values favour frame rate over sim
-speed.
+Requires SimCity 4 1.1.641. Tune with `-SimTickCap:<ms>` (default `32`; values are
+clamped to `15`–`500`; `-SimTickCap:off` or `-SimTickCap:0` disables the patch).
+Lower values favour frame rate over sim speed.
+
+To confirm it engaged, check `SC4D3D11.log` for `sim tick budget installed: cap=32 ms`.
 
 ## Diagnostics
 
