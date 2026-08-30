@@ -182,6 +182,9 @@ namespace nSCD3D11 {
 		// Set once recovery has given up on a fullscreen mode, so the next attempt asks for a
 		// plain window. Cleared whenever the game itself sets a video mode.
 		bool fallbackToWindowed;
+		// Set when the swap chain needs a ResizeBuffers that a client area comparison cannot
+		// detect on its own, such as a desktop mode change under an exclusive-fullscreen window.
+		bool backBufferRebuildRequested;
 		UINT swapChainFlags;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBufferTexture;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
@@ -315,9 +318,17 @@ namespace nSCD3D11 {
 
 		bool RecoverD3D11Device();
 
-		bool SyncExclusiveFullscreenState();
+		void ReclaimExclusiveFullscreen();
+
+		Microsoft::WRL::ComPtr<IDXGIOutput> TargetFullscreenOutput();
+
+		// Display device the fullscreen modes should use, empty for the primary. Also selects the
+		// display whose modes InitializeVideoModeVector enumerates.
+		static std::string TargetMonitorDeviceName();
 
 		void RecentreBorderlessWindow();
+
+		void UpdateBorderlessCursorClip(bool windowIsActive);
 
 		HRESULT CreateGeometryPipeline();
 

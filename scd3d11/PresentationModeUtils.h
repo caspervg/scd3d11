@@ -40,6 +40,11 @@ namespace nSCD3D11
 	// is absent or does not parse, meaning "the primary monitor".
 	uint32_t RequestedMonitorIndex(std::string const &lowercaseCommandLine);
 
+	// The display device `-Monitor:<n>` names, as `\\.\DISPLAY<n>`. That is the numbering Windows'
+	// own Display Settings shows, unlike the arbitrary order EnumDisplayMonitors calls back in.
+	// Returns an empty string for index 0, meaning "the primary display".
+	std::string MonitorDeviceName(uint32_t index);
+
 	// fallbackToWindowed forces a window regardless of what the mode and command line ask for;
 	// device recovery sets it once it has given up on a fullscreen mode.
 	PresentationMode SelectPresentationMode(

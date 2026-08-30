@@ -39,6 +39,11 @@ namespace nSCD3D11
 		return static_cast<uint32_t>(std::strtoul(digits, nullptr, 10));
 	}
 
+	std::string MonitorDeviceName(uint32_t index) {
+		if (index == 0) return std::string();
+		return "\\\\.\\DISPLAY" + std::to_string(index);
+	}
+
 	PresentationMode SelectPresentationMode(
 		bool modeIsFullscreen, bool fallbackToWindowed, std::string const &lowercaseCommandLine) {
 		if (!modeIsFullscreen || fallbackToWindowed) return PresentationMode::Windowed;

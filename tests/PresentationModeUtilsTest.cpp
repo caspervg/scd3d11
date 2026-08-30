@@ -7,6 +7,7 @@ using nSCD3D11::BorderlessFullscreenRequested;
 using nSCD3D11::CentredClientRectangle;
 using nSCD3D11::ClientRectangle;
 using nSCD3D11::LowercaseCopy;
+using nSCD3D11::MonitorDeviceName;
 using nSCD3D11::PresentationMode;
 using nSCD3D11::RequestedMonitorIndex;
 using nSCD3D11::SelectPresentationMode;
@@ -67,6 +68,18 @@ namespace {
 		assert(Monitor("sc4.exe -Monitor:-2") == 0);
 	}
 
+	// -Monitor:<n> resolves through the display device name so it matches the numbering Windows'
+	// own Display Settings shows, rather than the order EnumDisplayMonitors happens to use.
+	void TestMonitorDeviceName() {
+		assert(MonitorDeviceName(0).empty());
+		assert(MonitorDeviceName(1) == "\\\\.\\DISPLAY1");
+		assert(MonitorDeviceName(2) == "\\\\.\\DISPLAY2");
+		assert(MonitorDeviceName(11) == "\\\\.\\DISPLAY11");
+		// The whole path from switch text to device name, which is what the driver actually runs.
+		assert(MonitorDeviceName(Monitor("sc4.exe -Monitor:3")) == "\\\\.\\DISPLAY3");
+		assert(MonitorDeviceName(Monitor("sc4.exe")).empty());
+	}
+
 	void TestCentredClientRectangle() {
 		ClientRectangle const monitor{0, 0, 2560, 1440};
 
@@ -98,6 +111,7 @@ int main() {
 	TestBorderlessDetection();
 	TestPresentationModeSelection();
 	TestMonitorIndex();
+	TestMonitorDeviceName();
 	TestCentredClientRectangle();
 	return 0;
 }

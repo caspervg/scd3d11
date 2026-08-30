@@ -37,21 +37,24 @@ namespace nSCD3D11 {
 			return commandLine;
 		}
 
+		ClientRectangle ToClientRectangle(RECT const &rectangle) {
+			return ClientRectangle{rectangle.left, rectangle.top, rectangle.right, rectangle.bottom};
+		}
+
 		struct MonitorSearch {
-			uint32_t wanted;
-			uint32_t seen;
+			char const *wantedDevice;
+			bool found;
 			ClientRectangle rectangle;
 		};
 
 		BOOL CALLBACK SelectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM parameter) {
 			MonitorSearch *const search = reinterpret_cast<MonitorSearch *>(parameter);
-			MONITORINFO monitorInfo{sizeof(monitorInfo)};
+			MONITORINFOEXA monitorInfo{};
+			monitorInfo.cbSize = sizeof(monitorInfo);
 			if (!GetMonitorInfoA(monitor, &monitorInfo)) return TRUE;
-			if (++search->seen != search->wanted) return TRUE;
-			search->rectangle = ClientRectangle{
-				monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
-				monitorInfo.rcMonitor.right, monitorInfo.rcMonitor.bottom
-			};
+			if (std::strcmp(monitorInfo.szDevice, search->wantedDevice) != 0) return TRUE;
+			search->rectangle = ToClientRectangle(monitorInfo.rcMonitor);
+			search->found = true;
 			return FALSE;
 		}
 
@@ -59,23 +62,42 @@ namespace nSCD3D11 {
 			MONITORINFO monitorInfo{sizeof(monitorInfo)};
 			HMONITOR const monitor = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
 			if (monitor != nullptr && GetMonitorInfoA(monitor, &monitorInfo)) {
-				return ClientRectangle{
-					monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
-					monitorInfo.rcMonitor.right, monitorInfo.rcMonitor.bottom
-				};
+				return ToClientRectangle(monitorInfo.rcMonitor);
 			}
 			return ClientRectangle{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 		}
 
-		// The display the fullscreen modes should occupy. Falls back to the primary monitor when
-		// no monitor was requested, or when the requested one does not exist.
-		ClientRectangle TargetMonitorRectangle() {
-			uint32_t const wanted = RequestedMonitorIndex(LowercaseCommandLine());
-			if (wanted == 0) return PrimaryMonitorRectangle();
+		struct TargetMonitor {
+			ClientRectangle rectangle;
+			// Empty means "the primary display", which every API here accepts as a null device.
+			std::string deviceName;
+		};
 
-			MonitorSearch search{wanted, 0, PrimaryMonitorRectangle()};
+		// The display the fullscreen modes should occupy, and the device whose modes should be
+		// enumerated for them. Falls back to the primary monitor when no display was requested, or
+		// when the requested one is not attached.
+		TargetMonitor ResolveTargetMonitor() {
+			std::string const deviceName = MonitorDeviceName(RequestedMonitorIndex(LowercaseCommandLine()));
+			if (deviceName.empty()) return TargetMonitor{PrimaryMonitorRectangle(), std::string()};
+
+			MonitorSearch search{deviceName.c_str(), false, PrimaryMonitorRectangle()};
 			EnumDisplayMonitors(nullptr, nullptr, SelectMonitor, reinterpret_cast<LPARAM>(&search));
-			return search.rectangle;
+			if (!search.found) {
+				// This resolves again on every reclaim attempt and every display change, so say it
+				// once rather than once a frame.
+				static bool warned = false;
+				if (!warned) {
+					warned = true;
+					Log(LogCategory::Initialization, "requested display %s is not attached; using the primary display",
+					    deviceName.c_str());
+				}
+				return TargetMonitor{PrimaryMonitorRectangle(), std::string()};
+			}
+			return TargetMonitor{search.rectangle, deviceName};
+		}
+
+		ClientRectangle TargetMonitorRectangle() {
+			return ResolveTargetMonitor().rectangle;
 		}
 
 #ifndef NDEBUG
@@ -199,10 +221,11 @@ namespace nSCD3D11 {
 		if (width == 0 || height == 0) {
 			return S_FALSE;
 		}
-		if (renderTargetView && depthStencilView &&
+		if (!backBufferRebuildRequested && renderTargetView && depthStencilView &&
 		    width == static_cast<uint32_t>(windowWidth) && height == static_cast<uint32_t>(windowHeight)) {
 			return S_OK;
 		}
+		backBufferRebuildRequested = false;
 
 		// Clear every direct context binding before releasing backbuffer views.
 		// This covers state a frame callback may have installed outside SCD3D11's caches.
@@ -251,28 +274,70 @@ namespace nSCD3D11 {
 		return false;
 	}
 
+	std::string cGDriver::TargetMonitorDeviceName() {
+		return ResolveTargetMonitor().deviceName;
+	}
+
+	// The DXGI output backing -Monitor:<n>, so a fullscreen transition names the display outright
+	// instead of relying on which one the window happens to overlap. Null means "let DXGI pick from
+	// the window", which is what the primary display wants anyway.
+	Microsoft::WRL::ComPtr<IDXGIOutput> cGDriver::TargetFullscreenOutput() {
+		std::string const deviceName = TargetMonitorDeviceName();
+		if (deviceName.empty() || !d3dDevice) return nullptr;
+
+		Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
+		Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+		if (FAILED(d3dDevice.As(&dxgiDevice)) || FAILED(dxgiDevice->GetAdapter(&adapter))) return nullptr;
+
+		Microsoft::WRL::ComPtr<IDXGIOutput> output;
+		for (UINT index = 0; SUCCEEDED(adapter->EnumOutputs(index, &output)); ++index) {
+			DXGI_OUTPUT_DESC description{};
+			char name[2 * sizeof(description.DeviceName)]{};
+			if (SUCCEEDED(output->GetDesc(&description)) &&
+			    WideCharToMultiByte(
+				    CP_ACP, 0, description.DeviceName, -1, name, sizeof(name), nullptr, nullptr) != 0 &&
+			    deviceName == name) {
+				return output;
+			}
+			output.Reset();
+		}
+		static bool warned = false;
+		if (!warned) {
+			warned = true;
+			Log(LogCategory::SwapChain, "no DXGI output matches display %s; letting DXGI choose",
+			    deviceName.c_str());
+		}
+		return nullptr;
+	}
+
 	// DXGI leaves exclusive fullscreen on its own when the window loses focus, when another
 	// application takes the output, or after a foreign display mode change, without telling the
-	// driver. Returns false while the swap chain must not be resized or presented to.
-	bool cGDriver::SyncExclusiveFullscreenState() {
-		if (presentationMode != PresentationMode::ExclusiveFullscreen) return true;
+	// driver. Take the display back once the game is in front again. Presentation is deliberately
+	// not gated on this: until the mode comes back the game keeps drawing into the popup window
+	// DXGI left behind, which is visible, rather than going dark.
+	void cGDriver::ReclaimExclusiveFullscreen() {
+		if (presentationMode != PresentationMode::ExclusiveFullscreen) return;
 
 		BOOL fullscreen = FALSE;
-		if (FAILED(swapChain->GetFullscreenState(&fullscreen, nullptr))) return false;
-		if (fullscreen) return true;
+		if (FAILED(swapChain->GetFullscreenState(&fullscreen, nullptr)) || fullscreen) return;
 
-		// Only reclaim the display once the game is the foreground window again, so the driver
-		// does not fight the user for the output while they are working in another application.
+		// Only reclaim once the game is the foreground window, so the driver does not fight the
+		// user for the output while they are working in another application.
 		HWND const window = static_cast<HWND>(windowHandle);
-		if (IsIconic(window) || GetForegroundWindow() != window) return false;
+		if (IsIconic(window) || GetForegroundWindow() != window) return;
 
-		HRESULT const result = swapChain->SetFullscreenState(TRUE, nullptr);
+		Microsoft::WRL::ComPtr<IDXGIOutput> const output = TargetFullscreenOutput();
+		HRESULT const result = swapChain->SetFullscreenState(TRUE, output.Get());
+		// A transition already in flight is not a failure and not a success either; leave it to
+		// settle and look again next frame.
+		if (result == DXGI_STATUS_MODE_CHANGE_IN_PROGRESS) return;
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::SetFullscreenState(restore)", result);
-			return false;
+			return;
 		}
+		// The swap chain buffers still describe the windowed size until the next resize check.
+		backBufferRebuildRequested = true;
 		Log(LogCategory::SwapChain, "exclusive fullscreen reclaimed after DXGI dropped it");
-		return true;
 	}
 
 	// A resolution or monitor-layout change moves the target display out from under a borderless
@@ -289,6 +354,30 @@ namespace nSCD3D11 {
 			static_cast<HWND>(windowHandle), nullptr, rectangle.left, rectangle.top,
 			rectangle.right - rectangle.left, rectangle.bottom - rectangle.top,
 			SWP_NOZORDER | SWP_NOACTIVATE);
+		// The confinement below follows the client area, so it has to be re-applied after a move.
+		UpdateBorderlessCursorClip(GetForegroundWindow() == static_cast<HWND>(windowHandle));
+	}
+
+	// A borderless mode smaller than the monitor leaves a black surround the cursor can wander
+	// onto, where SC4 stops seeing movement: edge scrolling and clicks die in a region that still
+	// looks like part of the game. Exclusive fullscreen gets this confinement from Windows;
+	// borderless has to ask for it, and has to give it back when the player leaves.
+	void cGDriver::UpdateBorderlessCursorClip(bool windowIsActive) {
+		if (presentationMode != PresentationMode::BorderlessFullscreen || windowHandle == nullptr) return;
+		if (!windowIsActive) {
+			ClipCursor(nullptr);
+			return;
+		}
+
+		HWND const window = static_cast<HWND>(windowHandle);
+		RECT client{};
+		if (!GetClientRect(window, &client)) return;
+		POINT topLeft{client.left, client.top};
+		POINT bottomRight{client.right, client.bottom};
+		if (!ClientToScreen(window, &topLeft) || !ClientToScreen(window, &bottomRight)) return;
+
+		RECT const confinement{topLeft.x, topLeft.y, bottomRight.x, bottomRight.y};
+		ClipCursor(&confinement);
 	}
 
 	void cGDriver::SetVideoMode(int32_t newModeIndex, void *windowProcedure, bool showWindow, bool) {
@@ -439,7 +528,13 @@ namespace nSCD3D11 {
 			DXGI_MODE_DESC targetMode = swapChainDescription.BufferDesc;
 			targetMode.RefreshRate = DXGI_RATIONAL{0, 0};
 			result = swapChain->ResizeTarget(&targetMode);
-			if (SUCCEEDED(result)) result = swapChain->SetFullscreenState(TRUE, nullptr);
+			if (SUCCEEDED(result)) {
+				Microsoft::WRL::ComPtr<IDXGIOutput> const output = TargetFullscreenOutput();
+				result = swapChain->SetFullscreenState(TRUE, output.Get());
+				// A transition already in flight is not a failure, but the swap chain will not
+				// have settled by the time the sizing below runs; let the next frame re-sync.
+				if (result == DXGI_STATUS_MODE_CHANGE_IN_PROGRESS) backBufferRebuildRequested = true;
+			}
 			// DXGI best practice: repeat ResizeTarget with a zeroed refresh rate after the
 			// transition. Without it DXGI can settle on a rate that does not match the monitor's
 			// real one and falls back to blitting instead of flipping in fullscreen.
@@ -508,6 +603,7 @@ namespace nSCD3D11 {
 		// current placement alone.
 		ShowWindow(window, windowed ? SW_SHOWNORMAL : SW_SHOW);
 		SetForegroundWindow(window);
+		UpdateBorderlessCursorClip(GetForegroundWindow() == window);
 		// UpdateWindow dispatches WM_PAINT directly, so the notice appears even though the game is
 		// not pumping its message queue yet.
 		UpdateWindow(window);
@@ -546,14 +642,11 @@ namespace nSCD3D11 {
 			return;
 		}
 
-		// DXGI minimizes an exclusive-fullscreen window when it loses focus, so both of these
-		// idle paths are on the alt-tab route and have to throttle in Present's place.
-		if (!SyncExclusiveFullscreenState()) {
-			Sleep(kIdleFrameSleepMilliseconds);
-			return;
-		}
+		ReclaimExclusiveFullscreen();
 
 		HRESULT result = ResizeBackBufferIfNeeded();
+		// A minimized window has nothing to present into, and DXGI minimizes an exclusive
+		// fullscreen window on every alt-tab, so this idles in Present's place.
 		if (result == S_FALSE) {
 			Sleep(kIdleFrameSleepMilliseconds);
 			return;
@@ -589,6 +682,14 @@ namespace nSCD3D11 {
 		// is a third path that would otherwise spin.
 		if (result == DXGI_STATUS_OCCLUDED) {
 			Sleep(kIdleFrameSleepMilliseconds);
+			return;
+		}
+		// Also a success code: the desktop mode changed under the swap chain, and DXGI is colour
+		// converting or stretching every frame until ResizeBuffers matches it. The client area may
+		// not have changed size, so ask for the rebuild explicitly.
+		if (result == DXGI_STATUS_MODE_CHANGED) {
+			Log(LogCategory::SwapChain, "desktop mode changed under the swap chain; rebuilding the back buffer");
+			backBufferRebuildRequested = true;
 			return;
 		}
 		if (FAILED(result)) {

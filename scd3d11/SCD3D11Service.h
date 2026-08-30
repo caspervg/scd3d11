@@ -7,6 +7,10 @@
 
 enum SCD3D11Event : uint32_t
 {
+	// Raised once per presented frame. It is tied to presentation, not to the game's frame loop,
+	// so it does not arrive while there is nothing to present into: a minimized window (which is
+	// what DXGI does to an exclusive-fullscreen window on alt-tab), a fully occluded one, or a
+	// device that is being recreated. Do not drive timing from its arrival rate.
 	SCD3D11_EVENT_RENDER = 1,
 	SCD3D11_EVENT_BEFORE_DEVICE_DESTROY = 2,
 };

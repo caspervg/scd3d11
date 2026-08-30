@@ -101,18 +101,29 @@ float4 PSMain(VertexOutput input) : SV_TARGET { return notice.Sample(noticeSampl
 
 	HRESULT StartupOverlay::Initialize(ID3D11Device *device, uint32_t width, uint32_t height) {
 		if (device == nullptr || width == 0 || height == 0) return E_INVALIDARG;
-		bool const wasActive = active;
-		Shutdown();
-		HRESULT result = CreatePipeline(device);
-		if (FAILED(result)) return result;
-		result = CreateNoticeTexture(device, width, height);
-		if (FAILED(result)) Shutdown();
-		else {
-			active = wasActive;
-			this->width = width;
-			this->height = height;
+
+		// This runs on every back buffer resize, but only the notice texture depends on the size,
+		// so keep the compiled pipeline instead of paying two D3DCompile calls each time. A device
+		// loss clears it through Shutdown, which is what makes the null check the right test.
+		if (!vertexShader) {
+			HRESULT const result = CreatePipeline(device);
+			if (FAILED(result)) {
+				// Never leave a half-built pipeline behind for the next attempt to skip over.
+				Shutdown();
+				return result;
+			}
 		}
-		return result;
+
+		noticeView.Reset();
+		noticeTexture.Reset();
+		HRESULT const result = CreateNoticeTexture(device, width, height);
+		if (FAILED(result)) {
+			Shutdown();
+			return result;
+		}
+		this->width = width;
+		this->height = height;
+		return S_OK;
 	}
 
 	void StartupOverlay::Shutdown(void) {

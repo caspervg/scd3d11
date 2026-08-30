@@ -91,6 +91,9 @@ namespace nSCD3D11 {
 
 	void cGDriver::PaintStartupNotice(HWND window) {
 		if (presentedFirstFrame || window == nullptr) return;
+		// GDI cannot reach an exclusive-fullscreen swap chain's surface, so drawing there would
+		// only look like the notice failed to appear.
+		if (presentationMode == PresentationMode::ExclusiveFullscreen) return;
 		HDC const deviceContext = GetDC(window);
 		if (deviceContext == nullptr) return;
 		DrawStartupNotice(window, deviceContext);
@@ -105,9 +108,12 @@ namespace nSCD3D11 {
 			SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(driver));
 		}
 
-		// The game still gets to see the message; this only keeps the window on the display it
-		// was placed on when the desktop layout changes underneath it.
-		if (driver != nullptr && message == WM_DISPLAYCHANGE) driver->RecentreBorderlessWindow();
+		// The game still gets to see these; they only keep the borderless window on the display it
+		// was placed on, and the cursor inside it while the player is actually in the game.
+		if (driver != nullptr) {
+			if (message == WM_DISPLAYCHANGE) driver->RecentreBorderlessWindow();
+			if (message == WM_ACTIVATEAPP) driver->UpdateBorderlessCursorClip(wParam != FALSE);
+		}
 
 		// Own repaints only until the game presents; after that the swap chain owns the window.
 		if (driver != nullptr && !driver->presentedFirstFrame) {
@@ -222,6 +228,8 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::DestroyD3D11Context(bool preserveResources) {
+		// Release any borderless cursor confinement before the window it referred to goes away.
+		UpdateBorderlessCursorClip(false);
 		if (d3dDevice) {
 			SCD3D11FrameContext const frame{
 				sizeof(frame), 1, SCD3D11_EVENT_BEFORE_DEVICE_DESTROY, deviceGeneration,
@@ -283,6 +291,7 @@ namespace nSCD3D11 {
 		swapChain.Reset();
 		presentationMode = PresentationMode::Windowed;
 		swapChainFlags = 0;
+		backBufferRebuildRequested = false;
 		d3dContext.Reset();
 #ifndef NDEBUG
 		if (d3dDevice) {
@@ -305,10 +314,16 @@ namespace nSCD3D11 {
 		videoModes.clear();
 		videoModeCount = 0;
 
+		// Enumerate the display the fullscreen modes will actually run on, not always the primary:
+		// with -Monitor:<n> the two differ, and offering the primary's mode list for another
+		// display advertises resolutions it may not support.
+		std::string const deviceName = TargetMonitorDeviceName();
+		char const *const device = deviceName.empty() ? nullptr : deviceName.c_str();
+
 		DEVMODEA displayMode{};
 		displayMode.dmSize = sizeof(displayMode);
 		DWORD index = 0;
-		while (EnumDisplaySettingsA(nullptr, index++, &displayMode)) {
+		while (EnumDisplaySettingsA(device, index++, &displayMode)) {
 			int const depth = static_cast<int>(displayMode.dmBitsPerPel);
 			if (depth < 24) {
 				continue;

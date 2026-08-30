@@ -36,10 +36,14 @@ launch to get a borderless window instead.
 
 Both fullscreen modes keep the client area at exactly the selected resolution, so mouse coordinates line up with the
 game's UI. Pick your desktop resolution to fill the screen in borderless mode; a smaller resolution is centred on the
-monitor rather than stretched.
+monitor rather than stretched, and the cursor is confined to the game area so edge scrolling still works at the edges.
+Because a smaller borderless resolution does not cover the whole monitor, Windows will keep drawing the taskbar over
+the surround — run borderless at your desktop resolution if you want the taskbar out of the way.
 
-Add `-Monitor:<n>` to put either fullscreen mode on a specific display, numbered from 1 in the order Windows enumerates
-them. The default (`0`) uses the primary monitor.
+Add `-Monitor:<n>` to put either fullscreen mode on a specific display. `<n>` is the display number Windows itself
+uses (Settings → System → Display), so `-Monitor:2` targets `\\.\DISPLAY2`. The default (`0`) uses the primary
+monitor, as does a display that is not attached. The offered fullscreen resolutions come from whichever display is
+selected.
 
 ## Frame callback API
 
