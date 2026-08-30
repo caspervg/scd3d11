@@ -67,6 +67,8 @@ namespace nSCD3D11 {
 	                       presentedFirstFrame(false),
 	                       startupWindowMessages(0),
 	                       presentationMode(PresentationMode::Windowed),
+	                       deviceRecoveryFailures(0),
+	                       fallbackToWindowed(false),
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),

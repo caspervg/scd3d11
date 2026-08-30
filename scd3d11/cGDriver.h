@@ -180,6 +180,13 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
 		StartupOverlay startupOverlay;
 		PresentationMode presentationMode;
+		// Consecutive failed device recreations. Every failed attempt in exclusive fullscreen
+		// costs a display mode switch, so the count caps the retry loop instead of letting it
+		// strobe the display once per frame.
+		uint32_t deviceRecoveryFailures;
+		// Set once recovery has given up on a fullscreen mode, so the next attempt asks for a
+		// plain window. Cleared whenever the game itself sets a video mode.
+		bool fallbackToWindowed;
 		UINT swapChainFlags;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBufferTexture;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
@@ -312,6 +319,10 @@ namespace nSCD3D11 {
 		HRESULT PresentStartupOverlay();
 
 		bool RecoverD3D11Device();
+
+		bool SyncExclusiveFullscreenState();
+
+		void RecentreBorderlessWindow();
 
 		HRESULT CreateGeometryPipeline();
 

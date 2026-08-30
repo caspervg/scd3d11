@@ -105,6 +105,10 @@ namespace nSCD3D11 {
 			SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(driver));
 		}
 
+		// The game still gets to see the message; this only keeps the window on the display it
+		// was placed on when the desktop layout changes underneath it.
+		if (driver != nullptr && message == WM_DISPLAYCHANGE) driver->RecentreBorderlessWindow();
+
 		// Own repaints only until the game presents; after that the swap chain owns the window.
 		if (driver != nullptr && !driver->presentedFirstFrame) {
 			driver->startupWindowMessages++;
@@ -210,6 +214,8 @@ namespace nSCD3D11 {
 		videoModeCount = 0;
 		currentVideoMode = -1;
 		windowWidth = windowHeight = 0;
+		deviceRecoveryFailures = 0;
+		fallbackToWindowed = false;
 		initialized = false;
 		Log(LogCategory::Initialization, "shutdown complete");
 		return true;

@@ -31,7 +31,15 @@ ctest --test-dir build\debug --output-on-failure
 
 ## Presentation modes
 
-SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` alongside a fullscreen launch to get a monitor-sized borderless window instead.
+SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` alongside a fullscreen
+launch to get a borderless window instead.
+
+Both fullscreen modes keep the client area at exactly the selected resolution, so mouse coordinates line up with the
+game's UI. Pick your desktop resolution to fill the screen in borderless mode; a smaller resolution is centred on the
+monitor rather than stretched.
+
+Add `-Monitor:<n>` to put either fullscreen mode on a specific display, numbered from 1 in the order Windows enumerates
+them. The default (`0`) uses the primary monitor.
 
 ## Frame callback API
 
