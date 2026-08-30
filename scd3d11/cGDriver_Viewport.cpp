@@ -13,7 +13,6 @@
 #include "Diagnostics.h"
 #include "SCD3D11Service.h"
 
-#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -34,34 +33,14 @@ namespace nSCD3D11 {
 		uint32_t const kMaxDeviceRecoveryFailures = 3;
 
 		std::string const &LowercaseCommandLine() {
-			static std::string const commandLine = [] {
-				std::string text = GetCommandLineA();
-				for (char &character: text) {
-					if (character >= 'A' && character <= 'Z') character = static_cast<char>(character - 'A' + 'a');
-				}
-				return text;
-			}();
+			static std::string const commandLine = LowercaseCopy(GetCommandLineA());
 			return commandLine;
-		}
-
-		bool BorderlessFullscreenRequested() {
-			std::string const &commandLine = LowercaseCommandLine();
-			return commandLine.find("-borderless") != std::string::npos ||
-			       commandLine.find("-fullscreenmode:borderless") != std::string::npos;
-		}
-
-		// `-Monitor:<n>` picks a 1-based display for the fullscreen modes. 0 means "the primary".
-		uint32_t RequestedMonitorIndex() {
-			std::string const &commandLine = LowercaseCommandLine();
-			size_t const position = commandLine.find("-monitor:");
-			if (position == std::string::npos) return 0;
-			return static_cast<uint32_t>(std::strtoul(commandLine.c_str() + position + 9, nullptr, 10));
 		}
 
 		struct MonitorSearch {
 			uint32_t wanted;
 			uint32_t seen;
-			RECT rectangle;
+			ClientRectangle rectangle;
 		};
 
 		BOOL CALLBACK SelectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM parameter) {
@@ -69,36 +48,34 @@ namespace nSCD3D11 {
 			MONITORINFO monitorInfo{sizeof(monitorInfo)};
 			if (!GetMonitorInfoA(monitor, &monitorInfo)) return TRUE;
 			if (++search->seen != search->wanted) return TRUE;
-			search->rectangle = monitorInfo.rcMonitor;
+			search->rectangle = ClientRectangle{
+				monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
+				monitorInfo.rcMonitor.right, monitorInfo.rcMonitor.bottom
+			};
 			return FALSE;
 		}
 
-		RECT PrimaryMonitorRectangle() {
+		ClientRectangle PrimaryMonitorRectangle() {
 			MONITORINFO monitorInfo{sizeof(monitorInfo)};
 			HMONITOR const monitor = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
-			if (monitor != nullptr && GetMonitorInfoA(monitor, &monitorInfo)) return monitorInfo.rcMonitor;
-			return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+			if (monitor != nullptr && GetMonitorInfoA(monitor, &monitorInfo)) {
+				return ClientRectangle{
+					monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
+					monitorInfo.rcMonitor.right, monitorInfo.rcMonitor.bottom
+				};
+			}
+			return ClientRectangle{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 		}
 
 		// The display the fullscreen modes should occupy. Falls back to the primary monitor when
 		// no monitor was requested, or when the requested one does not exist.
-		RECT TargetMonitorRectangle() {
-			uint32_t const wanted = RequestedMonitorIndex();
+		ClientRectangle TargetMonitorRectangle() {
+			uint32_t const wanted = RequestedMonitorIndex(LowercaseCommandLine());
 			if (wanted == 0) return PrimaryMonitorRectangle();
 
 			MonitorSearch search{wanted, 0, PrimaryMonitorRectangle()};
 			EnumDisplayMonitors(nullptr, nullptr, SelectMonitor, reinterpret_cast<LPARAM>(&search));
 			return search.rectangle;
-		}
-
-		// A client area of exactly the requested mode, centred on the monitor. Both fullscreen
-		// modes keep the client area the size the game renders at and believes it is presenting
-		// to, so window-space mouse coordinates line up with the game's own UI layout; a mode
-		// smaller than the monitor is centred rather than stretched to fit.
-		RECT CentredClientRectangle(RECT const &monitor, uint32_t width, uint32_t height) {
-			LONG const left = monitor.left + ((monitor.right - monitor.left) - static_cast<LONG>(width)) / 2;
-			LONG const top = monitor.top + ((monitor.bottom - monitor.top) - static_cast<LONG>(height)) / 2;
-			return RECT{left, top, left + static_cast<LONG>(width), top + static_cast<LONG>(height)};
 		}
 
 #ifndef NDEBUG
@@ -306,7 +283,7 @@ namespace nSCD3D11 {
 		// driver does not yet know what size to centre.
 		if (windowWidth <= 0 || windowHeight <= 0) return;
 
-		RECT const rectangle = CentredClientRectangle(
+		ClientRectangle const rectangle = CentredClientRectangle(
 			TargetMonitorRectangle(), static_cast<uint32_t>(windowWidth), static_cast<uint32_t>(windowHeight));
 		SetWindowPos(
 			static_cast<HWND>(windowHandle), nullptr, rectangle.left, rectangle.top,
@@ -331,11 +308,8 @@ namespace nSCD3D11 {
 		if (!recoveringDevice) fallbackToWindowed = false;
 
 		sGDMode const mode = videoModes[newModeIndex];
-		PresentationMode const requestedPresentationMode = (!mode.isFullscreen || fallbackToWindowed)
-			                                                   ? PresentationMode::Windowed
-			                                                   : BorderlessFullscreenRequested()
-			                                                     ? PresentationMode::BorderlessFullscreen
-			                                                     : PresentationMode::ExclusiveFullscreen;
+		PresentationMode const requestedPresentationMode = SelectPresentationMode(
+			mode.isFullscreen, fallbackToWindowed, LowercaseCommandLine());
 
 		DestroyD3D11Context(recoveringDevice);
 		presentationMode = requestedPresentationMode;
@@ -348,9 +322,12 @@ namespace nSCD3D11 {
 		// Both fullscreen modes start out as a mode-sized window on the target display: borderless
 		// stays that way, and exclusive fullscreen needs the window on the display it is claiming
 		// because SetFullscreenState picks the output the window sits on.
-		RECT windowRectangle = windowed
-			                       ? RECT{0, 0, static_cast<LONG>(mode.width), static_cast<LONG>(mode.height)}
-			                       : CentredClientRectangle(TargetMonitorRectangle(), mode.width, mode.height);
+		ClientRectangle const client = windowed
+			                               ? ClientRectangle{
+				                               0, 0, static_cast<int32_t>(mode.width), static_cast<int32_t>(mode.height)
+			                               }
+			                               : CentredClientRectangle(TargetMonitorRectangle(), mode.width, mode.height);
+		RECT windowRectangle{client.left, client.top, client.right, client.bottom};
 		if (windowed && !AdjustWindowRectEx(&windowRectangle, style, FALSE, extendedStyle)) {
 			Log(LogCategory::Initialization, "AdjustWindowRectEx failed (Win32 error %lu)", ::GetLastError());
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);

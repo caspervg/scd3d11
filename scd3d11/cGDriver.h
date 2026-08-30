@@ -26,6 +26,7 @@
 #include <cRZRefCount.h>
 #include "cIGZGDriver.h"
 #include "D3D11Conversions.h"
+#include "PresentationModeUtils.h"
 #include "sGDMode.h"
 #include "ext/cIGZGBufferRegionExtension.h"
 #include "ext/cIGZGDriverLightingExtension.h"
@@ -65,12 +66,6 @@ namespace nSCD3D11 {
 			COLOR,
 
 			NUM_MATRIX_MODES = COLOR + 1,
-		};
-
-		enum class PresentationMode : uint8_t {
-			Windowed,
-			ExclusiveFullscreen,
-			BorderlessFullscreen,
 		};
 
 	private:

@@ -66,6 +66,7 @@ add_library(SCD3D11 SHARED
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
+        scd3d11/PresentationModeUtils.cpp
         scd3d11/SCD3D11Service.cpp
         scd3d11/StartupOverlay.cpp
         scd3d11/StartupProgress.cpp
@@ -118,6 +119,10 @@ if (BUILD_TESTING)
     scd3d11_add_test(VideoModeUtilsTest
             tests/VideoModeUtilsTest.cpp
             scd3d11/VideoModeUtils.cpp)
+
+    scd3d11_add_test(PresentationModeUtilsTest
+            tests/PresentationModeUtilsTest.cpp
+            scd3d11/PresentationModeUtils.cpp)
 
     scd3d11_add_test(TextureUploadUtilsTest
             tests/TextureUploadUtilsTest.cpp
