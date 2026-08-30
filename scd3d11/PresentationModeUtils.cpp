@@ -26,6 +26,10 @@ namespace nSCD3D11
 		       lowercaseCommandLine.find("-fullscreenmode:borderless") != std::string::npos;
 	}
 
+	bool StartupOverlayEnabled(std::string const &lowercaseCommandLine) {
+		return lowercaseCommandLine.find("-startupoverlay:off") == std::string::npos;
+	}
+
 	uint32_t RequestedMonitorIndex(std::string const &lowercaseCommandLine) {
 		char const *const switchName = "-monitor:";
 		size_t const position = lowercaseCommandLine.find(switchName);

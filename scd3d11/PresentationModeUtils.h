@@ -36,6 +36,10 @@ namespace nSCD3D11
 
 	bool BorderlessFullscreenRequested(std::string const &lowercaseCommandLine);
 
+	// The startup notice is enabled by default. `-StartupOverlay:off` disables both its D3D
+	// presentation and the GDI fallback, which is useful for isolating retained-buffer issues.
+	bool StartupOverlayEnabled(std::string const &lowercaseCommandLine);
+
 	// `-Monitor:<n>` picks a 1-based display for the fullscreen modes. Returns 0 when the switch
 	// is absent or does not parse, meaning "the primary monitor".
 	uint32_t RequestedMonitorIndex(std::string const &lowercaseCommandLine);

@@ -12,6 +12,25 @@
 #include "../Diagnostics.h"
 
 namespace nSCD3D11 {
+	namespace {
+		struct BufferRegionDiagnostics {
+			bool availabilityLogged = false;
+			uint64_t readCount[2]{};
+			uint64_t drawCount[2]{};
+			bool invalidReadLogged = false;
+			bool invalidDrawLogged = false;
+		};
+
+		bool ShouldLogBufferRegionCall(uint64_t count) {
+			return count <= 4 || (count & (count - 1)) == 0;
+		}
+
+		BufferRegionDiagnostics &RegionDiagnostics() {
+			static BufferRegionDiagnostics diagnostics;
+			return diagnostics;
+		}
+	}
+
 	HRESULT cGDriver::EnsureDepthRegionScratch(void) {
 		if (depthRegionScratch) return S_OK;
 		if (!d3dDevice || windowWidth <= 0 || windowHeight <= 0) return E_POINTER;
@@ -77,7 +96,14 @@ namespace nSCD3D11 {
 	}
 
 	bool cGDriver::BufferRegionEnabled(void) {
-		return d3dDevice != nullptr;
+		bool const enabled = d3dDevice != nullptr;
+		BufferRegionDiagnostics &diagnostics = RegionDiagnostics();
+		if (!diagnostics.availabilityLogged) {
+			diagnostics.availabilityLogged = true;
+			char const *const state = enabled ? "enabled" : "unavailable before device creation";
+			Log(LogCategory::Resource, "buffer regions %s", state);
+		}
+		return enabled;
 	}
 
 	uint32_t cGDriver::NewBufferRegion(int32_t type) {
@@ -92,6 +118,8 @@ namespace nSCD3D11 {
 			return 0;
 		}
 		bufferRegionFlags |= static_cast<uint8_t>(1u << index);
+		Log(LogCategory::Resource, "buffer region %u created: type=%d size=%dx%d",
+		    static_cast<uint32_t>(index + 1), type, windowWidth, windowHeight);
 		return static_cast<uint32_t>(index + 1);
 	}
 
@@ -112,11 +140,26 @@ namespace nSCD3D11 {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
 		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
 		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
+			BufferRegionDiagnostics &diagnostics = RegionDiagnostics();
+			if (!diagnostics.invalidReadLogged) {
+				diagnostics.invalidReadLogged = true;
+				Log(LogCategory::Resource,
+				    "buffer region read rejected: region=%u dst=(%d,%d) size=%dx%d src=(%d,%d) target=%dx%d",
+				    region, destinationX, destinationY, width, height, sourceX, sourceY, windowWidth, windowHeight);
+			}
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
 
 		uint32_t const index = region - 1;
+		BufferRegionDiagnostics &diagnostics = RegionDiagnostics();
+		uint64_t const readCount = ++diagnostics.readCount[bufferRegions[index].type];
+		if (ShouldLogBufferRegionCall(readCount)) {
+			Log(LogCategory::Resource,
+			    "buffer region read #%llu: region=%u type=%d dst=(%d,%d) size=%dx%d src=(%d,%d)",
+			    static_cast<unsigned long long>(readCount), region, bufferRegions[index].type,
+			    destinationX, destinationY, width, height, sourceX, sourceY);
+		}
 		ID3D11Resource *source = nullptr;
 		if (bufferRegions[index].type == 0) {
 			if (!backBufferTexture) return false;
@@ -153,11 +196,26 @@ namespace nSCD3D11 {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
 		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
 		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
+			BufferRegionDiagnostics &diagnostics = RegionDiagnostics();
+			if (!diagnostics.invalidDrawLogged) {
+				diagnostics.invalidDrawLogged = true;
+				Log(LogCategory::Resource,
+				    "buffer region draw rejected: region=%u src=(%d,%d) size=%dx%d dst=(%d,%d) target=%dx%d",
+				    region, sourceX, sourceY, width, height, destinationX, destinationY, windowWidth, windowHeight);
+			}
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
 
 		uint32_t const index = region - 1;
+		BufferRegionDiagnostics &diagnostics = RegionDiagnostics();
+		uint64_t const drawCount = ++diagnostics.drawCount[bufferRegions[index].type];
+		if (ShouldLogBufferRegionCall(drawCount)) {
+			Log(LogCategory::Resource,
+			    "buffer region draw #%llu: region=%u type=%d src=(%d,%d) size=%dx%d dst=(%d,%d)",
+			    static_cast<unsigned long long>(drawCount), region, bufferRegions[index].type,
+			    sourceX, sourceY, width, height, destinationX, destinationY);
+		}
 		ID3D11Resource *destination = nullptr;
 		if (bufferRegions[index].type == 0) {
 			if (!backBufferTexture) return false;

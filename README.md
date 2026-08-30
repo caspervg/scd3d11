@@ -45,6 +45,9 @@ uses (Settings → System → Display), so `-Monitor:2` targets `\\.\DISPLAY2`. 
 monitor, as does a display that is not attached. The offered fullscreen resolutions come from whichever display is
 selected.
 
+Add `-StartupOverlay:off` to disable the SCD3D11 startup notice, including its GDI fallback. This is primarily a
+diagnostic switch for comparing startup and region-view presentation without any driver-rendered overlay.
+
 ## Frame callback API
 
 Other plugins can observe the live D3D11 device, context, swap chain and back-buffer RTV through the exports in

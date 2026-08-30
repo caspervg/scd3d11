@@ -156,7 +156,7 @@ namespace nSCD3D11 {
 	                       clearDepth(1.0f),
 	                       clearStencil(0) {
 		g_driverInstance = this;
-		presentedFirstFrame = g_startupComplete;
+		presentedFirstFrame = !ShouldShowStartupOverlay();
 		for (float *matrix: matrices) {
 			matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
 		}
@@ -185,7 +185,8 @@ namespace nSCD3D11 {
 	}
 
 	bool cGDriver::ShouldShowStartupOverlay(void) {
-		return !g_startupComplete;
+		static bool const enabled = StartupOverlayEnabled(LowercaseCopy(GetCommandLineA()));
+		return enabled && !g_startupComplete;
 	}
 
 	void cGDriver::MarkStartupComplete(void) {

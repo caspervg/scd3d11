@@ -11,6 +11,7 @@ using nSCD3D11::MonitorDeviceName;
 using nSCD3D11::PresentationMode;
 using nSCD3D11::RequestedMonitorIndex;
 using nSCD3D11::SelectPresentationMode;
+using nSCD3D11::StartupOverlayEnabled;
 
 namespace {
 	// The driver folds the process command line once and hands the result to every query, so the
@@ -36,6 +37,13 @@ namespace {
 		assert(BorderlessFullscreenRequested(LowercaseCopy("sc4.exe -FullscreenMode:Borderless")));
 		assert(!BorderlessFullscreenRequested(LowercaseCopy("sc4.exe")));
 		assert(!BorderlessFullscreenRequested(LowercaseCopy("sc4.exe -CustomResolution -VSync:off")));
+	}
+
+	void TestStartupOverlaySelection() {
+		assert(StartupOverlayEnabled(LowercaseCopy("sc4.exe")));
+		assert(!StartupOverlayEnabled(LowercaseCopy("sc4.exe -StartupOverlay:off")));
+		assert(!StartupOverlayEnabled(LowercaseCopy("sc4.exe -STARTUPOVERLAY:OFF -Borderless")));
+		assert(StartupOverlayEnabled(LowercaseCopy("sc4.exe -StartupOverlay:on")));
 	}
 
 	// The decision table the driver runs on every SetVideoMode.
@@ -109,6 +117,7 @@ namespace {
 int main() {
 	TestLowercaseCopy();
 	TestBorderlessDetection();
+	TestStartupOverlaySelection();
 	TestPresentationModeSelection();
 	TestMonitorIndex();
 	TestMonitorDeviceName();

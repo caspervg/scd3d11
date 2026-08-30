@@ -594,7 +594,7 @@ namespace nSCD3D11 {
 		(void) showWindow;
 		// A device-loss recovery mid-game must not drop back to the startup notice.
 		if (!recoveringDevice) {
-			presentedFirstFrame = false;
+			presentedFirstFrame = !ShouldShowStartupOverlay();
 			startupWindowMessages = 0;
 		}
 		startupOverlay.SetActive(ShouldShowStartupOverlay());
