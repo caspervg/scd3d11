@@ -108,6 +108,14 @@ namespace nSCD3D11 {
 			SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(driver));
 		}
 
+		if (message == WM_CLOSE || message == WM_DESTROY || message == WM_NCDESTROY ||
+		    message == WM_QUERYENDSESSION || message == WM_ENDSESSION) {
+			Log(LogCategory::Initialization,
+			    "window shutdown message: id=0x%04X wParam=0x%08lX lParam=0x%08lX thread=%lu",
+			    message, static_cast<unsigned long>(wParam), static_cast<unsigned long>(lParam),
+			    GetCurrentThreadId());
+		}
+
 		// The game still gets to see these; they only keep the borderless window on the display it
 		// was placed on, and the cursor inside it while the player is actually in the game.
 		if (driver != nullptr) {

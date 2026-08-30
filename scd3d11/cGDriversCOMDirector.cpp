@@ -122,6 +122,7 @@ namespace nSCD3D11
 		}
 
 		bool PreAppShutdown() {
+			Log(LogCategory::Initialization, "PreAppShutdown begin");
 			if (messageServer != nullptr) {
 				messageServer->RemoveNotification(this, kSC4MessagePostRegionInit);
 				messageServer->RemoveNotification(this, kSC4MessagePreRegionShutdown);
@@ -129,9 +130,14 @@ namespace nSCD3D11
 				messageServer->Release();
 				messageServer = nullptr;
 			}
+			Log(LogCategory::Initialization, "PreAppShutdown message subscriptions removed");
 			StartupResourceLoadPatches::Uninstall();
+			Log(LogCategory::Initialization, "PreAppShutdown startup patch removed");
+			Log(LogCategory::Initialization, "PreAppShutdown stopping parallel cull");
 			ParallelRenderCull::Uninstall();
+			Log(LogCategory::Initialization, "PreAppShutdown parallel cull stopped");
 			SimTickBudget::Uninstall();
+			Log(LogCategory::Initialization, "PreAppShutdown complete");
 			return true;
 		}
 
