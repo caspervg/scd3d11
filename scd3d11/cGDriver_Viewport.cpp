@@ -602,7 +602,19 @@ namespace nSCD3D11 {
 		// position DXGI just applied when entering exclusive fullscreen. SW_SHOW leaves the
 		// current placement alone.
 		ShowWindow(window, windowed ? SW_SHOWNORMAL : SW_SHOW);
-		SetForegroundWindow(window);
+		// SetForegroundWindow is only a request and Windows may reject it because of foreground-lock
+		// policy. SC4 also keys startup rendering state off the thread's active/focused window, so
+		// explicitly establish those states on this UI thread. A manual click used to provide the
+		// missing WM_ACTIVATE/WM_SETFOCUS messages and made the region view initialize correctly.
+		BOOL const foregroundRequested = SetForegroundWindow(window);
+		SetActiveWindow(window);
+		SetFocus(window);
+		Log(LogCategory::Initialization,
+		    "startup window activation: foreground-request=%u foreground=%u active=%u focus=%u",
+		    foregroundRequested ? 1u : 0u,
+		    GetForegroundWindow() == window ? 1u : 0u,
+		    GetActiveWindow() == window ? 1u : 0u,
+		    GetFocus() == window ? 1u : 0u);
 		UpdateBorderlessCursorClip(GetForegroundWindow() == window);
 		// UpdateWindow dispatches WM_PAINT directly, so the notice appears even though the game is
 		// not pumping its message queue yet.

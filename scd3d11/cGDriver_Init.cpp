@@ -113,6 +113,11 @@ namespace nSCD3D11 {
 		if (driver != nullptr) {
 			if (message == WM_DISPLAYCHANGE) driver->RecentreBorderlessWindow();
 			if (message == WM_ACTIVATEAPP) driver->UpdateBorderlessCursorClip(wParam != FALSE);
+			if (!driver->presentedFirstFrame &&
+			    (message == WM_ACTIVATE || message == WM_ACTIVATEAPP || message == WM_SETFOCUS)) {
+				Log(LogCategory::Initialization, "startup window message: id=0x%04X wParam=0x%08lX",
+				    message, static_cast<unsigned long>(wParam));
+			}
 		}
 
 		// Own repaints only until the game presents; after that the swap chain owns the window.

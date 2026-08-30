@@ -25,6 +25,56 @@ namespace nSCD3D11 {
 			return count <= 4 || (count & (count - 1)) == 0;
 		}
 
+		void LogColorResourceSample(
+			ID3D11Device *device, ID3D11DeviceContext *context, ID3D11Texture2D *texture,
+			char const *operation, uint64_t callCount) {
+			if (device == nullptr || context == nullptr || texture == nullptr) return;
+
+			D3D11_TEXTURE2D_DESC description{};
+			texture->GetDesc(&description);
+			description.Usage = D3D11_USAGE_STAGING;
+			description.BindFlags = 0;
+			description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			description.MiscFlags = 0;
+
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+			HRESULT result = device->CreateTexture2D(&description, nullptr, &staging);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(buffer region sample)", result);
+				return;
+			}
+			context->CopyResource(staging.Get(), texture);
+
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			result = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(buffer region sample)", result);
+				return;
+			}
+
+			uint64_t hash = 1469598103934665603ULL;
+			uint32_t nonBlack = 0;
+			uint32_t const columns = description.Width < 64 ? description.Width : 64;
+			uint32_t const rows = description.Height < 64 ? description.Height : 64;
+			for (uint32_t row = 0; row < rows; ++row) {
+				uint32_t const y = rows == 1 ? 0 : row * (description.Height - 1) / (rows - 1);
+				uint8_t const *const scanline = static_cast<uint8_t const *>(mapped.pData) + y * mapped.RowPitch;
+				for (uint32_t column = 0; column < columns; ++column) {
+					uint32_t const x = columns == 1 ? 0 : column * (description.Width - 1) / (columns - 1);
+					uint8_t const *const pixel = scanline + x * 4;
+					if (pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0) ++nonBlack;
+					for (uint32_t component = 0; component < 4; ++component) {
+						hash = (hash ^ pixel[component]) * 1099511628211ULL;
+					}
+				}
+			}
+			context->Unmap(staging.Get(), 0);
+			Log(LogCategory::Resource,
+			    "buffer region color sample after %s #%llu: hash=%016llX nonblack=%u/%u",
+			    operation, static_cast<unsigned long long>(callCount),
+			    static_cast<unsigned long long>(hash), nonBlack, columns * rows);
+		}
+
 		BufferRegionDiagnostics &RegionDiagnostics() {
 			static BufferRegionDiagnostics diagnostics;
 			return diagnostics;
@@ -187,6 +237,10 @@ namespace nSCD3D11 {
 			bufferRegions[index].texture.Get(), 0,
 			static_cast<UINT>(destinationX), static_cast<UINT>(destinationY), 0,
 			source, 0, &sourceBox);
+		if (bufferRegions[index].type == 0 && (readCount == 2 || readCount == 3)) {
+			LogColorResourceSample(
+				d3dDevice.Get(), d3dContext.Get(), bufferRegions[index].texture.Get(), "read", readCount);
+		}
 		return true;
 	}
 
@@ -243,6 +297,10 @@ namespace nSCD3D11 {
 			destination, 0,
 			static_cast<UINT>(destinationX), static_cast<UINT>(destinationY), 0,
 			bufferRegions[index].texture.Get(), 0, &sourceBox);
+		if (bufferRegions[index].type == 0 && (drawCount == 2 || drawCount == 3)) {
+			LogColorResourceSample(
+				d3dDevice.Get(), d3dContext.Get(), backBufferTexture.Get(), "draw", drawCount);
+		}
 		if (bufferRegions[index].type == 1) {
 			d3dContext->CopyResource(depthStencilTexture.Get(), depthRegionScratch.Get());
 			depthRegionScratchValid = true;
