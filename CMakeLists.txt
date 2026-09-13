@@ -38,6 +38,7 @@ add_library(scd3d11_common INTERFACE)
 target_include_directories(scd3d11_common INTERFACE
         "${PROJECT_SOURCE_DIR}/scd3d11"
         "${PROJECT_SOURCE_DIR}/scd3d11/ext"
+        "${PROJECT_SOURCE_DIR}/vendor/xxhash"
 )
 
 # Limited to C++ sources so none of these reach the resource compiler.

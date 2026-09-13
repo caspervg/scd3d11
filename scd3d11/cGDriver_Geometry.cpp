@@ -504,11 +504,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		uint8_t const *source = interleavedPointer + byteOffset;
-		GeometryCacheKey key;
-		key.digest = HashBytes(nullptr, 0);
+		XXH3_state_t hashState;
+		XXH3_128bits_reset(&hashState);
 		for (uint32_t i = 0; i < count; ++i) {
-			key.digest = HashBytes(source + static_cast<size_t>(i) * interleavedStride, packedStride, key.digest);
+			XXH3_128bits_update(&hashState, source + static_cast<size_t>(i) * interleavedStride, packedStride);
 		}
+		GeometryCacheKey key;
+		key.digest = XXH3_128bits_digest(&hashState);
 		key.count = count;
 		key.format = interleavedFormat;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,

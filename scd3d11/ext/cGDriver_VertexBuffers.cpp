@@ -79,7 +79,7 @@ namespace nSCD3D11 {
 		uint8_t const *source = extensionVertexData.data() + offset;
 		// The reservation generation stands in for the contents: they can only change under GetVertices.
 		GeometryCacheKey key;
-		key.digest = extensionVertexGeneration;
+		key.digest.low64 = extensionVertexGeneration;
 		key.count = byteSize / stride;
 		key.format = format;
 		key.generation = true;

@@ -8,6 +8,8 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
+// The one translation unit that compiles xxHash's implementation.
+#define XXH_IMPLEMENTATION
 #include "D3D11Conversions.h"
 #include "VertexFormatUtils.h"
 
@@ -15,18 +17,10 @@
 #include <cstring>
 
 namespace nSCD3D11 {
-    uint64_t HashBytes(void const *data, size_t size, uint64_t hash) {
-        uint8_t const *bytes = static_cast<uint8_t const *>(data);
-        for (size_t i = 0; i < size; ++i) {
-            hash = (hash ^ bytes[i]) * 1099511628211ull;
-        }
-        return hash;
-    }
-
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count) {
         size_t const indexBytes = format == DXGI_FORMAT_R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t);
         GeometryCacheKey key;
-        key.digest = HashBytes(indices, static_cast<size_t>(count) * indexBytes);
+        key.digest = XXH3_128bits(indices, static_cast<size_t>(count) * indexBytes);
         key.count = count;
         key.format = static_cast<uint32_t>(format);
         return key;

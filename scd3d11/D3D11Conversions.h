@@ -14,6 +14,9 @@
 #include <vector>
 #include <d3d11.h>
 
+#define XXH_STATIC_LINKING_ONLY
+#include <xxhash.h>
+
 namespace nSCD3D11 {
     constexpr bool ClearsColor(uint32_t mask) {
         return (mask & 0x4000) != 0;
@@ -35,26 +38,25 @@ namespace nSCD3D11 {
         float texCoord[2][2];
     };
 
-    uint64_t HashBytes(void const *data, size_t size, uint64_t hash = 14695981039346656037ull);
-
     // Identifies uploaded geometry. The digest alone never decides a match: count and format say how
     // the bytes are interpreted, and generation keys (a reservation generation, not a content hash)
-    // live in a separate key space from content keys.
+    // live in a separate key space from content keys. Content digests are XXH3-128; a match is still
+    // only overwhelmingly likely, not proof, that the contents are equal.
     struct GeometryCacheKey {
-        uint64_t digest = 0;
+        XXH128_hash_t digest{};
         uint32_t count = 0;
         uint32_t format = 0; // SimGL vertex format or DXGI index format
         bool generation = false;
 
         bool operator==(GeometryCacheKey const &other) const {
-            return digest == other.digest && count == other.count && format == other.format &&
+            return XXH128_isEqual(digest, other.digest) && count == other.count && format == other.format &&
                    generation == other.generation;
         }
     };
 
     struct GeometryCacheKeyHash {
         size_t operator()(GeometryCacheKey const &key) const {
-            return static_cast<size_t>(key.digest ^ (key.digest >> 32));
+            return static_cast<size_t>(key.digest.low64 ^ key.digest.high64);
         }
     };
 

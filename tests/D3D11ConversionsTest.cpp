@@ -15,18 +15,22 @@ int main() {
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 100) == 980);
     assert(nSCD3D11::D3D11TopLeftY(1080, 980, 100) == 0);
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 1080) == 0);
+    // Split input must go through one streaming state, not digests chained as seeds.
     uint8_t const hashInput[] = {1, 2, 3, 4};
-    uint64_t splitHash = nSCD3D11::HashBytes(hashInput, 2);
-    splitHash = nSCD3D11::HashBytes(hashInput + 2, 2, splitHash);
-    assert(splitHash == nSCD3D11::HashBytes(hashInput, sizeof(hashInput)));
-    assert(splitHash != nSCD3D11::HashBytes(hashInput, sizeof(hashInput) - 1));
+    XXH3_state_t hashState;
+    XXH3_128bits_reset(&hashState);
+    XXH3_128bits_update(&hashState, hashInput, 2);
+    XXH3_128bits_update(&hashState, hashInput + 2, 2);
+    XXH128_hash_t const splitHash = XXH3_128bits_digest(&hashState);
+    assert(XXH128_isEqual(splitHash, XXH3_128bits(hashInput, sizeof(hashInput))));
+    assert(!XXH128_isEqual(splitHash, XXH3_128bits(hashInput, sizeof(hashInput) - 1)));
 
     uint32_t const wideIndices[] = {5, 0, 1};
     uint16_t const narrowIndices[] = {5, 0, 0, 0, 1, 0};
     nSCD3D11::GeometryCacheKey const wideKey = nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 3);
     nSCD3D11::GeometryCacheKey const narrowKey = nSCD3D11::IndexCacheKey(DXGI_FORMAT_R16_UINT, narrowIndices, 6);
     // Identical bytes, different interpretation.
-    assert(wideKey.digest == narrowKey.digest && !(wideKey == narrowKey));
+    assert(XXH128_isEqual(wideKey.digest, narrowKey.digest) && !(wideKey == narrowKey));
     assert(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 3));
     assert(!(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 2)));
     nSCD3D11::GeometryCacheKey generationKey = wideKey;
