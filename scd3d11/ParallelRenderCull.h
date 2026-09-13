@@ -23,8 +23,9 @@ namespace nSCD3D11::ParallelRenderCull {
 	//   "0" / "off"         -> do not install; stock code runs untouched
 	//
 	// Safe to call more than once; only the first call installs. Returns true if the
-	// hooks are active afterwards.
-	bool Install(void);
+	// hooks are active afterwards. The worker pool is sized to the logical processors the
+	// process may run on, so a game pinned to one core gathers on the render thread only.
+	bool Install(unsigned logicalProcessors);
 
 	// Removes the hooks and tears the worker pool down. Safe if Install never ran.
 	void Uninstall(void);

@@ -299,6 +299,7 @@ namespace nSCD3D11 {
 		static LRESULT CALLBACK DriverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 		static void DrawStartupNotice(HWND window, HDC deviceContext);
+		static Microsoft::WRL::ComPtr<IDXGIAdapter> SelectAdapter(void);
 		void PaintStartupNotice(HWND window);
 
 		void DestroyD3D11Context(bool preserveResources = false);

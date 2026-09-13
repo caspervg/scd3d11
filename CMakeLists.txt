@@ -56,6 +56,7 @@ add_library(SCD3D11 SHARED
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriversCOMDirector.cpp
+        scd3d11/CpuScheduling.cpp
         scd3d11/ParallelRenderCull.cpp
         scd3d11/SimTickBudget.cpp
         scd3d11/cGDriver_Info.cpp
@@ -126,6 +127,11 @@ if (BUILD_TESTING)
     scd3d11_add_test(SCD3D11ServiceTest
             tests/SCD3D11ServiceTest.cpp
             scd3d11/SCD3D11Service.cpp
+            scd3d11/Diagnostics.cpp)
+
+    scd3d11_add_test(CpuSchedulingTest
+            tests/CpuSchedulingTest.cpp
+            scd3d11/CpuScheduling.cpp
             scd3d11/Diagnostics.cpp)
 
     scd3d11_add_test(StartupProgressTest

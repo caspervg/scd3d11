@@ -24,6 +24,7 @@
 #include <cRZCOMDllDirector.h>
 #include <GZCLSIDDefs.h>
 #include "cGDriver.h"
+#include "CpuScheduling.h"
 #include "Diagnostics.h"
 #include "StartupProgress.h"
 #include "StartupResourceLoadPatches.h"
@@ -136,8 +137,9 @@ namespace nSCD3D11
 		}
 
 		bool OnStart(cIGZCOM* pCOM) {
+			unsigned const logicalProcessors = CpuScheduling::Apply();
 			StartupResourceLoadPatches::Install();
-			ParallelRenderCull::Install();
+			ParallelRenderCull::Install(logicalProcessors);
 			SimTickBudget::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			if (pFramework) {

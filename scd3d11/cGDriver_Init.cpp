@@ -13,6 +13,9 @@
 #include "SCD3D11Service.h"
 #include "VideoModeUtils.h"
 
+#include <cstring>
+#include <dxgi1_6.h>
+
 #ifndef NDEBUG
 #include <d3d11sdklayers.h>
 #endif
@@ -27,7 +30,8 @@ namespace nSCD3D11 {
 			       (support & requiredSupport) == requiredSupport;
 		}
 
-		HRESULT ProbeD3D11Device(Microsoft::WRL::ComPtr<ID3D11Device> &device, D3D_FEATURE_LEVEL &level) {
+		HRESULT ProbeD3D11Device(
+			IDXGIAdapter *adapter, Microsoft::WRL::ComPtr<ID3D11Device> &device, D3D_FEATURE_LEVEL &level) {
 			D3D_FEATURE_LEVEL const levels[] = {
 				D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
 				D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
@@ -35,13 +39,14 @@ namespace nSCD3D11 {
 			D3D_FEATURE_LEVEL const legacyLevels[] = {
 				D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
 			};
+			D3D_DRIVER_TYPE const driverType = adapter != nullptr ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
 			HRESULT result = D3D11CreateDevice(
-				nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+				adapter, driverType, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
 				levels, static_cast<UINT>(sizeof(levels) / sizeof(levels[0])), D3D11_SDK_VERSION,
 				&device, &level, nullptr);
 			if (result == E_INVALIDARG) {
 				result = D3D11CreateDevice(
-					nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+					adapter, driverType, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
 					legacyLevels, static_cast<UINT>(sizeof(legacyLevels) / sizeof(legacyLevels[0])), D3D11_SDK_VERSION,
 					&device, &level, nullptr);
 			}
@@ -87,6 +92,24 @@ namespace nSCD3D11 {
 		drawLine("Loading plugins and game data. This can take a while.",
 		         detailHeight, RGB(150, 158, 170), titleHeight / 4);
 		drawLine("Direct3D 11 renderer (SCD3D11)", detailHeight, RGB(104, 112, 126), titleHeight * 2);
+	}
+
+	// Passing no adapter gets DXGI adapter 0, which on hybrid-GPU laptops is usually the integrated
+	// GPU. Prefer the high-performance GPU instead; -GPU:default restores the old behaviour.
+	Microsoft::WRL::ComPtr<IDXGIAdapter> cGDriver::SelectAdapter(void) {
+		if (std::strstr(GetCommandLineA(), "-GPU:default") != nullptr) return nullptr;
+
+		Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+		Microsoft::WRL::ComPtr<IDXGIFactory6> factory6;
+		Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+		DXGI_ADAPTER_DESC1 description{};
+		if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || FAILED(factory.As(&factory6)) ||
+		    FAILED(factory6->EnumAdapterByGpuPreference(
+			    0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter))) ||
+		    FAILED(adapter->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
+			return nullptr;
+		}
+		return adapter;
 	}
 
 	void cGDriver::PaintStartupNotice(HWND window) {
@@ -151,7 +174,7 @@ namespace nSCD3D11 {
 
 		Microsoft::WRL::ComPtr<ID3D11Device> probeDevice;
 		D3D_FEATURE_LEVEL probeLevel{};
-		HRESULT const probeResult = ProbeD3D11Device(probeDevice, probeLevel);
+		HRESULT const probeResult = ProbeD3D11Device(SelectAdapter().Get(), probeDevice, probeLevel);
 		if (FAILED(probeResult)) {
 			LogHRESULT(LogCategory::Initialization, "D3D11CreateDevice(capability probe)", probeResult);
 			UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));

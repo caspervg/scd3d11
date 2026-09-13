@@ -297,12 +297,14 @@ namespace nSCD3D11 {
 			D3D_FEATURE_LEVEL_10_0
 		};
 
+		Microsoft::WRL::ComPtr<IDXGIAdapter> const preferredAdapter = SelectAdapter();
 		auto createDevice = [&](D3D_FEATURE_LEVEL const *levels, UINT levelCount) {
 			swapChain.Reset();
 			d3dContext.Reset();
 			d3dDevice.Reset();
 			return D3D11CreateDeviceAndSwapChain(
-				nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags,
+				preferredAdapter.Get(), preferredAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+				nullptr, creationFlags,
 				levels, levelCount, D3D11_SDK_VERSION, &swapChainDescription,
 				&swapChain, &d3dDevice, &featureLevel, &d3dContext);
 		};
@@ -339,6 +341,15 @@ namespace nSCD3D11 {
 		if (SUCCEEDED(d3dDevice.As(&dxgiDevice)) && SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) &&
 		    SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
 			factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+		}
+		DXGI_ADAPTER_DESC adapterDescription{};
+		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
+			char name[sizeof(adapterDescription.Description)]{};
+			WideCharToMultiByte(CP_UTF8, 0, adapterDescription.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
+			Log(LogCategory::Initialization, "adapter: %s (vendor 0x%04X, device 0x%04X, %u MB dedicated, %s)",
+			    name, adapterDescription.VendorId, adapterDescription.DeviceId,
+			    static_cast<unsigned>(adapterDescription.DedicatedVideoMemory / (1024 * 1024)),
+			    preferredAdapter ? "high-performance preference" : "system default");
 		}
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {

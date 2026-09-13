@@ -656,7 +656,7 @@ namespace nSCD3D11::ParallelRenderCull {
 
 	} // namespace
 
-	bool Install() {
+	bool Install(unsigned logicalProcessors) {
 		if (gInstalled) return true;
 
 		Mode requested = ReadMode();
@@ -682,8 +682,7 @@ namespace nSCD3D11::ParallelRenderCull {
 
 		gMode = requested;
 
-		unsigned hw = std::thread::hardware_concurrency();
-		unsigned workers = (gMode == Mode::Parallel && hw > 2) ? (hw - 1) : 0;
+		unsigned workers = (gMode == Mode::Parallel && logicalProcessors > 2) ? (logicalProcessors - 1) : 0;
 		if (workers > 7) workers = 7;
 		if (workers > 0) gPool.Start(workers);
 

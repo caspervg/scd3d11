@@ -18,6 +18,31 @@ Not affiliated with or endorsed by EA Games.
 Copy `SCD3D11.dll` into a SimCity 4 plugins folder — either `Documents\SimCity 4\Plugins` or the `Plugins` folder of
 whatever user directory you launch with.
 
+## Command-line switches
+
+Add these to the SimCity 4 launch arguments. Switch names are case-sensitive except `-Borderless`, so type them as shown.
+
+Added by SCD3D11:
+
+| Switch | Default | Effect |
+|--------|---------|--------|
+| `-Borderless` (or `-FullscreenMode:Borderless`) | off | With `-f`, a monitor-sized borderless window instead of exclusive fullscreen |
+| `-VSync:off` | vsync on | Present without waiting for vsync |
+| `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
+| `-ParallelCull:<mode>` | `parallel` | `parallel`, `serial`, `off` (also `0`, `false`), or diagnostics `passthru` / `tailonly`; see [Parallel render cull](#parallel-render-cull). The `SC4D3D11_PARALLEL_CULL` environment variable is used when the switch is absent |
+| `-SimTickCap:<ms>` | `32` | Per-tick simulation budget, clamped to `15`–`500`; `off` or `0` disables; see [Sim tick budget](#sim-tick-budget) |
+| `-GridDebug` | off | Log the texture state of the terrain grid pass once per second (`grid` category) |
+
+Standard SimCity 4 switches that SCD3D11 reacts to or that the scripts in `scripts/` use:
+
+| Switch | Effect |
+|--------|--------|
+| `-w` / `-f` | Windowed / fullscreen |
+| `-CustomResolution:enabled` `-r<width>x<height>x32` | Render at an arbitrary resolution |
+| `-UserDir:"<path>"` | User directory; with `SCD3D11.dll` in its `Plugins` folder, `SC4D3D11.log` is written there |
+| `-CPUPriority:<level>` | Process priority. When present, SCD3D11 leaves priority alone instead of raising it to high |
+| `-CPUCount:<n>` | Limits the cores the game uses. With `1`, the parallel cull starts no workers if the game applies the limit before SCD3D11 loads (check `workers=` in the log) |
+
 ## Building
 
 CMake is the only build. Install [Visual Studio 2022](https://visualstudio.microsoft.com/#vs-section) or later with
@@ -32,6 +57,14 @@ ctest --test-dir build\debug --output-on-failure
 ## Presentation modes
 
 SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` alongside a fullscreen launch to get a monitor-sized borderless window instead.
+
+On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Add `-GPU:default` to use the adapter Windows picks instead. `SC4D3D11.log` names the adapter in use on its `adapter:` line.
+
+## CPU scheduling
+
+At startup SCD3D11 raises SimCity 4 to high priority (skipped when `-CPUPriority:` is on the command line), opts the
+process out of Windows power throttling (EcoQoS), and on hybrid Intel CPUs keeps its threads on the performance cores.
+Check `SC4D3D11.log` for the `cpu:` lines.
 
 ## Frame callback API
 
@@ -66,10 +99,10 @@ line argument (`parallel` is the default):
 | `passthru`, `tailonly` | hook diagnostics |
 
 The worker pool only helps if the game process is allowed to run on more than one
-core. The `SC4CPUOptions` plugin pins SimCity 4 to a single core by default, which
-leaves the workers time-slicing the render thread's core and cancels any benefit —
-remove that plugin, or configure it to allow multiple cores, if you want the
-parallel path to do anything.
+core. The pool is sized to the cores the process may use, so when the `SC4CPUOptions`
+plugin (or `-CPUCount:1`) pins SimCity 4 to a single core, no workers start and the
+gather stays on the render thread — remove that plugin, or configure it to allow
+multiple cores, if you want the parallel path to do anything.
 
 To confirm what engaged, check `SC4D3D11.log` (see Diagnostics below) for a line
 like `parallel cull installed: mode=parallel workers=7 static=ok dynamic=ok`.
