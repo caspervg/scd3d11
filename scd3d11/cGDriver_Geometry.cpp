@@ -496,7 +496,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		uint64_t const byteOffset = static_cast<uint64_t>(first) * interleavedStride;
-		uint32_t const packedStride = RZVertexFormatStride(interleavedFormat);
 		uint64_t const byteSize = static_cast<uint64_t>(count) * sizeof(D3D11Vertex);
 		if (byteOffset > (std::numeric_limits<size_t>::max)() || byteSize > (std::numeric_limits<uint32_t>::max)()) {
 			Log(LogCategory::Unsupported, "vertex upload exceeds 32-bit limits");
@@ -504,15 +503,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		uint8_t const *source = interleavedPointer + byteOffset;
-		XXH3_state_t hashState;
-		XXH3_128bits_reset(&hashState);
-		for (uint32_t i = 0; i < count; ++i) {
-			XXH3_128bits_update(&hashState, source + static_cast<size_t>(i) * interleavedStride, packedStride);
-		}
-		GeometryCacheKey key;
-		key.digest = XXH3_128bits_digest(&hashState);
-		key.count = count;
-		key.format = interleavedFormat;
+		GeometryCacheKey const key = VertexCacheKey(interleavedFormat, interleavedStride, source, count);
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 

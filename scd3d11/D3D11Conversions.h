@@ -63,6 +63,10 @@ namespace nSCD3D11 {
     // The only way index keys are built: format, count and the exact bytes uploaded.
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count);
 
+    // Content key of interleaved vertices. Only the bytes the format consumes are hashed, so padding
+    // between strided vertices never affects it and packed and padded copies of a mesh share a key.
+    GeometryCacheKey VertexCacheKey(uint32_t format, uint32_t stride, void const *vertices, uint32_t count);
+
     bool IsSupportedVertexFormat(uint32_t format);
 
     bool ConvertVertices(

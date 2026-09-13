@@ -26,6 +26,25 @@ namespace nSCD3D11 {
         return key;
     }
 
+    GeometryCacheKey VertexCacheKey(uint32_t format, uint32_t stride, void const *vertices, uint32_t count) {
+        uint32_t const packedStride = RZVertexFormatStride(format);
+        uint8_t const *source = static_cast<uint8_t const *>(vertices);
+        GeometryCacheKey key;
+        if (stride == packedStride) {
+            key.digest = XXH3_128bits(source, static_cast<size_t>(count) * packedStride);
+        } else {
+            XXH3_state_t state;
+            XXH3_128bits_reset(&state);
+            for (uint32_t i = 0; i < count; ++i) {
+                XXH3_128bits_update(&state, source + static_cast<size_t>(i) * stride, packedStride);
+            }
+            key.digest = XXH3_128bits_digest(&state);
+        }
+        key.count = count;
+        key.format = format;
+        return key;
+    }
+
     bool IsSupportedVertexFormat(uint32_t format) {
         // SC4 passes both the small enum values and pre-packed bitfield formats;
         // normalize through RZMakeVertexFormat before checking the whitelist.

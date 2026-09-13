@@ -33,6 +33,26 @@ int main() {
     assert(XXH128_isEqual(wideKey.digest, narrowKey.digest) && !(wideKey == narrowKey));
     assert(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 3));
     assert(!(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 2)));
+    {
+        // Two V3F_C4UB vertices, packed (16 bytes each) and with 4 bytes of padding per vertex.
+        uint8_t packed[32]{};
+        uint8_t padded[40]{};
+        for (uint8_t i = 0; i < 32; ++i) packed[i] = static_cast<uint8_t>(i + 1);
+        memcpy(padded, packed, 16);
+        memcpy(padded + 20, packed + 16, 16);
+        memset(padded + 16, 0xAA, 4);
+        using nSCD3D11::VertexCacheKey;
+        nSCD3D11::GeometryCacheKey const packedKey = VertexCacheKey(kGDVertexFormat_V3F_C4UB, 16, packed, 2);
+        assert(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 20, padded, 2));
+        memset(padded + 16, 0x55, 4);
+        memset(padded + 36, 0x55, 4);
+        assert(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 20, padded, 2));
+        ++padded[20 + 12]; // second vertex, color
+        assert(!(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 20, padded, 2)));
+        assert(!(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 16, packed, 1)));
+        ++packed[3]; // first vertex, position
+        assert(!(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 16, packed, 2)));
+    }
     nSCD3D11::GeometryCacheKey generationKey = wideKey;
     generationKey.generation = true;
     assert(!(generationKey == wideKey));
