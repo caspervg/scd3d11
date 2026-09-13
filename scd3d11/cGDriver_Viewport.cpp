@@ -84,16 +84,28 @@ namespace nSCD3D11 {
 			return E_INVALIDARG;
 		}
 
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
-		HRESULT result = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+		HRESULT result = swapChain->GetBuffer(0, IID_PPV_ARGS(&swapChainBuffer));
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "IDXGISwapChain::GetBuffer", result);
+			return result;
+		}
+
+		D3D11_TEXTURE2D_DESC colorDescription{};
+		swapChainBuffer->GetDesc(&colorDescription);
+		colorDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
+		colorDescription.MiscFlags = 0;
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
+		result = d3dDevice->CreateTexture2D(&colorDescription, nullptr, &backBuffer);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(color)", result);
+			swapChainBuffer.Reset();
 			return result;
 		}
 
 		result = d3dDevice->CreateRenderTargetView(backBuffer.Get(), nullptr, &renderTargetView);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateRenderTargetView", result);
+			swapChainBuffer.Reset();
 			return result;
 		}
 
@@ -111,6 +123,7 @@ namespace nSCD3D11 {
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(depth)", result);
 			renderTargetView.Reset();
+			swapChainBuffer.Reset();
 			return result;
 		}
 
@@ -122,6 +135,7 @@ namespace nSCD3D11 {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateDepthStencilView", result);
 			depthStencilTexture.Reset();
 			renderTargetView.Reset();
+			swapChainBuffer.Reset();
 			return result;
 		}
 
@@ -134,11 +148,6 @@ namespace nSCD3D11 {
 		SetViewport();
 		result = RecreateBufferRegions();
 		if (FAILED(result)) {
-			return result;
-		}
-		result = startupOverlay.Initialize(d3dDevice.Get(), width, height);
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "StartupOverlay::Initialize", result);
 			return result;
 		}
 		Log(LogCategory::SwapChain, "back buffer ready at %ux%u", width, height);
@@ -179,6 +188,7 @@ namespace nSCD3D11 {
 		depthStencilTexture.Reset();
 		renderTargetView.Reset();
 		backBufferTexture.Reset();
+		swapChainBuffer.Reset();
 
 		HRESULT const result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags);
 		if (FAILED(result)) {
@@ -396,49 +406,15 @@ namespace nSCD3D11 {
 		                       "exclusive fullscreen";
 		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, %s at %dx%d", featureLevel, modeName,
 		    mode.width, mode.height);
-		// SC4 passes showWindow=false on the only SetVideoMode call it makes, but its own DirectX
-		// driver (and upstream SCGL) put the window on screen as soon as the mode is set. Honouring
-		// the flag leaves nothing visible until the game shows the window itself, which does not
-		// happen until loading finishes - the game looks like it failed to start.
-		(void) showWindow;
-		// A device-loss recovery mid-game must not drop back to the startup notice.
-		if (!recoveringDevice) {
-			presentedFirstFrame = false;
-			startupWindowMessages = 0;
+		if (showWindow) {
+			ShowWindow(window, SW_SHOWNORMAL);
+			UpdateWindow(window);
 		}
-		startupOverlay.SetActive(ShouldShowStartupOverlay());
-		ShowWindow(window, SW_SHOWNORMAL);
-		SetForegroundWindow(window);
-		// UpdateWindow dispatches WM_PAINT directly, so the notice appears even though the game is
-		// not pumping its message queue yet.
-		UpdateWindow(window);
-		if (FAILED(PresentStartupOverlay())) PaintStartupNotice(window);
 		SetLastError(DriverError::OK);
 	}
 
 	bool cGDriver::IsDeviceReady(void) {
 		return d3dDevice && d3dContext && swapChain && renderTargetView && depthStencilView;
-	}
-
-	HRESULT cGDriver::PresentStartupOverlay() {
-		if (!IsDeviceReady() || !startupOverlay.IsActive()) return S_FALSE;
-
-		d3dContext->ClearState();
-		InvalidateD3D11StateCache();
-		ID3D11RenderTargetView *renderTarget = renderTargetView.Get();
-		d3dContext->OMSetRenderTargets(1, &renderTarget, nullptr);
-		SetViewport();
-		startupOverlay.Draw(d3dContext.Get());
-		static bool startupOverlayFlushLogged = false;
-		if (startupOverlay.IsActive() && !startupOverlayFlushLogged) {
-			Log(LogCategory::SwapChain, "startup overlay rendered during game Flush");
-			startupOverlayFlushLogged = true;
-		}
-
-		HRESULT const result = swapChain->Present(0, 0);
-		if (SUCCEEDED(result)) Log(LogCategory::SwapChain, "initial startup overlay presented");
-		else LogHRESULT(LogCategory::SwapChain, "Present(initial startup overlay)", result);
-		return result;
 	}
 
 	void cGDriver::Flush(void) {
@@ -471,9 +447,9 @@ namespace nSCD3D11 {
 		d3dContext->OMSetRenderTargets(1, &restoredRenderTarget, depthStencilView.Get());
 		if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
 		else SetViewport();
-		startupOverlay.Draw(d3dContext.Get());
 
 		static bool const vsyncEnabled = std::strstr(GetCommandLineA(), "-VSync:off") == nullptr;
+		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
 		result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
 #ifndef NDEBUG
 		LogDebugLayerMessages(d3dDevice.Get());

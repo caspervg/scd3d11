@@ -64,13 +64,11 @@ add_library(SCD3D11 SHARED
         scd3d11/cGDriver_State.cpp
         scd3d11/cGDriver_Textures.cpp
         scd3d11/cGDriver_Unknown.cpp
+        scd3d11/cGDriver_Blit.cpp
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
         scd3d11/SCD3D11Service.cpp
-        scd3d11/StartupOverlay.cpp
-        scd3d11/StartupProgress.cpp
-        scd3d11/StartupResourceLoadPatches.cpp
         scd3d11/TextureUploadUtils.cpp
         scd3d11/VideoModeUtils.cpp
         scd3d11/VertexFormatUtils.cpp
@@ -133,8 +131,4 @@ if (BUILD_TESTING)
             tests/CpuSchedulingTest.cpp
             scd3d11/CpuScheduling.cpp
             scd3d11/Diagnostics.cpp)
-
-    scd3d11_add_test(StartupProgressTest
-            tests/StartupProgressTest.cpp
-            scd3d11/StartupProgress.cpp)
 endif ()

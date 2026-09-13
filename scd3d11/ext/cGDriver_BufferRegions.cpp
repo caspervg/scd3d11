@@ -112,6 +112,12 @@ namespace nSCD3D11 {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
 		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
 		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
+			static bool logged = false;
+			if (!logged) {
+				Log(LogCategory::Unsupported, "ReadBufferRegion rejected: region %u dst %d,%d src %d,%d %dx%d window %dx%d",
+				    region, destinationX, destinationY, sourceX, sourceY, width, height, windowWidth, windowHeight);
+				logged = true;
+			}
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
@@ -153,6 +159,12 @@ namespace nSCD3D11 {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
 		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
 		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
+			static bool logged = false;
+			if (!logged) {
+				Log(LogCategory::Unsupported, "DrawBufferRegion rejected: region %u src %d,%d dst %d,%d %dx%d window %dx%d",
+				    region, sourceX, sourceY, destinationX, destinationY, width, height, windowWidth, windowHeight);
+				logged = true;
+			}
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}

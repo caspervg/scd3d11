@@ -36,12 +36,6 @@ static_assert(offsetof(sGDMode, is3DAccelerated) == 0x22);
 static_assert(offsetof(sGDMode, _unknownFuncPtr) == 0x34);*/
 
 namespace nSCD3D11 {
-	namespace {
-		bool g_postAppInit = false;
-		bool g_startupComplete = false;
-		cGDriver *g_driverInstance = nullptr;
-	}
-
 	cGDriver::cGDriver() : refCount(0),
 	                       lastError(DriverError::OK),
 #ifndef NDEBUG
@@ -64,8 +58,6 @@ namespace nSCD3D11 {
 	                       windowProcedure(nullptr),
 	                       showDriverWindow(false),
 	                       recoveringDevice(false),
-	                       presentedFirstFrame(false),
-	                       startupWindowMessages(0),
 	                       presentationMode(PresentationMode::Windowed),
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
@@ -104,6 +96,7 @@ namespace nSCD3D11 {
 	                       activeTextureStage(0),
 	                       textureStageEnabled{},
 	                       pixelStoreRowLength(0),
+	                       blitUsesSourceAlpha(false),
 	                       enabledCapabilities{},
 	                       colorWriteEnabled(true),
 	                       depthFunction(1),
@@ -152,8 +145,6 @@ namespace nSCD3D11 {
 	                       clearColor{0.0f, 0.0f, 0.0f, 0.0f},
 	                       clearDepth(1.0f),
 	                       clearStencil(0) {
-		g_driverInstance = this;
-		presentedFirstFrame = g_startupComplete;
 		for (float *matrix: matrices) {
 			matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
 		}
@@ -168,34 +159,7 @@ namespace nSCD3D11 {
 	}
 
 	cGDriver::~cGDriver() {
-		if (g_driverInstance == this) g_driverInstance = nullptr;
 		Shutdown();
-	}
-
-	void cGDriver::MarkPostAppInit(void) {
-		g_postAppInit = true;
-		Log(LogCategory::Initialization, "PostAppInit received; startup overlay remains active until region init");
-	}
-
-	bool cGDriver::HasPostAppInit(void) {
-		return g_postAppInit;
-	}
-
-	bool cGDriver::ShouldShowStartupOverlay(void) {
-		return !g_startupComplete;
-	}
-
-	void cGDriver::MarkStartupComplete(void) {
-		g_startupComplete = true;
-		CompleteStartupOverlay();
-		Log(LogCategory::Initialization, "startup completion message received; ending startup notice");
-	}
-
-	void cGDriver::CompleteStartupOverlay(void) {
-		if (g_driverInstance != nullptr) {
-			g_driverInstance->startupOverlay.SetActive(false);
-			g_driverInstance->presentedFirstFrame = true;
-		}
 	}
 
 	uint32_t cGDriver::MakeVertexFormat(uint32_t, intptr_t gdElementTypePtr) {
@@ -456,114 +420,5 @@ namespace nSCD3D11 {
 
 	void cGDriver::PolygonOffset(int32_t offset) {
 		polygonOffset = offset;
-	}
-
-	void cGDriver::BitBlt(
-		int32_t destLeft,
-		int32_t destTop,
-		int32_t unknownWidth1,
-		int32_t unknownHeight1,
-		uint32_t gdTexFormat,
-		uint32_t gdType,
-		void const *unknownBuffer1,
-		bool unknown5,
-		void const *unknownBuffer2) {
-		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
-		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
-
-		SetLastError(DriverError::NOT_SUPPORTED);
-	}
-
-	void cGDriver::StretchBlt(
-		int32_t destLeft,
-		int32_t destTop,
-		int32_t unknownWidth1,
-		int32_t unknownHeight1,
-		int32_t unknownWidth2,
-		int32_t unknownHeight2,
-		uint32_t gdTexFormat,
-		uint32_t gdType,
-		void const *unknownBuffer1,
-		bool unknownBool,
-		void const *unknownBuffer2) {
-		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
-		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
-
-		SetLastError(DriverError::NOT_SUPPORTED);
-	}
-
-	void cGDriver::BitBltAlpha(
-		int32_t unknown0,
-		int32_t unknown1,
-		int32_t unknown2,
-		int32_t unknown3,
-		uint32_t gdTexFormat,
-		uint32_t gdType,
-		void const *unknownBuffer1,
-		bool unknown5,
-		void const *unknownBuffer2,
-		uint32_t unknown7) {
-		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
-		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
-
-		SetLastError(DriverError::NOT_SUPPORTED);
-	}
-
-	void cGDriver::StretchBltAlpha(
-		int32_t destLeft,
-		int32_t destTop,
-		int32_t unknownWidth1,
-		int32_t unknownHeight1,
-		int32_t unknownWidth2,
-		int32_t unknownHeight2,
-		uint32_t gdTexFormat,
-		uint32_t gdType,
-		void const *unknownBuffer1,
-		bool unknown7,
-		void const *unknownBuffer2,
-		uint32_t unknown9) {
-		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
-		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
-
-		SetLastError(DriverError::NOT_SUPPORTED);
-	}
-
-	void cGDriver::BitBltAlphaModulate(
-		int32_t unknown0,
-		int32_t unknown1,
-		int32_t unknown2,
-		uint32_t gdTexFormat,
-		uint32_t gdType,
-		void const *unknownBuffer1,
-		bool unknown4,
-		void const *unknownBuffer2,
-		uint32_t unknown6) {
-		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
-		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
-
-		SetLastError(DriverError::NOT_SUPPORTED);
-	}
-
-	void cGDriver::StretchBltAlphaModulate(
-		int32_t destLeft,
-		int32_t destTop,
-		int32_t unknownWidth1,
-		int32_t unknownHeight1,
-		int32_t unknownWidth2,
-		int32_t unknownHeight2,
-		uint32_t gdTexFormat,
-		uint32_t gdType,
-		void const *unknownBuffer1,
-		bool unknown7,
-		void const *unknownBuffer2,
-		uint32_t unknown9) {
-		uint8_t const *unknownUintBuffer1 = reinterpret_cast<uint8_t const *>(unknownBuffer1);
-		uint8_t const *unknownUintBuffer2 = reinterpret_cast<uint8_t const *>(unknownBuffer2);
-
-		SetLastError(DriverError::NOT_SUPPORTED);
-	}
-
-	bool cGDriver::Punt(uint32_t, void *) {
-		return false;
 	}
 }

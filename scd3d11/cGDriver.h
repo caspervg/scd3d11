@@ -31,7 +31,6 @@
 #include "ext/cIGZGDriverLightingExtension.h"
 #include "ext/cIGZGDriverVertexBufferExtension.h"
 #include "ext/cIGZGSnapshotExtension.h"
-#include "StartupOverlay.h"
 
 namespace nSCD3D11 {
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
@@ -169,17 +168,16 @@ namespace nSCD3D11 {
 		void *windowProcedure;
 		bool showDriverWindow;
 		bool recoveringDevice;
-		// The driver paints its own startup notice until the GZCOM PostAppInit lifecycle hook
-		// reports that application initialization has completed.
-		bool presentedFirstFrame;
-		uint32_t startupWindowMessages;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
-		StartupOverlay startupOverlay;
 		PresentationMode presentationMode;
 		UINT swapChainFlags;
+		// SC4 redraws only dirty rectangles and expects the back buffer to survive Present. DISCARD
+		// swap chains give no such guarantee (exclusive fullscreen really flips), so the game renders
+		// into this persistent texture, which is copied to swapChainBuffer right before each Present.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBufferTexture;
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> swapChainBuffer;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilTexture;
 		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilView;
@@ -241,6 +239,27 @@ namespace nSCD3D11 {
 		bool textureStageEnabled[2];
 		TextureStageState textureStages[2];
 		uint32_t pixelStoreRowLength;
+		struct BlitPipeline {
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+			Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> constants;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depthState;
+			Microsoft::WRL::ComPtr<ID3D11BlendState> opaqueBlend;
+			Microsoft::WRL::ComPtr<ID3D11BlendState> alphaBlend;
+			Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+			Microsoft::WRL::ComPtr<ID3D11RasterizerState> scissorRasterizer;
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> textureView;
+			uint32_t textureWidth = 0;
+			uint32_t textureHeight = 0;
+			std::vector<uint8_t> scratch;
+		} blit;
+		// Toggled by Punt(0x6C4236E7): SC4 brackets a plain StretchBlt with it when the source
+		// carries per-pixel alpha that should blend.
+		bool blitUsesSourceAlpha;
 		bool enabledCapabilities[kGDNumCapabilities];
 		bool colorWriteEnabled;
 		uint8_t depthFunction;
@@ -298,17 +317,13 @@ namespace nSCD3D11 {
 
 		static LRESULT CALLBACK DriverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
-		static void DrawStartupNotice(HWND window, HDC deviceContext);
 		static Microsoft::WRL::ComPtr<IDXGIAdapter> SelectAdapter(void);
-		void PaintStartupNotice(HWND window);
 
 		void DestroyD3D11Context(bool preserveResources = false);
 
 		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);
 
 		HRESULT ResizeBackBufferIfNeeded();
-
-		HRESULT PresentStartupOverlay();
 
 		bool RecoverD3D11Device();
 
@@ -345,6 +360,16 @@ namespace nSCD3D11 {
 
 		void InvalidateD3D11StateCache();
 
+		enum class BlitAlpha { Opaque, Source, Constant, SourceModulated };
+
+		// Shared body of the BitBlt/StretchBlt family: SC4 hands over a CPU pixel rectangle that is
+		// converted, uploaded and drawn as a screen-space quad (top-left origin, window pixels).
+		void DrawBlit(int32_t destX, int32_t destY, int32_t destWidth, int32_t destHeight,
+		              int32_t sourceWidth, int32_t sourceHeight, uint32_t format, uint32_t type,
+		              void const *pixels, bool colorKeyed, void const *colorKey, BlitAlpha alpha, uint32_t alphaValue);
+
+		HRESULT CreateBlitPipeline();
+
 		HRESULT CreateTextureResource(
 			TextureResource &resource,
 			uint32_t internalFormat,
@@ -374,13 +399,6 @@ namespace nSCD3D11 {
 		// Override SC4's native DirectX driver by presenting its GZCLSID with a
 		// higher version number to GZCOM.
 		static const uint32_t kSCD3D11GDriverGZCLSID = 0x0badb6906;
-
-		// Called by the GZCOM director when application initialization completes.
-		static void MarkPostAppInit(void);
-		static bool HasPostAppInit(void);
-		static void MarkStartupComplete(void);
-		static void CompleteStartupOverlay(void);
-		static bool ShouldShowStartupOverlay(void);
 
 		static bool FactoryFunctionPtr2(uint32_t riid, void **ppvObj) {
 			cGDriver *pDriver = new cGDriver();
@@ -556,7 +574,7 @@ namespace nSCD3D11 {
 		virtual void StretchBltAlpha(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t gdTexFormat,
 		                             uint32_t gdType, void const *, bool, void const *, uint32_t) override;
 
-		virtual void BitBltAlphaModulate(int32_t, int32_t, int32_t, uint32_t gdTexFormat, uint32_t gdType, void const *,
+		virtual void BitBltAlphaModulate(int32_t, int32_t, int32_t, int32_t, uint32_t gdTexFormat, uint32_t gdType, void const *,
 		                                 bool, void const *, uint32_t) override;
 
 		virtual void StretchBltAlphaModulate(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t gdTexFormat,

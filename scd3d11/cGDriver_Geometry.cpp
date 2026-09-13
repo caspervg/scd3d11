@@ -168,7 +168,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		float3 normal = normalize(input.normal);
 		float3 view = normalize(-input.viewPosition);
 		primary = materialEmission + globalAmbient * ambientMaterial;
-		[unroll] for (uint light = 0; light < 8; ++light)
+		[loop] for (uint light = 0; light < 8; ++light)
 		{
 			if ((enabledLights & (1u << light)) == 0) continue;
 			float3 vectorToLight = lightPosition[light].w == 0.0f
