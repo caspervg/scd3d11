@@ -239,7 +239,8 @@ namespace nSCD3D11 {
 		bool const lost = result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET ||
 		                  result == DXGI_ERROR_DEVICE_HUNG || FAILED(reason);
 		if (lost && !deviceLost) {
-			LogHRESULT(LogCategory::Resource, "D3D11 device lost; ID3D11Device::GetDeviceRemovedReason", reason);
+			Log(LogCategory::Resource, "D3D11 device lost (HRESULT 0x%08lX, removed reason 0x%08lX)",
+			    static_cast<unsigned long>(result), static_cast<unsigned long>(reason));
 			deviceLost = true;
 		}
 		return lost;
