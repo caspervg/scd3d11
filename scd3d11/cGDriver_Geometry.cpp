@@ -732,25 +732,24 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		bool const convertPrimitive = topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-		if (convertPrimitive) sourceIndexScratch.resize(static_cast<size_t>(count));
 		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
-		if (type == 3) {
-			uint16_t const *source = static_cast<uint16_t const *>(indices);
+		// Index keys hash the final upload, so this pass only finds the range and, for primitives
+		// D3D11 lacks, gathers the indices to convert. A separate min/max loop vectorizes.
+		auto const scan = [&](auto const *source) {
 			for (int32_t i = 0; i < count; ++i) {
-				if (convertPrimitive) sourceIndexScratch[i] = source[i];
-				if (source[i] < minimumIndex) minimumIndex = source[i];
-				if (source[i] > maximumIndex) maximumIndex = source[i];
+				minimumIndex = (std::min)(minimumIndex, static_cast<uint32_t>(source[i]));
+				maximumIndex = (std::max)(maximumIndex, static_cast<uint32_t>(source[i]));
 			}
-		} else {
-			uint32_t const *source = static_cast<uint32_t const *>(indices);
-			for (int32_t i = 0; i < count; ++i) {
-				if (convertPrimitive) sourceIndexScratch[i] = source[i];
-				if (source[i] < minimumIndex) minimumIndex = source[i];
-				if (source[i] > maximumIndex) maximumIndex = source[i];
-			}
-		}
+			if (convertPrimitive) sourceIndexScratch.assign(source, source + count);
+		};
+		if (type == 3) scan(static_cast<uint16_t const *>(indices));
+		else scan(static_cast<uint32_t const *>(indices));
 
+		if (convertPrimitive && !ConvertPrimitiveIndices(primitive, sourceIndexScratch, drawIndexScratch)) {
+			Log(LogCategory::Unsupported, "unsupported indexed primitive %u with %d indices", primitive, count);
+			return;
+		}
 		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX ||
 		    !UploadVertices(minimumIndex, maximumIndex - minimumIndex + 1)) {
 			return;
@@ -775,21 +774,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
-		std::vector<uint32_t> const *drawIndices = &sourceIndexScratch;
-		{
-			if (!ConvertPrimitiveIndices(primitive, sourceIndexScratch, drawIndexScratch)) {
-				Log(LogCategory::Unsupported, "unsupported indexed primitive %u with %d indices", primitive, count);
-				return;
-			}
-			drawIndices = &drawIndexScratch;
-			primitive = 0;
-		}
-
-		if (!UploadIndices(*drawIndices) || !BindGeometryPipeline(primitive)) {
+		if (!UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
 			return;
 		}
 		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();
 		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, dynamicIndexBufferOffset);
-		d3dContext->DrawIndexed(static_cast<UINT>(drawIndices->size()), 0, baseVertex);
+		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), 0, baseVertex);
 	}
 }

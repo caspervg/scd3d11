@@ -121,9 +121,52 @@ namespace nSCD3D11 {
 			}
 		}
 
+		template <typename T>
+		std::vector<uint8_t> Bytes(T const *values, size_t count) {
+			return {reinterpret_cast<uint8_t const *>(values), reinterpret_cast<uint8_t const *>(values) + count * sizeof(T)};
+		}
+
+		std::vector<uint8_t> UploadedIndices(uint32_t bytes) {
+			return ReadBuffer(d.dynamicIndexBuffer.Get(), d.dynamicIndexBufferOffset, bytes);
+		}
+
+		void IndexUploadsUseFinalContents() {
+			std::vector<ColorVertex> vertices(400);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices.data());
+			ResetGeometryCache();
+
+			// 16-bit indices above 255, uploaded natively.
+			uint16_t const wide16[]{300, 301, 302, 256, 399, 300};
+			d.DrawElements(0, 6, 3, wide16);
+			assert(UploadedIndices(sizeof(wide16)) == Bytes(wide16, 6));
+			assert(d.indexBufferCache.count(IndexCacheKey(DXGI_FORMAT_R16_UINT, wide16, 6)) == 1);
+
+			// The same values as 32-bit indices are a different upload.
+			uint32_t const wide32[]{300, 301, 302, 256, 399, 300};
+			d.DrawElements(0, 6, 5, wide32);
+			assert(UploadedIndices(sizeof(wide32)) == Bytes(wide32, 6));
+			assert(d.indexBufferCacheMisses == 2 && d.indexBufferCacheHits == 0);
+
+			// A 16-bit fan converts to the 32-bit list [300, 301, 302, 300, 302, 256], hashed as uploaded.
+			uint16_t const fan16[]{300, 301, 302, 256};
+			uint32_t const fanList[]{300, 301, 302, 300, 302, 256};
+			d.DrawElements(2, 4, 3, fan16);
+			assert(UploadedIndices(sizeof(fanList)) == Bytes(fanList, 6));
+			assert(d.indexBufferCache.count(IndexCacheKey(DXGI_FORMAT_R32_UINT, fanList, 6)) == 1);
+			assert(d.indexBufferCacheMisses == 3);
+
+			// A native list with those exact 32-bit contents reuses the converted upload, and vice versa.
+			d.DrawElements(0, 6, 5, fanList);
+			uint32_t const fan32[]{300, 301, 302, 256};
+			d.DrawElements(2, 4, 5, fan32);
+			assert(d.indexBufferCacheMisses == 3 && d.indexBufferCacheHits == 2);
+			assert(UploadedIndices(sizeof(fanList)) == Bytes(fanList, 6));
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
+			IndexUploadsUseFinalContents();
 			return 0;
 		}
 	};
