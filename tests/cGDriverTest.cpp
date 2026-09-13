@@ -637,6 +637,90 @@ namespace nSCD3D11 {
 			assert(Pixel(1, 1) == 0xff00ffff);
 		}
 
+		// Every entry points at live data in its segment, every segment key has its entry, and the
+		// allocated capacity stays within budget.
+		uint64_t CheckVertexCache() {
+			uint64_t total = 0;
+			size_t keys = 0;
+			for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
+				cGDriver::GeometryCacheSegment const &segment = d.vertexBufferSegments[index];
+				total += segment.capacity;
+				assert(!segment.buffer == (segment.capacity == 0));
+				assert(segment.buffer || (segment.cursor == 0 && segment.keys.empty()));
+				assert(segment.keys.size() <= 32768);
+				for (GeometryCacheKey const &key: segment.keys) {
+					auto const entry = d.vertexBufferCache.find(key);
+					assert(entry != d.vertexBufferCache.end() && entry->second.segment == index);
+					assert(entry->second.offset < segment.cursor);
+				}
+				keys += segment.keys.size();
+			}
+			assert(d.vertexBufferCache.size() == keys);
+			assert(total <= 8ull * 16 * 1024 * 1024);
+			return total;
+		}
+
+		void GeometryCacheStaysBounded() {
+			uint32_t const segmentBytes = 16u * 1024 * 1024;
+			ResetGeometryCache();
+			d.vertexBufferCacheHits = d.vertexBufferCacheMisses = 0;
+
+			// 360,000 vertices convert to 15,840,000 bytes: one nearly full segment each.
+			std::vector<ColorVertex> large(360000);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, large.data());
+			for (int draw = 0; draw < 8; ++draw) {
+				large[0].position[0] = static_cast<float>(draw);
+				d.DrawArrays(0, 0, 360000);
+			}
+			assert(d.vertexBufferCacheMisses == 8 && CheckVertexCache() == 8ull * segmentBytes);
+
+			// 19.8 MB does not fit a segment, and a larger segment must evict another to stay in budget.
+			std::vector<ColorVertex> oversized(450000);
+			oversized.back().position[0] = 5.0f;
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, oversized.data());
+			d.DrawArrays(0, 0, 450000);
+			assert(d.vertexBufferSegments[d.activeVertexBufferSegment].capacity == 450000 * sizeof(D3D11Vertex));
+			assert(UploadedX(449999) == 5.0f);
+			CheckVertexCache();
+
+			// Going round the ring again reuses the oversized segment at normal size.
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, large.data());
+			for (int draw = 0; draw < 9; ++draw) {
+				large[0].position[0] = static_cast<float>(100 + draw);
+				d.DrawArrays(0, 0, 360000);
+				CheckVertexCache();
+			}
+			for (auto const &segment: d.vertexBufferSegments) assert(segment.capacity <= segmentBytes);
+			assert(!d.deviceLost);
+
+			// One failed allocation: evict and retry once with a buffer just big enough for this upload.
+			ResetGeometryCache();
+			ColorVertex triangle[3]{{{1.0f, 0.0f, 0.0f}}, {{2.0f, 0.0f, 0.0f}}, {{3.0f, 0.0f, 0.0f}}};
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, triangle);
+			d.injectedFaults[cGDriver::FAULT_ALLOCATE] = {E_OUTOFMEMORY, 1};
+			d.DrawArrays(0, 0, 3);
+			assert(d.injectedFaults[cGDriver::FAULT_ALLOCATE].remaining == 0);
+			assert(d.vertexBufferSegments[0].capacity == 3 * sizeof(D3D11Vertex) && UploadedX(2) == 3.0f);
+			CheckVertexCache();
+			// Later draws go back to normal segments.
+			triangle[2].position[0] = 4.0f;
+			d.DrawArrays(0, 0, 3);
+			assert(d.vertexBufferSegments[d.activeVertexBufferSegment].capacity == segmentBytes && UploadedX(2) == 4.0f);
+			CheckVertexCache();
+
+			// Both attempts failing drops the draw and leaves nothing half-updated.
+			ResetGeometryCache();
+			d.vertexBufferCacheMisses = 0;
+			d.injectedFaults[cGDriver::FAULT_ALLOCATE] = {E_OUTOFMEMORY, 2};
+			triangle[2].position[0] = 6.0f;
+			d.DrawArrays(0, 0, 3);
+			assert(d.vertexBufferCache.empty() && !d.vertexBufferSegments[0].buffer && CheckVertexCache() == 0);
+			assert(!d.deviceLost);
+			d.DrawArrays(0, 0, 3);
+			assert(d.vertexBufferCacheMisses == 2 && d.vertexBufferCache.size() == 1 && UploadedX(2) == 6.0f);
+			CheckVertexCache();
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
@@ -649,6 +733,7 @@ namespace nSCD3D11 {
 			NormalMatrixFollowsModelView();
 			ConstantsFollowEverySetter();
 			RecoversFromDeviceLoss();
+			GeometryCacheStaysBounded();
 			return 0;
 		}
 	};

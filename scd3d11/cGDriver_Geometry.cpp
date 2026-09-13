@@ -16,6 +16,7 @@
 #include <cstring>
 #include <d3dcompiler.h>
 #include <limits>
+#include <new>
 #include <cmath>
 
 namespace nSCD3D11 {
@@ -23,6 +24,8 @@ namespace nSCD3D11 {
 	constexpr uint32_t VERTEX_CACHE_SEGMENT_BYTES = 16u * 1024u * 1024u;
 	constexpr uint32_t INDEX_CACHE_SEGMENT_BYTES = 4u * 1024u * 1024u;
 	constexpr uint64_t LOW_ADDRESS_SPACE_BYTES = 512ull * 1024u * 1024u;
+	// Bounds cache bookkeeping (roughly 100 bytes per entry) when uploads are tiny.
+	constexpr size_t MAX_CACHE_ENTRIES_PER_SEGMENT = 32768;
 
 	namespace {
 		char const kShaderSource[] = R"(
@@ -421,8 +424,20 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheMisses;
 		else ++indexBufferCacheMisses;
 
+		// Segment count, actual capacities and entries per segment are all bounded, so an oversized upload
+		// evicts older segments rather than growing the cache past its budget.
+		uint32_t const normalCapacity = bindFlags == D3D11_BIND_VERTEX_BUFFER
+			                                ? VERTEX_CACHE_SEGMENT_BYTES
+			                                : INDEX_CACHE_SEGMENT_BYTES;
+		uint64_t const budget = static_cast<uint64_t>(normalCapacity) * GEOMETRY_CACHE_SEGMENTS;
+		if (requiredSize > budget) {
+			Log(LogCategory::Unsupported, "%u byte upload exceeds the geometry cache budget", requiredSize);
+			return false;
+		}
+
 		GeometryCacheSegment *segment = &segments[activeSegment];
-		if (!segment->buffer || static_cast<uint64_t>(segment->cursor) + requiredSize > segment->capacity) {
+		if (!segment->buffer || static_cast<uint64_t>(segment->cursor) + requiredSize > segment->capacity ||
+		    segment->keys.size() >= MAX_CACHE_ENTRIES_PER_SEGMENT) {
 			if (segment->buffer && segment->cursor != 0) {
 				activeSegment = static_cast<uint8_t>((activeSegment + 1) % GEOMETRY_CACHE_SEGMENTS);
 				// Low 32-bit address space: recycle the segments we already have instead of growing.
@@ -436,37 +451,55 @@ float4 PSMain(PSInput input) : SV_TARGET
 				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment);
 			}
 
-			for (GeometryCacheKey const &oldKey: segment->keys) {
-				auto const old = cache.find(oldKey);
-				if (old != cache.end() && old->second.segment == activeSegment) cache.erase(old);
-			}
-			segment->keys.clear();
-			segment->cursor = 0;
+			// An oversized segment shrinks back once it is reused for ordinary uploads.
+			ClearCacheSegment(segments, cache, activeSegment,
+			                  segment->capacity > normalCapacity && requiredSize <= normalCapacity);
 
 			if (!segment->buffer || segment->capacity < requiredSize) {
-				uint32_t const normalCapacity = bindFlags == D3D11_BIND_VERTEX_BUFFER
-					                                ? VERTEX_CACHE_SEGMENT_BYTES
-					                                : INDEX_CACHE_SEGMENT_BYTES;
-				uint32_t const newCapacity = (std::max)(normalCapacity, requiredSize);
+				uint32_t newCapacity = (std::max)(normalCapacity, requiredSize);
+				uint64_t others = 0;
+				for (size_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) others += segments[index].capacity;
+				others -= segment->capacity;
+				// Oldest first: the segment after the active one is the next to be recycled anyway.
+				for (uint8_t step = 1; others + newCapacity > budget && step < GEOMETRY_CACHE_SEGMENTS; ++step) {
+					uint8_t const victim = static_cast<uint8_t>((activeSegment + step) % GEOMETRY_CACHE_SEGMENTS);
+					others -= segments[victim].capacity;
+					ClearCacheSegment(segments, cache, victim, true);
+				}
+				segment->buffer.Reset();
+				segment->capacity = 0;
 
 				// DYNAMIC buffers cost their full size in 32-bit address space (measured 1:1 on NVIDIA),
 				// hence the modest segment sizes. DEFAULT + UpdateSubresource avoids that but made each
 				// cache miss 3-5x slower, which shows up as stutter while panning large cities.
-				D3D11_BUFFER_DESC description{};
-				description.ByteWidth = newCapacity;
-				description.Usage = D3D11_USAGE_DYNAMIC;
-				description.BindFlags = bindFlags;
-				description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-
-				Microsoft::WRL::ComPtr<ID3D11Buffer> replacement;
-				HRESULT result = TakeInjectedFault(FAULT_ALLOCATE);
-				if (SUCCEEDED(result)) result = d3dDevice->CreateBuffer(&description, nullptr, &replacement);
+				auto const allocate = [&](uint32_t capacity) {
+					D3D11_BUFFER_DESC description{};
+					description.ByteWidth = capacity;
+					description.Usage = D3D11_USAGE_DYNAMIC;
+					description.BindFlags = bindFlags;
+					description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+					HRESULT result = TakeInjectedFault(FAULT_ALLOCATE);
+					if (SUCCEEDED(result)) result = d3dDevice->CreateBuffer(&description, nullptr, &segment->buffer);
+					return result;
+				};
+				HRESULT result = allocate(newCapacity);
+				if (FAILED(result) && !NoteDeviceLoss(result)) {
+					// Out of memory: drop every other cached segment and retry once, sized for this upload only.
+					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(dynamic segment); evicting and retrying",
+					           result);
+					buffer.Reset();
+					for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
+						if (index != activeSegment) ClearCacheSegment(segments, cache, index, true);
+					}
+					newCapacity = (requiredSize + 3u) & ~3u;
+					result = allocate(newCapacity);
+				}
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(dynamic segment)", result);
 					NoteDeviceLoss(result);
+					segment->buffer.Reset();
 					return false;
 				}
-				segment->buffer = replacement;
 				segment->capacity = newCapacity;
 				Log(LogCategory::Resource, "%s cache segment %u allocated at %u bytes",
 				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment, newCapacity);
@@ -487,10 +520,34 @@ float4 PSMain(PSInput input) : SV_TARGET
 		memcpy(static_cast<uint8_t *>(mapping.pData) + offset, data, requiredSize);
 		d3dContext->Unmap(segment->buffer.Get(), 0);
 		segment->cursor = (segment->cursor + requiredSize + 3u) & ~3u;
-		segment->keys.push_back(key);
-		cache.emplace(key, GeometryCacheEntry{activeSegment, offset});
 		buffer = segment->buffer;
+		// Remembering the upload is optional: if the bookkeeping cannot allocate, it still draws.
+		bool keyed = false;
+		try {
+			segment->keys.push_back(key);
+			keyed = true;
+			cache.insert_or_assign(key, GeometryCacheEntry{activeSegment, offset});
+		} catch (std::bad_alloc const &) {
+			if (keyed) segment->keys.pop_back();
+		}
 		return true;
+	}
+
+	void cGDriver::ClearCacheSegment(
+		GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release) {
+		GeometryCacheSegment &segment = segments[index];
+		for (GeometryCacheKey const &oldKey: segment.keys) {
+			auto const old = cache.find(oldKey);
+			if (old != cache.end() && old->second.segment == index) cache.erase(old);
+		}
+		segment.cursor = 0;
+		if (release) {
+			std::vector<GeometryCacheKey>().swap(segment.keys);
+			segment.buffer.Reset();
+			segment.capacity = 0;
+		} else {
+			segment.keys.clear();
+		}
 	}
 
 	bool cGDriver::UploadVertices(uint32_t first, uint32_t count) {
@@ -517,9 +574,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 
-		if (!ConvertVertices(interleavedFormat, interleavedStride, source, count, vertexScratch)) {
-			Log(LogCategory::Unsupported, "unsupported vertex format 0x%08X stride %u", interleavedFormat,
-			    interleavedStride);
+		try {
+			if (!ConvertVertices(interleavedFormat, interleavedStride, source, count, vertexScratch)) {
+				Log(LogCategory::Unsupported, "unsupported vertex format 0x%08X stride %u", interleavedFormat,
+				    interleavedStride);
+				return false;
+			}
+		} catch (std::bad_alloc const &) {
+			Log(LogCategory::Resource, "out of memory converting %u vertices", count);
 			return false;
 		}
 		return UploadCachedBuffer(
@@ -742,8 +804,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
-		if (!BuildSequentialIndices(primitive, static_cast<uint32_t>(count), drawIndexScratch) ||
-		    !UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
+		bool built = false;
+		try {
+			built = BuildSequentialIndices(primitive, static_cast<uint32_t>(count), drawIndexScratch);
+		} catch (std::bad_alloc const &) {
+		}
+		if (!built || !UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
 			Log(LogCategory::Unsupported, "unsupported array primitive %u with %d vertices", primitive, count);
 			return;
 		}
@@ -771,11 +837,15 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 			if (convertPrimitive) sourceIndexScratch.assign(source, source + count);
 		};
-		if (type == 3) scan(static_cast<uint16_t const *>(indices));
-		else scan(static_cast<uint32_t const *>(indices));
-
-		if (convertPrimitive && !ConvertPrimitiveIndices(primitive, sourceIndexScratch, drawIndexScratch)) {
-			Log(LogCategory::Unsupported, "unsupported indexed primitive %u with %d indices", primitive, count);
+		try {
+			if (type == 3) scan(static_cast<uint16_t const *>(indices));
+			else scan(static_cast<uint32_t const *>(indices));
+			if (convertPrimitive && !ConvertPrimitiveIndices(primitive, sourceIndexScratch, drawIndexScratch)) {
+				Log(LogCategory::Unsupported, "unsupported indexed primitive %u with %d indices", primitive, count);
+				return;
+			}
+		} catch (std::bad_alloc const &) {
+			Log(LogCategory::Resource, "out of memory converting %d indices", count);
 			return;
 		}
 		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX ||

@@ -406,6 +406,9 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 			uint32_t &offset);
 
+		// Forgets a segment's cache entries; release also frees its buffer and bookkeeping.
+		void ClearCacheSegment(GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release);
+
 		bool UploadVertices(uint32_t first, uint32_t count);
 
 		bool UploadIndices(std::vector<uint32_t> const &indices);
