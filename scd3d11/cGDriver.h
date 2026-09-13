@@ -209,6 +209,9 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
 			float encodedFarPlane = 0.0f;
 		} sceneDepth;
+		// Projection of the last depth-writing draw: SC4's city camera. cSC43DRender::Draw switches to its UI camera
+		// before the ReShade effects run, so matrices[PROJECTION] no longer holds it by then.
+		float sceneProjection[16]{};
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;

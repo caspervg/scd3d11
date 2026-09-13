@@ -17,7 +17,10 @@
 //    any UI is drawn over it;
 //  - binds the scene depth to the DEPTH semantic, already encoded so that ReShade.fxh's perspective
 //    linearization turns it back into SC4's depth, which is linear because the camera is orthographic
-//    (cSC43DRender::UpdateCameraZoomAndRotationParams -> SetOrtho).
+//    (cSC43DRender::UpdateCameraZoomAndRotationParams -> SetOrtho);
+//  - for effects written for SC4 (shaders/SimCity4.fx), binds the unencoded depth buffer to the SC4_DEPTH
+//    semantic and sets float4 uniforms annotated source = "scd3d11_ortho" to that camera's projection entries
+//    (P[0][0], P[1][1], P[2][2], P[3][2]), so they can measure the city in meters at full depth precision.
 // Only effect runtime events and calls are used. ReShade's regular build (not only the "full add-on
 // support" one) allows those for externally registered add-ons. Requires ReShade 6.0 or later.
 // -ReShade:off on the command line leaves ReShade's default behaviour untouched.
@@ -33,6 +36,7 @@
 #include <cstring>
 #include <d3dcompiler.h>
 #include <reshade.hpp>
+#include <vector>
 
 namespace nSCD3D11 {
 	namespace {
@@ -65,6 +69,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		ID3D11ShaderResourceView *gSceneDepthView = nullptr;
 		bool gDepthBound = false;
 		float gFarPlane = 1000.0f; // ReShade.fxh's default
+		std::vector<reshade::api::effect_uniform_variable> gOrthoUniforms;
 
 		reshade::api::resource_view ViewHandle(ID3D11View *view) {
 			return reshade::api::resource_view{static_cast<uint64_t>(reinterpret_cast<uintptr_t>(view))};
@@ -82,13 +87,14 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				                       ? std::strtof(value, nullptr)
 				                       : 1000.0f;
 			gFarPlane = farPlane >= 1.0f ? farPlane : 1000.0f;
+			// Also raised right after effects are destroyed, which is when old handles must go.
+			gOrthoUniforms.clear();
 			runtime->enumerate_uniform_variables(nullptr, [](reshade::api::effect_runtime *runtime,
 			                                                 reshade::api::effect_uniform_variable variable) {
 				char source[32]{};
-				if (runtime->get_annotation_string_from_uniform_variable(variable, "source", source) &&
-				    std::strcmp(source, "bufready_depth") == 0) {
-					runtime->set_uniform_value_bool(variable, true);
-				}
+				if (!runtime->get_annotation_string_from_uniform_variable(variable, "source", source)) return;
+				if (std::strcmp(source, "bufready_depth") == 0) runtime->set_uniform_value_bool(variable, true);
+				else if (std::strcmp(source, "scd3d11_ortho") == 0) gOrthoUniforms.push_back(variable);
 			});
 		}
 
@@ -99,7 +105,9 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		}
 
 		void OnDestroyEffectRuntime(reshade::api::effect_runtime *runtime) {
-			if (runtime == gRuntime) gRuntime = nullptr;
+			if (runtime != gRuntime) return;
+			gRuntime = nullptr;
+			gOrthoUniforms.clear();
 		}
 
 		// Runs inside render_effects, after ReShade's own Generic Depth add-on picked its depth buffer.
@@ -255,8 +263,19 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		if (gRuntime == nullptr || !IsDeviceReady()) return;
 
 		gSceneDepthView = SUCCEEDED(UpdateSceneDepth()) ? sceneDepth.view.Get() : nullptr;
+		for (reshade::api::effect_uniform_variable const variable: gOrthoUniforms) {
+			gRuntime->set_uniform_value_float(variable, sceneProjection[0], sceneProjection[5], sceneProjection[10],
+			                                  sceneProjection[14]);
+		}
+		// ReShade binds its own render targets for the effects, so the depth buffer is not an output meanwhile.
+		gRuntime->update_texture_bindings("SC4_DEPTH", ViewHandle(depthShaderView.Get()), ViewHandle(depthShaderView.Get()));
 		reshade::api::command_list *const commands = gRuntime->get_command_queue()->get_immediate_command_list();
 		gRuntime->render_effects(commands, ViewHandle(renderTargetView.Get()), ViewHandle(renderTargetViewSrgb.Get()));
+		gRuntime->update_texture_bindings("SC4_DEPTH", reshade::api::resource_view{0}, reshade::api::resource_view{0});
+		// Effects ReShade renders at Present outside the city view must not measure with this camera.
+		for (reshade::api::effect_uniform_variable const variable: gOrthoUniforms) {
+			gRuntime->set_uniform_value_float(variable, 0.0f, 0.0f, 0.0f, 0.0f);
+		}
 		if (gDepthBound) {
 			// Never leave ReShade holding a view that a resize or device loss may release.
 			gRuntime->update_texture_bindings("DEPTH", reshade::api::resource_view{0}, reshade::api::resource_view{0});

@@ -765,10 +765,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		textureBindingsValid = true;
 		if (!ApplyRenderStates()) return false;
-		if ((enabledCapabilities[kGDCapability_DepthTest] && depthWriteEnabled) ||
-		    enabledCapabilities[kGDCapability_StencilTest]) {
+		bool const writesDepth = enabledCapabilities[kGDCapability_DepthTest] && depthWriteEnabled;
+		if (writesDepth || enabledCapabilities[kGDCapability_StencilTest]) {
 			depthRegionScratchValid = false;
 		}
+		if (writesDepth) memcpy(sceneProjection, matrices[PROJECTION], sizeof(sceneProjection));
 		return true;
 	}
 
