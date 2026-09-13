@@ -1,4 +1,5 @@
 #include "cGDriver.h"
+#include "SCD3D11Service.h"
 #include "VertexFormatUtils.h"
 
 #include <cassert>
@@ -60,6 +61,7 @@ namespace nSCD3D11 {
 				{{3.0f, -1.0f, 0.0f}, {b, g, r, 255}},
 				{{-1.0f, 3.0f, 0.0f}, {b, g, r, 255}},
 			};
+			d.SetTexture(0, 0);
 			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
 			d.DrawArrays(0, 0, 3);
 		}
@@ -188,6 +190,7 @@ namespace nSCD3D11 {
 				uint32_t const compressed = static_cast<uint32_t>(d.CreateTexture(5, 8, 8, 1, 0));
 				d.LoadTextureLevel(compressed, 0, 0, 0, 8, 8, 7, 0, 0x7FFFFFFC, nearTop);
 				assert(Rejected());
+				d.DeleteTextures(1, &compressed);
 			}
 
 			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0x40000000, noAccess);
@@ -318,6 +321,34 @@ namespace nSCD3D11 {
 			assert(d.vertexBufferCacheMisses == 5 && UploadedX(2) == 0.0f);
 		}
 
+		// Leaves the immediate context in a state that would break the next draw if not cleaned up.
+		static void __stdcall ClobberingCallback(SCD3D11FrameContext const *frame, void *) {
+			if (frame->event != SCD3D11_EVENT_RENDER) return;
+			ID3D11DeviceContext *const context = frame->context;
+			D3D11_VIEWPORT const tiny{0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+			context->RSSetViewports(1, &tiny);
+			context->OMSetRenderTargets(0, nullptr, nullptr);
+			context->PSSetShader(nullptr, nullptr, 0);
+			context->IASetInputLayout(nullptr);
+		}
+
+		void FrameCallbackCleanupOnlyWhenNeeded() {
+			d.SetViewport();
+			DrawFullscreen(0, 0, 255);
+			d.Flush();
+			// No callback: the cached pipeline bindings survive the frame.
+			assert(d.geometryPipelineBound && d.appliedPixelShader != nullptr);
+			DrawFullscreen(0, 255, 0);
+			assert(Pixel(1, 1) == 0x00ff00ff && Pixel(d.windowWidth - 2, d.windowHeight - 2) == 0x00ff00ff);
+
+			assert(SCD3D11RegisterFrameCallback(ClobberingCallback, this));
+			d.Flush();
+			assert(!d.geometryPipelineBound && d.appliedPixelShader == nullptr);
+			DrawFullscreen(255, 255, 0);
+			assert(Pixel(1, 1) == 0xffff00ff && Pixel(d.windowWidth - 2, d.windowHeight - 2) == 0xffff00ff);
+			assert(SCD3D11UnregisterFrameCallback(ClobberingCallback, this));
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
@@ -325,6 +356,7 @@ namespace nSCD3D11 {
 			OversizedInputsFailBeforeReading();
 			TerrainDrawsStayInReservation();
 			CachedVerticesFollowTheirSource();
+			FrameCallbackCleanupOnlyWhenNeeded();
 			return 0;
 		}
 	};

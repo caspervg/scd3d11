@@ -49,7 +49,7 @@ namespace nSCD3D11
 		return g_deviceGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
 	}
 
-	void InvokeD3D11FrameCallback(SCD3D11FrameContext const& frame) {
+	bool InvokeD3D11FrameCallback(SCD3D11FrameContext const& frame) {
 		SCD3D11FrameCallback callback;
 		void* userData;
 		{
@@ -58,7 +58,7 @@ namespace nSCD3D11
 			userData = g_userData;
 			if (callback != nullptr) ++g_callbacksInFlight;
 		}
-		if (callback == nullptr) return;
+		if (callback == nullptr) return false;
 
 		struct InvocationGuard {
 			~InvocationGuard() {
@@ -72,5 +72,6 @@ namespace nSCD3D11
 			~ActiveCallbackGuard() { g_insideCallback = false; }
 		} activeGuard;
 		callback(&frame, userData);
+		return true;
 	}
 }

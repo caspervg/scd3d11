@@ -23,6 +23,11 @@ namespace
 		receivedUser = userData;
 	}
 
+	void __stdcall SelfUnregisteringCallback(SCD3D11FrameContext const*, void* userData) {
+		++calls;
+		assert(SCD3D11UnregisterFrameCallback(SelfUnregisteringCallback, userData));
+	}
+
 	void __stdcall BlockingCallback(SCD3D11FrameContext const*, void*) {
 		std::unique_lock<std::mutex> lock(blockingMutex);
 		blockingCallbackStarted = true;
@@ -38,13 +43,20 @@ int main() {
 	assert(SCD3D11RegisterFrameCallback(Callback, &owner));
 	SCD3D11FrameContext frame{ sizeof(frame), 1, SCD3D11_EVENT_RENDER,
 		nSCD3D11::NextD3D11DeviceGeneration(), nullptr, nullptr, nullptr, nullptr, nullptr };
-	nSCD3D11::InvokeD3D11FrameCallback(frame);
+	assert(nSCD3D11::InvokeD3D11FrameCallback(frame));
 	assert(calls == 1 && receivedUser == &owner);
 	assert(received.structSize == sizeof(frame) && received.apiVersion == 1 && received.deviceGeneration == 1);
 	assert(!SCD3D11UnregisterFrameCallback(Callback, nullptr));
 	assert(SCD3D11UnregisterFrameCallback(Callback, &owner));
-	nSCD3D11::InvokeD3D11FrameCallback(frame);
+	assert(!nSCD3D11::InvokeD3D11FrameCallback(frame));
 	assert(calls == 1);
+
+	// A callback that unregisters itself still ran this frame; the next frame has none.
+	assert(SCD3D11RegisterFrameCallback(SelfUnregisteringCallback, &owner));
+	assert(nSCD3D11::InvokeD3D11FrameCallback(frame));
+	assert(calls == 2);
+	assert(!nSCD3D11::InvokeD3D11FrameCallback(frame));
+	assert(calls == 2);
 
 	assert(SCD3D11RegisterFrameCallback(BlockingCallback, &owner));
 	std::thread invocation([&] { nSCD3D11::InvokeD3D11FrameCallback(frame); });
