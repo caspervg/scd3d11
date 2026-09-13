@@ -1,0 +1,3 @@
+[submodule "vendor/reshade"]
+	path = vendor/reshade
+	url = https://github.com/crosire/reshade.git
