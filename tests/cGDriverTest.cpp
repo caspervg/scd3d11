@@ -721,6 +721,50 @@ namespace nSCD3D11 {
 			CheckVertexCache();
 		}
 
+		DXGI_SWAP_EFFECT SwapEffect() {
+			DXGI_SWAP_CHAIN_DESC description{};
+			assert(SUCCEEDED(d.swapChain->GetDesc(&description)));
+			return description.SwapEffect;
+		}
+
+		// Draws, presents twice without redrawing (a UI-only frame), resizes, and draws again.
+		void PresentsAndResizes() {
+			DrawFullscreen(255, 128, 0);
+			d.Flush();
+			d.Flush();
+			assert(!d.deviceLost && Pixel(1, 1) == 0xff8000ff);
+
+			HWND const window = static_cast<HWND>(d.windowHandle);
+			RECT before{};
+			GetClientRect(window, &before);
+			RECT frame{};
+			GetWindowRect(window, &frame);
+			SetWindowPos(window, nullptr, 0, 0, frame.right - frame.left - 100, frame.bottom - frame.top - 60,
+			             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+			d.Flush();
+			assert(!d.deviceLost && d.windowWidth == before.right - 100 && d.windowHeight == before.bottom - 60);
+			DXGI_SWAP_CHAIN_DESC description{};
+			d.swapChain->GetDesc(&description);
+			assert(description.BufferDesc.Width == static_cast<UINT>(d.windowWidth));
+			DrawFullscreen(0, 128, 255);
+			d.Flush();
+			assert(!d.deviceLost && Pixel(d.windowWidth - 1, d.windowHeight - 1) == 0x0080ffff);
+		}
+
+		void FlipModelWithLegacyFallback() {
+			assert(SwapEffect() == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+			PresentsAndResizes();
+
+			d.preferFlipModel = false;
+			assert(d.RecoverD3D11Device());
+			assert(SwapEffect() == DXGI_SWAP_EFFECT_DISCARD);
+			PresentsAndResizes();
+
+			d.preferFlipModel = true;
+			assert(d.RecoverD3D11Device());
+			assert(SwapEffect() == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
@@ -734,6 +778,7 @@ namespace nSCD3D11 {
 			ConstantsFollowEverySetter();
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();
+			FlipModelWithLegacyFallback();
 			return 0;
 		}
 	};

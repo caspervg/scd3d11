@@ -181,6 +181,8 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
 		PresentationMode presentationMode;
+		// Off with -FlipModel:off.
+		bool preferFlipModel;
 		UINT swapChainFlags;
 		// SC4 redraws only dirty rectangles and expects the back buffer to survive Present. DISCARD
 		// swap chains give no such guarantee (exclusive fullscreen really flips), so the game renders

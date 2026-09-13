@@ -62,6 +62,7 @@ namespace nSCD3D11 {
 	                       deviceRecoveryFailures(0),
 	                       nextDeviceRecovery(0),
 	                       presentationMode(PresentationMode::Windowed),
+	                       preferFlipModel(std::strstr(GetCommandLineA(), "-FlipModel:off") == nullptr),
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),

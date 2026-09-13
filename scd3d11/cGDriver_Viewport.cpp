@@ -347,10 +347,14 @@ namespace nSCD3D11 {
 		swapChainDescription.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		swapChainDescription.SampleDesc.Count = 1;
 		swapChainDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-		swapChainDescription.BufferCount = 1;
+		// Composed presentation (windowed, borderless) uses the flip model: less copying, lower latency and
+		// power. SC4 renders into the persistent backBufferTexture either way, so the swap chain's own
+		// buffers never have to keep their contents. Exclusive fullscreen keeps the legacy effect.
+		bool const flipModel = preferFlipModel && presentationMode != PresentationMode::ExclusiveFullscreen;
+		swapChainDescription.BufferCount = flipModel ? 2 : 1;
 		swapChainDescription.OutputWindow = window;
 		swapChainDescription.Windowed = TRUE;
-		swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+		swapChainDescription.SwapEffect = flipModel ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_DISCARD;
 		swapChainFlags = presentationMode == PresentationMode::ExclusiveFullscreen
 			                 ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
 			                 : 0;
@@ -405,6 +409,13 @@ namespace nSCD3D11 {
 			result = createForAvailableRuntime();
 		}
 #endif
+		if (FAILED(result) && flipModel) {
+			// FLIP_DISCARD needs Windows 10.
+			LogHRESULT(LogCategory::SwapChain, "flip model swap chain; falling back to the legacy swap effect", result);
+			swapChainDescription.BufferCount = 1;
+			swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+			result = createForAvailableRuntime();
+		}
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Initialization, "D3D11CreateDeviceAndSwapChain", result);
 			DestroyD3D11Context(recoveringDevice);
@@ -472,8 +483,9 @@ namespace nSCD3D11 {
 		char const *modeName = presentationMode == PresentationMode::Windowed ? "windowed" :
 		                       presentationMode == PresentationMode::BorderlessFullscreen ? "borderless fullscreen" :
 		                       "exclusive fullscreen";
-		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, %s at %dx%d", featureLevel, modeName,
-		    mode.width, mode.height);
+		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, %s at %dx%d, %s swap chain", featureLevel, modeName,
+		    mode.width, mode.height,
+		    swapChainDescription.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ? "flip model" : "legacy");
 		if (showWindow) {
 			ShowWindow(window, SW_SHOWNORMAL);
 			UpdateWindow(window);

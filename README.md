@@ -28,6 +28,7 @@ Added by SCD3D11:
 |--------|---------|--------|
 | `-Borderless` (or `-FullscreenMode:Borderless`) | off | With `-f`, a monitor-sized borderless window instead of exclusive fullscreen |
 | `-VSync:off` | vsync on | Present without waiting for vsync |
+| `-FlipModel:off` | flip model | Windowed and borderless: present with the legacy DISCARD swap chain instead of the flip model |
 | `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
 | `-ParallelCull:<mode>` | `parallel` | `parallel`, `serial`, `off` (also `0`, `false`), or diagnostics `passthru` / `tailonly`; see [Parallel render cull](#parallel-render-cull). The `SC4D3D11_PARALLEL_CULL` environment variable is used when the switch is absent |
 | `-SimTickCap:<ms>` | `32` | Per-tick simulation budget, clamped to `15`–`500`; `off` or `0` disables; see [Sim tick budget](#sim-tick-budget) |
