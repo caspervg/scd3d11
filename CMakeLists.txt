@@ -15,7 +15,7 @@ endif ()
 
 set(CMAKE_SYSTEM_PROCESSOR "x86")
 
-project(SCD3D11 LANGUAGES C CXX)
+project(SCD3D11 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,11 +40,12 @@ target_include_directories(scd3d11_common INTERFACE
         "${PROJECT_SOURCE_DIR}/scd3d11/ext"
 )
 
+# Limited to C++ sources so none of these reach the resource compiler.
 target_compile_options(scd3d11_common INTERFACE
-        $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-8;/MP>
-        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:GNU>>:-Wall;-fpermissive>
-        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Gw;/Zc:threadSafeInit->
-        $<$<AND:$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:GNU>>,$<CONFIG:Release>>:-flto>
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W3;/utf-8;/MP>
+        $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Wall;-fpermissive>
+        $<$<AND:$<COMPILE_LANG_AND_ID:CXX,MSVC>,$<CONFIG:Release>>:/Gw;/Zc:threadSafeInit->
+        $<$<AND:$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>,$<CONFIG:Release>>:-flto>
 )
 
 target_compile_definitions(scd3d11_common INTERFACE
@@ -80,6 +81,19 @@ add_library(SCD3D11 SHARED
         vendor/framework/src/cRZCOMDllDirector.cpp
         vendor/framework/src/cRZRefCount.cpp
 )
+
+# Stamped into the DLL's version resource. CI passes the release tag, e.g. v1.2.0 or v1.2.0-rc1.
+# Not SCD3D11_VERSION: project() already defines that as an empty variable, which would shadow the cache entry.
+set(SCD3D11_VERSION_TAG "0.0.0-dev" CACHE STRING "Version stamped into SCD3D11.dll ([v]MAJOR.MINOR.PATCH[-suffix])")
+if (NOT SCD3D11_VERSION_TAG MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    message(FATAL_ERROR "SCD3D11_VERSION_TAG must start with MAJOR.MINOR.PATCH, got '${SCD3D11_VERSION_TAG}'")
+endif ()
+set(SCD3D11_VERSION_MAJOR ${CMAKE_MATCH_1})
+set(SCD3D11_VERSION_MINOR ${CMAKE_MATCH_2})
+set(SCD3D11_VERSION_PATCH ${CMAKE_MATCH_3})
+string(REGEX REPLACE "^v" "" SCD3D11_VERSION_STRING "${SCD3D11_VERSION_TAG}")
+configure_file(scd3d11/SCD3D11.rc.in "${PROJECT_BINARY_DIR}/SCD3D11.rc" @ONLY)
+target_sources(SCD3D11 PRIVATE "${PROJECT_BINARY_DIR}/SCD3D11.rc")
 
 # SC4 loads the driver as SCD3D11.dll, so suppress CMake's "lib" prefix.
 set_target_properties(SCD3D11 PROPERTIES PREFIX "")
