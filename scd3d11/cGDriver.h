@@ -38,6 +38,8 @@ namespace nSCD3D11 {
 	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 8;
 	constexpr size_t CONSTANT_BUFFER_COUNT = 8;
 
+	struct cGDriverTestAccess;
+
 	class cGDriver final :
 			public cIGZGDriver,
 			public cIGZGBufferRegionExtension,
@@ -45,6 +47,8 @@ namespace nSCD3D11 {
 			public cIGZGDriverVertexBufferExtension,
 			public cIGZGSnapshotExtension,
 			public cRZRefCount {
+		friend struct cGDriverTestAccess;
+
 	private:
 		enum class DriverError {
 			OK = 0,
