@@ -19,8 +19,10 @@
 #include <cmath>
 
 namespace nSCD3D11 {
-	constexpr uint32_t VERTEX_CACHE_SEGMENT_BYTES = 64u * 1024u * 1024u;
-	constexpr uint32_t INDEX_CACHE_SEGMENT_BYTES = 16u * 1024u * 1024u;
+	// 8 segments each: at most 128 MB vertex + 32 MB index cache (was 512 + 128 MB).
+	constexpr uint32_t VERTEX_CACHE_SEGMENT_BYTES = 16u * 1024u * 1024u;
+	constexpr uint32_t INDEX_CACHE_SEGMENT_BYTES = 4u * 1024u * 1024u;
+	constexpr uint64_t LOW_ADDRESS_SPACE_BYTES = 512ull * 1024u * 1024u;
 
 	namespace {
 		char const kShaderSource[] = R"(
@@ -423,6 +425,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (!segment->buffer || static_cast<uint64_t>(segment->cursor) + requiredSize > segment->capacity) {
 			if (segment->buffer && segment->cursor != 0) {
 				activeSegment = static_cast<uint8_t>((activeSegment + 1) % GEOMETRY_CACHE_SEGMENTS);
+				// Low 32-bit address space: recycle the segments we already have instead of growing.
+				MEMORYSTATUSEX memory{sizeof(memory)};
+				if (!segments[activeSegment].buffer && GlobalMemoryStatusEx(&memory) &&
+				    memory.ullAvailVirtual < LOW_ADDRESS_SPACE_BYTES) {
+					activeSegment = 0;
+				}
 				segment = &segments[activeSegment];
 				Log(LogCategory::Resource, "%s cache advanced to segment %u",
 				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment);
@@ -441,6 +449,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 					                                : INDEX_CACHE_SEGMENT_BYTES;
 				uint32_t const newCapacity = (std::max)(normalCapacity, requiredSize);
 
+				// DYNAMIC buffers cost their full size in 32-bit address space (measured 1:1 on NVIDIA),
+				// hence the modest segment sizes. DEFAULT + UpdateSubresource avoids that but made each
+				// cache miss 3-5x slower, which shows up as stutter while panning large cities.
 				D3D11_BUFFER_DESC description{};
 				description.ByteWidth = newCapacity;
 				description.Usage = D3D11_USAGE_DYNAMIC;
