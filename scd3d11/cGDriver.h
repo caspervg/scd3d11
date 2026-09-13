@@ -133,8 +133,6 @@ namespace nSCD3D11 {
 			uint32_t levels = 0;
 			uint32_t uploadedMipLevels = 0;
 			uint32_t internalFormat = 0;
-			std::vector<std::vector<uint8_t>> mipData;
-			std::vector<uint32_t> mipPitch;
 		};
 
 		struct TextureStageState {

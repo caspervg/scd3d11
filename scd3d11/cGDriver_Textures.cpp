@@ -47,7 +47,6 @@ namespace nSCD3D11 {
         uint32_t height,
         uint32_t levels) {
         DXGI_FORMAT const format = D3D11TextureFormat(internalFormat);
-		bool const preserveMipData = resource.format == format && resource.width == width && resource.height == height;
         if (!d3dDevice || format == DXGI_FORMAT_UNKNOWN || width == 0 || height == 0 ||
             width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
             return E_INVALIDARG;
@@ -91,32 +90,26 @@ namespace nSCD3D11 {
 		resource.levels = levels;
 		resource.uploadedMipLevels = 0;
 		resource.internalFormat = internalFormat;
-		if (!preserveMipData) {
-			resource.mipData.clear();
-			resource.mipPitch.clear();
-		}
-		resource.mipData.resize(levels);
-		resource.mipPitch.resize(levels);
         RecordEncountered(ObservedCategory::TextureFormat,
                           (static_cast<uint64_t>(internalFormat) << 32) | static_cast<uint32_t>(format));
         return S_OK;
     }
 
+	// No CPU copy of texture contents is kept: in a 32-bit process shadowing every texture doubled
+	// the texture address-space footprint and caused out-of-memory crashes on heavily modded games.
+	// After device loss textures come back with their names and sizes but blank contents until the
+	// game re-uploads them.
 	HRESULT cGDriver::RecreateTextureResources() {
+		uint32_t recreated = 0;
 		for (auto &entry: textures) {
 			TextureResource &resource = entry.second;
-			uint32_t const uploaded = resource.uploadedMipLevels;
 			if (resource.width == 0) continue;
 			HRESULT const result = CreateTextureResource(
 				resource, resource.internalFormat, resource.width, resource.height, resource.levels);
 			if (FAILED(result)) return result;
-			for (uint32_t level = 0; level < resource.levels; ++level) {
-				if (level >= resource.mipData.size() || resource.mipData[level].empty()) continue;
-				d3dContext->UpdateSubresource(resource.texture.Get(), level, nullptr,
-					resource.mipData[level].data(), resource.mipPitch[level], 0);
-			}
-			resource.uploadedMipLevels = uploaded;
+			++recreated;
 		}
+		Log(LogCategory::Resource, "device loss: recreated %u textures without contents", recreated);
 		return S_OK;
 	}
 
@@ -564,22 +557,8 @@ namespace nSCD3D11 {
 		d3dContext->UpdateSubresource(
 			resource.texture.Get(), D3D11CalcSubresource(level, 0, resource.levels),
 			&box, upload, pitch, 0);
-		uint32_t const levelIndex = static_cast<uint32_t>(level);
-		uint32_t const destinationPitch = D3D11TextureRowPitch(resource.format, mipWidth);
-		uint32_t const destinationRows = IsCompressed(resource.format) ? (mipHeight + 3) / 4 : mipHeight;
-		resource.mipPitch[levelIndex] = destinationPitch;
-		resource.mipData[levelIndex].resize(static_cast<size_t>(destinationPitch) * destinationRows);
-		uint32_t const copyRows = IsCompressed(resource.format) ? (static_cast<uint32_t>(height) + 3) / 4 : static_cast<uint32_t>(height);
-		uint32_t const copyBytes = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
-		uint32_t const destinationY = IsCompressed(resource.format) ? static_cast<uint32_t>(yOffset) / 4 : static_cast<uint32_t>(yOffset);
-		uint32_t const destinationX = IsCompressed(resource.format)
-			? (static_cast<uint32_t>(xOffset) / 4) * (resource.format == DXGI_FORMAT_BC1_UNORM ? 8u : 16u)
-			: static_cast<uint32_t>(xOffset) * D3D11TextureRowPitch(resource.format, 1);
-		uint8_t const *backupSource = static_cast<uint8_t const *>(upload);
-		for (uint32_t row = 0; row < copyRows; ++row) {
-			memcpy(resource.mipData[levelIndex].data() + static_cast<size_t>(destinationY + row) * destinationPitch + destinationX,
-			       backupSource + static_cast<size_t>(row) * pitch, copyBytes);
-		}
+		// Don't pin a one-off huge conversion buffer for the rest of the session.
+		if (converted.capacity() > 16u * 1024u * 1024u) std::vector<uint8_t>().swap(converted);
 		resource.uploadedMipLevels |= 1u << static_cast<uint32_t>(level);
 	}
 
