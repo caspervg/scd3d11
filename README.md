@@ -91,11 +91,10 @@ To confirm it engaged, check `SC4D3D11.log` for `sim tick budget installed: cap=
 
 ## Diagnostics
 
-The driver appends to `SC4D3D11.log` in the game's working directory (normally the `Apps` folder next to
-`SimCity 4.exe`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`. Debug builds also forward D3D11 debug-layer messages.
-
-Set `SC4D3D11_RECORD_STATES=1` before launching to additionally record observed render-state combinations to
-`SC4D3D11-states.log`.
+The driver writes `SC4D3D11.log` to the parent of the plugins folder holding `SCD3D11.dll` (normally
+`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`. The log is
+recreated each session. Debug builds also forward D3D11 debug-layer messages and record each newly observed
+render-state, vertex-format and texture-format combination, tagged `state`.
 
 ## Third-party components
 

@@ -59,5 +59,5 @@ foreach ($cap in $capList) {
     Write-Host ("[cap=$cap] samples: " + (($fps | ForEach-Object { '{0:N0}' -f $_ }) -join ' '))
     Cmd 'QuitGame false' | Out-Null; Start-Sleep 3
     if (-not $p.HasExited) { $p.Kill() }
-    (Get-Content (Join-Path $gameDir 'SC4D3D11.log') -EA SilentlyContinue | Select-String 'sim tick budget')
+    (Get-Content (Join-Path $userDir 'SC4D3D11.log') -EA SilentlyContinue | Select-String 'sim tick budget')
 }

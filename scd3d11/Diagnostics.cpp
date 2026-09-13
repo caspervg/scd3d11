@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <filesystem>
 #include <unordered_set>
 
 namespace nSCD3D11
@@ -26,6 +27,29 @@ namespace nSCD3D11
 		char const* CategoryName(LogCategory category) {
 			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported" };
 			return names[static_cast<unsigned int>(category)];
+		}
+
+		// The log goes next to the user Plugins folder, i.e. the parent of the folder holding SCD3D11.dll.
+		// Falls back to the working directory if the module path is unavailable.
+		void WriteLogLine(char const* message) {
+			static std::filesystem::path const logPath = [] {
+				HMODULE module = nullptr;
+				wchar_t path[MAX_PATH]{};
+				if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+				                        reinterpret_cast<LPCWSTR>(&WriteLogLine), &module) ||
+				    GetModuleFileNameW(module, path, MAX_PATH) == 0) {
+					return std::filesystem::path(L"SC4D3D11.log");
+				}
+				return std::filesystem::path(path).parent_path().parent_path() / L"SC4D3D11.log";
+			}();
+
+			static std::atomic<bool> opened{false};
+			wchar_t const* const mode = opened.exchange(true) ? L"a" : L"w";
+			FILE* file = nullptr;
+			if (_wfopen_s(&file, logPath.c_str(), mode) == 0) {
+				fputs(message, file);
+				fclose(file);
+			}
 		}
 	}
 
@@ -54,13 +78,7 @@ namespace nSCD3D11
 		}
 
 		OutputDebugStringA(message);
-		static std::atomic<bool> opened{false};
-		char const* const mode = opened.exchange(true) ? "a" : "w";
-		FILE* file = nullptr;
-		if (fopen_s(&file, "SC4D3D11.log", mode) == 0) {
-			fputs(message, file);
-			fclose(file);
-		}
+		WriteLogLine(message);
 	}
 
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result) {
@@ -69,9 +87,6 @@ namespace nSCD3D11
 
 	void RecordEncountered(ObservedCategory category, uint64_t value) {
 #ifndef NDEBUG
-		char enabled[2]{};
-		if (GetEnvironmentVariableA("SC4D3D11_RECORD_STATES", enabled, sizeof(enabled)) == 0 || enabled[0] == '0') return;
-
 		unsigned int const index = static_cast<unsigned int>(category);
 		if (index >= static_cast<unsigned int>(ObservedCategory::Count)) return;
 		auto& values = observed[index];
@@ -79,12 +94,8 @@ namespace nSCD3D11
 
 		static char const* names[] = { "render-state", "vertex-format", "texture-format" };
 		char message[128]{};
-		sprintf_s(message, "%s=0x%016llX\n", names[index], static_cast<unsigned long long>(value));
-		FILE* file = nullptr;
-		if (fopen_s(&file, "SC4D3D11-states.log", "a") == 0) {
-			fputs(message, file);
-			fclose(file);
-		}
+		sprintf_s(message, "[SC4D3D11][state] %s=0x%016llX\n", names[index], static_cast<unsigned long long>(value));
+		WriteLogLine(message);
 #else
 		(void)category;
 		(void)value;

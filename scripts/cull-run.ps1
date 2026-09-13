@@ -30,7 +30,7 @@ function WaitState([string]$want, [int]$sec) {
 
 Get-Process 'SimCity 4' -EA SilentlyContinue | Stop-Process -Force; Start-Sleep 1
 Copy-Item (Join-Path $repo 'build\review\SCD3D11.dll') (Join-Path $userDir 'Plugins\SCD3D11.dll') -Force
-Remove-Item (Join-Path $gameDir 'SC4D3D11.log') -EA SilentlyContinue
+Remove-Item (Join-Path $userDir 'SC4D3D11.log') -EA SilentlyContinue
 $before = @(Get-ChildItem "$userDir\Exception Reports\*.txt" -EA SilentlyContinue | Select -Expand Name)
 $p = Start-Process (Join-Path $gameDir 'SimCity 4.exe') -WorkingDirectory $gameDir -PassThru -ArgumentList @(
     '-UserDir:"' + $userDir + '\\"', '-CustomResolution:enabled', '-r1600x900x32', '-w', '-NetCommandGenerator:enabled',
@@ -65,7 +65,7 @@ if (WaitState '1|2' 120) {
 else { "never reached region/city view" }
 
 if (Get-Process -Id $p.Id -EA SilentlyContinue) { $p.Kill(); "killed" } else { "exited" }
-Copy-Item (Join-Path $gameDir 'SC4D3D11.log') $out -EA SilentlyContinue
+Copy-Item (Join-Path $userDir 'SC4D3D11.log') $out -EA SilentlyContinue
 $new = @(Get-ChildItem "$userDir\Exception Reports\*.txt" -EA SilentlyContinue | Select -Expand Name) | Where-Object { $_ -notin $before }
 if ($new) {
     "CRASH:"

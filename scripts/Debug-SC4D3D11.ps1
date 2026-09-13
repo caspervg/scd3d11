@@ -16,7 +16,7 @@ $ErrorActionPreference = 'Stop'
 $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x86\cdb.exe'
 $gameDir = Split-Path -Parent $GameExe
 Remove-Item -LiteralPath $LogPath -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath (Join-Path $gameDir 'SC4D3D11.log') -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $UserDir 'SC4D3D11.log') -ErrorAction SilentlyContinue
 
 $arguments = @(
     '-logo', $LogPath,

@@ -72,7 +72,7 @@ foreach ($mode in $modeList) {
     New-Item -ItemType Directory -Force $md | Out-Null
     Get-Process 'SimCity 4' -EA SilentlyContinue | Stop-Process -Force; Start-Sleep 1
     Copy-Item (Join-Path $repo 'build\review\SCD3D11.dll') (Join-Path $userDir 'Plugins\SCD3D11.dll') -Force
-    Remove-Item (Join-Path $gameDir 'SC4D3D11.log') -EA SilentlyContinue
+    Remove-Item (Join-Path $userDir 'SC4D3D11.log') -EA SilentlyContinue
     $before = @(Get-ChildItem "$userDir\Exception Reports\*.txt" -EA SilentlyContinue | Select -Expand Name)
     $p = Start-Process (Join-Path $gameDir 'SimCity 4.exe') -WorkingDirectory $gameDir -PassThru -ArgumentList @(
         '-UserDir:"' + $userDir + '\\"', '-CustomResolution:enabled', '-r1600x900x32', '-w',
@@ -116,7 +116,7 @@ foreach ($mode in $modeList) {
     $frames | Tee-Object (Join-Path $md 'frames.txt')
     Cmd 'QuitGame false' | Out-Null; Start-Sleep 3
     if (-not $p.HasExited) { $p.Kill() }
-    Copy-Item (Join-Path $gameDir 'SC4D3D11.log') $md -EA SilentlyContinue
+    Copy-Item (Join-Path $userDir 'SC4D3D11.log') $md -EA SilentlyContinue
     $new = @(Get-ChildItem "$userDir\Exception Reports\*.txt" -EA SilentlyContinue | Select -Expand Name) | ? { $_ -notin $before }
     if ($new) { Write-Host "[$mode] CRASH: $new"; $new | % { Copy-Item "$userDir\Exception Reports\$_" $md } }
 }

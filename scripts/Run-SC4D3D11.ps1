@@ -45,14 +45,15 @@ if (Test-Path -LiteralPath $PluginDll) {
 New-Item -ItemType Directory -Path (Split-Path -Parent $PluginDll) -Force | Out-Null
 Copy-Item -LiteralPath $builtDll -Destination $PluginDll -Force
 $pluginRoot = Split-Path -Parent $PluginDll
+$logDir = Split-Path -Parent $pluginRoot
 Get-ChildItem -LiteralPath $pluginRoot -Recurse -Filter '*.dll' | Sort-Object FullName | ForEach-Object {
     $pluginHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
     "$pluginHash  $($_.FullName.Substring($pluginRoot.Length).TrimStart('\'))"
 } | Set-Content -LiteralPath (Join-Path $captureDir 'plugin-dlls.txt')
 
-$logs = @('SC4D3D11.log', 'SC4D3D11-states.log')
+$logs = @('SC4D3D11.log')
 foreach ($name in $logs) {
-    $path = Join-Path $gameDir $name
+    $path = Join-Path $logDir $name
     if (Test-Path -LiteralPath $path) {
         Copy-Item -LiteralPath $path -Destination (Join-Path $captureDir "$name.before")
         Remove-Item -LiteralPath $path -Force
@@ -79,13 +80,7 @@ switch ($PresentationMode) {
     "arguments=$($arguments -join ' ')"
 ) | Set-Content -LiteralPath (Join-Path $captureDir 'run.txt')
 
-$oldRecording = $env:SC4D3D11_RECORD_STATES
-$env:SC4D3D11_RECORD_STATES = '1'
-try {
-    $process = Start-Process -FilePath $GameExe -ArgumentList $arguments -WorkingDirectory $gameDir -PassThru
-} finally {
-    $env:SC4D3D11_RECORD_STATES = $oldRecording
-}
+$process = Start-Process -FilePath $GameExe -ArgumentList $arguments -WorkingDirectory $gameDir -PassThru
 Add-Content -LiteralPath (Join-Path $captureDir 'run.txt') -Value "pid=$($process.Id)"
 
 $deadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -141,7 +136,7 @@ if ($process.HasExited) {
     Add-Content -LiteralPath (Join-Path $captureDir 'run.txt') -Value "exit_code=$($process.ExitCode)"
 }
 foreach ($name in $logs) {
-    $path = Join-Path $gameDir $name
+    $path = Join-Path $logDir $name
     if (Test-Path -LiteralPath $path) {
         Copy-Item -LiteralPath $path -Destination (Join-Path $captureDir $name) -Force
     }
