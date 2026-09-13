@@ -1,4 +1,5 @@
 #include "cGDriver.h"
+#include "cGDCombiner.h"
 #include "SCD3D11Service.h"
 #include "VertexFormatUtils.h"
 
@@ -444,6 +445,131 @@ namespace nSCD3D11 {
 			assert(Pixel(1, 1) == 0xffffffff);
 		}
 
+		struct FullVertex {
+			float position[3];
+			float normal[3];
+			uint8_t bgra[4];
+			float texCoord[2][2];
+		};
+
+		FullVertex fullVertices[3]{
+			{{-1.0f, -1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {10, 20, 30, 255}, {{0.0f, 0.0f}, {0.0f, 0.0f}}},
+			{{3.0f, -1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {10, 20, 30, 255}, {{2.0f, 0.0f}, {2.0f, 0.0f}}},
+			{{-1.0f, 3.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {10, 20, 30, 255}, {{0.0f, 2.0f}, {0.0f, 2.0f}}},
+		};
+		bool drawNormals = true;
+
+		void DrawFull() {
+			if (drawNormals) d.InterleavedArrays(kGDVertexFormat_V3F_N3F_C4UB_2T2F, 0, fullVertices);
+			else d.InterleavedArrays(kGDVertexFormat_V3F_C4UB_2T2F, 0, fullVertices); // only the flags matter here
+			d.DrawArrays(0, 0, 3);
+		}
+
+		// The constants a setter leaves behind must equal a from-scratch rebuild, on the CPU and the GPU.
+		template <typename Setter>
+		void CheckConstants(char const *name, Setter const &setter) {
+			DrawFull();
+			std::vector<uint8_t> const before = d.constantBufferCache;
+			setter();
+			DrawFull();
+			std::vector<uint8_t> const incremental = d.constantBufferCache;
+			bool const uploaded = ReadBuffer(d.transformBuffers[d.activeTransformBuffer].Get(), 0,
+			                                 static_cast<uint32_t>(incremental.size())) == incremental;
+			d.constantsDirty = true;
+			d.constantBufferCache.clear();
+			DrawFull();
+			if (!uploaded || incremental == before || d.constantBufferCache != incremental) {
+				std::fprintf(stderr, "constants wrong after %s (uploaded %d, changed %d, fresh %d)\n", name,
+				             uploaded, incremental != before, d.constantBufferCache == incremental);
+				assert(false);
+			}
+		}
+
+		void ConstantsFollowEverySetter() {
+			uint32_t const texture = static_cast<uint32_t>(d.CreateTexture(1, 4, 4, 1, 0));
+			d.SetTexture(texture, 0);
+			d.TexStage(0);
+			d.Enable(kGDCapability_Texture2D);
+			float const color[4]{0.1f, 0.2f, 0.3f, 0.4f};
+			float const other[4]{0.5f, 0.6f, 0.7f, 0.8f};
+			float const scaled[16]{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1};
+			float const value = 0.5f, start = 2.0f, end = 3.0f, shininess = 8.0f;
+
+			CheckConstants("AlphaFunc", [&] { d.AlphaFunc(4, 0.5f); });
+			CheckConstants("Enable(AlphaTest)", [&] { d.Enable(kGDCapability_AlphaTest); });
+			CheckConstants("Disable(AlphaTest)", [&] { d.Disable(kGDCapability_AlphaTest); });
+			CheckConstants("Enable(Fog)", [&] { d.Enable(kGDCapability_Fog); });
+			CheckConstants("Fog(mode)", [&] { d.Fog(0, 2u); });
+			CheckConstants("Fog(color)", [&] { d.Fog(1, color); });
+			CheckConstants("Fog(density)", [&] { d.Fog(2, &value); });
+			CheckConstants("Fog(start)", [&] { d.Fog(3, &start); });
+			CheckConstants("Fog(end)", [&] { d.Fog(4, &end); });
+			CheckConstants("ColorMultiplier", [&] { d.ColorMultiplier(0.5f, 0.25f, 0.125f); });
+			CheckConstants("AlphaMultiplier", [&] { d.AlphaMultiplier(0.25f); });
+			CheckConstants("EnableVertexColors", [&] { d.EnableVertexColors(true, false); });
+			CheckConstants("LoadMatrix(model-view)", [&] { d.MatrixMode(0); d.LoadMatrix(scaled); });
+			CheckConstants("LoadIdentity(model-view)", [&] { d.LoadIdentity(); });
+			CheckConstants("LoadMatrix(projection)", [&] { d.MatrixMode(1); d.LoadMatrix(scaled); d.MatrixMode(0); });
+			CheckConstants("LoadIdentity(projection)", [&] { d.MatrixMode(1); d.LoadIdentity(); d.MatrixMode(0); });
+			CheckConstants("EnableLight", [&] { d.EnableLight(1, true); });
+			CheckConstants("LightModelAmbient", [&] { d.LightModelAmbient(0.1f, 0.2f, 0.3f, 1.0f); });
+			CheckConstants("LightColor(parameter)", [&] { d.LightColor(0, 1, color); });
+			CheckConstants("LightColor(all)", [&] { d.LightColor(1, other, color, other); });
+			CheckConstants("LightPosition", [&] { d.LightPosition(2, other); });
+			CheckConstants("LightDirection", [&] { d.LightDirection(0, color); });
+			CheckConstants("MaterialColor(parameter)", [&] { d.MaterialColor(3, color); });
+			CheckConstants("MaterialColor(shininess)", [&] { d.MaterialColor(4, &shininess); });
+			CheckConstants("MaterialColor(all)", [&] { d.MaterialColor(other, color, other, other, 16.0f); });
+			CheckConstants("EnableLighting(false)", [&] { d.EnableLighting(false); });
+			CheckConstants("EnableLighting(true)", [&] { d.EnableLighting(true); });
+			CheckConstants("TexEnv(mode)", [&] { d.TexEnv(0, 0, 2); });
+			CheckConstants("TexEnv(color)", [&] { d.TexEnv(0, 1, color); });
+			CheckConstants("TexStageCoord", [&] { d.TexStageCoord(1); });
+			CheckConstants("TexStageMatrix", [&] { d.TexStageMatrix(scaled, 4, 4, 0); });
+			CheckConstants("TexStageCombine(mode)", [&] {
+				d.TexStageCombine(static_cast<eGDTextureStageCombineParamType>(1),
+				                  static_cast<eGDTextureStageCombineModeParam>(3));
+			});
+			CheckConstants("TexStageCombine(source)", [&] {
+				d.TexStageCombine(static_cast<eGDTextureStageCombineSourceParamType>(1),
+				                  static_cast<eGDTextureStageCombineSourceParam>(3));
+			});
+			CheckConstants("TexStageCombine(operand)", [&] {
+				d.TexStageCombine(static_cast<eGDTextureStageCombineOperandType>(4), static_cast<eGDBlend>(3));
+			});
+			CheckConstants("TexStageCombine(scale)", [&] {
+				d.TexStageCombine(static_cast<eGDTextureStageCombineScaleParamType>(0),
+				                  static_cast<eGDTextureStageCombineScaleParam>(2));
+			});
+			CheckConstants("SetCombiner", [&] {
+				cGDCombiner combiner{};
+				combiner.RGBCombineMode = 4;
+				combiner.RGBParams[2].SourceType = 2;
+				d.SetCombiner(combiner, 1);
+			});
+			CheckConstants("TexStage(1) setters", [&] { d.TexStage(1); d.TexEnv(0, 0, 3); d.TexStage(0); });
+			CheckConstants("SetTexture(none)", [&] { d.SetTexture(0, 0); });
+			CheckConstants("SetTexture", [&] { d.SetTexture(texture, 0); });
+			CheckConstants("Disable(Texture2D)", [&] { d.Disable(kGDCapability_Texture2D); });
+			CheckConstants("Enable(Texture2D)", [&] { d.Enable(kGDCapability_Texture2D); });
+			CheckConstants("vertex format without normals", [&] { drawNormals = false; });
+			CheckConstants("vertex format with normals", [&] { drawNormals = true; });
+
+			// Identical draws rebuild and upload nothing; losing the bindings does not force an upload either.
+			uint8_t const buffer = d.activeTransformBuffer;
+			DrawFull();
+			DrawFull();
+			assert(!d.constantsDirty && !d.normalMatrixDirty && d.activeTransformBuffer == buffer);
+			d.InvalidateD3D11StateCache();
+			DrawFull();
+			assert(d.activeTransformBuffer == buffer && d.appliedTransformBuffer == d.transformBuffers[buffer].Get());
+
+			d.DeleteTextures(1, &texture);
+			d.Disable(kGDCapability_Fog);
+			d.ColorMultiplier(1.0f, 1.0f, 1.0f);
+			d.AlphaMultiplier(1.0f);
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
@@ -454,6 +580,7 @@ namespace nSCD3D11 {
 			FrameCallbackCleanupOnlyWhenNeeded();
 			TextureUploadsHonorRowPitch();
 			NormalMatrixFollowsModelView();
+			ConstantsFollowEverySetter();
 			return 0;
 		}
 	};

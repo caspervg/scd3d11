@@ -16,10 +16,12 @@
 namespace nSCD3D11
 {
 	void cGDriver::EnableLighting(bool enabled) {
+		constantsDirty = true;
 		lightingEnabled = enabled;
 	}
 
 	void cGDriver::EnableLight(uint32_t light, bool enabled) {
+		constantsDirty = true;
 		if (light >= sizeof(lightsEnabled) / sizeof(lightsEnabled[0])) {
 			SetLastError(DriverError::OUT_OF_RANGE);
 			return;
@@ -28,6 +30,7 @@ namespace nSCD3D11
 	}
 
 	void cGDriver::LightModelAmbient(float red, float green, float blue, float alpha) {
+		constantsDirty = true;
 		globalAmbient[0] = red;
 		globalAmbient[1] = green;
 		globalAmbient[2] = blue;
@@ -35,6 +38,7 @@ namespace nSCD3D11
 	}
 
 	void cGDriver::LightColor(uint32_t light, uint32_t parameter, float const* color) {
+		constantsDirty = true;
 		if (light >= 8 || parameter > 2 || color == nullptr) {
 			SetLastError(light >= 8 ? DriverError::OUT_OF_RANGE : DriverError::INVALID_VALUE);
 			return;
@@ -47,12 +51,14 @@ namespace nSCD3D11
 	void cGDriver::LightColor(
 		uint32_t light, float const* ambient, float const* diffuse, float const* specular)
 	{
+		constantsDirty = true;
 		if (ambient) LightColor(light, 0, ambient);
 		if (diffuse) LightColor(light, 1, diffuse);
 		if (specular) LightColor(light, 2, specular);
 	}
 
 	void cGDriver::LightPosition(uint32_t light, float const* position) {
+		constantsDirty = true;
 		if (light >= 8 || position == nullptr) {
 			SetLastError(light >= 8 ? DriverError::OUT_OF_RANGE : DriverError::INVALID_VALUE);
 			return;
@@ -61,6 +67,7 @@ namespace nSCD3D11
 	}
 
 	void cGDriver::LightDirection(uint32_t light, float const* direction) {
+		constantsDirty = true;
 		if (light >= 8 || direction == nullptr) {
 			SetLastError(light >= 8 ? DriverError::OUT_OF_RANGE : DriverError::INVALID_VALUE);
 			return;
@@ -70,6 +77,7 @@ namespace nSCD3D11
 	}
 
 	void cGDriver::MaterialColor(uint32_t parameter, float const* color) {
+		constantsDirty = true;
 		if (parameter > 4 || color == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
@@ -90,6 +98,7 @@ namespace nSCD3D11
 		float const* emission,
 		float shininess)
 	{
+		constantsDirty = true;
 		if (ambient) memcpy(materialAmbient, ambient, sizeof(materialAmbient));
 		if (diffuse) memcpy(materialDiffuse, diffuse, sizeof(materialDiffuse));
 		if (specular) memcpy(materialSpecular, specular, sizeof(materialSpecular));

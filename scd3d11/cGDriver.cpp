@@ -89,6 +89,8 @@ namespace nSCD3D11 {
 	                       matrices{},
 	                       normalMatrix{},
 	                       normalMatrixDirty(true),
+	                       constantsDirty(true),
+	                       constantsFlagInputs(0),
 	                       extensionVertexCursor(0),
 	                       extensionVertexStart(0),
 	                       extensionVertexGeneration(0),
@@ -270,6 +272,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::AlphaFunc(GLenum func, GLclampf ref) {
+		constantsDirty = true;
 		if (D3D11Comparison(func) == 0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
@@ -287,6 +290,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, uint32_t gdFogParam) {
+		constantsDirty = true;
 		if (gdFogParamType == 0 && gdFogParam <= 2) {
 			fogMode = static_cast<uint8_t>(gdFogParam);
 			return;
@@ -302,6 +306,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const *params) {
+		constantsDirty = true;
 		if (params == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
@@ -330,16 +335,19 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::ColorMultiplier(float r, float g, float b) {
+		constantsDirty = true;
 		colorMultipliers[0] = r;
 		colorMultipliers[1] = g;
 		colorMultipliers[2] = b;
 	}
 
 	void cGDriver::AlphaMultiplier(float a) {
+		constantsDirty = true;
 		colorMultipliers[3] = a;
 	}
 
 	void cGDriver::EnableVertexColors(bool ambient, bool diffuse) {
+		constantsDirty = true;
 		ambientVertexColors = ambient;
 		diffuseVertexColors = diffuse;
 	}
@@ -353,6 +361,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::LoadMatrix(GLfloat const *m) {
+		constantsDirty = true;
 		if (m != nullptr) {
 			memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
 			if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
@@ -360,6 +369,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::LoadIdentity(void) {
+		constantsDirty = true;
 		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
 		memset(matrices[activeMatrixMode], 0, sizeof(matrices[activeMatrixMode]));
 		matrices[activeMatrixMode][0] = matrices[activeMatrixMode][5] =
@@ -367,6 +377,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Enable(GLenum gdCap) {
+		constantsDirty = true;
 		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
@@ -379,6 +390,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Disable(GLenum gdCap) {
+		constantsDirty = true;
 		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;

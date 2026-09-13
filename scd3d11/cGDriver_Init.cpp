@@ -232,6 +232,7 @@ namespace nSCD3D11 {
 		indexBufferCache.clear();
 		vertexBufferCache.clear();
 		for (auto &buffer: transformBuffers) buffer.Reset();
+		constantBufferCache.clear();
 		activeTransformBuffer = 0;
 		inputLayout.Reset();
 		flatPixelShader.Reset();

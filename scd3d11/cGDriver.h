@@ -250,7 +250,13 @@ namespace nSCD3D11 {
 		std::vector<uint32_t> sourceIndexScratch;
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
+		// The constants last uploaded to transformBuffers[activeTransformBuffer]. Losing the binding
+		// (ClearState) keeps them valid; only destroying the buffers clears this.
 		std::vector<uint8_t> constantBufferCache;
+		// Set by every setter feeding the shader constants.
+		bool constantsDirty;
+		// Texture and lighting flag inputs the cached constants were built with.
+		uint32_t constantsFlagInputs;
 		std::vector<uint8_t> extensionVertexData;
 		uint32_t extensionVertexCursor;
 		uint32_t extensionVertexStart;

@@ -276,6 +276,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexEnv(uint32_t target, uint32_t parameter, int32_t value) {
+        constantsDirty = true;
         if (target != 0 || parameter != 0 || value < 0 || value > 5) {
             SetLastError(DriverError::INVALID_VALUE);
             return;
@@ -285,6 +286,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexEnv(uint32_t target, uint32_t parameter, float const *value) {
+        constantsDirty = true;
         if (target != 0 || parameter != 1 || value == nullptr) {
             SetLastError(DriverError::INVALID_VALUE);
             return;
@@ -322,6 +324,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageCoord(uint32_t source) {
+        constantsDirty = true;
         textureStages[activeTextureStage].coordinateSource = source;
         if ((source & 0xfffffff8) != 0 && (source & 0xfffffff8) != 0x10) {
             Log(LogCategory::Unsupported, "texture coordinate source 0x%08X requested", source);
@@ -329,6 +332,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageMatrix(float const *matrix, uint32_t rows, uint32_t columns, uint32_t flags) {
+        constantsDirty = true;
         float *destination = textureStages[activeTextureStage].matrix;
         memset(destination, 0, sizeof(textureStages[activeTextureStage].matrix));
         if (matrix == nullptr) {
@@ -346,6 +350,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineParamType parameter, eGDTextureStageCombineModeParam value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const mode = static_cast<uint32_t>(value);
         if (parameterIndex >= 2 || mode >= 6) {
@@ -358,6 +363,7 @@ namespace nSCD3D11 {
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineSourceParamType parameter,
                                    eGDTextureStageCombineSourceParam value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const source = static_cast<uint32_t>(value);
         if (parameterIndex >= 8 || source >= 4) {
@@ -376,6 +382,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineOperandType parameter, eGDBlend value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const blend = static_cast<uint32_t>(value);
         if (parameterIndex >= 8 || blend < 2 || blend > 5) {
@@ -395,6 +402,7 @@ namespace nSCD3D11 {
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineScaleParamType parameter,
                                    eGDTextureStageCombineScaleParam value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const scale = static_cast<uint32_t>(value);
         if (parameterIndex >= 2 || scale >= 3) {
@@ -564,6 +572,7 @@ namespace nSCD3D11 {
 	}
 
     void cGDriver::SetCombiner(cGDCombiner const &combiner, uint32_t stage) {
+        constantsDirty = true;
         if (stage >= 2) {
             SetLastError(DriverError::OUT_OF_RANGE);
             return;

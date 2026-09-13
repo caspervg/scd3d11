@@ -546,59 +546,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return false;
 		}
 
-		DriverConstants constants{};
-		memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
-		memcpy(constants.projection, matrices[1], sizeof(constants.projection));
-		if (normalMatrixDirty) {
-			MakeNormalMatrix(matrices[MODEL_VIEW], normalMatrix);
-			normalMatrixDirty = false;
-		}
-		memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
-		memcpy(constants.colorMultiplier, colorMultipliers, sizeof(constants.colorMultiplier));
-		constants.alphaFunction = alphaFunction;
-		constants.alphaReference = alphaReference;
-		if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
-		memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
-		memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
-		memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
-		memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
-		memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
-		memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
-		memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
-		memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
-		memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
-		constants.materialParameters[0] = materialShininess;
-		for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
-			TextureStageState const &source = textureStages[stageIndex];
-			DriverConstants::StageConstants &destination = constants.stages[stageIndex];
-			memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
-			memcpy(destination.environmentColor, source.environmentColor, sizeof(source.environmentColor));
-			destination.modes[0] = source.environmentMode;
-			destination.modes[1] = source.rgbMode;
-			destination.modes[2] = source.alphaMode;
-			destination.modes[3] = source.rgbScale;
-			destination.parameters0[0] = source.alphaScale;
-			for (uint32_t parameter = 0; parameter < 3; ++parameter) {
-				destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
-				destination.parameters1[parameter] = source.alphaParameters[parameter];
-			}
-			destination.parameters1[3] = source.coordinateSource;
-		}
-		if (lightingEnabled && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) {
-			constants.flags |= 4;
-			if (ambientVertexColors) constants.flags |= 32;
-			if (diffuseVertexColors) constants.flags |= 64;
-			for (uint32_t light = 0; light < 8; ++light)
-				if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
-		}
-		if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
-		memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
-		constants.fogParameters[0] = fogDensity;
-		constants.fogParameters[1] = fogStart;
-		constants.fogParameters[2] = fogEnd;
-		constants.fogParameters[3] = static_cast<float>(fogMode);
 		ID3D11ShaderResourceView *textureViews[2]{};
 		ID3D11SamplerState *samplers[2]{defaultSampler.Get(), defaultSampler.Get()};
+		uint32_t flagInputs = 0;
 		for (uint32_t stage = 0; stage < 2; ++stage) {
 			if (!textureStageEnabled[stage]) continue;
 			auto iterator = textures.find(boundTextures[stage]);
@@ -606,7 +556,84 @@ float4 PSMain(PSInput input) : SV_TARGET
 				continue;
 			textureViews[stage] = iterator->second.view.Get();
 			samplers[stage] = textureStages[stage].sampler.Get();
-			constants.flags |= 1u << stage;
+			flagInputs |= 1u << stage;
+		}
+		bool const lit = lightingEnabled && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0;
+		if (lit) flagInputs |= 4;
+
+		// Setters mark the constants dirty; the only other inputs are bound textures and whether the vertex
+		// format carries normals, which can change without a setter and are compared here instead.
+		if (constantsDirty || flagInputs != constantsFlagInputs || constantBufferCache.size() != sizeof(DriverConstants)) {
+			DriverConstants constants{};
+			constants.flags = flagInputs;
+			memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
+			memcpy(constants.projection, matrices[1], sizeof(constants.projection));
+			if (normalMatrixDirty) {
+				MakeNormalMatrix(matrices[MODEL_VIEW], normalMatrix);
+				normalMatrixDirty = false;
+			}
+			memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
+			memcpy(constants.colorMultiplier, colorMultipliers, sizeof(constants.colorMultiplier));
+			constants.alphaFunction = alphaFunction;
+			constants.alphaReference = alphaReference;
+			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
+			memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
+			memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
+			memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
+			memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
+			memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+			memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
+			memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
+			memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
+			memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
+			constants.materialParameters[0] = materialShininess;
+			for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
+				TextureStageState const &source = textureStages[stageIndex];
+				DriverConstants::StageConstants &destination = constants.stages[stageIndex];
+				memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
+				memcpy(destination.environmentColor, source.environmentColor, sizeof(source.environmentColor));
+				destination.modes[0] = source.environmentMode;
+				destination.modes[1] = source.rgbMode;
+				destination.modes[2] = source.alphaMode;
+				destination.modes[3] = source.rgbScale;
+				destination.parameters0[0] = source.alphaScale;
+				for (uint32_t parameter = 0; parameter < 3; ++parameter) {
+					destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
+					destination.parameters1[parameter] = source.alphaParameters[parameter];
+				}
+				destination.parameters1[3] = source.coordinateSource;
+			}
+			if (lit) {
+				if (ambientVertexColors) constants.flags |= 32;
+				if (diffuseVertexColors) constants.flags |= 64;
+				for (uint32_t light = 0; light < 8; ++light)
+					if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
+			}
+			if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
+			memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
+			constants.fogParameters[0] = fogDensity;
+			constants.fogParameters[1] = fogStart;
+			constants.fogParameters[2] = fogEnd;
+			constants.fogParameters[3] = static_cast<float>(fogMode);
+
+			if (constantBufferCache.size() != sizeof(constants) ||
+			    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
+				activeTransformBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
+				D3D11_MAPPED_SUBRESOURCE mapping{};
+				HRESULT const result = d3dContext->Map(
+					transformBuffers[activeTransformBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+				if (FAILED(result)) {
+					LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
+					return false;
+				}
+				memcpy(mapping.pData, &constants, sizeof(constants));
+				d3dContext->Unmap(transformBuffers[activeTransformBuffer].Get(), 0);
+				constantBufferCache.assign(
+					reinterpret_cast<uint8_t const *>(&constants),
+					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
+			}
+			constantsDirty = false;
+			constantsFlagInputs = flagInputs;
 		}
 		static bool const gridDebug = std::strstr(GetCommandLineA(), "-GridDebug") != nullptr;
 		if (gridDebug && textureStageEnabled[0] &&
@@ -630,22 +657,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 					lastGridLog = now;
 				}
 			}
-		}
-		if (constantBufferCache.size() != sizeof(constants) ||
-		    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
-			activeTransformBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
-			D3D11_MAPPED_SUBRESOURCE mapping{};
-			HRESULT const result = d3dContext->Map(
-				transformBuffers[activeTransformBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
-			if (FAILED(result)) {
-				LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
-				return false;
-			}
-			memcpy(mapping.pData, &constants, sizeof(constants));
-			d3dContext->Unmap(transformBuffers[activeTransformBuffer].Get(), 0);
-			constantBufferCache.assign(
-				reinterpret_cast<uint8_t const *>(&constants),
-				reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
 		}
 
 		UINT const stride = sizeof(D3D11Vertex);
