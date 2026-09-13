@@ -513,7 +513,10 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::SetViewport(int32_t x, int32_t y, int32_t width, int32_t height) {
-		if (x < 0 || y < 0 || width < 0 || height < 0) {
+		// The scissor rectangle's right and bottom edges must stay representable.
+		if (x < 0 || y < 0 || width < 0 || height < 0 ||
+		    !RangeFits(static_cast<uint32_t>(x), static_cast<uint32_t>(width), INT32_MAX) ||
+		    !RangeFits(static_cast<uint32_t>(y), static_cast<uint32_t>(height), INT32_MAX)) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}

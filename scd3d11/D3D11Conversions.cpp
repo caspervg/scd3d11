@@ -17,6 +17,13 @@
 #include <cstring>
 
 namespace nSCD3D11 {
+    bool SourceSpanFits(void const *base, uint64_t rows, uint64_t rowPitch, uint64_t lastRowBytes) {
+        if (base == nullptr || rows == 0) return false;
+        uint64_t const available = static_cast<uint64_t>(UINTPTR_MAX - reinterpret_cast<uintptr_t>(base)) + 1;
+        if (rowPitch != 0 && rows - 1 > available / rowPitch) return false;
+        return RangeFits((rows - 1) * rowPitch, lastRowBytes, available);
+    }
+
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count) {
         size_t const indexBytes = format == DXGI_FORMAT_R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t);
         GeometryCacheKey key;

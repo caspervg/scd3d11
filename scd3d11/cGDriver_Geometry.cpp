@@ -495,14 +495,17 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return false;
 		}
 
-		uint64_t const byteOffset = static_cast<uint64_t>(first) * interleavedStride;
+		// Validate the whole strided source span, first vertex through the last one's consumed bytes,
+		// before anything reads it.
 		uint64_t const byteSize = static_cast<uint64_t>(count) * sizeof(D3D11Vertex);
-		if (byteOffset > (std::numeric_limits<size_t>::max)() || byteSize > (std::numeric_limits<uint32_t>::max)()) {
+		if (byteSize > (std::numeric_limits<uint32_t>::max)() ||
+		    !SourceSpanFits(interleavedPointer, static_cast<uint64_t>(first) + count, interleavedStride,
+		                    RZVertexFormatStride(interleavedFormat))) {
 			Log(LogCategory::Unsupported, "vertex upload exceeds 32-bit limits");
 			return false;
 		}
 
-		uint8_t const *source = interleavedPointer + byteOffset;
+		uint8_t const *source = interleavedPointer + static_cast<size_t>(first) * interleavedStride;
 		GeometryCacheKey const key = VertexCacheKey(interleavedFormat, interleavedStride, source, count);
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;

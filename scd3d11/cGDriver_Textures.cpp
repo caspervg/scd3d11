@@ -452,7 +452,8 @@ namespace nSCD3D11 {
                           (static_cast<uint64_t>(sourceFormat) << 32) | sourceType);
         uint32_t const mipWidth = D3D11MipDimension(resource.width, static_cast<uint32_t>(level));
         uint32_t const mipHeight = D3D11MipDimension(resource.height, static_cast<uint32_t>(level));
-        if (static_cast<uint32_t>(xOffset + width) > mipWidth || static_cast<uint32_t>(yOffset + height) > mipHeight) {
+        if (!RangeFits(static_cast<uint32_t>(xOffset), static_cast<uint32_t>(width), mipWidth) ||
+            !RangeFits(static_cast<uint32_t>(yOffset), static_cast<uint32_t>(height), mipHeight)) {
             SetLastError(DriverError::INVALID_VALUE);
             return;
         }
@@ -481,12 +482,20 @@ namespace nSCD3D11 {
                 SetLastError(DriverError::NOT_SUPPORTED);
                 return;
             }
+            uint64_t const blockBytes = D3D11TextureRowPitch(resource.format, 1);
+            uint64_t const sourcePitch = (static_cast<uint64_t>(sourceWidth) + 3) / 4 * blockBytes;
+            if (sourcePitch > UINT32_MAX ||
+                !SourceSpanFits(pixels, (static_cast<uint64_t>(height) + 3) / 4, sourcePitch,
+                                D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width)))) {
+                SetLastError(DriverError::INVALID_VALUE);
+                return;
+            }
             // D3D11 wants block-compressed update boxes expressed in whole blocks. The 2x2 and
             // 1x1 tail mips of a BC chain still occupy one full block, so round the right and
             // bottom edges up instead of passing the logical mip size.
             box.right = (box.right + 3) & ~3u;
             box.bottom = (box.bottom + 3) & ~3u;
-            pitch = D3D11TextureRowPitch(resource.format, sourceWidth);
+            pitch = static_cast<uint32_t>(sourcePitch);
         } else {
 			uint32_t const sourcePixelBytes = TextureSourcePixelBytes(sourceFormat, sourceType);
             // Type 13 is GL_UNSIGNED_SHORT_4_4_4_4_REV per the original driver's typeMap:
@@ -506,7 +515,9 @@ namespace nSCD3D11 {
 				return;
 			}
 			uint64_t const sourcePitch64 = static_cast<uint64_t>(sourceWidth) * sourcePixelBytes;
-			if (sourcePitch64 > UINT32_MAX) {
+			if (sourcePitch64 > UINT32_MAX ||
+			    !SourceSpanFits(pixels, static_cast<uint32_t>(height), sourcePitch64,
+			                    static_cast<uint64_t>(width) * sourcePixelBytes)) {
 				SetLastError(DriverError::INVALID_VALUE);
 				return;
 			}

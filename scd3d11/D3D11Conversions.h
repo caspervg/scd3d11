@@ -31,6 +31,16 @@ namespace nSCD3D11 {
         return targetHeight - y - height;
     }
 
+    // Whether [offset, offset + size) lies within [0, limit), without overflowing. Negative signed
+    // arguments convert to huge values and fail.
+    constexpr bool RangeFits(uint64_t offset, uint64_t size, uint64_t limit) {
+        return size <= limit && offset <= limit - size;
+    }
+
+    // Whether source rows starting at base stay inside the address space: every row but the last
+    // advances rowPitch bytes, and lastRowBytes are read from the last one.
+    bool SourceSpanFits(void const *base, uint64_t rows, uint64_t rowPitch, uint64_t lastRowBytes);
+
     struct D3D11Vertex {
         float position[3];
         float normal[3];

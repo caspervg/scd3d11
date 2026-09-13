@@ -110,8 +110,9 @@ namespace nSCD3D11 {
 		uint32_t region, int32_t destinationX, int32_t destinationY, int32_t width, int32_t height,
 		int32_t sourceX, int32_t sourceY) {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
-		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
-		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
+		    sourceX < 0 || sourceY < 0 ||
+		    !RangeFits(destinationX, width, windowWidth) || !RangeFits(destinationY, height, windowHeight) ||
+		    !RangeFits(sourceX, width, windowWidth) || !RangeFits(sourceY, height, windowHeight)) {
 			static bool logged = false;
 			if (!logged) {
 				Log(LogCategory::Unsupported, "ReadBufferRegion rejected: region %u dst %d,%d src %d,%d %dx%d window %dx%d",
@@ -157,8 +158,9 @@ namespace nSCD3D11 {
 		uint32_t region, int32_t sourceX, int32_t sourceY, int32_t width, int32_t height,
 		int32_t destinationX, int32_t destinationY) {
 		if (!IsBufferRegion(region) || width <= 0 || height <= 0 || destinationX < 0 || destinationY < 0 ||
-		    sourceX < 0 || sourceY < 0 || destinationX + width > windowWidth || destinationY + height > windowHeight ||
-		    sourceX + width > windowWidth || sourceY + height > windowHeight) {
+		    sourceX < 0 || sourceY < 0 ||
+		    !RangeFits(destinationX, width, windowWidth) || !RangeFits(destinationY, height, windowHeight) ||
+		    !RangeFits(sourceX, width, windowWidth) || !RangeFits(sourceY, height, windowHeight)) {
 			static bool logged = false;
 			if (!logged) {
 				Log(LogCategory::Unsupported, "DrawBufferRegion rejected: region %u src %d,%d dst %d,%d %dx%d window %dx%d",

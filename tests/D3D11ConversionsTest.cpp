@@ -15,6 +15,19 @@ int main() {
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 100) == 980);
     assert(nSCD3D11::D3D11TopLeftY(1080, 980, 100) == 0);
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 1080) == 0);
+    using nSCD3D11::RangeFits;
+    assert(RangeFits(INT32_MAX - 1, 1, INT32_MAX) && !RangeFits(INT32_MAX, 1, INT32_MAX));
+    assert(RangeFits(0, UINT32_MAX, UINT32_MAX) && !RangeFits(1, UINT32_MAX, UINT32_MAX));
+    assert(!RangeFits(UINT32_MAX, 1, UINT32_MAX) && !RangeFits(2, 1, 1));
+    assert(!RangeFits(int32_t{-1}, 1, INT32_MAX));
+    using nSCD3D11::SourceSpanFits;
+    void const *const top = reinterpret_cast<void const *>(UINTPTR_MAX - 99);
+    assert(SourceSpanFits(top, 1, 0, 100) && !SourceSpanFits(top, 1, 0, 101));
+    assert(SourceSpanFits(top, 2, 50, 50) && !SourceSpanFits(top, 2, 50, 51));
+    assert(!SourceSpanFits(top, 0x100000000ull, UINT32_MAX, 1));
+    assert(!SourceSpanFits(reinterpret_cast<void const *>(uintptr_t{1}), 5, 0x40000000u, 16));
+    assert(!SourceSpanFits(nullptr, 1, 0, 1));
+
     // Split input must go through one streaming state, not digests chained as seeds.
     uint8_t const hashInput[] = {1, 2, 3, 4};
     XXH3_state_t hashState;

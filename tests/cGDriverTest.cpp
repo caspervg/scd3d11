@@ -163,10 +163,63 @@ namespace nSCD3D11 {
 			assert(UploadedIndices(sizeof(fanList)) == Bytes(fanList, 6));
 		}
 
+		bool Rejected() {
+			bool const invalid = d.lastError == cGDriver::DriverError::INVALID_VALUE;
+			d.lastError = cGDriver::DriverError::OK;
+			return invalid;
+		}
+
+		// Every input below would fault if the driver read the source memory it points at.
+		void OversizedInputsFailBeforeReading() {
+			void *const noAccess = VirtualAlloc(nullptr, 4096, MEM_RESERVE, PAGE_NOACCESS);
+			void const *const nearTop = reinterpret_cast<void const *>(uintptr_t{0xFFFFF000u});
+			assert(noAccess != nullptr);
+			d.lastError = cGDriver::DriverError::OK;
+
+			uint32_t const texture = static_cast<uint32_t>(d.CreateTexture(1, 4, 4, 1, 0));
+			d.LoadTextureLevel(texture, 0, INT32_MAX, 0, 2, 2, 3, 1, 0, noAccess);
+			assert(Rejected());
+			d.LoadTextureLevel(texture, 0, 0, INT32_MAX, 2, 2, 3, 1, 0, noAccess);
+			assert(Rejected());
+			// A row pitch that still fits 32 bits, but whose second row lies past the address space.
+			d.LoadTextureLevel(texture, 0, 0, 0, 2, 2, 3, 1, 0x3FFFFFFF, nearTop);
+			assert(Rejected());
+			if (d.supportedExtensions.textureCompression) {
+				uint32_t const compressed = static_cast<uint32_t>(d.CreateTexture(5, 8, 8, 1, 0));
+				d.LoadTextureLevel(compressed, 0, 0, 0, 8, 8, 7, 0, 0x7FFFFFFC, nearTop);
+				assert(Rejected());
+			}
+
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0x40000000, noAccess);
+			d.DrawArrays(0, 0, 5);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, nearTop);
+			d.DrawArrays(0, 0, 1000);
+			d.DrawArrays(0, INT32_MAX, 3);
+			uint32_t const indices[]{0, 1, UINT32_MAX - 1};
+			d.DrawElements(0, 3, 5, indices);
+
+			int32_t before[4]{};
+			d.GetViewport(before);
+			d.SetViewport(INT32_MAX, 0, 10, 10);
+			assert(Rejected());
+			d.SetViewport(0, INT32_MAX - 5, 10, 10);
+			assert(Rejected());
+			int32_t after[4]{};
+			d.GetViewport(after);
+			assert(memcmp(before, after, sizeof(before)) == 0);
+			d.SetViewport(INT32_MAX - 10, 0, 10, 10);
+			assert(!Rejected());
+			d.SetViewport();
+
+			d.DeleteTextures(1, &texture);
+			VirtualFree(noAccess, 0, MEM_RELEASE);
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();
+			OversizedInputsFailBeforeReading();
 			return 0;
 		}
 	};
