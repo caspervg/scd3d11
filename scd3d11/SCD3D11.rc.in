@@ -1,0 +1,29 @@
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @SCD3D11_VERSION_MAJOR@,@SCD3D11_VERSION_MINOR@,@SCD3D11_VERSION_PATCH@,0
+PRODUCTVERSION  @SCD3D11_VERSION_MAJOR@,@SCD3D11_VERSION_MINOR@,@SCD3D11_VERSION_PATCH@,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_DLL
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "SCD3D11 Direct3D 11 driver for SimCity 4"
+            VALUE "FileVersion", "@SCD3D11_VERSION_STRING@"
+            VALUE "InternalName", "SCD3D11"
+            VALUE "LegalCopyright", "GNU LGPL v2.1 or later"
+            VALUE "OriginalFilename", "SCD3D11.dll"
+            VALUE "ProductName", "SCD3D11"
+            VALUE "ProductVersion", "@SCD3D11_VERSION_STRING@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

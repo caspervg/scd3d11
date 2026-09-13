@@ -19,6 +19,8 @@ jobs:
       fail-fast: false
       matrix:
         configuration: [ "Debug", "Release" ]
+    env:
+      VERSION_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.0.0-dev' }}
 
     steps:
     - uses: actions/checkout@v4
@@ -32,7 +34,9 @@ jobs:
         arch: x86
 
     - name: Configure
-      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
+      run: >-
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
+        -DSCD3D11_VERSION_TAG=${{ env.VERSION_TAG }}
 
     - name: Build
       run: cmake --build build
@@ -40,11 +44,35 @@ jobs:
     - name: Test
       run: ctest --test-dir build --output-on-failure
 
+    - uses: actions/setup-python@v5
+      if: matrix.configuration == 'Release'
+      with:
+        python-version: "3.12"
+
+    - name: Generate and validate SBOMs
+      if: matrix.configuration == 'Release'
+      shell: bash
+      run: |
+        python scripts/generate_sbom.py "$VERSION_TAG" build/SCD3D11.dll build
+        python -m pip install --disable-pip-version-check -q spdx-tools "cyclonedx-python-lib[json-validation]"
+        pyspdxtools -i build/SCD3D11.spdx.json
+        python - <<'EOF'
+        import sys
+        from cyclonedx.schema import SchemaVersion
+        from cyclonedx.validation.json import JsonStrictValidator
+        error = JsonStrictValidator(SchemaVersion.V1_6).validate_str(open("build/SCD3D11.cdx.json").read())
+        sys.exit(error and f"CycloneDX SBOM is invalid: {error}")
+        EOF
+
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: SCD3D11-${{ matrix.configuration }}
-        path: build/SCD3D11.dll
+        # SBOMs only exist for Release; the DLL is still required.
+        path: |
+          build/SCD3D11.dll
+          build/SCD3D11.*.json
+        if-no-files-found: error
 
   # Pushing a tag such as v1.2.0 publishes the tested Release build; v1.2.0-rc1 becomes a prerelease.
   release:
@@ -67,7 +95,8 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: |
         archive="SCD3D11-${GITHUB_REF_NAME}.zip"
-        zip -j "$archive" dist/SCD3D11.dll README.md LICENSE
+        zip -j "$archive" dist/SCD3D11.dll dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json README.md LICENSE
         prerelease=""
         if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
-        gh release create "$GITHUB_REF_NAME" "$archive" --verify-tag --generate-notes $prerelease
+        gh release create "$GITHUB_REF_NAME" "$archive" dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json \
+          --verify-tag --generate-notes $prerelease
