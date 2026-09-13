@@ -233,6 +233,7 @@ namespace nSCD3D11 {
 		windowClass.style = CS_OWNDC;
 		windowClass.lpfnWndProc = DriverWindowProcedure;
 		windowClass.hInstance = GetModuleHandleA(nullptr);
+		windowClass.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
 		windowClass.lpszClassName = kWindowClassName;
 
 		if (!RegisterClassA(&windowClass) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {

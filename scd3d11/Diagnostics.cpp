@@ -221,9 +221,18 @@ namespace nSCD3D11
 			ULONGLONG stalledFrame = 0;
 			ULONGLONG nextReport = 0;
 			unsigned reports = 0;
+			// SC4 loads plugins on the render thread after its first Flush; that is not a stall. Arm only once
+			// frames have kept coming for a while (10 half-second ticks).
+			ULONGLONG previousFrame = 0;
+			unsigned framesFlowing = 0;
 			while (WaitForSingleObject(stop, 500) == WAIT_TIMEOUT) {
 				ULONGLONG const frame = lastRenderFrame.load();
 				if (frame == 0) continue;
+				if (framesFlowing < 10) {
+					framesFlowing = frame != previousFrame ? framesFlowing + 1 : 0;
+					previousFrame = frame;
+					continue;
+				}
 				ULONGLONG const now = GetTickCount64();
 				if (stalledFrame != 0 && frame != stalledFrame) {
 					Log(LogCategory::Window, "watchdog: frames resumed after %llu ms",

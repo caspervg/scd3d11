@@ -311,9 +311,11 @@ namespace nSCD3D11 {
 
 		bool const windowed = presentationMode == PresentationMode::Windowed;
 		RECT const monitorRectangle = PrimaryMonitorRectangle();
+		// Visible from creation, like the stock DirectX driver (0x10CF0000): SC4 loads plugins on this thread
+		// before it shows the window itself, and a hidden window leaves no taskbar entry for that whole time.
 		DWORD const style = windowed
-			                        ? WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN
-			                        : WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+			                        ? WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN
+			                        : WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
 		DWORD const extendedStyle = windowed ? WS_EX_APPWINDOW | WS_EX_WINDOWEDGE : WS_EX_APPWINDOW;
 		RECT windowRectangle = presentationMode == PresentationMode::BorderlessFullscreen
 			                       ? monitorRectangle

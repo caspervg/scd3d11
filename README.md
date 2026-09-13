@@ -150,7 +150,8 @@ recreated each session.
 `window` records focus, activation, size, visibility and system-command messages on the game window (Alt+Tab and the
 Windows key included), and `swapchain` records changes in the Present result, paused presentation and the exclusive
 fullscreen state. A watchdog logs `watchdog: no frame for N ms` with the render thread's current phase, instruction
-pointer and likely return addresses when no frame completes for 5 seconds, and `watchdog: frames resumed` afterwards. Debug builds also forward D3D11 debug-layer messages and record each newly observed
+pointer and likely return addresses when no frame completes for 5 seconds once rendering is under way (the startup
+plugin load is ignored), and `watchdog: frames resumed` afterwards. Debug builds also forward D3D11 debug-layer messages and record each newly observed
 render-state, vertex-format and texture-format combination, tagged `state`.
 
 ## Third-party components
