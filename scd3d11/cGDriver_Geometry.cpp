@@ -386,8 +386,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	bool cGDriver::UseCachedBuffer(
 		GeometryCacheSegment *segments,
-		std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
-		uint64_t key,
+		GeometryCache &cache,
+		GeometryCacheKey const &key,
 		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 		uint32_t &offset,
 		uint32_t bindFlags) {
@@ -406,8 +406,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 	bool cGDriver::UploadCachedBuffer(
 		GeometryCacheSegment *segments,
 		uint8_t &activeSegment,
-		std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
-		uint64_t key,
+		GeometryCache &cache,
+		GeometryCacheKey const &key,
 		uint32_t requiredSize,
 		uint32_t bindFlags,
 		void const *data,
@@ -436,7 +436,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment);
 			}
 
-			for (uint64_t oldKey: segment->keys) {
+			for (GeometryCacheKey const &oldKey: segment->keys) {
 				auto const old = cache.find(oldKey);
 				if (old != cache.end() && old->second.segment == activeSegment) cache.erase(old);
 			}
@@ -504,11 +504,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		uint8_t const *source = interleavedPointer + byteOffset;
-		uint64_t key = HashBytes(&interleavedFormat, sizeof(interleavedFormat));
-		key = HashBytes(&count, sizeof(count), key);
+		GeometryCacheKey key;
+		key.digest = HashBytes(nullptr, 0);
 		for (uint32_t i = 0; i < count; ++i) {
-			key = HashBytes(source + static_cast<size_t>(i) * interleavedStride, packedStride, key);
+			key.digest = HashBytes(source + static_cast<size_t>(i) * interleavedStride, packedStride, key.digest);
 		}
+		key.count = count;
+		key.format = interleavedFormat;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 
@@ -529,10 +531,10 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (indices.empty() || byteSize > (std::numeric_limits<uint32_t>::max)()) {
 			return false;
 		}
-		uint64_t key = HashBytes(indices.data(), static_cast<size_t>(byteSize));
 		return UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
-			key, static_cast<uint32_t>(byteSize), D3D11_BIND_INDEX_BUFFER, indices.data(),
+			IndexCacheKey(DXGI_FORMAT_R32_UINT, indices.data(), static_cast<uint32_t>(indices.size())),
+			static_cast<uint32_t>(byteSize), D3D11_BIND_INDEX_BUFFER, indices.data(),
 			dynamicIndexBuffer,
 			dynamicIndexBufferOffset);
 	}
@@ -740,12 +742,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (convertPrimitive) sourceIndexScratch.resize(static_cast<size_t>(count));
 		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
-		uint64_t indexKey = HashBytes(&type, sizeof(type));
 		if (type == 3) {
 			uint16_t const *source = static_cast<uint16_t const *>(indices);
 			for (int32_t i = 0; i < count; ++i) {
-				indexKey = (indexKey ^ source[i]) * 1099511628211ull;
-				indexKey = (indexKey ^ (source[i] >> 8)) * 1099511628211ull;
 				if (convertPrimitive) sourceIndexScratch[i] = source[i];
 				if (source[i] < minimumIndex) minimumIndex = source[i];
 				if (source[i] > maximumIndex) maximumIndex = source[i];
@@ -753,8 +752,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 		} else {
 			uint32_t const *source = static_cast<uint32_t const *>(indices);
 			for (int32_t i = 0; i < count; ++i) {
-				for (uint32_t shift = 0; shift < 32; shift += 8)
-					indexKey = (indexKey ^ ((source[i] >> shift) & 0xff)) * 1099511628211ull;
 				if (convertPrimitive) sourceIndexScratch[i] = source[i];
 				if (source[i] < minimumIndex) minimumIndex = source[i];
 				if (source[i] > maximumIndex) maximumIndex = source[i];
@@ -768,19 +765,19 @@ float4 PSMain(PSInput input) : SV_TARGET
 		INT const baseVertex = -static_cast<INT>(minimumIndex);
 
 		if (!convertPrimitive) {
+			DXGI_FORMAT const indexFormat = type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
 			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
 			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
 			if (indexBytes > UINT32_MAX) return;
-			uint32_t indexOffset = 0;
 			if (!UploadCachedBuffer(
 				    indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
-				    indexKey, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
-				    dynamicIndexBuffer, indexOffset) ||
+				    IndexCacheKey(indexFormat, indices, static_cast<uint32_t>(count)),
+				    static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+				    dynamicIndexBuffer, dynamicIndexBufferOffset) ||
 			    !BindGeometryPipeline(primitive)) {
 				return;
 			}
-			d3dContext->IASetIndexBuffer(
-				dynamicIndexBuffer.Get(), type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, indexOffset);
+			d3dContext->IASetIndexBuffer(dynamicIndexBuffer.Get(), indexFormat, dynamicIndexBufferOffset);
 			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, baseVertex);
 			return;
 		}

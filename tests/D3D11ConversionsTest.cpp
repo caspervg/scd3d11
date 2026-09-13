@@ -21,6 +21,18 @@ int main() {
     assert(splitHash == nSCD3D11::HashBytes(hashInput, sizeof(hashInput)));
     assert(splitHash != nSCD3D11::HashBytes(hashInput, sizeof(hashInput) - 1));
 
+    uint32_t const wideIndices[] = {5, 0, 1};
+    uint16_t const narrowIndices[] = {5, 0, 0, 0, 1, 0};
+    nSCD3D11::GeometryCacheKey const wideKey = nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 3);
+    nSCD3D11::GeometryCacheKey const narrowKey = nSCD3D11::IndexCacheKey(DXGI_FORMAT_R16_UINT, narrowIndices, 6);
+    // Identical bytes, different interpretation.
+    assert(wideKey.digest == narrowKey.digest && !(wideKey == narrowKey));
+    assert(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 3));
+    assert(!(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 2)));
+    nSCD3D11::GeometryCacheKey generationKey = wideKey;
+    generationKey.generation = true;
+    assert(!(generationKey == wideKey));
+
     struct SourceVertex {
         float position[3];
         float normal[3];

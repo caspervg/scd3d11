@@ -72,8 +72,58 @@ namespace nSCD3D11 {
 			assert(Pixel(1, 1) == 0xff0000ff);
 		}
 
+		std::vector<uint8_t> ReadBuffer(ID3D11Buffer *buffer, uint32_t offset, uint32_t size) {
+			D3D11_BUFFER_DESC description{};
+			buffer->GetDesc(&description);
+			description.Usage = D3D11_USAGE_STAGING;
+			description.BindFlags = 0;
+			description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			ComPtr<ID3D11Buffer> staging;
+			assert(SUCCEEDED(d.d3dDevice->CreateBuffer(&description, nullptr, &staging)));
+			d.d3dContext->CopyResource(staging.Get(), buffer);
+			D3D11_MAPPED_SUBRESOURCE mapping{};
+			assert(SUCCEEDED(d.d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapping)));
+			uint8_t const *bytes = static_cast<uint8_t const *>(mapping.pData) + offset;
+			std::vector<uint8_t> result(bytes, bytes + size);
+			d.d3dContext->Unmap(staging.Get(), 0);
+			return result;
+		}
+
+		void ResetGeometryCache() {
+			for (auto &segment: d.indexBufferSegments) segment = {};
+			for (auto &segment: d.vertexBufferSegments) segment = {};
+			d.indexBufferCache.clear();
+			d.vertexBufferCache.clear();
+			d.activeIndexBufferSegment = d.activeVertexBufferSegment = 0;
+			d.indexBufferCacheHits = d.indexBufferCacheMisses = 0;
+		}
+
+		// A native 32-bit line list [0, 1] once hashed exactly like a converted fan uploading [5, 0, 1].
+		void IndexKeysDoNotAlias() {
+			ColorVertex vertices[6]{};
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
+			uint32_t const lineIndices[]{0, 1};
+			uint32_t const fanIndices[]{5, 0, 1};
+			for (bool lineFirst: {true, false}) {
+				ResetGeometryCache();
+				for (int draw = 0; draw < 2; ++draw) {
+					bool const line = (draw == 0) == lineFirst;
+					if (line) d.DrawElements(4, 2, 5, lineIndices);
+					else d.DrawElements(2, 3, 5, fanIndices);
+					uint32_t const *expected = line ? lineIndices : fanIndices;
+					uint32_t const bytes = (line ? 2u : 3u) * sizeof(uint32_t);
+					assert(ReadBuffer(d.dynamicIndexBuffer.Get(), d.dynamicIndexBufferOffset, bytes) ==
+						std::vector<uint8_t>(reinterpret_cast<uint8_t const *>(expected),
+						                     reinterpret_cast<uint8_t const *>(expected) + bytes));
+				}
+				assert(d.indexBufferCacheMisses == 2 && d.indexBufferCacheHits == 0);
+				assert(d.indexBufferCache.size() == 2);
+			}
+		}
+
 		int Run() {
 			DrawsGeometry();
+			IndexKeysDoNotAlias();
 			return 0;
 		}
 	};

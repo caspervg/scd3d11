@@ -23,6 +23,15 @@ namespace nSCD3D11 {
         return hash;
     }
 
+    GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count) {
+        size_t const indexBytes = format == DXGI_FORMAT_R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t);
+        GeometryCacheKey key;
+        key.digest = HashBytes(indices, static_cast<size_t>(count) * indexBytes);
+        key.count = count;
+        key.format = static_cast<uint32_t>(format);
+        return key;
+    }
+
     bool IsSupportedVertexFormat(uint32_t format) {
         // SC4 passes both the small enum values and pre-packed bitfield formats;
         // normalize through RZMakeVertexFormat before checking the whitelist.

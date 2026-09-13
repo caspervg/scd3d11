@@ -161,11 +161,13 @@ namespace nSCD3D11 {
 			uint32_t offset;
 		};
 
+		using GeometryCache = std::unordered_map<GeometryCacheKey, GeometryCacheEntry, GeometryCacheKeyHash>;
+
 		struct GeometryCacheSegment {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
 			uint32_t capacity = 0;
 			uint32_t cursor = 0;
-			std::vector<uint64_t> keys;
+			std::vector<GeometryCacheKey> keys;
 		};
 
 		void *windowHandle;
@@ -225,8 +227,8 @@ namespace nSCD3D11 {
 		uint32_t dynamicIndexBufferOffset;
 		ID3D11Buffer *appliedVertexBuffer;
 		uint32_t appliedVertexBufferOffset;
-		std::unordered_map<uint64_t, GeometryCacheEntry> vertexBufferCache;
-		std::unordered_map<uint64_t, GeometryCacheEntry> indexBufferCache;
+		GeometryCache vertexBufferCache;
+		GeometryCache indexBufferCache;
 		uint64_t vertexBufferCacheHits;
 		uint64_t vertexBufferCacheMisses;
 		uint64_t indexBufferCacheHits;
@@ -351,8 +353,8 @@ namespace nSCD3D11 {
 
 		bool UseCachedBuffer(
 			GeometryCacheSegment *segments,
-			std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
-			uint64_t key,
+			GeometryCache &cache,
+			GeometryCacheKey const &key,
 			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 			uint32_t &offset,
 			uint32_t bindFlags);
@@ -360,8 +362,8 @@ namespace nSCD3D11 {
 		bool UploadCachedBuffer(
 			GeometryCacheSegment *segments,
 			uint8_t &activeSegment,
-			std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
-			uint64_t key,
+			GeometryCache &cache,
+			GeometryCacheKey const &key,
 			uint32_t requiredSize,
 			uint32_t bindFlags,
 			void const *data,

@@ -77,8 +77,12 @@ namespace nSCD3D11 {
 			return false;
 		}
 		uint8_t const *source = extensionVertexData.data() + offset;
-		uint64_t key = HashBytes(&extensionVertexGeneration, sizeof(extensionVertexGeneration));
-		key = HashBytes(&byteSize, sizeof(byteSize), key);
+		// The reservation generation stands in for the contents: they can only change under GetVertices.
+		GeometryCacheKey key;
+		key.digest = extensionVertexGeneration;
+		key.count = byteSize / stride;
+		key.format = format;
+		key.generation = true;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 		if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
@@ -105,10 +109,7 @@ namespace nSCD3D11 {
 			return;
 		}
 		uint16_t maximumIndex = 0;
-		uint64_t key = HashBytes(&count, sizeof(count));
 		for (uint32_t i = 0; i < count; ++i) {
-			key = (key ^ indices[i]) * 1099511628211ull;
-			key = (key ^ (indices[i] >> 8)) * 1099511628211ull;
 			if (indices[i] > maximumIndex) maximumIndex = indices[i];
 		}
 		uint32_t const byteSize =
@@ -116,7 +117,8 @@ namespace nSCD3D11 {
 		if (!UploadExtensionVertices(byteSize)) return;
 		if (!UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
-			key, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+			IndexCacheKey(DXGI_FORMAT_R16_UINT, indices, count),
+			static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
 			dynamicIndexBuffer, dynamicIndexBufferOffset)) {
 			return;
 		}

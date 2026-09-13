@@ -37,6 +37,30 @@ namespace nSCD3D11 {
 
     uint64_t HashBytes(void const *data, size_t size, uint64_t hash = 14695981039346656037ull);
 
+    // Identifies uploaded geometry. The digest alone never decides a match: count and format say how
+    // the bytes are interpreted, and generation keys (a reservation generation, not a content hash)
+    // live in a separate key space from content keys.
+    struct GeometryCacheKey {
+        uint64_t digest = 0;
+        uint32_t count = 0;
+        uint32_t format = 0; // SimGL vertex format or DXGI index format
+        bool generation = false;
+
+        bool operator==(GeometryCacheKey const &other) const {
+            return digest == other.digest && count == other.count && format == other.format &&
+                   generation == other.generation;
+        }
+    };
+
+    struct GeometryCacheKeyHash {
+        size_t operator()(GeometryCacheKey const &key) const {
+            return static_cast<size_t>(key.digest ^ (key.digest >> 32));
+        }
+    };
+
+    // The only way index keys are built: format, count and the exact bytes uploaded.
+    GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count);
+
     bool IsSupportedVertexFormat(uint32_t format);
 
     bool ConvertVertices(
