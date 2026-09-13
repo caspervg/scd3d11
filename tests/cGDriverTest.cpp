@@ -349,6 +349,56 @@ namespace nSCD3D11 {
 			assert(SCD3D11UnregisterFrameCallback(ClobberingCallback, this));
 		}
 
+		// Uploads a width x height rectangle whose source rows are rowLength texels wide (0 = width),
+		// then checks the whole level against a CPU model of the texture.
+		void UploadAndCompare(uint32_t texture, std::vector<uint8_t> &model, uint32_t textureWidth,
+		                      uint32_t texelBytes, int32_t x, int32_t y, int32_t width, int32_t height,
+		                      uint32_t rowLength, uint32_t format, uint32_t type, uint32_t sourceTexelBytes,
+		                      uint8_t seed) {
+			uint32_t const sourceWidth = rowLength ? rowLength : static_cast<uint32_t>(width);
+			std::vector<uint8_t> source(static_cast<size_t>(sourceWidth) * height * sourceTexelBytes, 0xEE);
+			for (int32_t row = 0; row < height; ++row) {
+				for (int32_t column = 0; column < width; ++column) {
+					uint8_t *texel = source.data() + (static_cast<size_t>(row) * sourceWidth + column) * sourceTexelBytes;
+					for (uint32_t byte = 0; byte < sourceTexelBytes; ++byte) {
+						texel[byte] = static_cast<uint8_t>(seed + row * 16 + column * 4 + byte);
+					}
+					// The texture's own layout: BGRA8 and B4G4R4A4 copy through, RGBA8 swaps red and blue.
+					uint8_t *destination = model.data() + (static_cast<size_t>(y + row) * textureWidth + x + column) * texelBytes;
+					memcpy(destination, texel, texelBytes);
+					if (format == 1) std::swap(destination[0], destination[2]);
+				}
+			}
+			d.LoadTextureLevel(texture, 0, x, y, width, height, format, type, rowLength, source.data());
+			assert(Read(d.textures[texture].texture.Get(), 0, texelBytes) == model);
+		}
+
+		void TextureUploadsHonorRowPitch() {
+			std::vector<uint8_t>().swap(d.textureUploadScratch);
+			for (uint32_t internalFormat: {1u, 2u}) {
+				bool const bgra8 = internalFormat == 1;
+				uint32_t const texelBytes = bgra8 ? 4 : 2;
+				uint32_t const type = bgra8 ? 1 : 13;
+				uint32_t const texture = static_cast<uint32_t>(d.CreateTexture(internalFormat, 8, 6, 1, 0));
+				assert(texture != 0);
+				std::vector<uint8_t> model(8 * 6 * texelBytes);
+				UploadAndCompare(texture, model, 8, texelBytes, 0, 0, 8, 6, 0, 3, type, texelBytes, 1);
+				UploadAndCompare(texture, model, 8, texelBytes, 0, 0, 8, 6, 11, 3, type, texelBytes, 2);
+				UploadAndCompare(texture, model, 8, texelBytes, 2, 1, 3, 4, 0, 3, type, texelBytes, 3);
+				UploadAndCompare(texture, model, 8, texelBytes, 5, 2, 3, 4, 7, 3, type, texelBytes, 4);
+				// Matching layouts never touch the conversion scratch.
+				assert(d.textureUploadScratch.capacity() == 0);
+				if (bgra8) {
+					// RGBA still converts, padded or not.
+					UploadAndCompare(texture, model, 8, 4, 1, 1, 4, 3, 6, 1, 1, 4, 5);
+					UploadAndCompare(texture, model, 8, 4, 0, 3, 8, 3, 0, 1, 1, 4, 6);
+					assert(d.textureUploadScratch.capacity() != 0);
+					std::vector<uint8_t>().swap(d.textureUploadScratch);
+				}
+				d.DeleteTextures(1, &texture);
+			}
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
@@ -357,6 +407,7 @@ namespace nSCD3D11 {
 			TerrainDrawsStayInReservation();
 			CachedVerticesFollowTheirSource();
 			FrameCallbackCleanupOnlyWhenNeeded();
+			TextureUploadsHonorRowPitch();
 			return 0;
 		}
 	};

@@ -524,23 +524,13 @@ namespace nSCD3D11 {
 			uint32_t const sourcePitch = static_cast<uint32_t>(sourcePitch64);
             pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
             uint8_t const *sourceRows = static_cast<uint8_t const *>(pixels);
-			if (sourceFormat == 3 && sourceType == 1 &&
-			    resource.format == DXGI_FORMAT_B8G8R8A8_UNORM && sourcePitch == pitch) {
+			if ((sourceFormat == 3 && sourceType == 1 && resource.format == DXGI_FORMAT_B8G8R8A8_UNORM) ||
+			    packedBgra4444) {
+				// Texels already match the texture. UpdateSubresource steps rows by SrcRowPitch, so padded
+				// rows (a row length wider than the upload) go straight through as well.
 				upload = pixels;
-			} else if (packedBgra4444) {
-                // Same nibble layout as B4G4R4A4; only row pitch needs normalizing.
-                if (sourcePitch == pitch) {
-                    upload = pixels;
-                } else {
-                    converted.resize(static_cast<size_t>(pitch) * height);
-                    for (int32_t y = 0; y < height; ++y) {
-                        memcpy(converted.data() + static_cast<size_t>(y) * pitch,
-                               sourceRows + static_cast<size_t>(y) * sourcePitch,
-                               static_cast<size_t>(width) * 2);
-                    }
-                    upload = converted.data();
-                }
-            } else {
+				pitch = sourcePitch;
+			} else {
                 converted.resize(static_cast<size_t>(pitch) * height);
                 for (int32_t y = 0; y < height; ++y) {
                     uint8_t const *source = sourceRows + static_cast<size_t>(y) * sourcePitch;
