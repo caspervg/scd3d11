@@ -399,6 +399,51 @@ namespace nSCD3D11 {
 			}
 		}
 
+		struct LitVertex {
+			float position[3];
+			float normal[3];
+			uint8_t bgra[4];
+		};
+
+		// Directional light along +z onto a +z-facing triangle: white, or black once the model-view
+		// turns the normal away.
+		void DrawLit() {
+			LitVertex const vertices[3]{
+				{{-1.0f, -1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0, 0, 0, 255}},
+				{{3.0f, -1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0, 0, 0, 255}},
+				{{-1.0f, 3.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0, 0, 0, 255}},
+			};
+			d.SetTexture(0, 0);
+			d.InterleavedArrays(kGDVertexFormat_V3F_N3F_C4UB, 0, vertices);
+			d.DrawArrays(0, 0, 3);
+		}
+
+		void NormalMatrixFollowsModelView() {
+			float const towardViewer[3]{0.0f, 0.0f, 1.0f};
+			float const turned[16]{-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1}; // 180 degrees about y
+			d.LightDirection(0, towardViewer);
+			d.MatrixMode(0);
+			d.LoadIdentity();
+			DrawLit();
+			assert(Pixel(1, 1) == 0xffffffff && !d.normalMatrixDirty);
+			DrawLit();
+			assert(Pixel(1, 1) == 0xffffffff && !d.normalMatrixDirty);
+
+			d.LoadMatrix(turned);
+			assert(d.normalMatrixDirty);
+			DrawLit();
+			assert(Pixel(1, 1) == 0x000000ff && !d.normalMatrixDirty);
+
+			// The projection matrix does not feed the normal matrix.
+			d.MatrixMode(1);
+			d.LoadIdentity();
+			assert(!d.normalMatrixDirty);
+			d.MatrixMode(0);
+			d.LoadIdentity();
+			DrawLit();
+			assert(Pixel(1, 1) == 0xffffffff);
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
@@ -408,6 +453,7 @@ namespace nSCD3D11 {
 			CachedVerticesFollowTheirSource();
 			FrameCallbackCleanupOnlyWhenNeeded();
 			TextureUploadsHonorRowPitch();
+			NormalMatrixFollowsModelView();
 			return 0;
 		}
 	};

@@ -549,7 +549,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 		DriverConstants constants{};
 		memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
 		memcpy(constants.projection, matrices[1], sizeof(constants.projection));
-		MakeNormalMatrix(matrices[0], constants.normalMatrix);
+		if (normalMatrixDirty) {
+			MakeNormalMatrix(matrices[MODEL_VIEW], normalMatrix);
+			normalMatrixDirty = false;
+		}
+		memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
 		memcpy(constants.colorMultiplier, colorMultipliers, sizeof(constants.colorMultiplier));
 		constants.alphaFunction = alphaFunction;
 		constants.alphaReference = alphaReference;

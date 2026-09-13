@@ -243,6 +243,9 @@ namespace nSCD3D11 {
 		uint8_t const *interleavedPointer;
 		uint8_t activeMatrixMode;
 		float matrices[2][16];
+		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
+		float normalMatrix[16];
+		bool normalMatrixDirty;
 		std::vector<D3D11Vertex> vertexScratch;
 		std::vector<uint32_t> sourceIndexScratch;
 		std::vector<uint32_t> drawIndexScratch;

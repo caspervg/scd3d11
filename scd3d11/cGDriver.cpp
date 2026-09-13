@@ -87,6 +87,8 @@ namespace nSCD3D11 {
 	                       interleavedPointer(nullptr),
 	                       activeMatrixMode(0),
 	                       matrices{},
+	                       normalMatrix{},
+	                       normalMatrixDirty(true),
 	                       extensionVertexCursor(0),
 	                       extensionVertexStart(0),
 	                       extensionVertexGeneration(0),
@@ -353,10 +355,12 @@ namespace nSCD3D11 {
 	void cGDriver::LoadMatrix(GLfloat const *m) {
 		if (m != nullptr) {
 			memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
+			if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
 		}
 	}
 
 	void cGDriver::LoadIdentity(void) {
+		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
 		memset(matrices[activeMatrixMode], 0, sizeof(matrices[activeMatrixMode]));
 		matrices[activeMatrixMode][0] = matrices[activeMatrixMode][5] =
 		                                matrices[activeMatrixMode][10] = matrices[activeMatrixMode][15] = 1.0f;
