@@ -311,8 +311,10 @@ namespace nSCD3D11 {
 
 		bool const windowed = presentationMode == PresentationMode::Windowed;
 		RECT const monitorRectangle = PrimaryMonitorRectangle();
-		// Visible from creation, like the stock DirectX driver (0x10CF0000): SC4 loads plugins on this thread
-		// before it shows the window itself, and a hidden window leaves no taskbar entry for that whole time.
+		// Visible from creation, like the stock DirectX driver (0x10CF0000). DXGI saves the window style at
+		// SetFullscreenState(TRUE) and silently restores it when it drops out of fullscreen (Win key, Alt+Tab):
+		// a style saved without WS_VISIBLE hides the window for good, taskbar entry included. Also, SC4 loads
+		// plugins on this thread before it shows the window itself.
 		DWORD const style = windowed
 			                        ? WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN
 			                        : WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
