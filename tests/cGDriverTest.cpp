@@ -263,12 +263,68 @@ namespace nSCD3D11 {
 			assert(VertexUploads() == uploads);
 		}
 
+		float UploadedX(uint32_t vertex) {
+			std::vector<uint8_t> const bytes = ReadBuffer(
+				d.dynamicVertexBuffer.Get(), d.dynamicVertexBufferOffset + vertex * sizeof(D3D11Vertex),
+				sizeof(float));
+			float x;
+			memcpy(&x, bytes.data(), sizeof(x));
+			return x;
+		}
+
+		// Cached uploads must never outlive the data they were made from.
+		void CachedVerticesFollowTheirSource() {
+			ResetGeometryCache();
+			d.vertexBufferCacheHits = d.vertexBufferCacheMisses = 0;
+
+			// Content keys: rewriting the same memory is a new upload, restoring it a hit.
+			ColorVertex vertices[3]{};
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
+			d.DrawArrays(0, 0, 3);
+			vertices[2].position[0] = 7.0f;
+			d.DrawArrays(0, 0, 3);
+			assert(d.vertexBufferCacheMisses == 2 && UploadedX(2) == 7.0f);
+			vertices[2].position[0] = 0.0f;
+			d.DrawArrays(0, 0, 3);
+			assert(d.vertexBufferCacheMisses == 2 && d.vertexBufferCacheHits == 1 && UploadedX(2) == 0.0f);
+
+			// Generation keys: a reservation that wraps back to the same offset and size is new data.
+			uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+			uint32_t const capacity = d.MaxVertices(0);
+			auto writeX = [&](uint32_t address, float x) {
+				memcpy(reinterpret_cast<uint8_t *>(static_cast<uintptr_t>(address)), &x, sizeof(x));
+			};
+			d.Reset();
+			uint32_t const first = d.GetVertices(0, 20);
+			writeX(first, 1.0f);
+			d.ReleaseVertices(0);
+			d.DrawPrims(0, 0, nullptr, 20 * stride);
+			d.DrawPrims(0, 0, nullptr, 20 * stride);
+			assert(d.vertexBufferCacheMisses == 3 && d.vertexBufferCacheHits == 2 && UploadedX(0) == 1.0f);
+			assert(d.GetVertices(0, capacity - 20) != 0);
+			d.ReleaseVertices(0);
+			uint32_t const wrapped = d.GetVertices(0, 20);
+			assert(wrapped == first);
+			writeX(wrapped, 2.0f);
+			d.ReleaseVertices(0);
+			d.DrawPrims(0, 0, nullptr, 20 * stride);
+			assert(d.vertexBufferCacheMisses == 4 && UploadedX(0) == 2.0f);
+
+			// Device recreation drops every cached upload.
+			assert(d.RecoverD3D11Device());
+			assert(d.vertexBufferCache.empty() && d.indexBufferCache.empty());
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
+			d.DrawArrays(0, 0, 3);
+			assert(d.vertexBufferCacheMisses == 5 && UploadedX(2) == 0.0f);
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();
 			OversizedInputsFailBeforeReading();
 			TerrainDrawsStayInReservation();
+			CachedVerticesFollowTheirSource();
 			return 0;
 		}
 	};

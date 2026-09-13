@@ -506,6 +506,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		uint8_t const *source = interleavedPointer + static_cast<size_t>(first) * interleavedStride;
+		// InterleavedArrays hands over a bare pointer into game memory with no allocation, modification
+		// or release boundary, so pointer and size cannot identify contents; only the terrain vertex
+		// buffer, which the driver owns, can use generation keys instead of hashing.
 		GeometryCacheKey const key = VertexCacheKey(interleavedFormat, interleavedStride, source, count);
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
