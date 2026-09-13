@@ -7,3 +7,12 @@
 Debug/
 Release/
 build/
+cmake-build-release/
+cmake-build-debug/
+.codex
+.agents
+.idea
+runtime-captures/
+docs/
+.mcp.json
+.claude

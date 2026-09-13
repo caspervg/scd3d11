@@ -1,0 +1,286 @@
+/*
+ *  SCD3D11 - a free Direct3D 11 driver for SimCity 4's SimGL interface
+ *  Copyright (C) 2026
+ *
+ *  This library is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU Lesser General Public
+ *  License as published by the Free Software Foundation, under
+ *  version 2.1 of the License, or (at your option) any later version.
+ */
+
+// ReShade add-on integration.
+//
+// Installed as dxgi.dll or d3d11.dll next to SimCity 4.exe, ReShade wraps the device and swap chain
+// SCD3D11 creates and renders its effects in Present, over the whole frame including the UI. When
+// ReShade is loaded SCD3D11 registers itself as an add-on instead and
+//  - renders the effects at the end of cSC43DRender::Draw, once the city view is complete and before
+//    any UI is drawn over it;
+//  - binds the scene depth to the DEPTH semantic, already encoded so that ReShade.fxh's perspective
+//    linearization turns it back into SC4's depth, which is linear because the camera is orthographic
+//    (cSC43DRender::UpdateCameraZoomAndRotationParams -> SetOrtho).
+// Only effect runtime events and calls are used. ReShade's regular build (not only the "full add-on
+// support" one) allows those for externally registered add-ons. Requires ReShade 6.0 or later.
+// -ReShade:off on the command line leaves ReShade's default behaviour untouched.
+//
+// SC4 keeps its back buffer across Present and redraws only what changed, so effects rendered into it
+// persist until the city view is redrawn. Frames that only redraw UI must not get effects again at
+// Present; FinishReShadeFrame marks those as done.
+
+#include "cGDriver.h"
+#include "Diagnostics.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <d3dcompiler.h>
+#include <reshade.hpp>
+
+namespace nSCD3D11 {
+	namespace {
+		constexpr uintptr_t kImageBase = 0x00400000;
+		// The cSC43DRender vtable slot for cSC43DRender::Draw, its only reference (SimCity 4 1.1.641).
+		constexpr uintptr_t kDrawSlotVA = 0x00ABABB4;
+		constexpr uintptr_t kDrawVA = 0x007CB530;
+
+		char const kShaderSource[] = R"(
+float4 VSMain(uint id : SV_VertexID) : SV_POSITION {
+	float2 uv = float2((id << 1) & 2, id & 2);
+	return float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
+}
+Texture2D<float> sceneDepth : register(t0);
+cbuffer SceneDepthConstants : register(b0) {
+	float farPlane;
+};
+// Inverse of ReShade.fxh: linear = d / (farPlane - d * (farPlane - 1)).
+float PSMain(float4 position : SV_POSITION) : SV_TARGET {
+	float depth = sceneDepth.Load(int3(position.xy, 0));
+	return depth * farPlane / (1.0f + depth * (farPlane - 1.0f));
+}
+)";
+
+		using DrawFunction = bool(__fastcall *)(void *self, void *edx);
+
+		DrawFunction gOriginalDraw = nullptr;
+		cGDriver *gDriver = nullptr;
+		reshade::api::effect_runtime *gRuntime = nullptr;
+		ID3D11ShaderResourceView *gSceneDepthView = nullptr;
+		bool gDepthBound = false;
+		float gFarPlane = 1000.0f; // ReShade.fxh's default
+
+		reshade::api::resource_view ViewHandle(ID3D11View *view) {
+			return reshade::api::resource_view{static_cast<uint64_t>(reinterpret_cast<uintptr_t>(view))};
+		}
+
+		bool __fastcall DrawHook(void *self, void *edx) {
+			bool const drawn = gOriginalDraw(self, edx);
+			if (drawn && gDriver != nullptr) gDriver->RenderSceneEffects();
+			return drawn;
+		}
+
+		void OnReloadedEffects(reshade::api::effect_runtime *runtime) {
+			char value[32]{};
+			float const farPlane = runtime->get_preprocessor_definition("RESHADE_DEPTH_LINEARIZATION_FAR_PLANE", value)
+				                       ? std::strtof(value, nullptr)
+				                       : 1000.0f;
+			gFarPlane = farPlane >= 1.0f ? farPlane : 1000.0f;
+			runtime->enumerate_uniform_variables(nullptr, [](reshade::api::effect_runtime *runtime,
+			                                                 reshade::api::effect_uniform_variable variable) {
+				char source[32]{};
+				if (runtime->get_annotation_string_from_uniform_variable(variable, "source", source) &&
+				    std::strcmp(source, "bufready_depth") == 0) {
+					runtime->set_uniform_value_bool(variable, true);
+				}
+			});
+		}
+
+		void OnInitEffectRuntime(reshade::api::effect_runtime *runtime) {
+			gRuntime = runtime;
+			OnReloadedEffects(runtime);
+			Log(LogCategory::Initialization, "reshade: effect runtime attached");
+		}
+
+		void OnDestroyEffectRuntime(reshade::api::effect_runtime *runtime) {
+			if (runtime == gRuntime) gRuntime = nullptr;
+		}
+
+		// Runs inside render_effects, after ReShade's own Generic Depth add-on picked its depth buffer.
+		void OnBeginEffects(reshade::api::effect_runtime *runtime, reshade::api::command_list *,
+		                    reshade::api::resource_view, reshade::api::resource_view) {
+			if (gSceneDepthView == nullptr) return;
+			runtime->update_texture_bindings("DEPTH", ViewHandle(gSceneDepthView), ViewHandle(gSceneDepthView));
+			gDepthBound = true;
+		}
+
+		bool PatchDrawSlot(void *replacement, void *expected) {
+			auto *const slot = reinterpret_cast<void **>(
+				reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawSlotVA - kImageBase));
+			DWORD protection = 0;
+			if (*slot != expected || !VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return false;
+			*slot = replacement;
+			VirtualProtect(slot, sizeof(*slot), protection, &protection);
+			return true;
+		}
+	}
+
+	void cGDriver::InstallReShadeAddon(void) {
+		static bool attempted = false;
+		if (attempted) {
+			if (gOriginalDraw != nullptr) gDriver = this;
+			return;
+		}
+		attempted = true;
+		if (std::strstr(GetCommandLineA(), "-ReShade:off") != nullptr) return;
+
+		HMODULE module = nullptr;
+		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		                        reinterpret_cast<LPCWSTR>(&DrawHook), &module) ||
+		    !reshade::register_addon(module)) {
+			return; // ReShade is not loaded, or is older than 6.0
+		}
+
+		auto const draw = reinterpret_cast<void *>(
+			reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawVA - kImageBase));
+		if (!PatchDrawSlot(reinterpret_cast<void *>(&DrawHook), draw)) {
+			Log(LogCategory::Initialization, "reshade: cSC43DRender::Draw not found, using ReShade's default rendering");
+			reshade::unregister_addon(module);
+			return;
+		}
+		gOriginalDraw = reinterpret_cast<DrawFunction>(draw);
+		gDriver = this;
+
+		reshade::register_event<reshade::addon_event::init_effect_runtime>(&OnInitEffectRuntime);
+		reshade::register_event<reshade::addon_event::destroy_effect_runtime>(&OnDestroyEffectRuntime);
+		reshade::register_event<reshade::addon_event::reshade_begin_effects>(&OnBeginEffects);
+		reshade::register_event<reshade::addon_event::reshade_reloaded_effects>(&OnReloadedEffects);
+		Log(LogCategory::Initialization, "reshade: add-on registered, effects render before the UI");
+	}
+
+	void cGDriver::UninstallReShadeAddon(void) {
+		// ponytail: the vtable hook stays for the process lifetime; it is inert without a driver.
+		if (gDriver == this) gDriver = nullptr;
+	}
+
+	HRESULT cGDriver::UpdateSceneDepth(void) {
+		if (!depthShaderView) return E_POINTER;
+		SceneDepthPipeline &pipeline = sceneDepth;
+		HRESULT result = S_OK;
+		if (!pipeline.pixelShader) {
+			Microsoft::WRL::ComPtr<ID3DBlob> vertexBytecode;
+			Microsoft::WRL::ComPtr<ID3DBlob> pixelBytecode;
+			result = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, "SCD3D11SceneDepth", nullptr, nullptr,
+			                    "VSMain", "vs_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &vertexBytecode, nullptr);
+			if (SUCCEEDED(result)) {
+				result = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, "SCD3D11SceneDepth", nullptr, nullptr,
+				                    "PSMain", "ps_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &pixelBytecode, nullptr);
+			}
+			if (SUCCEEDED(result)) {
+				result = d3dDevice->CreateVertexShader(vertexBytecode->GetBufferPointer(),
+				                                       vertexBytecode->GetBufferSize(), nullptr, &pipeline.vertexShader);
+			}
+			if (SUCCEEDED(result)) {
+				result = d3dDevice->CreatePixelShader(pixelBytecode->GetBufferPointer(), pixelBytecode->GetBufferSize(),
+				                                      nullptr, &pipeline.pixelShader);
+			}
+			if (SUCCEEDED(result)) {
+				D3D11_BUFFER_DESC const description{
+					sizeof(float) * 4, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0
+				};
+				result = d3dDevice->CreateBuffer(&description, nullptr, &pipeline.constants);
+			}
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "reshade scene depth pipeline", result);
+				pipeline = SceneDepthPipeline{};
+				return result;
+			}
+		}
+
+		D3D11_TEXTURE2D_DESC current{};
+		if (pipeline.texture) pipeline.texture->GetDesc(&current);
+		if (!pipeline.texture || current.Width != static_cast<UINT>(windowWidth) ||
+		    current.Height != static_cast<UINT>(windowHeight)) {
+			pipeline.view.Reset();
+			pipeline.target.Reset();
+			pipeline.texture.Reset();
+			D3D11_TEXTURE2D_DESC description{};
+			description.Width = static_cast<UINT>(windowWidth);
+			description.Height = static_cast<UINT>(windowHeight);
+			description.MipLevels = 1;
+			description.ArraySize = 1;
+			description.Format = DXGI_FORMAT_R32_FLOAT;
+			description.SampleDesc.Count = 1;
+			description.Usage = D3D11_USAGE_DEFAULT;
+			description.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+			result = d3dDevice->CreateTexture2D(&description, nullptr, &pipeline.texture);
+			if (SUCCEEDED(result)) result = d3dDevice->CreateRenderTargetView(pipeline.texture.Get(), nullptr, &pipeline.target);
+			if (SUCCEEDED(result)) result = d3dDevice->CreateShaderResourceView(pipeline.texture.Get(), nullptr, &pipeline.view);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "reshade scene depth texture", result);
+				pipeline.view.Reset();
+				pipeline.target.Reset();
+				pipeline.texture.Reset();
+				return result;
+			}
+		}
+
+		if (pipeline.encodedFarPlane != gFarPlane) {
+			float const constants[4]{gFarPlane, 0.0f, 0.0f, 0.0f};
+			d3dContext->UpdateSubresource(pipeline.constants.Get(), 0, nullptr, constants, 0, 0);
+			pipeline.encodedFarPlane = gFarPlane;
+		}
+
+		// The depth buffer cannot be sampled while it is bound as the output.
+		ID3D11RenderTargetView *const target = pipeline.target.Get();
+		d3dContext->OMSetRenderTargets(1, &target, nullptr);
+		D3D11_VIEWPORT const viewport{
+			0.0f, 0.0f, static_cast<float>(windowWidth), static_cast<float>(windowHeight), 0.0f, 1.0f
+		};
+		d3dContext->RSSetViewports(1, &viewport);
+		d3dContext->RSSetState(nullptr);
+		d3dContext->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+		d3dContext->OMSetDepthStencilState(nullptr, 0);
+		d3dContext->IASetInputLayout(nullptr);
+		d3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		d3dContext->VSSetShader(pipeline.vertexShader.Get(), nullptr, 0);
+		d3dContext->PSSetShader(pipeline.pixelShader.Get(), nullptr, 0);
+		ID3D11Buffer *const constants = pipeline.constants.Get();
+		d3dContext->PSSetConstantBuffers(0, 1, &constants);
+		ID3D11ShaderResourceView *depth = depthShaderView.Get();
+		d3dContext->PSSetShaderResources(0, 1, &depth);
+		d3dContext->Draw(3, 0);
+		depth = nullptr;
+		d3dContext->PSSetShaderResources(0, 1, &depth);
+		return S_OK;
+	}
+
+	void cGDriver::RenderSceneEffects(void) {
+		if (gRuntime == nullptr || !IsDeviceReady()) return;
+
+		gSceneDepthView = SUCCEEDED(UpdateSceneDepth()) ? sceneDepth.view.Get() : nullptr;
+		reshade::api::command_list *const commands = gRuntime->get_command_queue()->get_immediate_command_list();
+		gRuntime->render_effects(commands, ViewHandle(renderTargetView.Get()), ViewHandle(renderTargetViewSrgb.Get()));
+		if (gDepthBound) {
+			// Never leave ReShade holding a view that a resize or device loss may release.
+			gRuntime->update_texture_bindings("DEPTH", reshade::api::resource_view{0}, reshade::api::resource_view{0});
+			gDepthBound = false;
+		}
+		gSceneDepthView = nullptr;
+		reshadeEffectsInBackBuffer = reshadeEffectsThisFrame = true;
+
+		// The depth pass and the effects touched state SCD3D11 caches; start from a clean slate as Flush does.
+		d3dContext->ClearState();
+		InvalidateD3D11StateCache();
+		ID3D11RenderTargetView *const renderTarget = renderTargetView.Get();
+		d3dContext->OMSetRenderTargets(1, &renderTarget, depthStencilView.Get());
+		if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+		else SetViewport();
+	}
+
+	void cGDriver::FinishReShadeFrame(void) {
+		// A null target only marks the frame's effects as rendered, so Present does not stack another pass
+		// onto a back buffer that still holds the effects of the last city view redraw.
+		if (gRuntime != nullptr && reshadeEffectsInBackBuffer && !reshadeEffectsThisFrame) {
+			gRuntime->render_effects(gRuntime->get_command_queue()->get_immediate_command_list(),
+			                         reshade::api::resource_view{0}, reshade::api::resource_view{0});
+		}
+		reshadeEffectsThisFrame = false;
+	}
+}

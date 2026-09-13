@@ -1,0 +1,73 @@
+name: CMake
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Pinned rather than windows-latest: the VS 2022 toolset keeps the VC++ runtime dependency
+    # compatible with older Windows versions such as Windows 7.
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [ "Debug", "Release" ]
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Add MSVC to PATH
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        # SimCity 4 is a 32-bit process, so the driver must be built x86.
+        arch: x86
+
+    - name: Configure
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Test
+      run: ctest --test-dir build --output-on-failure
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: SCD3D11-${{ matrix.configuration }}
+        path: build/SCD3D11.dll
+
+  # Pushing a tag such as v1.2.0 publishes the tested Release build; v1.2.0-rc1 becomes a prerelease.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: SCD3D11-Release
+        path: dist
+
+    - name: Publish GitHub release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        archive="SCD3D11-${GITHUB_REF_NAME}.zip"
+        zip -j "$archive" dist/SCD3D11.dll README.md LICENSE
+        prerelease=""
+        if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
+        gh release create "$GITHUB_REF_NAME" "$archive" --verify-tag --generate-notes $prerelease
