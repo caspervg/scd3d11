@@ -72,6 +72,7 @@ namespace nSCD3D11 {
         HRESULT result = d3dDevice->CreateTexture2D(&description, nullptr, &texture);
         if (FAILED(result)) {
             LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(texture)", result);
+            NoteDeviceLoss(result);
             return result;
         }
 

@@ -174,6 +174,9 @@ namespace nSCD3D11 {
 		void *windowProcedure;
 		bool showDriverWindow;
 		bool recoveringDevice;
+		bool deviceLost;
+		uint32_t deviceRecoveryFailures;
+		ULONGLONG nextDeviceRecovery;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
@@ -357,6 +360,30 @@ namespace nSCD3D11 {
 		HRESULT ResizeBackBufferIfNeeded();
 
 		bool RecoverD3D11Device();
+
+		// Records a failed D3D11 result; returns whether it means the device is gone. Recovery then
+		// waits for the next frame boundary (Flush), with backoff between failed attempts.
+		bool NoteDeviceLoss(HRESULT result);
+
+		void RecoverFromDeviceLoss();
+
+		enum FaultPoint { FAULT_RESIZE, FAULT_MAP, FAULT_PRESENT, FAULT_ALLOCATE, FAULT_POINT_COUNT };
+#ifdef SCD3D11_TESTING
+		struct InjectedFault {
+			HRESULT result = S_OK;
+			uint32_t remaining = 0;
+		} injectedFaults[FAULT_POINT_COUNT];
+
+		HRESULT TakeInjectedFault(FaultPoint point) {
+			InjectedFault &fault = injectedFaults[point];
+			if (fault.remaining == 0) return S_OK;
+			--fault.remaining;
+			return fault.result;
+		}
+#else
+		// The tests make D3D11 calls at these boundaries fail; the DLL never does.
+		static HRESULT TakeInjectedFault(FaultPoint) { return S_OK; }
+#endif
 
 		HRESULT CreateGeometryPipeline();
 

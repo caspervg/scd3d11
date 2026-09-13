@@ -162,6 +162,8 @@ if (BUILD_TESTING)
     # the test must not see NDEBUG, and cGDriver's layout depends on it.
     scd3d11_add_test(cGDriverTest tests/cGDriverTest.cpp ${SCD3D11_DRIVER_SOURCES})
     target_include_directories(cGDriverTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
+    # Enables the fault injection points the tests use.
+    target_compile_definitions(cGDriverTest PRIVATE SCD3D11_TESTING)
     target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version)
     # No usable D3D11 device skips instead of failing.
     set_tests_properties(cGDriverTest PROPERTIES SKIP_RETURN_CODE 77)

@@ -94,6 +94,7 @@ namespace nSCD3D11 {
 		result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapping);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(snapshot)", result);
+			NoteDeviceLoss(result);
 			return fail();
 		}
 

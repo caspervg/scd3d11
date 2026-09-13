@@ -218,14 +218,48 @@ namespace nSCD3D11 {
 		backBufferTexture.Reset();
 		swapChainBuffer.Reset();
 
-		HRESULT const result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags);
+		HRESULT result = TakeInjectedFault(FAULT_RESIZE);
+		if (SUCCEEDED(result)) result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::ResizeBuffers", result);
+			// A removed device cannot back new targets; Flush recovers it instead.
+			if (NoteDeviceLoss(result)) return result;
 			// Keep rendering at the old size after a transient resize failure.
-			CreateBackBufferTargets(static_cast<uint32_t>(windowWidth), static_cast<uint32_t>(windowHeight));
+			NoteDeviceLoss(CreateBackBufferTargets(static_cast<uint32_t>(windowWidth), static_cast<uint32_t>(windowHeight)));
 			return result;
 		}
-		return CreateBackBufferTargets(width, height);
+		result = CreateBackBufferTargets(width, height);
+		NoteDeviceLoss(result);
+		return result;
+	}
+
+	bool cGDriver::NoteDeviceLoss(HRESULT result) {
+		if (SUCCEEDED(result) || !d3dDevice) return false;
+		HRESULT const reason = d3dDevice->GetDeviceRemovedReason();
+		bool const lost = result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET ||
+		                  result == DXGI_ERROR_DEVICE_HUNG || FAILED(reason);
+		if (lost && !deviceLost) {
+			LogHRESULT(LogCategory::Resource, "D3D11 device lost; ID3D11Device::GetDeviceRemovedReason", reason);
+			deviceLost = true;
+		}
+		return lost;
+	}
+
+	void cGDriver::RecoverFromDeviceLoss() {
+		ULONGLONG const now = GetTickCount64();
+		if (recoveringDevice || now < nextDeviceRecovery) return;
+		if (RecoverD3D11Device()) {
+			deviceLost = false;
+			deviceRecoveryFailures = 0;
+			nextDeviceRecovery = 0;
+			return;
+		}
+		// Back off from 0.5 s to 8 s so an unusable adapter does not stall every frame.
+		deviceLost = true;
+		if (deviceRecoveryFailures < 5) ++deviceRecoveryFailures;
+		nextDeviceRecovery = now + (250ull << deviceRecoveryFailures);
+		Log(LogCategory::Initialization, "device recovery failed; retrying in %llu ms",
+		    static_cast<unsigned long long>(250ull << deviceRecoveryFailures));
 	}
 
 	bool cGDriver::RecoverD3D11Device() {
@@ -235,6 +269,9 @@ namespace nSCD3D11 {
 		void *const procedure = windowProcedure;
 		bool const show = showDriverWindow;
 		Log(LogCategory::Initialization, "recreating D3D11 device after device loss");
+		// Destroying notifies frame callbacks once for the old generation; recoveringDevice keeps
+		// anything they call back into from starting another recovery.
+		DestroyD3D11Context(true);
 		SetVideoMode(mode, procedure, show, false);
 		recoveringDevice = false;
 		return IsDeviceReady();
@@ -429,6 +466,7 @@ namespace nSCD3D11 {
 			return;
 		}
 		deviceGeneration = NextD3D11DeviceGeneration();
+		deviceLost = false;
 
 		currentVideoMode = newModeIndex;
 		char const *modeName = presentationMode == PresentationMode::Windowed ? "windowed" :
@@ -448,8 +486,10 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Flush(void) {
-		if (!IsDeviceReady()) {
-			RecoverD3D11Device();
+		// The frame boundary is where a lost device is torn down and recreated, whichever call noticed it.
+		if (recoveringDevice) return;
+		if (deviceLost || !IsDeviceReady()) {
+			RecoverFromDeviceLoss();
 			return;
 		}
 
@@ -459,6 +499,7 @@ namespace nSCD3D11 {
 		}
 		if (FAILED(result)) {
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+			if (deviceLost) RecoverFromDeviceLoss();
 			return;
 		}
 
@@ -482,20 +523,16 @@ namespace nSCD3D11 {
 		static bool const vsyncEnabled = std::strstr(GetCommandLineA(), "-VSync:off") == nullptr;
 		FinishReShadeFrame();
 		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
-		result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
+		result = TakeInjectedFault(FAULT_PRESENT);
+		if (SUCCEEDED(result)) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
 #ifndef NDEBUG
 		LogDebugLayerMessages(d3dDevice.Get());
 #endif
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::Present", result);
-			if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
-				LogHRESULT(LogCategory::Resource, "ID3D11Device::GetDeviceRemovedReason",
-				           d3dDevice->GetDeviceRemovedReason());
-				DestroyD3D11Context(true);
-				RecoverD3D11Device();
-			}
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 		}
+		if (NoteDeviceLoss(result) || deviceLost) RecoverFromDeviceLoss();
 	}
 
 	void cGDriver::SetViewport(void) {

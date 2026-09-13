@@ -570,6 +570,73 @@ namespace nSCD3D11 {
 			d.AlphaMultiplier(1.0f);
 		}
 
+		struct DeviceEvents {
+			cGDriver *driver;
+			int destroys = 0;
+			uint32_t destroyedGeneration = 0;
+		};
+
+		static void __stdcall DeviceEventCallback(SCD3D11FrameContext const *frame, void *userData) {
+			DeviceEvents *const events = static_cast<DeviceEvents *>(userData);
+			if (frame->event != SCD3D11_EVENT_BEFORE_DEVICE_DESTROY) return;
+			++events->destroys;
+			events->destroyedGeneration = frame->deviceGeneration;
+			// Re-entering the driver mid-recovery must not start another recovery.
+			events->driver->Flush();
+		}
+
+		template <typename Trigger>
+		void RecoversFromLossAt(cGDriver::FaultPoint point, Trigger const &trigger) {
+			DeviceEvents events{&d};
+			assert(SCD3D11RegisterFrameCallback(DeviceEventCallback, &events));
+			ComPtr<ID3D11Device> const oldDevice = d.d3dDevice; // held, so its address cannot be reused
+			uint32_t const oldGeneration = d.deviceGeneration;
+			d.injectedFaults[point] = {DXGI_ERROR_DEVICE_REMOVED, 1};
+			trigger();
+			assert(d.injectedFaults[point].remaining == 0);
+			if (d.deviceLost) {
+				// Nothing is torn down before the frame boundary, and nothing more is drawn.
+				assert(events.destroys == 0 && d.d3dDevice == oldDevice);
+				uint64_t const uploads = VertexUploads();
+				DrawFullscreen(1, 2, 3);
+				assert(VertexUploads() == uploads);
+				d.Flush();
+			}
+			assert(!d.deviceLost && d.IsDeviceReady());
+			assert(events.destroys == 1 && events.destroyedGeneration == oldGeneration);
+			assert(d.deviceGeneration != oldGeneration && d.d3dDevice != oldDevice);
+			assert(SCD3D11UnregisterFrameCallback(DeviceEventCallback, &events));
+			DrawFullscreen(0, 255, 255);
+			assert(Pixel(1, 1) == 0x00ffffff);
+		}
+
+		void RecoversFromDeviceLoss() {
+			RecoversFromLossAt(cGDriver::FAULT_MAP, [&] { DrawFullscreen(17, 34, 51); });
+			RecoversFromLossAt(cGDriver::FAULT_PRESENT, [&] { d.Flush(); });
+			RecoversFromLossAt(cGDriver::FAULT_RESIZE, [&] {
+				RECT window{};
+				GetWindowRect(static_cast<HWND>(d.windowHandle), &window);
+				SetWindowPos(static_cast<HWND>(d.windowHandle), nullptr, 0, 0, (window.right - window.left) / 2,
+				             (window.bottom - window.top) / 2, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+				d.Flush();
+			});
+
+			// A failed recovery backs off instead of retrying every frame.
+			int const modes = d.videoModeCount;
+			d.videoModeCount = 0; // recreation now fails
+			d.injectedFaults[cGDriver::FAULT_PRESENT] = {DXGI_ERROR_DEVICE_RESET, 1};
+			d.Flush();
+			assert(d.deviceLost && d.deviceRecoveryFailures == 1 && d.nextDeviceRecovery > GetTickCount64());
+			d.Flush();
+			assert(d.deviceRecoveryFailures == 1);
+			d.videoModeCount = modes;
+			d.nextDeviceRecovery = 0;
+			d.Flush();
+			assert(!d.deviceLost && d.deviceRecoveryFailures == 0 && d.IsDeviceReady());
+			DrawFullscreen(255, 0, 255);
+			assert(Pixel(1, 1) == 0xff00ffff);
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
@@ -581,6 +648,7 @@ namespace nSCD3D11 {
 			TextureUploadsHonorRowPitch();
 			NormalMatrixFollowsModelView();
 			ConstantsFollowEverySetter();
+			RecoversFromDeviceLoss();
 			return 0;
 		}
 	};

@@ -413,7 +413,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		void const *data,
 		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 		uint32_t &offset) {
-		if (!d3dDevice || !d3dContext || data == nullptr || requiredSize == 0) {
+		if (!d3dDevice || !d3dContext || deviceLost || data == nullptr || requiredSize == 0) {
 			return false;
 		}
 
@@ -459,9 +459,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 				description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
 				Microsoft::WRL::ComPtr<ID3D11Buffer> replacement;
-				HRESULT const result = d3dDevice->CreateBuffer(&description, nullptr, &replacement);
+				HRESULT result = TakeInjectedFault(FAULT_ALLOCATE);
+				if (SUCCEEDED(result)) result = d3dDevice->CreateBuffer(&description, nullptr, &replacement);
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(dynamic segment)", result);
+					NoteDeviceLoss(result);
 					return false;
 				}
 				segment->buffer = replacement;
@@ -472,11 +474,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		D3D11_MAPPED_SUBRESOURCE mapping{};
-		HRESULT const result = d3dContext->Map(
+		HRESULT result = TakeInjectedFault(FAULT_MAP);
+		if (SUCCEEDED(result)) result = d3dContext->Map(
 			segment->buffer.Get(), 0,
 			segment->cursor == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map", result);
+			NoteDeviceLoss(result);
 			return false;
 		}
 		offset = segment->cursor;
@@ -540,7 +544,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
-		if (!IsDeviceReady() || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
+		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
 		    !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
 		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
@@ -618,16 +622,19 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 			if (constantBufferCache.size() != sizeof(constants) ||
 			    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
-				activeTransformBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
+				uint8_t const nextBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
 				D3D11_MAPPED_SUBRESOURCE mapping{};
-				HRESULT const result = d3dContext->Map(
-					transformBuffers[activeTransformBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+				HRESULT result = TakeInjectedFault(FAULT_MAP);
+				if (SUCCEEDED(result)) result = d3dContext->Map(
+					transformBuffers[nextBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
+					NoteDeviceLoss(result);
 					return false;
 				}
 				memcpy(mapping.pData, &constants, sizeof(constants));
-				d3dContext->Unmap(transformBuffers[activeTransformBuffer].Get(), 0);
+				d3dContext->Unmap(transformBuffers[nextBuffer].Get(), 0);
+				activeTransformBuffer = nextBuffer;
 				constantBufferCache.assign(
 					reinterpret_cast<uint8_t const *>(&constants),
 					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
