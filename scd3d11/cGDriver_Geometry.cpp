@@ -34,7 +34,6 @@ namespace nSCD3D11 {
 #endif
 struct StageState
 {
-	float4 environmentColor;
 	uint4 modes;
 	uint4 parameters0;
 	uint4 parameters1;
@@ -45,7 +44,6 @@ cbuffer DriverConstants : register(b0)
 	column_major float4x4 modelView;
 	column_major float4x4 projection;
 	column_major float4x4 normalMatrix;
-	float4 colorMultiplier;
 	uint flags;
 	uint alphaFunction;
 	float alphaReference;
@@ -66,6 +64,7 @@ cbuffer DriverConstants : register(b0)
 	StageState stage1;
 	float4 fogColor;
 	float4 fogParameters;
+	float4 textureFactor;
 };
 
 Texture2D texture0 : register(t0);
@@ -125,9 +124,9 @@ float4 CombinerArgument(uint packed, float4 textureColor, float4 previous, float
 
 float3 CombineRGB(StageState state, float4 textureColor, float4 previous, float4 primary)
 {
-	float4 a = CombinerArgument(state.parameters0.y, textureColor, previous, state.environmentColor, primary);
-	float4 b = CombinerArgument(state.parameters0.z, textureColor, previous, state.environmentColor, primary);
-	float4 c = CombinerArgument(state.parameters0.w, textureColor, previous, state.environmentColor, primary);
+	float4 a = CombinerArgument(state.parameters0.y, textureColor, previous, textureFactor, primary);
+	float4 b = CombinerArgument(state.parameters0.z, textureColor, previous, textureFactor, primary);
+	float4 c = CombinerArgument(state.parameters0.w, textureColor, previous, textureFactor, primary);
 	uint mode = state.modes.y;
 	float3 result = mode == 0 ? a.rgb :
 		(mode == 1 ? a.rgb * b.rgb :
@@ -140,9 +139,9 @@ float3 CombineRGB(StageState state, float4 textureColor, float4 previous, float4
 
 float CombineAlpha(StageState state, float4 textureColor, float4 previous, float4 primary)
 {
-	float a = CombinerArgument(state.parameters1.x, textureColor, previous, state.environmentColor, primary).a;
-	float b = CombinerArgument(state.parameters1.y, textureColor, previous, state.environmentColor, primary).a;
-	float c = CombinerArgument(state.parameters1.z, textureColor, previous, state.environmentColor, primary).a;
+	float a = CombinerArgument(state.parameters1.x, textureColor, previous, textureFactor, primary).a;
+	float b = CombinerArgument(state.parameters1.y, textureColor, previous, textureFactor, primary).a;
+	float c = CombinerArgument(state.parameters1.z, textureColor, previous, textureFactor, primary).a;
 	uint mode = state.modes.z;
 	float result = mode == 0 ? a : (mode == 1 ? a * b :
 		(mode == 2 ? a + b : (mode == 3 ? a + b - 0.5f : a * c + b * (1.0f - c))));
@@ -155,7 +154,7 @@ float4 ApplyStage(StageState state, float4 textureColor, float4 previous, float4
 	float4 result = textureColor;
 	if (mode == 1) result = previous * textureColor;
 	else if (mode == 2) result = float4(lerp(previous.rgb, textureColor.rgb, textureColor.a), previous.a);
-	else if (mode == 3) result = float4(lerp(previous.rgb, state.environmentColor.rgb, textureColor.rgb), previous.a * textureColor.a);
+	else if (mode == 3) result = float4(lerp(previous.rgb, textureFactor.rgb, textureColor.rgb), previous.a * textureColor.a);
 	else if (mode != 0) result = float4(CombineRGB(state, textureColor, previous, primary),
 		CombineAlpha(state, textureColor, previous, primary));
 	return result;
@@ -166,26 +165,23 @@ float4 PSMain(PSInput input) : SV_TARGET
 	float4 primary = input.color;
 	if ((flags & 4) != 0)
 	{
+		// Direct3D 7 fixed-function lighting as SimGLDX7 set it up: specular disabled, a vertex without
+		// a normal gets no diffuse term, and the lit color clamps before texturing.
 		float4 ambientMaterial = (flags & 32) != 0 ? input.color : materialAmbient;
 		float4 diffuseMaterial = (flags & 64) != 0 ? input.color : materialDiffuse;
-		float3 normal = normalize(input.normal);
-		float3 view = normalize(-input.viewPosition);
-		primary = materialEmission + globalAmbient * ambientMaterial;
+		float3 normal = (flags & 128) != 0 ? normalize(input.normal) : 0.0f;
+		float3 lit = materialEmission.rgb + globalAmbient.rgb * ambientMaterial.rgb;
 		[loop] for (uint light = 0; light < 8; ++light)
 		{
 			if ((enabledLights & (1u << light)) == 0) continue;
 			float3 vectorToLight = lightPosition[light].w == 0.0f
 				? normalize(lightPosition[light].xyz)
 				: normalize(lightPosition[light].xyz / lightPosition[light].w - input.viewPosition);
-			float diffuse = saturate(dot(normal, vectorToLight));
-			float specular = diffuse > 0.0f
-				? pow(saturate(dot(normal, normalize(vectorToLight + view))), materialParameters.x) : 0.0f;
-			primary += lightAmbient[light] * ambientMaterial +
-				lightDiffuse[light] * diffuseMaterial * diffuse + lightSpecular[light] * materialSpecular * specular;
+			lit += lightAmbient[light].rgb * ambientMaterial.rgb +
+				lightDiffuse[light].rgb * diffuseMaterial.rgb * saturate(dot(normal, vectorToLight));
 		}
-		primary.a = diffuseMaterial.a;
+		primary = float4(saturate(lit), diffuseMaterial.a);
 	}
-	primary *= colorMultiplier;
 	float4 color = primary;
 	if ((flags & 1) != 0) color = ApplyStage(stage0, texture0.Sample(sampler0, input.texCoord0), color, primary);
 	if ((flags & 2) != 0) color = ApplyStage(stage1, texture1.Sample(sampler1, input.texCoord1), color, primary);
@@ -217,7 +213,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			float modelView[16];
 			float projection[16];
 			float normalMatrix[16];
-			float colorMultiplier[4];
 			uint32_t flags;
 			uint32_t alphaFunction;
 			float alphaReference;
@@ -235,7 +230,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			float textureMatrices[2][16];
 
 			struct StageConstants {
-				float environmentColor[4];
 				uint32_t modes[4];
 				uint32_t parameters0[4];
 				uint32_t parameters1[4];
@@ -243,6 +237,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 			float fogColor[4];
 			float fogParameters[4];
+			float textureFactor[4];
 		};
 
 		void MakeNormalMatrix(float const *m, float *out) {
@@ -624,8 +619,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 			samplers[stage] = textureStages[stage].sampler.Get();
 			flagInputs |= 1u << stage;
 		}
-		bool const lit = lightingEnabled && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0;
+		bool const lit = lightingEnabled;
 		if (lit) flagInputs |= 4;
+		if (lit && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) flagInputs |= 128;
 
 		// Setters mark the constants dirty; the only other inputs are bound textures and whether the vertex
 		// format carries normals, which can change without a setter and are compared here instead.
@@ -639,7 +635,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 				normalMatrixDirty = false;
 			}
 			memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
-			memcpy(constants.colorMultiplier, colorMultipliers, sizeof(constants.colorMultiplier));
 			constants.alphaFunction = alphaFunction;
 			constants.alphaReference = alphaReference;
 			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
@@ -657,7 +652,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 				TextureStageState const &source = textureStages[stageIndex];
 				DriverConstants::StageConstants &destination = constants.stages[stageIndex];
 				memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
-				memcpy(destination.environmentColor, source.environmentColor, sizeof(source.environmentColor));
 				destination.modes[0] = source.environmentMode;
 				destination.modes[1] = source.rgbMode;
 				destination.modes[2] = source.alphaMode;
@@ -671,7 +665,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 			if (lit) {
 				if (ambientVertexColors) constants.flags |= 32;
-				if (diffuseVertexColors) constants.flags |= 64;
+				if (diffuseFromVertex) constants.flags |= 64;
 				for (uint32_t light = 0; light < 8; ++light)
 					if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
 			}
@@ -681,6 +675,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			constants.fogParameters[1] = fogStart;
 			constants.fogParameters[2] = fogEnd;
 			constants.fogParameters[3] = static_cast<float>(fogMode);
+			memcpy(constants.textureFactor, textureFactor, sizeof(constants.textureFactor));
 
 			if (constantBufferCache.size() != sizeof(constants) ||
 			    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {

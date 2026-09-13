@@ -152,7 +152,6 @@ namespace nSCD3D11 {
 			uint8_t rgbParameters[3]{0x00, 0x01, 0x02};
 			uint8_t alphaParameters[3]{0x00, 0x01, 0x02};
 			uint32_t coordinateSource = 0;
-			float environmentColor[4]{};
 			float matrix[16]{};
 		};
 
@@ -316,7 +315,8 @@ namespace nSCD3D11 {
 		uint8_t alphaFunction;
 		float alphaReference;
 		uint8_t shadeModel;
-		float colorMultipliers[4];
+		// TexEnv color. SimGLDX7 stored it in D3DRS_TEXTUREFACTOR, shared by both stages.
+		float textureFactor[4];
 		uint8_t fogMode;
 		uint8_t fogSource;
 		float fogColor[4];
@@ -325,6 +325,8 @@ namespace nSCD3D11 {
 		float fogEnd;
 		bool ambientVertexColors;
 		bool diffuseVertexColors;
+		// D3DRS_DIFFUSEMATERIALSOURCE: AlphaMultiplier below 1 overrides diffuseVertexColors until reset.
+		bool diffuseFromVertex;
 		int32_t polygonOffset;
 		bool scissorEnabled;
 		bool lightingEnabled;

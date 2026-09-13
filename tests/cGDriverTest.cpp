@@ -422,6 +422,9 @@ namespace nSCD3D11 {
 		void NormalMatrixFollowsModelView() {
 			float const towardViewer[3]{0.0f, 0.0f, 1.0f};
 			float const turned[16]{-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1}; // 180 degrees about y
+			d.EnableLighting(true);
+			d.EnableLight(0, true);
+			d.EnableVertexColors(false, false);
 			d.LightDirection(0, towardViewer);
 			d.MatrixMode(0);
 			d.LoadIdentity();
@@ -443,6 +446,48 @@ namespace nSCD3D11 {
 			d.LoadIdentity();
 			DrawLit();
 			assert(Pixel(1, 1) == 0xffffffff);
+			d.EnableLighting(false);
+		}
+
+		// SimGLDX7 semantics: ColorMultiplier is the clamped D3D ambient, AlphaMultiplier replaces the vertex
+		// alpha, and the TexEnv color is one texture factor whichever stage is active when it is set.
+		void MatchesDirect3D7Lighting() {
+			d.EnableVertexColors(true, true);
+			d.ColorMultiplier(2.0f, 0.25f, -1.0f);
+			DrawFullscreen(255, 255, 255);
+			assert(Pixel(1, 1) == 0xff4000ff);
+			d.AlphaMultiplier(0.25f);
+			DrawFullscreen(255, 255, 255);
+			assert(Pixel(1, 1) == 0xff400040);
+			d.AlphaMultiplier(1.0f);
+			DrawFullscreen(255, 255, 255);
+			assert(Pixel(1, 1) == 0xff4000ff);
+			d.EnableLighting(false);
+
+			uint32_t const texture = static_cast<uint32_t>(d.CreateTexture(1, 4, 4, 1, 0));
+			cGDCombiner constant{};
+			constant.RGBParams[0].SourceType = 2;
+			constant.AlphaParams[0].SourceType = 2;
+			d.SetCombiner(constant, 0);
+			float const shadow[4]{0.0f, 0.25f, 1.0f, 1.0f};
+			d.TexStage(1);
+			d.TexEnv(0, 1, shadow);
+			d.TexStage(0);
+			ColorVertex const vertices[3]{
+				{{-1.0f, -1.0f, 0.0f}, {0, 0, 0, 255}},
+				{{3.0f, -1.0f, 0.0f}, {0, 0, 0, 255}},
+				{{-1.0f, 3.0f, 0.0f}, {0, 0, 0, 255}},
+			};
+			d.SetTexture(texture, 0);
+			d.Enable(kGDCapability_Texture2D);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
+			d.DrawArrays(0, 0, 3);
+			assert(Pixel(1, 1) == 0x0040ffff);
+
+			float const white[4]{1.0f, 1.0f, 1.0f, 1.0f};
+			d.TexEnv(0, 1, white);
+			d.TexEnv(0, 0, 1);
+			d.DeleteTextures(1, &texture);
 		}
 
 		struct FullVertex {
@@ -506,7 +551,7 @@ namespace nSCD3D11 {
 			CheckConstants("Fog(end)", [&] { d.Fog(4, &end); });
 			CheckConstants("ColorMultiplier", [&] { d.ColorMultiplier(0.5f, 0.25f, 0.125f); });
 			CheckConstants("AlphaMultiplier", [&] { d.AlphaMultiplier(0.25f); });
-			CheckConstants("EnableVertexColors", [&] { d.EnableVertexColors(true, false); });
+			CheckConstants("EnableVertexColors", [&] { d.EnableVertexColors(false, true); });
 			CheckConstants("LoadMatrix(model-view)", [&] { d.MatrixMode(0); d.LoadMatrix(scaled); });
 			CheckConstants("LoadIdentity(model-view)", [&] { d.LoadIdentity(); });
 			CheckConstants("LoadMatrix(projection)", [&] { d.MatrixMode(1); d.LoadMatrix(scaled); d.MatrixMode(0); });
@@ -566,8 +611,7 @@ namespace nSCD3D11 {
 
 			d.DeleteTextures(1, &texture);
 			d.Disable(kGDCapability_Fog);
-			d.ColorMultiplier(1.0f, 1.0f, 1.0f);
-			d.AlphaMultiplier(1.0f);
+			d.EnableLighting(false);
 		}
 
 		struct DeviceEvents {
@@ -775,6 +819,7 @@ namespace nSCD3D11 {
 			FrameCallbackCleanupOnlyWhenNeeded();
 			TextureUploadsHonorRowPitch();
 			NormalMatrixFollowsModelView();
+			MatchesDirect3D7Lighting();
 			ConstantsFollowEverySetter();
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();

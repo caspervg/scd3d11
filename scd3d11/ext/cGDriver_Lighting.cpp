@@ -11,6 +11,7 @@
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace nSCD3D11
@@ -29,12 +30,12 @@ namespace nSCD3D11
 		lightsEnabled[light] = enabled;
 	}
 
-	void cGDriver::LightModelAmbient(float red, float green, float blue, float alpha) {
+	// D3DRS_AMBIENT is a D3DCOLOR: clamped to [0, 1], alpha ignored.
+	void cGDriver::LightModelAmbient(float red, float green, float blue, float) {
 		constantsDirty = true;
-		globalAmbient[0] = red;
-		globalAmbient[1] = green;
-		globalAmbient[2] = blue;
-		globalAmbient[3] = alpha;
+		globalAmbient[0] = (std::clamp)(red, 0.0f, 1.0f);
+		globalAmbient[1] = (std::clamp)(green, 0.0f, 1.0f);
+		globalAmbient[2] = (std::clamp)(blue, 0.0f, 1.0f);
 	}
 
 	void cGDriver::LightColor(uint32_t light, uint32_t parameter, float const* color) {

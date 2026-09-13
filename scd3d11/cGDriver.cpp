@@ -121,19 +121,20 @@ namespace nSCD3D11 {
 	                       alphaFunction(7),
 	                       alphaReference(0.0f),
 	                       shadeModel(1),
-	                       colorMultipliers{1.0f, 1.0f, 1.0f, 1.0f},
+	                       textureFactor{1.0f, 1.0f, 1.0f, 1.0f},
 	                       fogMode(0),
 	                       fogSource(4),
 	                       fogColor{0.0f, 0.0f, 0.0f, 0.0f},
 	                       fogDensity(1.0f),
 	                       fogStart(0.0f),
 	                       fogEnd(1.0f),
-	                       ambientVertexColors(false),
-	                       diffuseVertexColors(false),
+	                       ambientVertexColors(true),
+	                       diffuseVertexColors(true),
+	                       diffuseFromVertex(true),
 	                       polygonOffset(0),
 	                       scissorEnabled(false),
-	                       lightingEnabled(true),
-	                       lightsEnabled{true},
+	                       lightingEnabled(false),
+	                       lightsEnabled{},
 	                       globalAmbient{0.0f, 0.0f, 0.0f, 1.0f},
 	                       lightAmbient{},
 	                       lightDiffuse{},
@@ -338,22 +339,30 @@ namespace nSCD3D11 {
 		}
 	}
 
+	// SimGLDX7 had no color multiplier: it switched on D3D lighting, set the material ambient to white
+	// and the multiplier became D3DRS_AMBIENT, the same state LightModelAmbient writes. Mirror that so
+	// the result clamps and follows the ambient material source the same way.
 	void cGDriver::ColorMultiplier(float r, float g, float b) {
 		constantsDirty = true;
-		colorMultipliers[0] = r;
-		colorMultipliers[1] = g;
-		colorMultipliers[2] = b;
+		lightingEnabled = true;
+		materialAmbient[0] = materialAmbient[1] = materialAmbient[2] = 1.0f;
+		LightModelAmbient(r, g, b, 1.0f);
 	}
 
+	// Material diffuse alpha; below 1 it also replaces the vertex alpha, as in SimGLDX7.
 	void cGDriver::AlphaMultiplier(float a) {
 		constantsDirty = true;
-		colorMultipliers[3] = a;
+		lightingEnabled = true;
+		materialDiffuse[3] = a;
+		if (a < 1.0f) diffuseFromVertex = false;
+		else if (diffuseVertexColors) diffuseFromVertex = true;
 	}
 
 	void cGDriver::EnableVertexColors(bool ambient, bool diffuse) {
 		constantsDirty = true;
 		ambientVertexColors = ambient;
 		diffuseVertexColors = diffuse;
+		diffuseFromVertex = diffuse;
 	}
 
 	void cGDriver::MatrixMode(GLenum mode) {

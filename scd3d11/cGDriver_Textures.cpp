@@ -292,8 +292,8 @@ namespace nSCD3D11 {
             SetLastError(DriverError::INVALID_VALUE);
             return;
         }
-        memcpy(textureStages[activeTextureStage].environmentColor, value,
-               sizeof(textureStages[activeTextureStage].environmentColor));
+        // Not per stage: SC4 often sets it while the other stage is active (e.g. terrain shadows).
+        memcpy(textureFactor, value, sizeof(textureFactor));
     }
 
     void cGDriver::TexParameter(uint32_t target, uint32_t parameter, int32_t value) {
