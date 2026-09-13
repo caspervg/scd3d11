@@ -94,6 +94,8 @@ namespace nSCD3D11 {
 		swapChainBuffer->GetDesc(&colorDescription);
 		colorDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
 		colorDescription.MiscFlags = 0;
+		// Typeless so ReShade can also get an sRGB view; copies to the UNORM swap chain buffer stay legal.
+		colorDescription.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
 		result = d3dDevice->CreateTexture2D(&colorDescription, nullptr, &backBuffer);
 		if (FAILED(result)) {
@@ -102,9 +104,17 @@ namespace nSCD3D11 {
 			return result;
 		}
 
-		result = d3dDevice->CreateRenderTargetView(backBuffer.Get(), nullptr, &renderTargetView);
+		D3D11_RENDER_TARGET_VIEW_DESC colorViewDescription{};
+		colorViewDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		colorViewDescription.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+		result = d3dDevice->CreateRenderTargetView(backBuffer.Get(), &colorViewDescription, &renderTargetView);
+		if (SUCCEEDED(result)) {
+			colorViewDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+			result = d3dDevice->CreateRenderTargetView(backBuffer.Get(), &colorViewDescription, &renderTargetViewSrgb);
+		}
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateRenderTargetView", result);
+			renderTargetView.Reset();
 			swapChainBuffer.Reset();
 			return result;
 		}
@@ -114,26 +124,41 @@ namespace nSCD3D11 {
 		depthDescription.Height = height;
 		depthDescription.MipLevels = 1;
 		depthDescription.ArraySize = 1;
-		depthDescription.Format = depthStencilFormat;
+		// Typeless with a shader view so the scene depth can be handed to ReShade.
+		bool const stencil = depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT;
+		depthDescription.Format = stencil ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_R32_TYPELESS;
 		depthDescription.SampleDesc.Count = 1;
 		depthDescription.Usage = D3D11_USAGE_DEFAULT;
-		depthDescription.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+		depthDescription.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
 
 		result = d3dDevice->CreateTexture2D(&depthDescription, nullptr, &depthStencilTexture);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(depth)", result);
+			renderTargetViewSrgb.Reset();
 			renderTargetView.Reset();
 			swapChainBuffer.Reset();
 			return result;
 		}
 
-		result = d3dDevice->CreateDepthStencilView(depthStencilTexture.Get(), nullptr, &depthStencilView);
+		D3D11_SHADER_RESOURCE_VIEW_DESC depthViewDescription{};
+		depthViewDescription.Format = stencil ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : DXGI_FORMAT_R32_FLOAT;
+		depthViewDescription.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		depthViewDescription.Texture2D.MipLevels = 1;
+		result = d3dDevice->CreateShaderResourceView(depthStencilTexture.Get(), &depthViewDescription, &depthShaderView);
+		if (FAILED(result)) LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateShaderResourceView(depth)", result);
+
+		D3D11_DEPTH_STENCIL_VIEW_DESC depthStencilDescription{};
+		depthStencilDescription.Format = depthStencilFormat;
+		depthStencilDescription.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+		result = d3dDevice->CreateDepthStencilView(depthStencilTexture.Get(), &depthStencilDescription, &depthStencilView);
 		// Window size changed; force the depth region scratch to be recreated at the new size.
 		depthRegionScratch.Reset();
 		depthRegionScratchValid = false;
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateDepthStencilView", result);
+			depthShaderView.Reset();
 			depthStencilTexture.Reset();
+			renderTargetViewSrgb.Reset();
 			renderTargetView.Reset();
 			swapChainBuffer.Reset();
 			return result;
@@ -142,6 +167,7 @@ namespace nSCD3D11 {
 		ID3D11RenderTargetView *renderTarget = renderTargetView.Get();
 		d3dContext->OMSetRenderTargets(1, &renderTarget, depthStencilView.Get());
 		backBufferTexture = backBuffer;
+		reshadeEffectsInBackBuffer = false;
 
 		windowWidth = static_cast<int>(width);
 		windowHeight = static_cast<int>(height);
@@ -185,7 +211,9 @@ namespace nSCD3D11 {
 		d3dContext->ClearState();
 		InvalidateD3D11StateCache();
 		depthStencilView.Reset();
+		depthShaderView.Reset();
 		depthStencilTexture.Reset();
+		renderTargetViewSrgb.Reset();
 		renderTargetView.Reset();
 		backBufferTexture.Reset();
 		swapChainBuffer.Reset();
@@ -307,6 +335,8 @@ namespace nSCD3D11 {
 			D3D_FEATURE_LEVEL_10_0
 		};
 
+		// ReShade creates its effect runtime alongside the swap chain, so the add-on must exist first.
+		InstallReShadeAddon();
 		Microsoft::WRL::ComPtr<IDXGIAdapter> const preferredAdapter = SelectAdapter();
 		auto createDevice = [&](D3D_FEATURE_LEVEL const *levels, UINT levelCount) {
 			swapChain.Reset();
@@ -449,6 +479,7 @@ namespace nSCD3D11 {
 		else SetViewport();
 
 		static bool const vsyncEnabled = std::strstr(GetCommandLineA(), "-VSync:off") == nullptr;
+		FinishReShadeFrame();
 		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
 		result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
 #ifndef NDEBUG

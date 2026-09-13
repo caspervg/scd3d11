@@ -25,15 +25,25 @@ int main() {
 	description.Height = 8;
 	description.MipLevels = 1;
 	description.ArraySize = 1;
-	description.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	// Same layout as the driver's depth buffer: typeless, bound for depth and sampled for ReShade.
+	description.Format = DXGI_FORMAT_R24G8_TYPELESS;
 	description.SampleDesc.Count = 1;
 	description.Usage = D3D11_USAGE_DEFAULT;
-	description.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+	description.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
 	ComPtr<ID3D11Texture2D> depth;
 	if (FAILED(device->CreateTexture2D(&description, nullptr, &depth))) return 2;
 
+	D3D11_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
+	depthViewDescription.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	depthViewDescription.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
 	ComPtr<ID3D11DepthStencilView> depthView;
-	if (FAILED(device->CreateDepthStencilView(depth.Get(), nullptr, &depthView))) return 3;
+	if (FAILED(device->CreateDepthStencilView(depth.Get(), &depthViewDescription, &depthView))) return 3;
+	D3D11_SHADER_RESOURCE_VIEW_DESC shaderViewDescription{};
+	shaderViewDescription.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+	shaderViewDescription.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	shaderViewDescription.Texture2D.MipLevels = 1;
+	ComPtr<ID3D11ShaderResourceView> shaderView;
+	if (FAILED(device->CreateShaderResourceView(depth.Get(), &shaderViewDescription, &shaderView))) return 3;
 	description.Format = DXGI_FORMAT_R24G8_TYPELESS;
 	description.BindFlags = 0;
 	ComPtr<ID3D11Texture2D> scratch;

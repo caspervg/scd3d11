@@ -160,6 +160,7 @@ namespace nSCD3D11 {
 
 	cGDriver::~cGDriver() {
 		Shutdown();
+		UninstallReShadeAddon();
 	}
 
 	uint32_t cGDriver::MakeVertexFormat(uint32_t, intptr_t gdElementTypePtr) {
@@ -191,6 +192,7 @@ namespace nSCD3D11 {
 
 		if (ClearsColor(mask) && renderTargetView) {
 			d3dContext->ClearRenderTargetView(renderTargetView.Get(), clearColor);
+			reshadeEffectsInBackBuffer = false;
 		}
 
 		UINT const depthStencilFlags = D3D11DepthStencilClearFlags(mask);

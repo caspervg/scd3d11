@@ -179,9 +179,25 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBufferTexture;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> swapChainBuffer;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
+		// sRGB view of backBufferTexture, for ReShade techniques that write with SRGBWriteEnable.
+		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetViewSrgb;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilTexture;
 		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilView;
+		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> depthShaderView;
 		DXGI_FORMAT depthStencilFormat;
+		// Scene depth re-encoded for ReShade's DEPTH semantic (see cGDriver_ReShade.cpp).
+		struct SceneDepthPipeline {
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> constants;
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+			Microsoft::WRL::ComPtr<ID3D11RenderTargetView> target;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+			float encodedFarPlane = 0.0f;
+		} sceneDepth;
+		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
+		bool reshadeEffectsInBackBuffer = false;
+		bool reshadeEffectsThisFrame = false;
 		// Plain (non-depth-stencil-bound) copy of the depth buffer; partial CopySubresourceRegion
 		// is illegal on D3D11_BIND_DEPTH_STENCIL resources, so depth region blits bounce through this.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthRegionScratch;
@@ -391,7 +407,18 @@ namespace nSCD3D11 {
 
 		int InitializeVideoModeVector(void);
 
+		void InstallReShadeAddon(void);
+
+		void UninstallReShadeAddon(void);
+
+		HRESULT UpdateSceneDepth(void);
+
+		void FinishReShadeFrame(void);
+
 	public:
+		// Called at the end of cSC43DRender::Draw: the city view is complete and no UI is drawn yet.
+		void RenderSceneEffects(void);
+
 		cGDriver();
 
 		virtual ~cGDriver() override;

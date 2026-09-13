@@ -199,10 +199,13 @@ namespace nSCD3D11 {
 		for (BufferRegionResource &region: bufferRegions) region.texture.Reset();
 		if (!preserveResources) bufferRegionFlags = 0;
 		depthStencilView.Reset();
+		depthShaderView.Reset();
 		depthStencilTexture.Reset();
+		renderTargetViewSrgb.Reset();
 		renderTargetView.Reset();
 		backBufferTexture.Reset();
 		swapChainBuffer.Reset();
+		sceneDepth = SceneDepthPipeline{};
 		blit = BlitPipeline{};
 		if (preserveResources) {
 			for (auto &entry: textures) {

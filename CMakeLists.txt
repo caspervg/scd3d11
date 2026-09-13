@@ -65,6 +65,7 @@ add_library(SCD3D11 SHARED
         scd3d11/cGDriver_Textures.cpp
         scd3d11/cGDriver_Unknown.cpp
         scd3d11/cGDriver_Blit.cpp
+        scd3d11/cGDriver_ReShade.cpp
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
@@ -83,7 +84,9 @@ add_library(SCD3D11 SHARED
 # SC4 loads the driver as SCD3D11.dll, so suppress CMake's "lib" prefix.
 set_target_properties(SCD3D11 PROPERTIES PREFIX "")
 
-target_include_directories(SCD3D11 PRIVATE "${PROJECT_SOURCE_DIR}/vendor/framework/include")
+target_include_directories(SCD3D11 PRIVATE
+        "${PROJECT_SOURCE_DIR}/vendor/framework/include"
+        "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
 target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version)
@@ -110,6 +113,11 @@ if (BUILD_TESTING)
     target_compile_definitions(D3D11ShaderCompileTest PRIVATE
             SC4D3D11_GEOMETRY_SOURCE="${PROJECT_SOURCE_DIR}/scd3d11/cGDriver_Geometry.cpp")
     target_link_libraries(D3D11ShaderCompileTest PRIVATE d3dcompiler)
+
+    scd3d11_add_test(ReShadeShaderCompileTest tests/D3D11ShaderCompileTest.cpp)
+    target_compile_definitions(ReShadeShaderCompileTest PRIVATE
+            SC4D3D11_GEOMETRY_SOURCE="${PROJECT_SOURCE_DIR}/scd3d11/cGDriver_ReShade.cpp")
+    target_link_libraries(ReShadeShaderCompileTest PRIVATE d3dcompiler)
 
     scd3d11_add_test(D3D11DepthRegionCopyTest tests/D3D11DepthRegionCopyTest.cpp)
     target_link_libraries(D3D11DepthRegionCopyTest PRIVATE d3d11)

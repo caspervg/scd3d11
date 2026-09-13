@@ -32,6 +32,7 @@ Added by SCD3D11:
 | `-ParallelCull:<mode>` | `parallel` | `parallel`, `serial`, `off` (also `0`, `false`), or diagnostics `passthru` / `tailonly`; see [Parallel render cull](#parallel-render-cull). The `SC4D3D11_PARALLEL_CULL` environment variable is used when the switch is absent |
 | `-SimTickCap:<ms>` | `32` | Per-tick simulation budget, clamped to `15`–`500`; `off` or `0` disables; see [Sim tick budget](#sim-tick-budget) |
 | `-GridDebug` | off | Log the texture state of the terrain grid pass once per second (`grid` category) |
+| `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to or that the scripts in `scripts/` use:
 
@@ -121,6 +122,22 @@ clamped to `15`–`500`; `-SimTickCap:off` or `-SimTickCap:0` disables the patch
 Lower values favour frame rate over sim speed.
 
 To confirm it engaged, check `SC4D3D11.log` for `sim tick budget installed: cap=32 ms`.
+
+## ReShade
+
+Install [ReShade](https://reshade.me) 6.0 or later for `SimCity 4.exe` and pick the **Direct3D 10/11/12** API. The
+regular build is enough; the "full add-on support" build is not needed. SCD3D11 registers itself with ReShade as an
+add-on and:
+
+- renders the effects as soon as the city view is drawn, so the UI stays sharp and untouched;
+- supplies the city's depth buffer, so depth effects (ambient occlusion, depth of field, fog) work without setting
+  anything up. SC4's camera is orthographic, and the depth is encoded to match whatever
+  `RESHADE_DEPTH_LINEARIZATION_FAR_PLANE` is set to. Leave the other `RESHADE_DEPTH_INPUT_*` definitions at `0`.
+
+In the ReShade overlay's Add-ons tab, disable **Generic Depth**; SCD3D11 overrides its choice anyway. Outside the city
+view (menus, region view) ReShade behaves as usual, except that effects can stay off in the region view after leaving
+a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for
+`reshade: add-on registered`; `-ReShade:off` turns the integration off.
 
 ## Diagnostics
 
