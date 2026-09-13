@@ -177,6 +177,10 @@ namespace nSCD3D11 {
 		bool deviceLost;
 		uint32_t deviceRecoveryFailures;
 		ULONGLONG nextDeviceRecovery;
+		// Last observed swap chain state, so only changes are logged.
+		HRESULT lastPresentResult = S_OK;
+		BOOL lastFullscreenState = FALSE;
+		bool presentationPaused = false;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
@@ -360,6 +364,7 @@ namespace nSCD3D11 {
 		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);
 
 		HRESULT ResizeBackBufferIfNeeded();
+		void FlushFrame();
 
 		bool RecoverD3D11Device();
 

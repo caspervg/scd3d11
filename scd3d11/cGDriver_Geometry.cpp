@@ -447,7 +447,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 					activeSegment = 0;
 				}
 				segment = &segments[activeSegment];
-				Log(LogCategory::Resource, "%s cache advanced to segment %u",
+				LogTrace(LogCategory::Resource, "%s cache advanced to segment %u",
 				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment);
 			}
 

@@ -33,6 +33,7 @@ Added by SCD3D11:
 | `-ParallelCull:<mode>` | `parallel` | `parallel`, `serial`, `off` (also `0`, `false`), or diagnostics `passthru` / `tailonly`; see [Parallel render cull](#parallel-render-cull). The `SC4D3D11_PARALLEL_CULL` environment variable is used when the switch is absent |
 | `-SimTickCap:<ms>` | `32` | Per-tick simulation budget, clamped to `15`–`500`; `off` or `0` disables; see [Sim tick budget](#sim-tick-budget) |
 | `-GridDebug` | off | Log the texture state of the terrain grid pass once per second (`grid` category) |
+| `-LogLevel:trace` | off | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
 | `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to or that the scripts in `scripts/` use:
@@ -143,8 +144,13 @@ a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for
 ## Diagnostics
 
 The driver writes `SC4D3D11.log` to the parent of the plugins folder holding `SCD3D11.dll` (normally
-`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`. The log is
-recreated each session. Debug builds also forward D3D11 debug-layer messages and record each newly observed
+`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`. The log is
+recreated each session.
+
+`window` records focus, activation, size, visibility and system-command messages on the game window (Alt+Tab and the
+Windows key included), and `swapchain` records changes in the Present result, paused presentation and the exclusive
+fullscreen state. A watchdog logs `watchdog: no frame for N ms` with the render thread's current phase, instruction
+pointer and likely return addresses when no frame completes for 5 seconds, and `watchdog: frames resumed` afterwards. Debug builds also forward D3D11 debug-layer messages and record each newly observed
 render-state, vertex-format and texture-format combination, tagged `state`.
 
 ## Third-party components
