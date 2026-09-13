@@ -215,11 +215,60 @@ namespace nSCD3D11 {
 			VirtualFree(noAccess, 0, MEM_RELEASE);
 		}
 
+		uint64_t VertexUploads() {
+			return d.vertexBufferCacheHits + d.vertexBufferCacheMisses;
+		}
+
+		void TerrainDrawsStayInReservation() {
+			uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+			uint32_t const capacity = d.MaxVertices(0);
+			d.Reset();
+
+			// Exact capacity, then continuations that would run or wrap past it.
+			assert(d.GetVertices(0, capacity) != 0);
+			assert(d.ContinueVertices(0, 1) == 0);
+			d.ReleaseVertices(0);
+			assert(d.GetVertices(0, 100) != 0);
+			assert(d.ContinueVertices(0, UINT32_MAX) == 0);
+			assert(d.ContinueVertices(0, UINT32_MAX - 98) == 0);
+			assert(d.ContinueVertices(0, capacity - 100) != 0);
+			assert(d.ContinueVertices(0, 1) == 0);
+			d.ReleaseVertices(0);
+
+			// A 100-vertex reservation in the middle of the backing store.
+			d.Reset();
+			assert(d.GetVertices(0, 50) != 0);
+			d.ReleaseVertices(0);
+			assert(d.GetVertices(0, 100) != 0);
+			uint64_t uploads = VertexUploads();
+			d.DrawPrims(0, 0, nullptr, 3 * stride);
+			assert(VertexUploads() == uploads); // still locked
+			d.ReleaseVertices(0);
+
+			d.DrawPrims(0, 0, nullptr, 101 * stride);
+			assert(VertexUploads() == uploads);
+			d.DrawPrims(0, 0, nullptr, 100 * stride);
+			assert(VertexUploads() == ++uploads);
+
+			uint16_t outside[]{0, 1, 100};
+			d.DrawPrimsIndexed(0, 0, 3, outside);
+			assert(VertexUploads() == uploads);
+			outside[2] = 99;
+			d.DrawPrimsIndexed(0, 0, 3, outside);
+			assert(VertexUploads() == ++uploads);
+
+			d.Reset();
+			d.DrawPrims(0, 0, nullptr, 3 * stride);
+			d.DrawPrimsIndexed(0, 0, 3, outside);
+			assert(VertexUploads() == uploads);
+		}
+
 		int Run() {
 			DrawsGeometry();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();
 			OversizedInputsFailBeforeReading();
+			TerrainDrawsStayInReservation();
 			return 0;
 		}
 	};
