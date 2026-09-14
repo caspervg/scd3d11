@@ -134,12 +134,38 @@ add-on and:
 - renders the effects as soon as the city view is drawn, so the UI stays sharp and untouched;
 - supplies the city's depth buffer, so depth effects (ambient occlusion, depth of field, fog) work without setting
   anything up. SC4's camera is orthographic, and the depth is encoded to match whatever
-  `RESHADE_DEPTH_LINEARIZATION_FAR_PLANE` is set to. Leave the other `RESHADE_DEPTH_INPUT_*` definitions at `0`.
+  `RESHADE_DEPTH_LINEARIZATION_FAR_PLANE` is set to. Set `RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN`,
+  `RESHADE_DEPTH_INPUT_IS_REVERSED` and `RESHADE_DEPTH_INPUT_IS_LOGARITHMIC` to `0`; recent versions of `ReShade.fxh`
+  default the reversed one to `1`;
+- hands the city camera, the unencoded depth buffer and SC4's sun to effects written for SC4, so they can measure the
+  scene in meters at full depth precision and light it the way SC4 does;
+- switches SC4's own shadows off while an effect that draws its own is enabled (see below), and back on when it is
+  disabled or ReShade's effects are toggled off. Only the running game changes; SC4's saved shadow option does not.
 
 In the ReShade overlay's Add-ons tab, disable **Generic Depth**; SCD3D11 overrides its choice anyway. Outside the city
 view (menus, region view) ReShade behaves as usual, except that effects can stay off in the region view after leaving
 a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for
 `reshade: add-on registered`; `-ReShade:off` turns the integration off.
+
+The [`shaders`](shaders) folder holds effects made for this integration. Copy `SimCity4.fxh`, `SimCity4.fx` and
+`SimCity4Sunlight.fx` to `reshade-shaders\Shaders`; they need no depth settings. Enable any of these techniques, in this
+order (after SMAA, if you use it):
+
+- **SimCity 4 Sunlight** (`SimCity4Sunlight.fx`): dynamic sun shadows and sun rays in place of SC4's static shadows.
+  SC4 draws each building's shadow as a pre-rendered decal and bakes hill shadows into the terrain, all for one fixed
+  sun; while this technique is enabled those are gone and every building, tree and hill casts its shadow from the
+  scene itself, onto streets, lots, neighbours and slopes alike. **Sun** keeps SC4's sun (lower it for golden hour) or
+  moves it through the day: with SC4's clock, at a fixed time, or as a timelapse. Facades brighten and darken as the
+  sun comes round, the shade takes on the sky's blue, and haze over the city lights up in shafts between the towers,
+  most when looking towards a low sun.
+- **SimCity 4** (`SimCity4.fx`): ambient occlusion where buildings meet the ground and between towers, haze when zoomed
+  far out, a glow around lit windows at night, sharpening and color controls.
+- **SimCity 4 Miniature** (`SimCity4.fx`): tilt-shift depth of field focused on the mouse cursor, which makes the city
+  look like a scale model.
+
+Their Debug views show magenta when SCD3D11 did not provide the camera or sun. Preprocessor definitions trade quality
+for speed: `SC4_SHADOW_STEPS` (default `32`), `SC4_RAY_SAMPLES` (`10`) and `SC4_RAY_STEPS` (`16`) for the sunlight,
+`SC4_AO_SLICES` (`3`) and `SC4_AO_STEPS` (`8`) for the ambient occlusion.
 
 ## Diagnostics
 

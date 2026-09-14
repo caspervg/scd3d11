@@ -18,9 +18,17 @@
 //  - binds the scene depth to the DEPTH semantic, already encoded so that ReShade.fxh's perspective
 //    linearization turns it back into SC4's depth, which is linear because the camera is orthographic
 //    (cSC43DRender::UpdateCameraZoomAndRotationParams -> SetOrtho);
-//  - for effects written for SC4 (shaders/SimCity4.fx), binds the unencoded depth buffer to the SC4_DEPTH
-//    semantic and sets float4 uniforms annotated source = "scd3d11_ortho" to that camera's projection entries
-//    (P[0][0], P[1][1], P[2][2], P[3][2]), so they can measure the city in meters at full depth precision.
+//  - for effects written for SC4 (shaders/SimCity4*.fx), binds the unencoded depth buffer to the SC4_DEPTH
+//    semantic and sets float4 uniforms by their source annotation:
+//      scd3d11_ortho  the camera's projection entries P[0][0], P[1][1], P[2][2], P[3][2]
+//      scd3d11_sun    towards the sun along SC4's shadow direction, in view space; w: time of day in hours
+//      scd3d11_light  towards the sun SC4 lights terrain and models with, in view space
+//      scd3d11_up     world up in view space
+//    so they can measure the city in meters at full depth precision and light it like SC4 does;
+//  - while a technique annotated scd3d11_replaces_shadows = true is enabled, skips SC4's own shadows: the
+//    shadow decals cSTEOverlayManager::DrawOverlays draws on the terrain for buildings, flora and networks, and
+//    the hill shadows cSC4LightingManager bakes into the terrain colors. Only memory is changed, never SC4's
+//    saved shadow option.
 // Only effect runtime events and calls are used. ReShade's regular build (not only the "full add-on
 // support" one) allows those for externally registered add-ons. Requires ReShade 6.0 or later.
 // -ReShade:off on the command line leaves ReShade's default behaviour untouched.
@@ -32,6 +40,9 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 
+#include <cIGZMessage2Standard.h>
+#include <cIGZMessageServer2.h>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <d3dcompiler.h>
@@ -44,6 +55,34 @@ namespace nSCD3D11 {
 		// The cSC43DRender vtable slot for cSC43DRender::Draw, its only reference (SimCity 4 1.1.641).
 		constexpr uintptr_t kDrawSlotVA = 0x00ABABB4;
 		constexpr uintptr_t kDrawVA = 0x007CB530;
+		constexpr uintptr_t kForceFullRedrawVA = 0x007C7DD0;
+		// cSTEOverlayManager::DrawShadows and DrawShadowsRough draw the shadow decals: __thiscall, three stack
+		// arguments, both opening with a six byte sub esp, imm32. They are hooked at their entry rather than at
+		// their calls in DrawOverlays, which other plugins (sc4-render-services) retarget to wrappers that still
+		// end up in these functions.
+		constexpr uintptr_t kDrawShadowsVA = 0x00736BF0;
+		constexpr uintptr_t kDrawShadowsRoughVA = 0x00737870;
+		constexpr size_t kShadowEntryLength = 6;
+		constexpr uint8_t kDrawShadowsEntry[kShadowEntryLength]{0x81, 0xEC, 0xC4, 0x01, 0x00, 0x00};
+		constexpr uint8_t kDrawShadowsRoughEntry[kShadowEntryLength]{0x81, 0xEC, 0x9C, 0x00, 0x00, 0x00};
+		// cSC43DRender::GetLightingManager returns this field.
+		constexpr size_t kRenderLightingManager = 0x118;
+		// cSC4LightingManager fields. The directions are world space, turned along with the view like the
+		// buildings' pre-rendered lighting (DoZoomAndRotationChange).
+		constexpr size_t kLightingTimeOfDay = 0x1C;     // hours
+		constexpr size_t kLightingIsNight = 0x24;       // IsNight
+		constexpr size_t kLightingSunDirection = 0x58;  // GetColor lights normals facing along it
+		constexpr size_t kLightingShadowDirection = 0x64; // GetShadowDirection
+		constexpr size_t kLightingChangeData1 = 0xBC;   // sent with every lighting change message
+		constexpr size_t kLightingChangeData2 = 0xC0;
+		constexpr size_t kLightingHillShadows = 0x1D4;  // tested by GetTerrainVertexColors
+		// What cSC4LightingManager::DoMessage does when SC4's shadow quality changes (0xC9F775BB).
+		constexpr uintptr_t kDoZoomAndRotationChangeVA = 0x007DB840;
+		constexpr uintptr_t kViewUtilitiesPointerVA = 0x00B43DD8; // zoom at +0xC, rotation at +0x10
+		constexpr uintptr_t kMessageServerPointerVA = 0x00B43CCC;
+		constexpr uintptr_t kOperatorNewVA = 0x009133DA;
+		constexpr uintptr_t kMessageConstructorVA = 0x009134D6; // cRZMessage2Standard
+		constexpr uint32_t kLightingChangedMessage = 0xC9DA96EA; // the terrain relights itself on it
 
 		char const kShaderSource[] = R"(
 float4 VSMain(uint id : SV_VertexID) : SV_POSITION {
@@ -62,22 +101,172 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 )";
 
 		using DrawFunction = bool(__fastcall *)(void *self, void *edx);
+		using ForceFullRedrawFunction = void(__fastcall *)(void *self);
+		using DoZoomAndRotationChangeFunction = void(__fastcall *)(void *self, void *edx, uint32_t zoom, uint32_t rotation);
+		using OperatorNewFunction = void *(__cdecl *)(size_t size);
+		using MessageConstructorFunction = cIGZMessage2Standard *(__fastcall *)(void *self, void *edx);
+
+		enum class SceneValue { Ortho, Sun, Light, Up, Count };
+
+		struct SceneUniform {
+			reshade::api::effect_uniform_variable variable;
+			SceneValue value;
+		};
 
 		DrawFunction gOriginalDraw = nullptr;
+		// Where the shadow functions continue after their first instruction; read by the entry stubs.
+		uintptr_t gDrawShadowsBody = 0;
+		uintptr_t gDrawShadowsRoughBody = 0;
+		bool gShadowHooksInstalled = false;
 		cGDriver *gDriver = nullptr;
 		reshade::api::effect_runtime *gRuntime = nullptr;
 		ID3D11ShaderResourceView *gSceneDepthView = nullptr;
 		bool gDepthBound = false;
 		float gFarPlane = 1000.0f; // ReShade.fxh's default
-		std::vector<reshade::api::effect_uniform_variable> gOrthoUniforms;
+		std::vector<SceneUniform> gSceneUniforms;
+		std::vector<reshade::api::effect_technique> gShadowTechniques;
+		bool gShadowsReplaced = false;
+		uint8_t gSavedHillShadows = 0;
+
+		uintptr_t Rebase(uintptr_t address) {
+			return reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (address - kImageBase);
+		}
 
 		reshade::api::resource_view ViewHandle(ID3D11View *view) {
 			return reshade::api::resource_view{static_cast<uint64_t>(reinterpret_cast<uintptr_t>(view))};
 		}
 
+		uint8_t *LightingManager(void *render) {
+			return *reinterpret_cast<uint8_t **>(static_cast<uint8_t *>(render) + kRenderLightingManager);
+		}
+
+		// Replace the first instruction of DrawShadows / DrawShadowsRough: return at once while effects draw the
+		// shadows, otherwise run that instruction and continue into the function.
+		__declspec(naked) void DrawShadowsEntryStub() {
+			__asm {
+				cmp  byte ptr [gShadowsReplaced], 0
+				jne  skip
+				sub  esp, 0x1C4
+				jmp  dword ptr [gDrawShadowsBody]
+			skip:
+				ret  0x0C
+			}
+		}
+
+		__declspec(naked) void DrawShadowsRoughEntryStub() {
+			__asm {
+				cmp  byte ptr [gShadowsReplaced], 0
+				jne  skip
+				sub  esp, 0x9C
+				jmp  dword ptr [gDrawShadowsRoughBody]
+			skip:
+				ret  0x0C
+			}
+		}
+
+		void ForceFullRedraw(void *render) {
+			reinterpret_cast<ForceFullRedrawFunction>(Rebase(kForceFullRedrawVA))(render);
+		}
+
+		// SC4's own response to a change of its shadow quality: recompute the hill shadows for the current view,
+		// tell the terrain the lighting changed so it relights every cell, and redraw the city.
+		void RelightTerrain(void *render, uint8_t *lighting) {
+			auto const *const viewUtilities = *reinterpret_cast<uint8_t const **>(Rebase(kViewUtilitiesPointerVA));
+			auto *const messageServer = *reinterpret_cast<cIGZMessageServer2 **>(Rebase(kMessageServerPointerVA));
+			if (viewUtilities != nullptr && messageServer != nullptr) {
+				uint32_t zoom = 0;
+				uint32_t rotation = 0;
+				memcpy(&zoom, viewUtilities + 0xC, sizeof(zoom));
+				memcpy(&rotation, viewUtilities + 0x10, sizeof(rotation));
+				reinterpret_cast<DoZoomAndRotationChangeFunction>(Rebase(kDoZoomAndRotationChangeVA))(
+					lighting, nullptr, zoom, rotation);
+				// Allocated and constructed by SC4's own code, so its Release frees it with the matching heap.
+				if (void *const memory = reinterpret_cast<OperatorNewFunction>(Rebase(kOperatorNewVA))(0x2C)) {
+					cIGZMessage2Standard *const message =
+						reinterpret_cast<MessageConstructorFunction>(Rebase(kMessageConstructorVA))(memory, nullptr);
+					message->AddRef();
+					message->SetType(kLightingChangedMessage);
+					int32_t data = 0;
+					memcpy(&data, lighting + kLightingChangeData1, sizeof(data));
+					message->SetData1(data);
+					memcpy(&data, lighting + kLightingChangeData2, sizeof(data));
+					message->SetData2(data);
+					messageServer->MessageSend(message);
+					message->Release();
+				}
+			}
+			ForceFullRedraw(render);
+		}
+
+		// Keeps SC4's shadows off while an enabled technique draws its own.
+		void ReplaceStaticShadows(void *render) {
+			bool replace = false;
+			// Not while ReShade's effects toggle has every effect off, which would leave the city without shadows.
+			if (gRuntime != nullptr && gShadowHooksInstalled && gRuntime->get_effects_state()) {
+				for (reshade::api::effect_technique const technique: gShadowTechniques) {
+					replace = replace || gRuntime->get_technique_state(technique);
+				}
+			}
+			uint8_t *const lighting = LightingManager(render);
+			// Checked every frame: loading a city or changing SC4's shadow options turns hill shadows on again.
+			if (replace && lighting != nullptr && lighting[kLightingHillShadows] != 0) {
+				gSavedHillShadows = lighting[kLightingHillShadows];
+				lighting[kLightingHillShadows] = 0;
+				RelightTerrain(render, lighting);
+			}
+			if (replace == gShadowsReplaced) return;
+			gShadowsReplaced = replace;
+			if (!replace && lighting != nullptr && gSavedHillShadows != 0) {
+				lighting[kLightingHillShadows] = gSavedHillShadows;
+				gSavedHillShadows = 0;
+				RelightTerrain(render, lighting);
+			} else {
+				// The shadow decals are part of the static view in SC4's backing store.
+				ForceFullRedraw(render);
+			}
+			Log(LogCategory::Initialization, "reshade: SC4's static shadows %s", replace ? "replaced by effects" : "restored");
+		}
+
+		// Rotates a world direction into view space with the view the terrain was last drawn with.
+		bool ToViewSpace(float const *view, float const *world, float *out) {
+			for (int row = 0; row < 3; ++row) {
+				out[row] = view[row] * world[0] + view[row + 4] * world[1] + view[row + 8] * world[2];
+			}
+			float const length = std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+			if (!(length > 1e-6f)) return false;
+			for (int i = 0; i < 3; ++i) out[i] /= length;
+			return true;
+		}
+
+		bool TowardsSun(float const *view, uint8_t const *lighting, size_t field, float *out) {
+			float direction[3];
+			memcpy(direction, lighting + field, sizeof(direction));
+			// The sun is above the ground, whichever way round SC4 stores the vector.
+			if (direction[1] < 0.0f) for (float &component: direction) component = -component;
+			return ToViewSpace(view, direction, out);
+		}
+
+		void ReadSunlight(void *render, float const *view, float values[][4]) {
+			uint8_t const *const lighting = LightingManager(render);
+			float const worldUp[3]{0.0f, 1.0f, 0.0f};
+			float *const sun = values[static_cast<size_t>(SceneValue::Sun)];
+			float *const light = values[static_cast<size_t>(SceneValue::Light)];
+			float *const up = values[static_cast<size_t>(SceneValue::Up)];
+			if (lighting == nullptr || !ToViewSpace(view, worldUp, up) ||
+			    !TowardsSun(view, lighting, kLightingShadowDirection, sun) ||
+			    !TowardsSun(view, lighting, kLightingSunDirection, light)) {
+				memset(sun, 0, sizeof(values[0]) * 3);
+				return;
+			}
+			memcpy(&sun[3], lighting + kLightingTimeOfDay, sizeof(float));
+			light[3] = lighting[kLightingIsNight] != 0 ? 0.0f : 1.0f;
+			up[3] = 1.0f;
+		}
+
 		bool __fastcall DrawHook(void *self, void *edx) {
+			if (gDriver != nullptr) ReplaceStaticShadows(self);
 			bool const drawn = gOriginalDraw(self, edx);
-			if (drawn && gDriver != nullptr) gDriver->RenderSceneEffects();
+			if (drawn && gDriver != nullptr) gDriver->RenderSceneEffects(self);
 			return drawn;
 		}
 
@@ -88,13 +277,31 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				                       : 1000.0f;
 			gFarPlane = farPlane >= 1.0f ? farPlane : 1000.0f;
 			// Also raised right after effects are destroyed, which is when old handles must go.
-			gOrthoUniforms.clear();
+			gSceneUniforms.clear();
+			gShadowTechniques.clear();
 			runtime->enumerate_uniform_variables(nullptr, [](reshade::api::effect_runtime *runtime,
 			                                                 reshade::api::effect_uniform_variable variable) {
+				static constexpr struct {
+					char const *source;
+					SceneValue value;
+				} kSources[]{
+					{"scd3d11_ortho", SceneValue::Ortho}, {"scd3d11_sun", SceneValue::Sun},
+					{"scd3d11_light", SceneValue::Light}, {"scd3d11_up", SceneValue::Up}
+				};
 				char source[32]{};
 				if (!runtime->get_annotation_string_from_uniform_variable(variable, "source", source)) return;
 				if (std::strcmp(source, "bufready_depth") == 0) runtime->set_uniform_value_bool(variable, true);
-				else if (std::strcmp(source, "scd3d11_ortho") == 0) gOrthoUniforms.push_back(variable);
+				for (auto const &known: kSources) {
+					if (std::strcmp(source, known.source) == 0) gSceneUniforms.push_back({variable, known.value});
+				}
+			});
+			runtime->enumerate_techniques(nullptr, [](reshade::api::effect_runtime *runtime,
+			                                          reshade::api::effect_technique technique) {
+				bool replaces = false;
+				if (runtime->get_annotation_bool_from_technique(technique, "scd3d11_replaces_shadows", &replaces, 1) &&
+				    replaces) {
+					gShadowTechniques.push_back(technique);
+				}
 			});
 		}
 
@@ -107,7 +314,8 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		void OnDestroyEffectRuntime(reshade::api::effect_runtime *runtime) {
 			if (runtime != gRuntime) return;
 			gRuntime = nullptr;
-			gOrthoUniforms.clear();
+			gSceneUniforms.clear();
+			gShadowTechniques.clear();
 		}
 
 		// Runs inside render_effects, after ReShade's own Generic Depth add-on picked its depth buffer.
@@ -119,13 +327,33 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		}
 
 		bool PatchDrawSlot(void *replacement, void *expected) {
-			auto *const slot = reinterpret_cast<void **>(
-				reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawSlotVA - kImageBase));
+			auto *const slot = reinterpret_cast<void **>(Rebase(kDrawSlotVA));
 			DWORD protection = 0;
 			if (*slot != expected || !VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return false;
 			*slot = replacement;
 			VirtualProtect(slot, sizeof(*slot), protection, &protection);
 			return true;
+		}
+
+		bool EntryMatches(uintptr_t function, uint8_t const *expected) {
+			auto const *const entry = reinterpret_cast<uint8_t const *>(Rebase(function));
+			if (memcmp(entry, expected, kShadowEntryLength) == 0) return true;
+			Log(LogCategory::Initialization, "reshade: 0x%08X starts %02X %02X %02X %02X %02X %02X, expected %02X %02X %02X %02X %02X %02X",
+			    static_cast<unsigned>(function), entry[0], entry[1], entry[2], entry[3], entry[4], entry[5],
+			    expected[0], expected[1], expected[2], expected[3], expected[4], expected[5]);
+			return false;
+		}
+
+		void JumpFromEntry(uintptr_t function, void *stub) {
+			auto *const entry = reinterpret_cast<uint8_t *>(Rebase(function));
+			int32_t const displacement = static_cast<int32_t>(reinterpret_cast<uintptr_t>(stub) - (Rebase(function) + 5));
+			DWORD protection = 0;
+			VirtualProtect(entry, kShadowEntryLength, PAGE_EXECUTE_READWRITE, &protection);
+			entry[0] = 0xE9;
+			memcpy(entry + 1, &displacement, sizeof(displacement));
+			entry[5] = 0x90;
+			VirtualProtect(entry, kShadowEntryLength, protection, &protection);
+			FlushInstructionCache(GetCurrentProcess(), entry, kShadowEntryLength);
 		}
 	}
 
@@ -145,8 +373,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			return; // ReShade is not loaded, or is older than 6.0
 		}
 
-		auto const draw = reinterpret_cast<void *>(
-			reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawVA - kImageBase));
+		auto const draw = reinterpret_cast<void *>(Rebase(kDrawVA));
 		if (!PatchDrawSlot(reinterpret_cast<void *>(&DrawHook), draw)) {
 			Log(LogCategory::Initialization, "reshade: cSC43DRender::Draw not found, using ReShade's default rendering");
 			reshade::unregister_addon(module);
@@ -154,6 +381,15 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		}
 		gOriginalDraw = reinterpret_cast<DrawFunction>(draw);
 		gDriver = this;
+		if (EntryMatches(kDrawShadowsVA, kDrawShadowsEntry) && EntryMatches(kDrawShadowsRoughVA, kDrawShadowsRoughEntry)) {
+			gDrawShadowsBody = Rebase(kDrawShadowsVA) + kShadowEntryLength;
+			gDrawShadowsRoughBody = Rebase(kDrawShadowsRoughVA) + kShadowEntryLength;
+			JumpFromEntry(kDrawShadowsVA, reinterpret_cast<void *>(&DrawShadowsEntryStub));
+			JumpFromEntry(kDrawShadowsRoughVA, reinterpret_cast<void *>(&DrawShadowsRoughEntryStub));
+			gShadowHooksInstalled = true;
+		} else {
+			Log(LogCategory::Initialization, "reshade: shadow decal functions already modified, SC4's shadows cannot be replaced");
+		}
 
 		reshade::register_event<reshade::addon_event::init_effect_runtime>(&OnInitEffectRuntime);
 		reshade::register_event<reshade::addon_event::destroy_effect_runtime>(&OnDestroyEffectRuntime);
@@ -259,13 +495,16 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		return S_OK;
 	}
 
-	void cGDriver::RenderSceneEffects(void) {
+	void cGDriver::RenderSceneEffects(void *render) {
 		if (gRuntime == nullptr || !IsDeviceReady()) return;
 
 		gSceneDepthView = SUCCEEDED(UpdateSceneDepth()) ? sceneDepth.view.Get() : nullptr;
-		for (reshade::api::effect_uniform_variable const variable: gOrthoUniforms) {
-			gRuntime->set_uniform_value_float(variable, sceneProjection[0], sceneProjection[5], sceneProjection[10],
-			                                  sceneProjection[14]);
+		float values[static_cast<size_t>(SceneValue::Count)][4]{
+			{sceneProjection[0], sceneProjection[5], sceneProjection[10], sceneProjection[14]}
+		};
+		if (!gSceneUniforms.empty()) ReadSunlight(render, sceneView, values);
+		for (SceneUniform const &uniform: gSceneUniforms) {
+			gRuntime->set_uniform_value_float(uniform.variable, values[static_cast<size_t>(uniform.value)], 4);
 		}
 		// ReShade binds its own render targets for the effects, so the depth buffer is not an output meanwhile.
 		gRuntime->update_texture_bindings("SC4_DEPTH", ViewHandle(depthShaderView.Get()), ViewHandle(depthShaderView.Get()));
@@ -273,8 +512,8 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		gRuntime->render_effects(commands, ViewHandle(renderTargetView.Get()), ViewHandle(renderTargetViewSrgb.Get()));
 		gRuntime->update_texture_bindings("SC4_DEPTH", reshade::api::resource_view{0}, reshade::api::resource_view{0});
 		// Effects ReShade renders at Present outside the city view must not measure with this camera.
-		for (reshade::api::effect_uniform_variable const variable: gOrthoUniforms) {
-			gRuntime->set_uniform_value_float(variable, 0.0f, 0.0f, 0.0f, 0.0f);
+		for (SceneUniform const &uniform: gSceneUniforms) {
+			gRuntime->set_uniform_value_float(uniform.variable, 0.0f, 0.0f, 0.0f, 0.0f);
 		}
 		if (gDepthBound) {
 			// Never leave ReShade holding a view that a resize or device loss may release.

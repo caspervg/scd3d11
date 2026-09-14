@@ -99,6 +99,7 @@ namespace nSCD3D11 {
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
+			memcpy(sceneView, matrices[MODEL_VIEW], sizeof(sceneView));
 			d3dContext->Draw(byteSize / RZVertexFormatStride(interleavedFormat), 0);
 		}
 		interleavedFormat = previousFormat;
@@ -127,6 +128,7 @@ namespace nSCD3D11 {
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
+			memcpy(sceneView, matrices[MODEL_VIEW], sizeof(sceneView));
 			d3dContext->IASetIndexBuffer(
 				dynamicIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, dynamicIndexBufferOffset);
 			d3dContext->DrawIndexed(count, 0, 0);

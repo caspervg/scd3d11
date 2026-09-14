@@ -8,22 +8,16 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
-// Post-processing for SimCity 4's city view, built on what SCD3D11's ReShade integration guarantees:
-//  - The effects run before the UI, on a city view SC4 has redrawn completely (backing store restore or
-//    scroll shift, then the whole dynamic view), so no pixel is processed twice.
-//  - The city camera is orthographic and SCD3D11 hands over its projection (source = "scd3d11_ortho") and the
-//    unencoded depth buffer (SC4_DEPTH): depth is exact meters, every pixel covers the same ground and shares
-//    one view vector. Occlusion, haze and blur
-//    are measured in meters and keep their look across zoom levels. Scrolling moves the view by whole
-//    pixels, so these single-frame effects need no history to stay stable.
-//  - Buildings are pre-rendered with their lighting and lot shadows baked in, on coarse LOD meshes. Only the
-//    large-scale occlusion SC4 lacks is added: contact shadows where buildings meet the ground, dark streets
-//    between towers.
+// Ambience for SimCity 4's city view: ambient occlusion, haze, night light glow, sharpening and color, plus a
+// tilt-shift technique that turns the city into a scale model.
+//  - Buildings are pre-rendered with their lighting baked in, on coarse LOD meshes. The ambient occlusion adds
+//    only the large-scale occlusion SC4 lacks: contact shading where buildings meet the ground, dark streets
+//    between towers. Its radius is in meters, so it keeps its look across zoom levels.
 //  - At night the lit windows are the only light sources, so the glow follows the city's average brightness.
 //
-// Order in ReShade: SMAA (optional), SimCity 4, SimCity 4 Miniature.
+// Order in ReShade: SMAA (optional), SimCity 4 Sunlight (optional), SimCity 4, SimCity 4 Miniature.
 
-#include "ReShade.fxh"
+#include "SimCity4.fxh"
 
 #ifndef SC4_AO_SLICES
 	#define SC4_AO_SLICES 3 // Directions per pixel; the 4x4 denoise turns 3 into 48.
@@ -123,9 +117,6 @@ uniform int DebugView <
 	ui_type = "combo"; ui_items = "Image\0Ambient occlusion\0Normals\0Glow\0";
 > = 0;
 
-// Set by SCD3D11 while the city view renders: P[0][0], P[1][1], P[2][2], P[3][2] of the orthographic camera,
-// zero otherwise. No initializer, so ReShade's performance mode keeps it a runtime value.
-uniform float4 SC4Ortho < source = "scd3d11_ortho"; >;
 uniform float2 MousePoint < source = "mousepoint"; >;
 uniform float Timer < source = "timer"; >;
 
@@ -144,11 +135,6 @@ texture SC4Glow5Tex { Width = BUFFER_WIDTH / 32; Height = BUFFER_HEIGHT / 32; Fo
 texture SC4Glow6Tex { Width = BUFFER_WIDTH / 64; Height = BUFFER_HEIGHT / 64; Format = RGBA16F; };
 texture SC4BlurTex { Width = BUFFER_WIDTH / 2; Height = BUFFER_HEIGHT / 2; Format = RGBA16F; };
 
-// Bound by SCD3D11: the city's depth buffer as SC4 wrote it, without the encoding the DEPTH semantic carries.
-texture SC4DepthTex : SC4_DEPTH;
-
-sampler SC4Color { Texture = ReShade::BackBufferTex; SRGBTexture = true; };
-sampler SC4Depth { Texture = SC4DepthTex; MagFilter = POINT; MinFilter = POINT; MipFilter = POINT; };
 sampler SC4AO { Texture = SC4AOTex; };
 sampler SC4AOBlur { Texture = SC4AOBlurTex; };
 sampler SC4Scene { Texture = SC4SceneTex; };
@@ -163,90 +149,11 @@ sampler SC4Glow5 { Texture = SC4Glow5Tex; };
 sampler SC4Glow6 { Texture = SC4Glow6Tex; };
 sampler SC4Blur { Texture = SC4BlurTex; };
 
-static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
-static const float kPi = 3.14159265;
 static const int2 kHalfSize = int2(BUFFER_WIDTH / 2, BUFFER_HEIGHT / 2);
-static const float kBayer[16] = { 0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0 };
-
-bool HasCamera()
-{
-	return SC4Ortho.x != 0.0 && SC4Ortho.z != 0.0;
-}
-
-// D3D depth in [0, 1], at the depth buffer's full precision and independent of any RESHADE_DEPTH_* definition.
-float RawDepth(float2 uv)
-{
-	return tex2Dlod(SC4Depth, float4(uv, 0.0, 0.0)).x;
-}
-
-bool IsSky(float rawDepth)
-{
-	return rawDepth > 0.999999; // nothing drawn, past the edge of the city
-}
-
-// Meters along the view direction; orthographic, so nothing else depends on the pixel.
-float ViewDistance(float rawDepth)
-{
-	return (rawDepth * 2.0 - 1.0 - SC4Ortho.w) / abs(SC4Ortho.z);
-}
-
-float MetersPerPixel()
-{
-	return 2.0 / (abs(SC4Ortho.x) * BUFFER_WIDTH);
-}
-
-// Camera space in meters: x right, y down like texcoords, z away from the camera.
-float3 CameraPosition(float2 uv)
-{
-	return float3(uv * (2.0 / abs(SC4Ortho.xy)), ViewDistance(RawDepth(uv)));
-}
-
-float2 TexelCenter(float2 uv)
-{
-	return (min(floor(saturate(uv) * BUFFER_SCREEN_SIZE), BUFFER_SCREEN_SIZE - 1.0) + 0.5) * BUFFER_PIXEL_SIZE;
-}
-
-// Faces the camera (negative z). Differentiates towards whichever neighbour lies on the same surface.
-float3 CameraNormal(float2 uv, float3 center)
-{
-	float3 left = CameraPosition(uv - float2(BUFFER_RCP_WIDTH, 0.0));
-	float3 right = CameraPosition(uv + float2(BUFFER_RCP_WIDTH, 0.0));
-	float3 up = CameraPosition(uv - float2(0.0, BUFFER_RCP_HEIGHT));
-	float3 down = CameraPosition(uv + float2(0.0, BUFFER_RCP_HEIGHT));
-	float3 dx = abs(right.z - center.z) < abs(center.z - left.z) ? right - center : center - left;
-	float3 dy = abs(down.z - center.z) < abs(center.z - up.z) ? down - center : center - up;
-	return normalize(cross(dy, dx));
-}
-
-// A half resolution pixel stands for the full resolution texel at its top-left.
-float2 HalfTexelUV(int2 halfPixel)
-{
-	return (float2(halfPixel * 2) + 0.5) * BUFFER_PIXEL_SIZE;
-}
-
-float HalfViewDistance(int2 halfPixel)
-{
-	return ViewDistance(RawDepth(HalfTexelUV(halfPixel)));
-}
-
-float Bayer(int2 pixel)
-{
-	return (kBayer[(pixel.y & 3) * 4 + (pixel.x & 3)] + 0.5) / 16.0;
-}
-
-float3 LinearToSRGB(float3 color)
-{
-	return lerp(12.92 * color, 1.055 * pow(color, 1.0 / 2.4) - 0.055, step(0.0031308, color));
-}
 
 float4 ReadState()
 {
 	return tex2Dfetch(SC4State, int2(0, 0));
-}
-
-float Daylight(float averageLuminance)
-{
-	return smoothstep(0.04, 0.10, averageLuminance);
 }
 
 // ---- State ----------------------------------------------------------------------------------------------
@@ -276,7 +183,7 @@ float4 PS_State(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_
 			GroundDistance(float2(0.9, 0.98), -1e9));
 		target.b = reference < -1e8 ? previous.b : reference;
 		// Zooming or rotating shifts every distance at once; easing the haze through that would flash.
-		snapReference = abs(target.b - previous.b) > 0.5 / abs(SC4Ortho.y) ? 1.0 : 0.0;
+		snapReference = abs(target.b - previous.b) > 0.25 * ScreenMeters().y ? 1.0 : 0.0;
 	}
 
 	float4 state = lerp(previous, target, blend);
@@ -303,11 +210,11 @@ float PS_AO(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_Targ
 	if (!HasCamera() || AoStrength <= 0.0) return 1.0;
 
 	int2 pixel = int2(position.xy);
-	float2 uv = HalfTexelUV(pixel);
+	float2 uv = CoarseTexelUV(pixel, 2);
 	float raw = RawDepth(uv);
 	if (IsSky(raw)) return 1.0;
 
-	float3 center = float3(uv * (2.0 / abs(SC4Ortho.xy)), ViewDistance(raw));
+	float3 center = float3(uv * ScreenMeters(), ViewDistance(raw));
 	float3 normal = CameraNormal(uv, center);
 	float radiusPixels = min(AoRadius / MetersPerPixel(), BUFFER_HEIGHT * 0.1);
 	if (radiusPixels < 2.0) return 1.0;
@@ -351,43 +258,7 @@ float PS_AO(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_Targ
 
 float PS_AODenoise(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_Target
 {
-	if (!HasCamera()) return 1.0;
-
-	int2 pixel = int2(position.xy);
-	float center = HalfViewDistance(pixel);
-	float tolerance = MetersPerPixel() * 8.0;
-	float sum = 0.0;
-	float weight = 0.0;
-	// A 4x4 window holds each entry of the 4x4 jitter pattern exactly once.
-	for (int y = -2; y < 2; y++)
-	for (int x = -2; x < 2; x++)
-	{
-		int2 tap = clamp(pixel + int2(x, y), int2(0, 0), kHalfSize - 1);
-		float w = saturate(1.0 - abs(HalfViewDistance(tap) - center) / tolerance) + 0.001;
-		sum += tex2Dfetch(SC4AO, tap).r * w;
-		weight += w;
-	}
-	return sum / weight;
-}
-
-float UpsampledAO(float2 pixelCenter, float viewDistance)
-{
-	float2 halfPosition = pixelCenter * 0.5 - 0.25;
-	int2 base = int2(floor(halfPosition));
-	float2 f = halfPosition - float2(base);
-	float tolerance = MetersPerPixel() * 4.0;
-	float sum = 0.0;
-	float weight = 0.0;
-	for (int y = 0; y < 2; y++)
-	for (int x = 0; x < 2; x++)
-	{
-		int2 tap = clamp(base + int2(x, y), int2(0, 0), kHalfSize - 1);
-		float bilinear = (x == 0 ? 1.0 - f.x : f.x) * (y == 0 ? 1.0 - f.y : f.y);
-		float w = bilinear * (saturate(1.0 - abs(HalfViewDistance(tap) - viewDistance) / tolerance) + 0.001);
-		sum += tex2Dfetch(SC4AOBlur, tap).r * w;
-		weight += w;
-	}
-	return sum / max(weight, 0.0001);
+	return HasCamera() ? Denoise(SC4AO, int2(position.xy), 2, kHalfSize) : 1.0;
 }
 
 // Light bouncing between surfaces brightens occlusion on bright materials (Jimenez et al. 2016).
@@ -411,7 +282,7 @@ float4 PS_Scene(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_
 	float4 state = ReadState();
 	float average = exp2(state.r);
 
-	float visibility = pow(saturate(UpsampledAO(position.xy, viewDistance)), AoStrength);
+	float visibility = pow(saturate(Upsample(SC4AOBlur, position.xy, viewDistance, 2, kHalfSize)), AoStrength);
 	// Lit windows at night are light sources, not surfaces in the shade.
 	float emissive = smoothstep(average * 6.0, average * 16.0, dot(color, kLuma));
 	color *= lerp(MultiBounce(visibility, color), 1.0, emissive);
@@ -423,7 +294,7 @@ float4 PS_Scene(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_
 
 float PS_Luminance(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_Target
 {
-	return log2(dot(tex2D(SC4Scene, texcoord).rgb, kLuma) + 0.0001);
+	return LogLuminance(texcoord);
 }
 
 // ---- Glow -----------------------------------------------------------------------------------------------
@@ -462,7 +333,7 @@ float3 Downsample(sampler source, float2 uv, float2 texel)
 	return center * 0.125 + inner * 0.125 + edges * 0.0625 + corners * 0.03125;
 }
 
-float3 Upsample(sampler source, float2 uv, float2 texel)
+float3 UpsampleTent(sampler source, float2 uv, float2 texel)
 {
 	float3 center = tex2D(source, uv).rgb * 4.0;
 	float3 edges = tex2D(source, uv + texel * float2(0.0, -1.0)).rgb + tex2D(source, uv + texel * float2(-1.0, 0.0)).rgb
@@ -478,11 +349,11 @@ float4 PS_Glow4(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { retu
 float4 PS_Glow5(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Downsample(SC4Glow4, uv, 16.0 * BUFFER_PIXEL_SIZE), 1.0); }
 float4 PS_Glow6(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Downsample(SC4Glow5, uv, 32.0 * BUFFER_PIXEL_SIZE), 1.0); }
 // Added onto the next finer level, which ends up holding the sum of all six.
-float4 PS_Glow5Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Upsample(SC4Glow6, uv, 64.0 * BUFFER_PIXEL_SIZE), 0.0); }
-float4 PS_Glow4Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Upsample(SC4Glow5, uv, 32.0 * BUFFER_PIXEL_SIZE), 0.0); }
-float4 PS_Glow3Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Upsample(SC4Glow4, uv, 16.0 * BUFFER_PIXEL_SIZE), 0.0); }
-float4 PS_Glow2Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Upsample(SC4Glow3, uv, 8.0 * BUFFER_PIXEL_SIZE), 0.0); }
-float4 PS_Glow1Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(Upsample(SC4Glow2, uv, 4.0 * BUFFER_PIXEL_SIZE), 0.0); }
+float4 PS_Glow5Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(UpsampleTent(SC4Glow6, uv, 64.0 * BUFFER_PIXEL_SIZE), 0.0); }
+float4 PS_Glow4Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(UpsampleTent(SC4Glow5, uv, 32.0 * BUFFER_PIXEL_SIZE), 0.0); }
+float4 PS_Glow3Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(UpsampleTent(SC4Glow4, uv, 16.0 * BUFFER_PIXEL_SIZE), 0.0); }
+float4 PS_Glow2Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(UpsampleTent(SC4Glow3, uv, 8.0 * BUFFER_PIXEL_SIZE), 0.0); }
+float4 PS_Glow1Up(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target { return float4(UpsampleTent(SC4Glow2, uv, 4.0 * BUFFER_PIXEL_SIZE), 0.0); }
 
 // ---- Final image ----------------------------------------------------------------------------------------
 
@@ -530,14 +401,14 @@ float4 PS_Final(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_
 	color = lerp(color, 1.0 - 0.05 * exp((0.95 - color) / 0.05), step(0.95, color));
 	color *= 1.0 - Vignette * smoothstep(0.4, 1.2, length((texcoord - 0.5) * float2(BUFFER_ASPECT_RATIO, 1.0)));
 
-	if (DebugView != 0 && !HasCamera())
+	if (DebugView != 0 && DebugView != 3 && !HasCamera())
 	{
 		color = float3(1.0, 0.0, 1.0);
 	}
 	else if (DebugView == 1)
 	{
 		float raw = RawDepth(texcoord);
-		color = IsSky(raw) ? 1.0 : pow(saturate(UpsampledAO(position.xy, ViewDistance(raw))), AoStrength);
+		color = IsSky(raw) ? 1.0 : pow(saturate(Upsample(SC4AOBlur, position.xy, ViewDistance(raw), 2, kHalfSize)), AoStrength);
 	}
 	else if (DebugView == 2)
 	{
@@ -560,7 +431,7 @@ float4 PS_Final(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_
 float BlurRadius(float2 uv, float focus)
 {
 	float raw = RawDepth(uv);
-	float relative = IsSky(raw) ? 1.0 : (ViewDistance(raw) - focus) * abs(SC4Ortho.y) * 0.5;
+	float relative = IsSky(raw) ? 1.0 : (ViewDistance(raw) - focus) / ScreenMeters().y;
 	return sign(relative) * saturate((abs(relative) - FocusBand) * 4.0) * BUFFER_HEIGHT * 0.025 * MiniatureBlur;
 }
 

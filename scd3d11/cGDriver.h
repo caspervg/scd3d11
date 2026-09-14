@@ -212,6 +212,9 @@ namespace nSCD3D11 {
 		// Projection of the last depth-writing draw: SC4's city camera. cSC43DRender::Draw switches to its UI camera
 		// before the ReShade effects run, so matrices[PROJECTION] no longer holds it by then.
 		float sceneProjection[16]{};
+		// Model-view of the last terrain draw, which SC4 makes with the bare camera view (SC4DrawContext::
+		// ResetModelViewTransform): its rotation turns SC4's world space sun into view space for the effects.
+		float sceneView[16]{};
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;
@@ -473,8 +476,9 @@ namespace nSCD3D11 {
 		void FinishReShadeFrame(void);
 
 	public:
-		// Called at the end of cSC43DRender::Draw: the city view is complete and no UI is drawn yet.
-		void RenderSceneEffects(void);
+		// Called at the end of cSC43DRender::Draw, with that cSC43DRender: the city view is complete and no UI is
+		// drawn yet.
+		void RenderSceneEffects(void *render);
 
 		cGDriver();
 
