@@ -24,7 +24,6 @@ namespace nSCD3D11 {
         appliedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
         appliedTextureViews[0] = appliedTextureViews[1] = nullptr;
         appliedSamplers[0] = appliedSamplers[1] = nullptr;
-        constantBufferCache.clear();
     }
 
     bool cGDriver::ApplyRenderStates() {

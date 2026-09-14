@@ -14,6 +14,9 @@
 #include <vector>
 #include <d3d11.h>
 
+#define XXH_STATIC_LINKING_ONLY
+#include <xxhash.h>
+
 namespace nSCD3D11 {
     constexpr bool ClearsColor(uint32_t mask) {
         return (mask & 0x4000) != 0;
@@ -28,6 +31,16 @@ namespace nSCD3D11 {
         return targetHeight - y - height;
     }
 
+    // Whether [offset, offset + size) lies within [0, limit), without overflowing. Negative signed
+    // arguments convert to huge values and fail.
+    constexpr bool RangeFits(uint64_t offset, uint64_t size, uint64_t limit) {
+        return size <= limit && offset <= limit - size;
+    }
+
+    // Whether source rows starting at base stay inside the address space: every row but the last
+    // advances rowPitch bytes, and lastRowBytes are read from the last one.
+    bool SourceSpanFits(void const *base, uint64_t rows, uint64_t rowPitch, uint64_t lastRowBytes);
+
     struct D3D11Vertex {
         float position[3];
         float normal[3];
@@ -35,7 +48,34 @@ namespace nSCD3D11 {
         float texCoord[2][2];
     };
 
-    uint64_t HashBytes(void const *data, size_t size, uint64_t hash = 14695981039346656037ull);
+    // Identifies uploaded geometry. The digest alone never decides a match: count and format say how
+    // the bytes are interpreted, and generation keys (a reservation generation, not a content hash)
+    // live in a separate key space from content keys. Content digests are XXH3-128; a match is still
+    // only overwhelmingly likely, not proof, that the contents are equal.
+    struct GeometryCacheKey {
+        XXH128_hash_t digest{};
+        uint32_t count = 0;
+        uint32_t format = 0; // SimGL vertex format or DXGI index format
+        bool generation = false;
+
+        bool operator==(GeometryCacheKey const &other) const {
+            return XXH128_isEqual(digest, other.digest) && count == other.count && format == other.format &&
+                   generation == other.generation;
+        }
+    };
+
+    struct GeometryCacheKeyHash {
+        size_t operator()(GeometryCacheKey const &key) const {
+            return static_cast<size_t>(key.digest.low64 ^ key.digest.high64);
+        }
+    };
+
+    // The only way index keys are built: format, count and the exact bytes uploaded.
+    GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count);
+
+    // Content key of interleaved vertices. Only the bytes the format consumes are hashed, so padding
+    // between strided vertices never affects it and packed and padded copies of a mesh share a key.
+    GeometryCacheKey VertexCacheKey(uint32_t format, uint32_t stride, void const *vertices, uint32_t count);
 
     bool IsSupportedVertexFormat(uint32_t format);
 

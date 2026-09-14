@@ -171,7 +171,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
-		if (!IsDeviceReady()) return;
+		if (!IsDeviceReady() || deviceLost) return;
 
 		uint32_t const pixelBytes = TextureSourcePixelBytes(format, type);
 		if (pixelBytes == 0 || pixelBytes > 4) {
@@ -297,7 +297,11 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			{{left, top}, {0.0f, 0.0f}}, {{right, top}, {u, 0.0f}},
 			{{left, bottom}, {0.0f, v}}, {{right, bottom}, {u, v}},
 		};
-		if (FAILED(d3dContext->Map(blit.vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+		HRESULT const mapResult = d3dContext->Map(blit.vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+		if (FAILED(mapResult)) {
+			NoteDeviceLoss(mapResult);
+			return;
+		}
 		std::memcpy(mapped.pData, vertices, sizeof(vertices));
 		d3dContext->Unmap(blit.vertexBuffer.Get(), 0);
 

@@ -38,6 +38,8 @@ namespace nSCD3D11 {
 	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 8;
 	constexpr size_t CONSTANT_BUFFER_COUNT = 8;
 
+	struct cGDriverTestAccess;
+
 	class cGDriver final :
 			public cIGZGDriver,
 			public cIGZGBufferRegionExtension,
@@ -45,6 +47,8 @@ namespace nSCD3D11 {
 			public cIGZGDriverVertexBufferExtension,
 			public cIGZGSnapshotExtension,
 			public cRZRefCount {
+		friend struct cGDriverTestAccess;
+
 	private:
 		enum class DriverError {
 			OK = 0,
@@ -148,7 +152,6 @@ namespace nSCD3D11 {
 			uint8_t rgbParameters[3]{0x00, 0x01, 0x02};
 			uint8_t alphaParameters[3]{0x00, 0x01, 0x02};
 			uint32_t coordinateSource = 0;
-			float environmentColor[4]{};
 			float matrix[16]{};
 		};
 
@@ -157,21 +160,32 @@ namespace nSCD3D11 {
 			uint32_t offset;
 		};
 
+		using GeometryCache = std::unordered_map<GeometryCacheKey, GeometryCacheEntry, GeometryCacheKeyHash>;
+
 		struct GeometryCacheSegment {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
 			uint32_t capacity = 0;
 			uint32_t cursor = 0;
-			std::vector<uint64_t> keys;
+			std::vector<GeometryCacheKey> keys;
 		};
 
 		void *windowHandle;
 		void *windowProcedure;
 		bool showDriverWindow;
 		bool recoveringDevice;
+		bool deviceLost;
+		uint32_t deviceRecoveryFailures;
+		ULONGLONG nextDeviceRecovery;
+		// Last observed swap chain state, so only changes are logged.
+		HRESULT lastPresentResult = S_OK;
+		BOOL lastFullscreenState = FALSE;
+		bool presentationPaused = false;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
 		PresentationMode presentationMode;
+		// Off with -FlipModel:off.
+		bool preferFlipModel;
 		UINT swapChainFlags;
 		// SC4 redraws only dirty rectangles and expects the back buffer to survive Present. DISCARD
 		// swap chains give no such guarantee (exclusive fullscreen really flips), so the game renders
@@ -221,8 +235,8 @@ namespace nSCD3D11 {
 		uint32_t dynamicIndexBufferOffset;
 		ID3D11Buffer *appliedVertexBuffer;
 		uint32_t appliedVertexBufferOffset;
-		std::unordered_map<uint64_t, GeometryCacheEntry> vertexBufferCache;
-		std::unordered_map<uint64_t, GeometryCacheEntry> indexBufferCache;
+		GeometryCache vertexBufferCache;
+		GeometryCache indexBufferCache;
 		uint64_t vertexBufferCacheHits;
 		uint64_t vertexBufferCacheMisses;
 		uint64_t indexBufferCacheHits;
@@ -237,11 +251,20 @@ namespace nSCD3D11 {
 		uint8_t const *interleavedPointer;
 		uint8_t activeMatrixMode;
 		float matrices[2][16];
+		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
+		float normalMatrix[16];
+		bool normalMatrixDirty;
 		std::vector<D3D11Vertex> vertexScratch;
 		std::vector<uint32_t> sourceIndexScratch;
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
+		// The constants last uploaded to transformBuffers[activeTransformBuffer]. Losing the binding
+		// (ClearState) keeps them valid; only destroying the buffers clears this.
 		std::vector<uint8_t> constantBufferCache;
+		// Set by every setter feeding the shader constants.
+		bool constantsDirty;
+		// Texture and lighting flag inputs the cached constants were built with.
+		uint32_t constantsFlagInputs;
 		std::vector<uint8_t> extensionVertexData;
 		uint32_t extensionVertexCursor;
 		uint32_t extensionVertexStart;
@@ -292,7 +315,8 @@ namespace nSCD3D11 {
 		uint8_t alphaFunction;
 		float alphaReference;
 		uint8_t shadeModel;
-		float colorMultipliers[4];
+		// TexEnv color. SimGLDX7 stored it in D3DRS_TEXTUREFACTOR, shared by both stages.
+		float textureFactor[4];
 		uint8_t fogMode;
 		uint8_t fogSource;
 		float fogColor[4];
@@ -301,6 +325,8 @@ namespace nSCD3D11 {
 		float fogEnd;
 		bool ambientVertexColors;
 		bool diffuseVertexColors;
+		// D3DRS_DIFFUSEMATERIALSOURCE: AlphaMultiplier below 1 overrides diffuseVertexColors until reset.
+		bool diffuseFromVertex;
 		int32_t polygonOffset;
 		bool scissorEnabled;
 		bool lightingEnabled;
@@ -340,15 +366,40 @@ namespace nSCD3D11 {
 		HRESULT CreateBackBufferTargets(uint32_t width, uint32_t height);
 
 		HRESULT ResizeBackBufferIfNeeded();
+		void FlushFrame();
 
 		bool RecoverD3D11Device();
+
+		// Records a failed D3D11 result; returns whether it means the device is gone. Recovery then
+		// waits for the next frame boundary (Flush), with backoff between failed attempts.
+		bool NoteDeviceLoss(HRESULT result);
+
+		void RecoverFromDeviceLoss();
+
+		enum FaultPoint { FAULT_RESIZE, FAULT_MAP, FAULT_PRESENT, FAULT_ALLOCATE, FAULT_POINT_COUNT };
+#ifdef SCD3D11_TESTING
+		struct InjectedFault {
+			HRESULT result = S_OK;
+			uint32_t remaining = 0;
+		} injectedFaults[FAULT_POINT_COUNT];
+
+		HRESULT TakeInjectedFault(FaultPoint point) {
+			InjectedFault &fault = injectedFaults[point];
+			if (fault.remaining == 0) return S_OK;
+			--fault.remaining;
+			return fault.result;
+		}
+#else
+		// The tests make D3D11 calls at these boundaries fail; the DLL never does.
+		static HRESULT TakeInjectedFault(FaultPoint) { return S_OK; }
+#endif
 
 		HRESULT CreateGeometryPipeline();
 
 		bool UseCachedBuffer(
 			GeometryCacheSegment *segments,
-			std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
-			uint64_t key,
+			GeometryCache &cache,
+			GeometryCacheKey const &key,
 			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 			uint32_t &offset,
 			uint32_t bindFlags);
@@ -356,13 +407,16 @@ namespace nSCD3D11 {
 		bool UploadCachedBuffer(
 			GeometryCacheSegment *segments,
 			uint8_t &activeSegment,
-			std::unordered_map<uint64_t, GeometryCacheEntry> &cache,
-			uint64_t key,
+			GeometryCache &cache,
+			GeometryCacheKey const &key,
 			uint32_t requiredSize,
 			uint32_t bindFlags,
 			void const *data,
 			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 			uint32_t &offset);
+
+		// Forgets a segment's cache entries; release also frees its buffer and bookkeeping.
+		void ClearCacheSegment(GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release);
 
 		bool UploadVertices(uint32_t first, uint32_t count);
 

@@ -34,5 +34,6 @@ extern "C" __declspec(dllexport) BOOL __stdcall SCD3D11UnregisterFrameCallback(
 namespace nSCD3D11
 {
 	uint32_t NextD3D11DeviceGeneration();
-	void InvokeD3D11FrameCallback(SCD3D11FrameContext const& frame);
+	// Returns whether a callback actually ran, i.e. whether it may have changed context state.
+	bool InvokeD3D11FrameCallback(SCD3D11FrameContext const& frame);
 }

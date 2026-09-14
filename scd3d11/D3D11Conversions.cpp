@@ -8,6 +8,8 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
+// The one translation unit that compiles xxHash's implementation.
+#define XXH_IMPLEMENTATION
 #include "D3D11Conversions.h"
 #include "VertexFormatUtils.h"
 
@@ -15,12 +17,39 @@
 #include <cstring>
 
 namespace nSCD3D11 {
-    uint64_t HashBytes(void const *data, size_t size, uint64_t hash) {
-        uint8_t const *bytes = static_cast<uint8_t const *>(data);
-        for (size_t i = 0; i < size; ++i) {
-            hash = (hash ^ bytes[i]) * 1099511628211ull;
+    bool SourceSpanFits(void const *base, uint64_t rows, uint64_t rowPitch, uint64_t lastRowBytes) {
+        if (base == nullptr || rows == 0) return false;
+        uint64_t const available = static_cast<uint64_t>(UINTPTR_MAX - reinterpret_cast<uintptr_t>(base)) + 1;
+        if (rowPitch != 0 && rows - 1 > available / rowPitch) return false;
+        return RangeFits((rows - 1) * rowPitch, lastRowBytes, available);
+    }
+
+    GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count) {
+        size_t const indexBytes = format == DXGI_FORMAT_R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t);
+        GeometryCacheKey key;
+        key.digest = XXH3_128bits(indices, static_cast<size_t>(count) * indexBytes);
+        key.count = count;
+        key.format = static_cast<uint32_t>(format);
+        return key;
+    }
+
+    GeometryCacheKey VertexCacheKey(uint32_t format, uint32_t stride, void const *vertices, uint32_t count) {
+        uint32_t const packedStride = RZVertexFormatStride(format);
+        uint8_t const *source = static_cast<uint8_t const *>(vertices);
+        GeometryCacheKey key;
+        if (stride == packedStride) {
+            key.digest = XXH3_128bits(source, static_cast<size_t>(count) * packedStride);
+        } else {
+            XXH3_state_t state;
+            XXH3_128bits_reset(&state);
+            for (uint32_t i = 0; i < count; ++i) {
+                XXH3_128bits_update(&state, source + static_cast<size_t>(i) * stride, packedStride);
+            }
+            key.digest = XXH3_128bits_digest(&state);
         }
-        return hash;
+        key.count = count;
+        key.format = format;
+        return key;
     }
 
     bool IsSupportedVertexFormat(uint32_t format) {

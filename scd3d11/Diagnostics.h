@@ -23,10 +23,13 @@ namespace nSCD3D11
 		Resource,
 		Grid,
 		Unsupported,
+		Window,
 		Count
 	};
 
 	void Log(LogCategory category, char const* format, ...);
+	// Only written when SimCity 4 is started with -LogLevel:trace.
+	void LogTrace(LogCategory category, char const* format, ...);
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result);
 
 	enum class ObservedCategory
@@ -38,4 +41,11 @@ namespace nSCD3D11
 	};
 
 	void RecordEncountered(ObservedCategory category, uint64_t value);
+
+	// Render-loop watchdog: the render thread reports what it is doing, and a background thread logs where
+	// that thread is when no frame completes for a few seconds. Phases must be string literals.
+	void NoteRenderPhase(char const* phase);
+	void NoteRenderFrame();
+	void StartRenderWatchdog(HWND window);
+	void StopRenderWatchdog();
 }

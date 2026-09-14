@@ -1,3 +1,6 @@
 [submodule "vendor/reshade"]
 	path = vendor/reshade
 	url = https://github.com/crosire/reshade.git
+[submodule "vendor/xxhash"]
+	path = vendor/xxhash
+	url = https://github.com/Cyan4973/xxHash.git

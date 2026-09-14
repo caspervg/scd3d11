@@ -52,6 +52,133 @@ namespace nSCD3D11 {
 			}
 			return result;
 		}
+
+		char const *SystemCommandName(WPARAM command) {
+			switch (command & 0xFFF0) {
+				case SC_MINIMIZE: return "SC_MINIMIZE";
+				case SC_MAXIMIZE: return "SC_MAXIMIZE";
+				case SC_RESTORE: return "SC_RESTORE";
+				case SC_CLOSE: return "SC_CLOSE";
+				case SC_KEYMENU: return "SC_KEYMENU";
+				case SC_TASKLIST: return "SC_TASKLIST";
+				case SC_SCREENSAVE: return "SC_SCREENSAVE";
+				case SC_MONITORPOWER: return "SC_MONITORPOWER";
+				case SC_MOVE: return "SC_MOVE";
+				case SC_SIZE: return "SC_SIZE";
+				default: return "other";
+			}
+		}
+
+		// Everything that can move focus, visibility or size of the driver window, for diagnosing
+		// "the game vanished but is still running" reports.
+		void LogWindowMessage(HWND window, bool current, UINT message, WPARAM wParam, LPARAM lParam) {
+			char const *const stale = current ? "" : " (not the current driver window)";
+			switch (message) {
+				case WM_ACTIVATEAPP:
+					Log(LogCategory::Window, "%p WM_ACTIVATEAPP %s (other thread %lu)%s", window,
+					    wParam ? "activated" : "deactivated", static_cast<unsigned long>(lParam), stale);
+					break;
+				case WM_ACTIVATE: {
+					WORD const state = LOWORD(wParam);
+					Log(LogCategory::Window, "%p WM_ACTIVATE %s minimized=%u other=%p%s", window,
+					    state == WA_INACTIVE ? "WA_INACTIVE" : state == WA_CLICKACTIVE ? "WA_CLICKACTIVE" : "WA_ACTIVE",
+					    HIWORD(wParam) != 0 ? 1u : 0u, reinterpret_cast<HWND>(lParam), stale);
+					break;
+				}
+				case WM_NCACTIVATE:
+					Log(LogCategory::Window, "%p WM_NCACTIVATE %s%s", window, wParam ? "active" : "inactive", stale);
+					break;
+				case WM_SETFOCUS:
+					Log(LogCategory::Window, "%p WM_SETFOCUS (from %p)%s", window, reinterpret_cast<HWND>(wParam), stale);
+					break;
+				case WM_KILLFOCUS:
+					Log(LogCategory::Window, "%p WM_KILLFOCUS (to %p)%s", window, reinterpret_cast<HWND>(wParam), stale);
+					break;
+				case WM_ENABLE:
+					Log(LogCategory::Window, "%p WM_ENABLE %u%s", window, wParam ? 1u : 0u, stale);
+					break;
+				case WM_CANCELMODE:
+					Log(LogCategory::Window, "%p WM_CANCELMODE%s", window, stale);
+					break;
+				case WM_SHOWWINDOW:
+					Log(LogCategory::Window, "%p WM_SHOWWINDOW show=%u status=%ld%s", window, wParam ? 1u : 0u,
+					    static_cast<long>(lParam), stale);
+					break;
+				case WM_SIZE: {
+					static char const *const types[] = {"restored", "minimized", "maximized", "maxshow", "maxhide"};
+					Log(LogCategory::Window, "%p WM_SIZE %s %ux%u%s", window, wParam < 5 ? types[wParam] : "unknown",
+					    LOWORD(lParam), HIWORD(lParam), stale);
+					break;
+				}
+				case WM_WINDOWPOSCHANGED: {
+					WINDOWPOS const *const position = reinterpret_cast<WINDOWPOS const *>(lParam);
+					if (position == nullptr) break;
+					UINT const flags = position->flags;
+					bool const interesting = (flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW)) != 0 ||
+					                         (flags & SWP_NOSIZE) == 0 || (flags & SWP_NOMOVE) == 0;
+					(interesting ? Log : LogTrace)(
+						LogCategory::Window, "%p WM_WINDOWPOSCHANGED %d,%d %dx%d flags=0x%04X after=%p%s", window,
+						position->x, position->y, position->cx, position->cy, flags, position->hwndInsertAfter, stale);
+					break;
+				}
+				case WM_SYSCOMMAND:
+					Log(LogCategory::Window, "%p WM_SYSCOMMAND %s (0x%04X)%s", window, SystemCommandName(wParam),
+					    static_cast<unsigned>(wParam), stale);
+					break;
+				case WM_ENTERSIZEMOVE:
+				case WM_EXITSIZEMOVE:
+					Log(LogCategory::Window, "%p %s%s", window,
+					    message == WM_ENTERSIZEMOVE ? "WM_ENTERSIZEMOVE" : "WM_EXITSIZEMOVE", stale);
+					break;
+				case WM_DISPLAYCHANGE:
+					Log(LogCategory::Window, "%p WM_DISPLAYCHANGE %ux%u %u bpp%s", window, LOWORD(lParam), HIWORD(lParam),
+					    static_cast<unsigned>(wParam), stale);
+					break;
+				case WM_DPICHANGED:
+					Log(LogCategory::Window, "%p WM_DPICHANGED %u%s", window, HIWORD(wParam), stale);
+					break;
+				case WM_DWMCOMPOSITIONCHANGED:
+					Log(LogCategory::Window, "%p WM_DWMCOMPOSITIONCHANGED%s", window, stale);
+					break;
+				case WM_POWERBROADCAST:
+					Log(LogCategory::Window, "%p WM_POWERBROADCAST 0x%04X%s", window, static_cast<unsigned>(wParam), stale);
+					break;
+				case WM_CLOSE:
+				case WM_DESTROY:
+				case WM_NCDESTROY:
+					Log(LogCategory::Window, "%p %s%s", window,
+					    message == WM_CLOSE ? "WM_CLOSE" : message == WM_DESTROY ? "WM_DESTROY" : "WM_NCDESTROY", stale);
+					break;
+				case WM_QUERYENDSESSION:
+				case WM_ENDSESSION:
+					Log(LogCategory::Window, "%p %s 0x%lX%s", window,
+					    message == WM_ENDSESSION ? "WM_ENDSESSION" : "WM_QUERYENDSESSION",
+					    static_cast<unsigned long>(lParam), stale);
+					break;
+				case WM_KEYDOWN:
+				case WM_KEYUP:
+				case WM_SYSKEYDOWN:
+				case WM_SYSKEYUP: {
+					bool const system = message == WM_SYSKEYDOWN || message == WM_SYSKEYUP;
+					bool const up = message == WM_KEYUP || message == WM_SYSKEYUP;
+					char const *const key = wParam == VK_LWIN ? "LWIN" : wParam == VK_RWIN ? "RWIN" :
+					                        system && wParam == VK_TAB ? "Alt+Tab" :
+					                        system && wParam == VK_F4 ? "Alt+F4" :
+					                        system && wParam == VK_ESCAPE ? "Alt+Esc" : nullptr;
+					if (key != nullptr) Log(LogCategory::Window, "%p key %s %s%s", window, key, up ? "up" : "down", stale);
+					break;
+				}
+				case WM_CAPTURECHANGED:
+					LogTrace(LogCategory::Window, "%p WM_CAPTURECHANGED (to %p)%s", window,
+					         reinterpret_cast<HWND>(lParam), stale);
+					break;
+				case WM_MOUSEACTIVATE:
+					LogTrace(LogCategory::Window, "%p WM_MOUSEACTIVATE%s", window, stale);
+					break;
+				default:
+					break;
+			}
+		}
 	}
 
 	// Passing no adapter gets DXGI adapter 0, which on hybrid-GPU laptops is usually the integrated
@@ -79,6 +206,9 @@ namespace nSCD3D11 {
 			driver = creation == nullptr ? nullptr : static_cast<cGDriver *>(creation->lpCreateParams);
 			SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(driver));
 		}
+		// windowHandle is only assigned once CreateWindowExA returns.
+		LogWindowMessage(window, driver != nullptr && (driver->windowHandle == window || driver->windowHandle == nullptr),
+		                 message, wParam, lParam);
 
 		WNDPROC procedure = driver == nullptr ? nullptr : reinterpret_cast<WNDPROC>(driver->windowProcedure);
 		if (procedure != nullptr) {
@@ -103,6 +233,7 @@ namespace nSCD3D11 {
 		windowClass.style = CS_OWNDC;
 		windowClass.lpfnWndProc = DriverWindowProcedure;
 		windowClass.hInstance = GetModuleHandleA(nullptr);
+		windowClass.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
 		windowClass.lpszClassName = kWindowClassName;
 
 		if (!RegisterClassA(&windowClass) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
@@ -153,6 +284,7 @@ namespace nSCD3D11 {
 
 	bool cGDriver::Shutdown(void) {
 		if (!initialized) {
+			StopRenderWatchdog();
 			DestroyD3D11Context();
 			return true;
 		}
@@ -166,6 +298,7 @@ namespace nSCD3D11 {
 		}
 		vertexBufferCacheHits = vertexBufferCacheMisses = 0;
 		indexBufferCacheHits = indexBufferCacheMisses = 0;
+		StopRenderWatchdog();
 		DestroyD3D11Context();
 		UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
 		videoModes.clear();
@@ -232,6 +365,7 @@ namespace nSCD3D11 {
 		indexBufferCache.clear();
 		vertexBufferCache.clear();
 		for (auto &buffer: transformBuffers) buffer.Reset();
+		constantBufferCache.clear();
 		activeTransformBuffer = 0;
 		inputLayout.Reset();
 		flatPixelShader.Reset();
@@ -256,6 +390,7 @@ namespace nSCD3D11 {
 		d3dDevice.Reset();
 
 		if (windowHandle != nullptr) {
+			Log(LogCategory::Window, "%p destroying driver window", windowHandle);
 			DestroyWindow(static_cast<HWND>(windowHandle));
 			windowHandle = nullptr;
 		}

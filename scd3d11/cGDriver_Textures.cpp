@@ -72,6 +72,7 @@ namespace nSCD3D11 {
         HRESULT result = d3dDevice->CreateTexture2D(&description, nullptr, &texture);
         if (FAILED(result)) {
             LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(texture)", result);
+            NoteDeviceLoss(result);
             return result;
         }
 
@@ -276,6 +277,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexEnv(uint32_t target, uint32_t parameter, int32_t value) {
+        constantsDirty = true;
         if (target != 0 || parameter != 0 || value < 0 || value > 5) {
             SetLastError(DriverError::INVALID_VALUE);
             return;
@@ -285,12 +287,13 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexEnv(uint32_t target, uint32_t parameter, float const *value) {
+        constantsDirty = true;
         if (target != 0 || parameter != 1 || value == nullptr) {
             SetLastError(DriverError::INVALID_VALUE);
             return;
         }
-        memcpy(textureStages[activeTextureStage].environmentColor, value,
-               sizeof(textureStages[activeTextureStage].environmentColor));
+        // Not per stage: SC4 often sets it while the other stage is active (e.g. terrain shadows).
+        memcpy(textureFactor, value, sizeof(textureFactor));
     }
 
     void cGDriver::TexParameter(uint32_t target, uint32_t parameter, int32_t value) {
@@ -322,6 +325,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageCoord(uint32_t source) {
+        constantsDirty = true;
         textureStages[activeTextureStage].coordinateSource = source;
         if ((source & 0xfffffff8) != 0 && (source & 0xfffffff8) != 0x10) {
             Log(LogCategory::Unsupported, "texture coordinate source 0x%08X requested", source);
@@ -329,6 +333,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageMatrix(float const *matrix, uint32_t rows, uint32_t columns, uint32_t flags) {
+        constantsDirty = true;
         float *destination = textureStages[activeTextureStage].matrix;
         memset(destination, 0, sizeof(textureStages[activeTextureStage].matrix));
         if (matrix == nullptr) {
@@ -346,6 +351,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineParamType parameter, eGDTextureStageCombineModeParam value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const mode = static_cast<uint32_t>(value);
         if (parameterIndex >= 2 || mode >= 6) {
@@ -358,6 +364,7 @@ namespace nSCD3D11 {
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineSourceParamType parameter,
                                    eGDTextureStageCombineSourceParam value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const source = static_cast<uint32_t>(value);
         if (parameterIndex >= 8 || source >= 4) {
@@ -376,6 +383,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineOperandType parameter, eGDBlend value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const blend = static_cast<uint32_t>(value);
         if (parameterIndex >= 8 || blend < 2 || blend > 5) {
@@ -395,6 +403,7 @@ namespace nSCD3D11 {
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineScaleParamType parameter,
                                    eGDTextureStageCombineScaleParam value) {
+        constantsDirty = true;
         uint32_t const parameterIndex = static_cast<uint32_t>(parameter);
         uint32_t const scale = static_cast<uint32_t>(value);
         if (parameterIndex >= 2 || scale >= 3) {
@@ -452,7 +461,8 @@ namespace nSCD3D11 {
                           (static_cast<uint64_t>(sourceFormat) << 32) | sourceType);
         uint32_t const mipWidth = D3D11MipDimension(resource.width, static_cast<uint32_t>(level));
         uint32_t const mipHeight = D3D11MipDimension(resource.height, static_cast<uint32_t>(level));
-        if (static_cast<uint32_t>(xOffset + width) > mipWidth || static_cast<uint32_t>(yOffset + height) > mipHeight) {
+        if (!RangeFits(static_cast<uint32_t>(xOffset), static_cast<uint32_t>(width), mipWidth) ||
+            !RangeFits(static_cast<uint32_t>(yOffset), static_cast<uint32_t>(height), mipHeight)) {
             SetLastError(DriverError::INVALID_VALUE);
             return;
         }
@@ -481,12 +491,20 @@ namespace nSCD3D11 {
                 SetLastError(DriverError::NOT_SUPPORTED);
                 return;
             }
+            uint64_t const blockBytes = D3D11TextureRowPitch(resource.format, 1);
+            uint64_t const sourcePitch = (static_cast<uint64_t>(sourceWidth) + 3) / 4 * blockBytes;
+            if (sourcePitch > UINT32_MAX ||
+                !SourceSpanFits(pixels, (static_cast<uint64_t>(height) + 3) / 4, sourcePitch,
+                                D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width)))) {
+                SetLastError(DriverError::INVALID_VALUE);
+                return;
+            }
             // D3D11 wants block-compressed update boxes expressed in whole blocks. The 2x2 and
             // 1x1 tail mips of a BC chain still occupy one full block, so round the right and
             // bottom edges up instead of passing the logical mip size.
             box.right = (box.right + 3) & ~3u;
             box.bottom = (box.bottom + 3) & ~3u;
-            pitch = D3D11TextureRowPitch(resource.format, sourceWidth);
+            pitch = static_cast<uint32_t>(sourcePitch);
         } else {
 			uint32_t const sourcePixelBytes = TextureSourcePixelBytes(sourceFormat, sourceType);
             // Type 13 is GL_UNSIGNED_SHORT_4_4_4_4_REV per the original driver's typeMap:
@@ -506,30 +524,22 @@ namespace nSCD3D11 {
 				return;
 			}
 			uint64_t const sourcePitch64 = static_cast<uint64_t>(sourceWidth) * sourcePixelBytes;
-			if (sourcePitch64 > UINT32_MAX) {
+			if (sourcePitch64 > UINT32_MAX ||
+			    !SourceSpanFits(pixels, static_cast<uint32_t>(height), sourcePitch64,
+			                    static_cast<uint64_t>(width) * sourcePixelBytes)) {
 				SetLastError(DriverError::INVALID_VALUE);
 				return;
 			}
 			uint32_t const sourcePitch = static_cast<uint32_t>(sourcePitch64);
             pitch = D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width));
             uint8_t const *sourceRows = static_cast<uint8_t const *>(pixels);
-			if (sourceFormat == 3 && sourceType == 1 &&
-			    resource.format == DXGI_FORMAT_B8G8R8A8_UNORM && sourcePitch == pitch) {
+			if ((sourceFormat == 3 && sourceType == 1 && resource.format == DXGI_FORMAT_B8G8R8A8_UNORM) ||
+			    packedBgra4444) {
+				// Texels already match the texture. UpdateSubresource steps rows by SrcRowPitch, so padded
+				// rows (a row length wider than the upload) go straight through as well.
 				upload = pixels;
-			} else if (packedBgra4444) {
-                // Same nibble layout as B4G4R4A4; only row pitch needs normalizing.
-                if (sourcePitch == pitch) {
-                    upload = pixels;
-                } else {
-                    converted.resize(static_cast<size_t>(pitch) * height);
-                    for (int32_t y = 0; y < height; ++y) {
-                        memcpy(converted.data() + static_cast<size_t>(y) * pitch,
-                               sourceRows + static_cast<size_t>(y) * sourcePitch,
-                               static_cast<size_t>(width) * 2);
-                    }
-                    upload = converted.data();
-                }
-            } else {
+				pitch = sourcePitch;
+			} else {
                 converted.resize(static_cast<size_t>(pitch) * height);
                 for (int32_t y = 0; y < height; ++y) {
                     uint8_t const *source = sourceRows + static_cast<size_t>(y) * sourcePitch;
@@ -563,6 +573,7 @@ namespace nSCD3D11 {
 	}
 
     void cGDriver::SetCombiner(cGDCombiner const &combiner, uint32_t stage) {
+        constantsDirty = true;
         if (stage >= 2) {
             SetLastError(DriverError::OUT_OF_RANGE);
             return;

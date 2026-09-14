@@ -14,6 +14,8 @@
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
 
+#include <algorithm>
+
 extern cRZCOMSlimDllDirector *RZGetCOMDllDirector();
 
 static const uint32_t GZIID_cIGZGraphicSystem = 0x73283c;
@@ -39,8 +41,8 @@ namespace nSCD3D11 {
 
 		int32_t const left = x < 0 ? 0 : x;
 		int32_t const top = y < 0 ? 0 : y;
-		int32_t const right = x + width > windowWidth ? windowWidth : x + width;
-		int32_t const bottom = y + height > windowHeight ? windowHeight : y + height;
+		int32_t const right = static_cast<int32_t>((std::min)(static_cast<int64_t>(x) + width, int64_t{windowWidth}));
+		int32_t const bottom = static_cast<int32_t>((std::min)(static_cast<int64_t>(y) + height, int64_t{windowHeight}));
 		if (right <= left || bottom <= top) return nullptr;
 		width = right - left;
 		height = bottom - top;
@@ -92,6 +94,7 @@ namespace nSCD3D11 {
 		result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapping);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(snapshot)", result);
+			NoteDeviceLoss(result);
 			return fail();
 		}
 

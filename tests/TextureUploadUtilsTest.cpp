@@ -43,5 +43,12 @@ int main() {
 	assert(nSCD3D11::IsValidBlockCompressedUpdate(10, 10, 8, 8, 2, 2));
 	assert(!nSCD3D11::IsValidBlockCompressedUpdate(10, 10, 4, 4, 5, 4));
 	assert(!nSCD3D11::IsValidBlockCompressedUpdate(10, 10, 2, 0, 4, 4));
+	// Right/bottom edge blocks of a mip whose size is not a multiple of four.
+	assert(nSCD3D11::IsValidBlockCompressedUpdate(10, 10, 8, 0, 2, 4));
+	assert(!nSCD3D11::IsValidBlockCompressedUpdate(10, 10, 8, 0, 3, 4));
+	// Offsets that wrap x + width back into range.
+	assert(!nSCD3D11::IsValidBlockCompressedUpdate(16, 16, 0xFFFFFFFCu, 0, 8, 4));
+	assert(!nSCD3D11::IsValidBlockCompressedUpdate(16, 16, 0, 0xFFFFFFFCu, 4, 8));
+	assert(!nSCD3D11::IsValidBlockCompressedUpdate(16, 16, 4, 0, UINT32_MAX, 4));
 	return 0;
 }

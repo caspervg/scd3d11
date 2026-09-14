@@ -80,6 +80,9 @@ def main():
     reshade_url = "https://github.com/crosire/reshade"
     reshade_commit = git("-C", "vendor/reshade", "rev-parse", "HEAD")
     reshade_revision = remote_tag(f"{reshade_url}.git", reshade_commit) or reshade_commit
+    xxhash_url = "https://github.com/Cyan4973/xxHash"
+    xxhash_commit = git("-C", "vendor/xxhash", "rev-parse", "HEAD")
+    xxhash_revision = remote_tag(f"{xxhash_url}.git", xxhash_commit) or xxhash_commit
 
     main_package = {
         "spdx_id": "SPDXRef-SCD3D11",
@@ -102,6 +105,16 @@ def main():
             "purl": f"pkg:github/crosire/reshade@{reshade_revision}",
             "vcs": reshade_url,
             "download_location": f"git+{reshade_url}.git@{reshade_commit}",
+        },
+        {
+            "spdx_id": "SPDXRef-xxhash",
+            "name": "xxhash",
+            "version": xxhash_revision.removeprefix("v"),
+            "description": f"xxHash (xxhash.h only), commit {xxhash_commit}",
+            "license": "BSD-2-Clause",
+            "purl": f"pkg:github/Cyan4973/xxHash@{xxhash_revision}",
+            "vcs": xxhash_url,
+            "download_location": f"git+{xxhash_url}.git@{xxhash_commit}",
         },
         {
             "spdx_id": "SPDXRef-scion",

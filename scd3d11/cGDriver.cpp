@@ -58,7 +58,11 @@ namespace nSCD3D11 {
 	                       windowProcedure(nullptr),
 	                       showDriverWindow(false),
 	                       recoveringDevice(false),
+	                       deviceLost(false),
+	                       deviceRecoveryFailures(0),
+	                       nextDeviceRecovery(0),
 	                       presentationMode(PresentationMode::Windowed),
+	                       preferFlipModel(std::strstr(GetCommandLineA(), "-FlipModel:off") == nullptr),
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),
@@ -87,6 +91,10 @@ namespace nSCD3D11 {
 	                       interleavedPointer(nullptr),
 	                       activeMatrixMode(0),
 	                       matrices{},
+	                       normalMatrix{},
+	                       normalMatrixDirty(true),
+	                       constantsDirty(true),
+	                       constantsFlagInputs(0),
 	                       extensionVertexCursor(0),
 	                       extensionVertexStart(0),
 	                       extensionVertexGeneration(0),
@@ -113,19 +121,20 @@ namespace nSCD3D11 {
 	                       alphaFunction(7),
 	                       alphaReference(0.0f),
 	                       shadeModel(1),
-	                       colorMultipliers{1.0f, 1.0f, 1.0f, 1.0f},
+	                       textureFactor{1.0f, 1.0f, 1.0f, 1.0f},
 	                       fogMode(0),
 	                       fogSource(4),
 	                       fogColor{0.0f, 0.0f, 0.0f, 0.0f},
 	                       fogDensity(1.0f),
 	                       fogStart(0.0f),
 	                       fogEnd(1.0f),
-	                       ambientVertexColors(false),
-	                       diffuseVertexColors(false),
+	                       ambientVertexColors(true),
+	                       diffuseVertexColors(true),
+	                       diffuseFromVertex(true),
 	                       polygonOffset(0),
 	                       scissorEnabled(false),
-	                       lightingEnabled(true),
-	                       lightsEnabled{true},
+	                       lightingEnabled(false),
+	                       lightsEnabled{},
 	                       globalAmbient{0.0f, 0.0f, 0.0f, 1.0f},
 	                       lightAmbient{},
 	                       lightDiffuse{},
@@ -268,6 +277,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::AlphaFunc(GLenum func, GLclampf ref) {
+		constantsDirty = true;
 		if (D3D11Comparison(func) == 0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
@@ -285,6 +295,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, uint32_t gdFogParam) {
+		constantsDirty = true;
 		if (gdFogParamType == 0 && gdFogParam <= 2) {
 			fogMode = static_cast<uint8_t>(gdFogParam);
 			return;
@@ -300,6 +311,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const *params) {
+		constantsDirty = true;
 		if (params == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
@@ -327,19 +339,30 @@ namespace nSCD3D11 {
 		}
 	}
 
+	// SimGLDX7 had no color multiplier: it switched on D3D lighting, set the material ambient to white
+	// and the multiplier became D3DRS_AMBIENT, the same state LightModelAmbient writes. Mirror that so
+	// the result clamps and follows the ambient material source the same way.
 	void cGDriver::ColorMultiplier(float r, float g, float b) {
-		colorMultipliers[0] = r;
-		colorMultipliers[1] = g;
-		colorMultipliers[2] = b;
+		constantsDirty = true;
+		lightingEnabled = true;
+		materialAmbient[0] = materialAmbient[1] = materialAmbient[2] = 1.0f;
+		LightModelAmbient(r, g, b, 1.0f);
 	}
 
+	// Material diffuse alpha; below 1 it also replaces the vertex alpha, as in SimGLDX7.
 	void cGDriver::AlphaMultiplier(float a) {
-		colorMultipliers[3] = a;
+		constantsDirty = true;
+		lightingEnabled = true;
+		materialDiffuse[3] = a;
+		if (a < 1.0f) diffuseFromVertex = false;
+		else if (diffuseVertexColors) diffuseFromVertex = true;
 	}
 
 	void cGDriver::EnableVertexColors(bool ambient, bool diffuse) {
+		constantsDirty = true;
 		ambientVertexColors = ambient;
 		diffuseVertexColors = diffuse;
+		diffuseFromVertex = diffuse;
 	}
 
 	void cGDriver::MatrixMode(GLenum mode) {
@@ -351,18 +374,23 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::LoadMatrix(GLfloat const *m) {
+		constantsDirty = true;
 		if (m != nullptr) {
 			memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
+			if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
 		}
 	}
 
 	void cGDriver::LoadIdentity(void) {
+		constantsDirty = true;
+		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
 		memset(matrices[activeMatrixMode], 0, sizeof(matrices[activeMatrixMode]));
 		matrices[activeMatrixMode][0] = matrices[activeMatrixMode][5] =
 		                                matrices[activeMatrixMode][10] = matrices[activeMatrixMode][15] = 1.0f;
 	}
 
 	void cGDriver::Enable(GLenum gdCap) {
+		constantsDirty = true;
 		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
@@ -375,6 +403,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Disable(GLenum gdCap) {
+		constantsDirty = true;
 		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;

@@ -1,4 +1,5 @@
 #include "TextureUploadUtils.h"
+#include "D3D11Conversions.h"
 
 #include <algorithm>
 #include <cmath>
@@ -124,7 +125,7 @@ namespace nSCD3D11 {
 	bool IsValidBlockCompressedUpdate(
 		uint32_t mipWidth, uint32_t mipHeight,
 		uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
-		if (width == 0 || height == 0 || x + width > mipWidth || y + height > mipHeight) return false;
+		if (width == 0 || height == 0 || !RangeFits(x, width, mipWidth) || !RangeFits(y, height, mipHeight)) return false;
 		return x % 4 == 0 && y % 4 == 0 &&
 		       ((x + width) % 4 == 0 || x + width == mipWidth) &&
 		       ((y + height) % 4 == 0 || y + height == mipHeight);

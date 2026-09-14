@@ -15,11 +15,60 @@ int main() {
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 100) == 980);
     assert(nSCD3D11::D3D11TopLeftY(1080, 980, 100) == 0);
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 1080) == 0);
+    using nSCD3D11::RangeFits;
+    assert(RangeFits(INT32_MAX - 1, 1, INT32_MAX) && !RangeFits(INT32_MAX, 1, INT32_MAX));
+    assert(RangeFits(0, UINT32_MAX, UINT32_MAX) && !RangeFits(1, UINT32_MAX, UINT32_MAX));
+    assert(!RangeFits(UINT32_MAX, 1, UINT32_MAX) && !RangeFits(2, 1, 1));
+    assert(!RangeFits(int32_t{-1}, 1, INT32_MAX));
+    using nSCD3D11::SourceSpanFits;
+    void const *const top = reinterpret_cast<void const *>(UINTPTR_MAX - 99);
+    assert(SourceSpanFits(top, 1, 0, 100) && !SourceSpanFits(top, 1, 0, 101));
+    assert(SourceSpanFits(top, 2, 50, 50) && !SourceSpanFits(top, 2, 50, 51));
+    assert(!SourceSpanFits(top, 0x100000000ull, UINT32_MAX, 1));
+    assert(!SourceSpanFits(reinterpret_cast<void const *>(uintptr_t{1}), 5, 0x40000000u, 16));
+    assert(!SourceSpanFits(nullptr, 1, 0, 1));
+
+    // Split input must go through one streaming state, not digests chained as seeds.
     uint8_t const hashInput[] = {1, 2, 3, 4};
-    uint64_t splitHash = nSCD3D11::HashBytes(hashInput, 2);
-    splitHash = nSCD3D11::HashBytes(hashInput + 2, 2, splitHash);
-    assert(splitHash == nSCD3D11::HashBytes(hashInput, sizeof(hashInput)));
-    assert(splitHash != nSCD3D11::HashBytes(hashInput, sizeof(hashInput) - 1));
+    XXH3_state_t hashState;
+    XXH3_128bits_reset(&hashState);
+    XXH3_128bits_update(&hashState, hashInput, 2);
+    XXH3_128bits_update(&hashState, hashInput + 2, 2);
+    XXH128_hash_t const splitHash = XXH3_128bits_digest(&hashState);
+    assert(XXH128_isEqual(splitHash, XXH3_128bits(hashInput, sizeof(hashInput))));
+    assert(!XXH128_isEqual(splitHash, XXH3_128bits(hashInput, sizeof(hashInput) - 1)));
+
+    uint32_t const wideIndices[] = {5, 0, 1};
+    uint16_t const narrowIndices[] = {5, 0, 0, 0, 1, 0};
+    nSCD3D11::GeometryCacheKey const wideKey = nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 3);
+    nSCD3D11::GeometryCacheKey const narrowKey = nSCD3D11::IndexCacheKey(DXGI_FORMAT_R16_UINT, narrowIndices, 6);
+    // Identical bytes, different interpretation.
+    assert(XXH128_isEqual(wideKey.digest, narrowKey.digest) && !(wideKey == narrowKey));
+    assert(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 3));
+    assert(!(wideKey == nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, wideIndices, 2)));
+    {
+        // Two V3F_C4UB vertices, packed (16 bytes each) and with 4 bytes of padding per vertex.
+        uint8_t packed[32]{};
+        uint8_t padded[40]{};
+        for (uint8_t i = 0; i < 32; ++i) packed[i] = static_cast<uint8_t>(i + 1);
+        memcpy(padded, packed, 16);
+        memcpy(padded + 20, packed + 16, 16);
+        memset(padded + 16, 0xAA, 4);
+        using nSCD3D11::VertexCacheKey;
+        nSCD3D11::GeometryCacheKey const packedKey = VertexCacheKey(kGDVertexFormat_V3F_C4UB, 16, packed, 2);
+        assert(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 20, padded, 2));
+        memset(padded + 16, 0x55, 4);
+        memset(padded + 36, 0x55, 4);
+        assert(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 20, padded, 2));
+        ++padded[20 + 12]; // second vertex, color
+        assert(!(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 20, padded, 2)));
+        assert(!(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 16, packed, 1)));
+        ++packed[3]; // first vertex, position
+        assert(!(packedKey == VertexCacheKey(kGDVertexFormat_V3F_C4UB, 16, packed, 2)));
+    }
+    nSCD3D11::GeometryCacheKey generationKey = wideKey;
+    generationKey.generation = true;
+    assert(!(generationKey == wideKey));
 
     struct SourceVertex {
         float position[3];

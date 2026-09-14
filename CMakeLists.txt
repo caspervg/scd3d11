@@ -38,6 +38,7 @@ add_library(scd3d11_common INTERFACE)
 target_include_directories(scd3d11_common INTERFACE
         "${PROJECT_SOURCE_DIR}/scd3d11"
         "${PROJECT_SOURCE_DIR}/scd3d11/ext"
+        "${PROJECT_SOURCE_DIR}/vendor/xxhash"
 )
 
 # Limited to C++ sources so none of these reach the resource compiler.
@@ -52,8 +53,8 @@ target_compile_definitions(scd3d11_common INTERFACE
         $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:Debug>>:__FUNCSIG__=__PRETTY_FUNCTION__>
 )
 
-add_library(SCD3D11 SHARED
-        scd3d11/SCD3D11.def
+# Everything but the .def, so the driver integration test can compile the same code.
+set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriversCOMDirector.cpp
@@ -82,6 +83,8 @@ add_library(SCD3D11 SHARED
         vendor/framework/src/cRZRefCount.cpp
 )
 
+add_library(SCD3D11 SHARED scd3d11/SCD3D11.def ${SCD3D11_DRIVER_SOURCES})
+
 # Stamped into the DLL's version resource. CI passes the release tag, e.g. v1.2.0 or v1.2.0-rc1.
 # Not SCD3D11_VERSION: project() already defines that as an empty variable, which would shadow the cache entry.
 set(SCD3D11_VERSION_TAG "0.0.0-dev" CACHE STRING "Version stamped into SCD3D11.dll ([v]MAJOR.MINOR.PATCH[-suffix])")
@@ -98,9 +101,10 @@ target_sources(SCD3D11 PRIVATE "${PROJECT_BINARY_DIR}/SCD3D11.rc")
 # SC4 loads the driver as SCD3D11.dll, so suppress CMake's "lib" prefix.
 set_target_properties(SCD3D11 PROPERTIES PREFIX "")
 
-target_include_directories(SCD3D11 PRIVATE
+set(SCD3D11_DRIVER_INCLUDES
         "${PROJECT_SOURCE_DIR}/vendor/framework/include"
         "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
+target_include_directories(SCD3D11 PRIVATE ${SCD3D11_DRIVER_INCLUDES})
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
 target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version)
@@ -153,4 +157,14 @@ if (BUILD_TESTING)
             tests/CpuSchedulingTest.cpp
             scd3d11/CpuScheduling.cpp
             scd3d11/Diagnostics.cpp)
+
+    # Drives a real cGDriver on a hidden window. Built from source instead of reusing the DLL objects:
+    # the test must not see NDEBUG, and cGDriver's layout depends on it.
+    scd3d11_add_test(cGDriverTest tests/cGDriverTest.cpp ${SCD3D11_DRIVER_SOURCES})
+    target_include_directories(cGDriverTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
+    # Enables the fault injection points the tests use.
+    target_compile_definitions(cGDriverTest PRIVATE SCD3D11_TESTING)
+    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version)
+    # No usable D3D11 device skips instead of failing.
+    set_tests_properties(cGDriverTest PROPERTIES SKIP_RETURN_CODE 77)
 endif ()

@@ -58,7 +58,7 @@ namespace nSCD3D11 {
 	uint32_t cGDriver::ContinueVertices(uint32_t name, uint32_t count) {
 		uint32_t const capacity = MaxVertices(name);
 		uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
-		if (!extensionVerticesLocked || count == 0 || extensionVertexCursor + count > capacity) return 0;
+		if (!extensionVerticesLocked || capacity == 0 || count == 0 || count > capacity - extensionVertexCursor) return 0;
 		uint8_t *result = extensionVertexData.data() + static_cast<size_t>(extensionVertexCursor) * stride;
 		extensionVertexCursor += count;
 		return reinterpret_cast<uint32_t>(result);
@@ -72,13 +72,19 @@ namespace nSCD3D11 {
 		uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
 		uint32_t const stride = RZVertexFormatStride(format);
 		size_t const offset = static_cast<size_t>(extensionVertexStart) * stride;
+		// Draws read only the current reservation, [start, cursor). Reset() empties it, so nothing
+		// can be drawn again until the next GetVertices.
 		if (extensionVerticesLocked || byteSize == 0 || byteSize % stride != 0 ||
-		    offset + byteSize > extensionVertexData.size()) {
+		    byteSize / stride > extensionVertexCursor - extensionVertexStart) {
 			return false;
 		}
 		uint8_t const *source = extensionVertexData.data() + offset;
-		uint64_t key = HashBytes(&extensionVertexGeneration, sizeof(extensionVertexGeneration));
-		key = HashBytes(&byteSize, sizeof(byteSize), key);
+		// The reservation generation stands in for the contents: they can only change under GetVertices.
+		GeometryCacheKey key;
+		key.digest.low64 = extensionVertexGeneration;
+		key.count = byteSize / stride;
+		key.format = format;
+		key.generation = true;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 		if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
@@ -105,10 +111,7 @@ namespace nSCD3D11 {
 			return;
 		}
 		uint16_t maximumIndex = 0;
-		uint64_t key = HashBytes(&count, sizeof(count));
 		for (uint32_t i = 0; i < count; ++i) {
-			key = (key ^ indices[i]) * 1099511628211ull;
-			key = (key ^ (indices[i] >> 8)) * 1099511628211ull;
 			if (indices[i] > maximumIndex) maximumIndex = indices[i];
 		}
 		uint32_t const byteSize =
@@ -116,7 +119,8 @@ namespace nSCD3D11 {
 		if (!UploadExtensionVertices(byteSize)) return;
 		if (!UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
-			key, static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+			IndexCacheKey(DXGI_FORMAT_R16_UINT, indices, count),
+			static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
 			dynamicIndexBuffer, dynamicIndexBufferOffset)) {
 			return;
 		}
