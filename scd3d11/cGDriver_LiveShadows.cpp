@@ -190,7 +190,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // The game-side prebuilt-network Draw hook brackets only the relevant
         // occupant renderer, so it is both cheaper and more precise than
         // hashing those meshes (or heuristically accepting all scene draws).
-        if (NativeShadowMasks::LiveNetworkDrawActive()) return true;
+        ++liveShadowMatchCalls;
+        if (NativeShadowMasks::LiveNetworkDrawActive()) {
+            ++liveShadowMatchHits;
+            return true;
+        }
         if (!NativeShadowMasks::HasLivePropMeshes() || interleavedPointer == nullptr) return false;
         uint8_t const* const source = interleavedPointer + static_cast<size_t>(firstVertex) * interleavedStride;
         uint32_t const uvCount = RZVertexFormatNumElements(interleavedFormat, kGDElementType_TexCoord);
@@ -206,41 +210,89 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             std::memcpy(words + 3, vertex + uvOffset, sizeof(float) * 2);
             for (uint32_t word : words) hashWord(word);
         }
-        return NativeShadowMasks::MatchLivePropSignature(signature);
+        bool const matched = NativeShadowMasks::MatchLivePropSignature(signature);
+        if (matched) ++liveShadowMatchHits;
+        return matched;
     }
 
     void cGDriver::CaptureLiveShadowDraw(
         uint32_t firstVertex, uint32_t vertexCount, std::vector<uint32_t> const& indices,
         D3D11_PRIMITIVE_TOPOLOGY topology) {
-        if (indices.size() < 3 || interleavedPointer == nullptr) return;
+        if (indices.size() < 3) return;
+        if (interleavedPointer == nullptr) {
+            static bool loggedNullSource = false;
+            if (!loggedNullSource) {
+                loggedNullSource = true;
+                Log(LogCategory::Initialization,
+                    "live shadows: matched draw has no interleaved source; capture skipped");
+            }
+            return;
+        }
         uint8_t const* const source = interleavedPointer + static_cast<size_t>(firstVertex) * interleavedStride;
         std::vector<D3D11Vertex> vertices;
-        if (!ConvertVertices(interleavedFormat, interleavedStride, source, vertexCount, vertices)) return;
-        auto const texture = textures.find(boundTextures[0]);
-        if (texture == textures.end() || !texture->second.view || FAILED(EnsureSampler(textureStages[0]))) return;
+        if (!ConvertVertices(interleavedFormat, interleavedStride, source, vertexCount, vertices)) {
+            static bool loggedConvert = false;
+            if (!loggedConvert) {
+                loggedConvert = true;
+                Log(LogCategory::Initialization,
+                    "live shadows: matched draw failed vertex conversion (format=0x%08X stride=%u count=%u)",
+                    interleavedFormat, interleavedStride, vertexCount);
+            }
+            return;
+        }
+        AppendLiveShadowDraw(std::move(vertices), indices, topology, NativeShadowMasks::LiveNetworkDrawActive());
+    }
+
+    void cGDriver::AppendLiveShadowDraw(
+        std::vector<D3D11Vertex> vertices, std::vector<uint32_t> indices,
+        D3D11_PRIMITIVE_TOPOLOGY topology, bool networkCaster) {
+        if (vertices.empty() || indices.size() < 3) return;
+        // Untextured geometry still casts a solid silhouette; the caster shader
+        // already handles a null view via material.w == 0. Only textured draws
+        // need a live sampler.
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> texture;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler = defaultSampler;
+        if (textureStageEnabled[0]) {
+            auto const entry = textures.find(boundTextures[0]);
+            if (entry != textures.end() && entry->second.view) {
+                if (FAILED(EnsureSampler(textureStages[0]))) {
+                    static bool loggedSampler = false;
+                    if (!loggedSampler) {
+                        loggedSampler = true;
+                        Log(LogCategory::Initialization,
+                            "live shadows: sampler creation failed; textured captures skipped");
+                    }
+                    return;
+                }
+                texture = entry->second.view;
+                sampler = textureStages[0].sampler ? textureStages[0].sampler : defaultSampler;
+            }
+        }
         LiveShadowDraw draw;
         draw.vertices = std::move(vertices);
-        draw.indices = indices;
-        draw.texture = texture->second.view;
-        draw.sampler = textureStages[0].sampler ? textureStages[0].sampler : defaultSampler;
+        draw.indices = std::move(indices);
+        draw.texture = texture;
+        draw.sampler = sampler;
         std::memcpy(draw.modelView, matrices[MODEL_VIEW], sizeof(draw.modelView));
         std::memcpy(draw.projection, matrices[PROJECTION], sizeof(draw.projection));
         std::memcpy(draw.textureMatrix, textureStages[0].matrix, sizeof(draw.textureMatrix));
         draw.alphaFunction = alphaFunction;
         draw.alphaReference = alphaReference;
         draw.alphaTest = enabledCapabilities[kGDCapability_AlphaTest];
+        draw.network = networkCaster;
         draw.topology = topology;
+        size_t const loggedVertices = draw.vertices.size();
+        size_t const loggedIndices = draw.indices.size();
         liveShadowDraws.push_back(std::move(draw));
-        bool const networkCaster = NativeShadowMasks::LiveNetworkDrawActive();
         static bool loggedPropCapture = false;
         static bool loggedNetworkCapture = false;
         bool& loggedCapture = networkCaster ? loggedNetworkCapture : loggedPropCapture;
         if (!loggedCapture) {
             loggedCapture = true;
             Log(LogCategory::Initialization,
-                "native shadows: matched first indexed %s caster (%u vertices, %u indices)",
-                networkCaster ? "prebuilt network" : "prop", vertexCount,
-                static_cast<unsigned>(indices.size()));
+                "native shadows: matched first %s caster (%u vertices, %u indices)",
+                networkCaster ? "prebuilt network" : "prop", static_cast<unsigned>(loggedVertices),
+                static_cast<unsigned>(loggedIndices));
         }
     }
 
@@ -421,11 +473,12 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         float lightView[16]{};
         float const lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView);
         if (diagnosticLog) {
-            size_t vertexCount = 0, indexCount = 0;
+            size_t vertexCount = 0, indexCount = 0, networkCount = 0;
             float lightLow[3]{FLT_MAX,FLT_MAX,FLT_MAX}, lightHigh[3]{-FLT_MAX, -FLT_MAX, -FLT_MAX};
             for (LiveShadowDraw const& draw : liveShadowDraws) {
                 vertexCount += draw.vertices.size();
                 indexCount += draw.indices.size();
+                if (draw.network) ++networkCount;
                 for (D3D11Vertex const& vertex : draw.vertices) {
                     float view[3]{}, light[3]{};
                     TransformPoint(draw.modelView, vertex.position, view);
@@ -437,8 +490,12 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
             }
             Log(LogCategory::Initialization,
-                "liveshadow frame: draws=%u vertices=%u indices=%u view=[%.3g %.3g %.3g]-[%.3g %.3g %.3g]",
-                static_cast<unsigned>(liveShadowDraws.size()), static_cast<unsigned>(vertexCount),
+                "liveshadow frame: draws=%u (network=%u prop=%u) match=%llu/%llu vertices=%u indices=%u view=[%.3g %.3g %.3g]-[%.3g %.3g %.3g]",
+                static_cast<unsigned>(liveShadowDraws.size()), static_cast<unsigned>(networkCount),
+                static_cast<unsigned>(liveShadowDraws.size() - networkCount),
+                static_cast<unsigned long long>(liveShadowMatchCalls),
+                static_cast<unsigned long long>(liveShadowMatchHits),
+                static_cast<unsigned>(vertexCount),
                 static_cast<unsigned>(indexCount), boundsLow[0], boundsLow[1], boundsLow[2],
                 boundsHigh[0], boundsHigh[1], boundsHigh[2]);
             Log(LogCategory::Initialization,

@@ -45,6 +45,42 @@
 // module installs first; their byte guards make them skip rather than overlap.
 //
 //   E 0x0061E860   5 bytes  cSC4NetworkOccupantWithPreBuiltModel::Draw wrapper
+//
+// Verified in Ghidra (SimCity 4.exe): 0x0061E860 is __thiscall(self, 2 args,
+// RET 0x8); it refreshes UpdateShadow (CALL 0x0061E340) on quality change and
+// forwards both args to the base renderer at 0x0061A850. Bridge occupants
+// (class 0x49CC1BCD) route their Draw through the same wrapper: slot 12 of
+// their renderable subobject vtable (0x00AA7190) holds the this-adjusting thunk
+// at 0x00605320 (SUB ECX,[ECX-4]; SUB ECX,0x18; JMP 0x0061E860). So one bracket
+// covers prebuilt and bridge puzzle pieces alike.
+//
+// Site E is not enough on its own, which is why sites F and G exist (see
+// docs/true3d-shadows-model-instance-path.md):
+//
+//   F 0x0061E8A0   8 bytes  cSC4NetworkOccupantWithPreBuiltModel::GetModelInstances
+//   G 0x006147D0  11 bytes  the cS3DModelInstance drawable thunk (vtable +0x30)
+//
+// A piece is two separate entries in the view's sorted drawable list, each
+// drawn through virtual slot +0x30 by DrawStaticView_ (0x007C7370):
+//
+//   * the occupant itself, whose Draw (site E -> 0x0061A850) renders only the
+//     network's flat textured quads - its callees are DrawPrims/DrawPrimsIndexed
+//     and nothing else, so the piece's True3D deck is never inside that bracket;
+//   * the piece's model, a cS3DModelInstance created in GetModelInstances from
+//     the RKT0 key {0x5AD0E817, 0xBADB57F1} and kept at occupant +0x1C4/+0x1C8,
+//     drawn through the thunk at 0x006147D0 -> 0x00801750 -> RenderModelInstance
+//     -> RenderMesh, which is where cGDriver finally sees the triangles.
+//
+// Nor can the piece take the prop route: cSC4ModelMaker::AddModels (0x00494390)
+// calls CreateOccupantShadow for props, buildings and power poles but not for
+// network occupants (0xC772BF98), and those three are its only callers, so no
+// prop-style mesh signature for a deck can ever be registered.
+//
+// Site F records the two model instances an occupant owns; site G brackets the
+// draw of a recorded instance. Ownership is re-checked against occupant +0x1C4 /
+// +0x1C8 on every hit, so an instance that was freed and whose address was
+// recycled cannot masquerade as a caster: a live occupant holds a reference to
+// its own instance, so a matching slot means the entry is still real.
 
 #include "NativeShadowMasks.h"
 
@@ -52,6 +88,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -60,6 +97,8 @@
 #include <filesystem>
 #include <initializer_list>
 #include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
 #include <vector>
 
 #include <windows.h>
@@ -76,6 +115,12 @@ namespace nSCD3D11::NativeShadowMasks {
 		constexpr uintptr_t kMapResultRejoinVA = 0x0061E590;
 		constexpr uintptr_t kPrebuiltDrawVA = 0x0061E860;
 		constexpr uintptr_t kPrebuiltDrawRejoinVA = 0x0061E865;
+		constexpr uintptr_t kPrebuiltModelsVA = 0x0061E8A0;
+		constexpr uintptr_t kPrebuiltModelsRejoinVA = 0x0061E8A8;
+		constexpr uintptr_t kModelInstanceDrawThunkVA = 0x006147D0;
+		constexpr uintptr_t kModelInstanceDrawVA = 0x00801750;
+		// The two cS3DModelInstance interface pointers a prebuilt piece owns.
+		constexpr ptrdiff_t kPrebuiltModelSlots[]{0x1C4, 0x1C8};
 		constexpr uintptr_t kRenderPropertiesPointerVA = 0x00B43CC4;
 		constexpr uintptr_t kPropGroundModelVA = 0x0049134B;
 		constexpr uintptr_t kPropGroundModelRejoinVA = 0x0049136A;
@@ -104,6 +149,8 @@ namespace nSCD3D11::NativeShadowMasks {
 		PatchSite gNetworkGate;
 		PatchSite gMapResult;
 		PatchSite gPrebuiltDraw;
+		PatchSite gPrebuiltModels;
+		PatchSite gModelInstanceDraw;
 		PatchSite gPropGroundModel;
 		PatchSite gAddShadowSite;
 
@@ -114,6 +161,8 @@ namespace nSCD3D11::NativeShadowMasks {
 		uintptr_t gNetworkGateReject = 0;
 		uintptr_t gMapResultRejoin = 0;
 		uintptr_t gPrebuiltDrawRejoin = 0;
+		uintptr_t gPrebuiltModelsRejoin = 0;
+		uintptr_t gModelInstanceDrawTarget = 0;
 		uintptr_t gRenderPropertiesPointer = 0;
 		uintptr_t gPropGroundModelRejoin = 0;
 		uintptr_t gAddShadowRejoin = 0;
@@ -137,10 +186,27 @@ namespace nSCD3D11::NativeShadowMasks {
 		};
 		std::vector<LivePropMesh> gLivePropMeshes;
 
+		// Model instances owned by prebuilt network pieces, mapped to the
+		// occupant that owns them so a hit can be re-validated. Read once per
+		// cS3DModelInstance draw, written only when a piece loads its models, so
+		// a shared lock is the right shape - and the atomic count keeps the
+		// common "nothing registered" case off the lock entirely.
+		std::shared_mutex gLiveModelMutex;
+		std::unordered_map<void const *, void const *> gLiveModelInstances;
+		std::atomic<size_t> gLiveModelInstanceCount{0};
+		// Entries are only replaced, never erased, because there is no cheap
+		// notification when an occupant dies. The cap stops a pathological
+		// session from growing the map without bound; the validation below is
+		// what keeps stale entries harmless.
+		constexpr size_t kMaxLiveModelInstances = 1u << 16;
+
 		unsigned gNetworkGateRelaxed = 0;
 		unsigned gNetworkMaskSupplied = 0;
 		unsigned gNetworkFellBack = 0;
 		unsigned gLiveNetworkDraws = 0;
+		unsigned gLiveModelsRegistered = 0;
+		unsigned gLiveModelDraws = 0;
+		unsigned gLiveModelsRejected = 0;
 		unsigned gPropMeshesRegistered = 0;
 		unsigned gPropCallsSuppressed = 0;
 
@@ -191,6 +257,56 @@ namespace nSCD3D11::NativeShadowMasks {
 		bool LiveShadowDiagnosticsEnabled() {
 			static bool const enabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
 			return enabled;
+		}
+
+		// ------------------------------------------------------------------
+		// Prebuilt model instances
+		// ------------------------------------------------------------------
+
+		// Records the model instances a prebuilt piece owns, read straight back
+		// out of the occupant once GetModelInstances has refreshed both slots.
+		void RegisterPrebuiltModelInstances(void const *occupant) {
+			if (occupant == nullptr) return;
+			for (ptrdiff_t const slot: kPrebuiltModelSlots) {
+				void const *instance = nullptr;
+				if (!SafeCopy(static_cast<uint8_t const *>(occupant) + slot, &instance, sizeof(instance)) ||
+				    instance == nullptr)
+					continue;
+				std::unique_lock<std::shared_mutex> lock(gLiveModelMutex);
+				if (gLiveModelInstances.size() >= kMaxLiveModelInstances) {
+					gLiveModelInstances.clear();
+					Log(LogCategory::Initialization,
+					    "live shadows: prebuilt model registry hit its cap, cleared");
+				}
+				if (gLiveModelInstances.insert_or_assign(instance, occupant).second) ++gLiveModelsRegistered;
+				gLiveModelInstanceCount.store(gLiveModelInstances.size(), std::memory_order_relaxed);
+			}
+		}
+
+		// True while this instance is still one of its occupant's prebuilt
+		// models. The second half is what makes the registry safe: nothing tells
+		// us when an instance dies, so a freed address that the allocator handed
+		// to some other model would otherwise stay a caster forever. A live
+		// occupant holds a reference to its own instance, so a slot that still
+		// points here means the entry is real.
+		bool IsPrebuiltModelInstance(void const *instance) {
+			if (instance == nullptr) return false;
+			if (gLiveModelInstanceCount.load(std::memory_order_relaxed) == 0) return false;
+			void const *occupant = nullptr;
+			{
+				std::shared_lock<std::shared_mutex> lock(gLiveModelMutex);
+				auto const found = gLiveModelInstances.find(instance);
+				if (found == gLiveModelInstances.end()) return false;
+				occupant = found->second;
+			}
+			for (ptrdiff_t const slot: kPrebuiltModelSlots) {
+				void const *current = nullptr;
+				if (SafeCopy(static_cast<uint8_t const *>(occupant) + slot, &current, sizeof(current)) &&
+				    current == instance)
+					return true;
+			}
+			++gLiveModelsRejected;
+			return false;
 		}
 
 		// ------------------------------------------------------------------
@@ -349,9 +465,17 @@ namespace nSCD3D11::NativeShadowMasks {
 				    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature), count);
 			}
 			if (!inserted && LiveShadowDiagnosticsEnabled()) {
-				Log(LogCategory::Initialization,
-				    "liveshadow-reg reused sig=%08X%08X verts=%u",
-				    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature), count);
+				// Re-registration is the steady state (one AddShadow call per
+				// mesh per redraw), so this must stay a one-shot: logging every
+				// hit exhausts the init log budget in seconds and suppresses
+				// every later diagnostic line.
+				static bool loggedReuse = false;
+				if (!loggedReuse) {
+					loggedReuse = true;
+					Log(LogCategory::Initialization,
+					    "liveshadow-reg reused sig=%08X%08X verts=%u",
+					    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature), count);
+				}
 			}
 		}
 		++gPropCallsSuppressed;
@@ -416,6 +540,59 @@ namespace nSCD3D11::NativeShadowMasks {
 				reinterpret_cast<Original>(&PrebuiltDrawOriginal)(self, drawContext, drawState);
 			--tLiveNetworkDrawDepth;
 			++gLiveNetworkDraws;
+			return result;
+		}
+
+		// Site F. 0x0061E8A0 is __thiscall(self, 5 stack args, RET 0x14); the two
+		// displaced MOVs read arguments off ESP, which is why the trampoline has
+		// to be entered by a call carrying the same arguments.
+		__declspec(naked) void PrebuiltModelsOriginal() {
+			__asm {
+				mov eax, dword ptr [esp + 0x14]
+				mov edx, dword ptr [esp + 0x0c]
+				jmp dword ptr [gPrebuiltModelsRejoin]
+			}
+		}
+
+		void __fastcall PrebuiltModelsHook(
+			void *self, void *, int zoom, int rotation, void **instances, int capacity, int *count) {
+			using Original = void (__thiscall *)(void *, int, int, void **, int, int *);
+			reinterpret_cast<Original>(&PrebuiltModelsOriginal)(
+				self, zoom, rotation, instances, capacity, count);
+			// Read the instances back out of the occupant rather than out of the
+			// array: the array also carries whatever the base network occupant
+			// contributed, and +0x1C4/+0x1C8 are the slots the validation checks.
+			RegisterPrebuiltModelInstances(self);
+		}
+
+		// Site G. Replaces the whole this-adjusting thunk, so ECX here is still
+		// the interface pointer the drawable list stores - the same value
+		// GetModelInstances handed out - and no pointer arithmetic is needed to
+		// compare the two. The trampoline replays the adjustment the thunk did.
+		__declspec(naked) void ModelInstanceDrawOriginal() {
+			__asm {
+				sub ecx, dword ptr [ecx - 4]
+				sub ecx, 0x40
+				jmp dword ptr [gModelInstanceDrawTarget]
+			}
+		}
+
+		uint32_t __fastcall ModelInstanceDrawHook(void *self, void *, void *drawContext, uint32_t lit) {
+			using Original = uint32_t (__thiscall *)(void *, void *, uint32_t);
+			bool const caster = IsPrebuiltModelInstance(self);
+			if (caster) ++tLiveNetworkDrawDepth;
+			uint32_t const result =
+				reinterpret_cast<Original>(&ModelInstanceDrawOriginal)(self, drawContext, lit);
+			if (caster) {
+				--tLiveNetworkDrawDepth;
+				++gLiveModelDraws;
+				static bool loggedFirst = false;
+				if (!loggedFirst) {
+					loggedFirst = true;
+					Log(LogCategory::Initialization,
+					    "live shadows: first prebuilt model bracketed (instance %p)", self);
+				}
+			}
 			return result;
 		}
 
@@ -634,6 +811,8 @@ namespace nSCD3D11::NativeShadowMasks {
 		gNetworkGateReject = reinterpret_cast<uintptr_t>(resolve(kNetworkGateRejectVA));
 		gMapResultRejoin = reinterpret_cast<uintptr_t>(resolve(kMapResultRejoinVA));
 		gPrebuiltDrawRejoin = reinterpret_cast<uintptr_t>(resolve(kPrebuiltDrawRejoinVA));
+		gPrebuiltModelsRejoin = reinterpret_cast<uintptr_t>(resolve(kPrebuiltModelsRejoinVA));
+		gModelInstanceDrawTarget = reinterpret_cast<uintptr_t>(resolve(kModelInstanceDrawVA));
 		gRenderPropertiesPointer = reinterpret_cast<uintptr_t>(resolve(kRenderPropertiesPointerVA));
 		gPropGroundModelRejoin = reinterpret_cast<uintptr_t>(resolve(kPropGroundModelRejoinVA));
 		gAddShadowRejoin = reinterpret_cast<uintptr_t>(resolve(kAddShadowRejoinVA));
@@ -647,11 +826,20 @@ namespace nSCD3D11::NativeShadowMasks {
 		                  resolve(kMapResultVA), &MapResultStub);
 		ConfigureJumpSite(gPrebuiltDraw, kPrebuiltDrawVA, {0xA1, 0xC4, 0x3C, 0xB4, 0x00},
 		                  resolve(kPrebuiltDrawVA), &PrebuiltDrawLiveShadowHook);
+		ConfigureJumpSite(gPrebuiltModels, kPrebuiltModelsVA,
+		                  {0x8B, 0x44, 0x24, 0x14, 0x8B, 0x54, 0x24, 0x0C},
+		                  resolve(kPrebuiltModelsVA), &PrebuiltModelsHook);
+		// The displacement in the thunk's own JMP is image-base independent, so
+		// it is part of the guard.
+		ConfigureJumpSite(gModelInstanceDraw, kModelInstanceDrawThunkVA,
+		                  {0x2B, 0x49, 0xFC, 0x83, 0xE9, 0x40, 0xE9, 0x75, 0xCF, 0x1E, 0x00},
+		                  resolve(kModelInstanceDrawThunkVA), &ModelInstanceDrawHook);
 		ConfigureJumpSite(gPropGroundModel, kPropGroundModelVA, {0x8D, 0x4C, 0x24, 0x13, 0x51},
 		                  resolve(kPropGroundModelVA), &PropGroundModelStub);
 		ConfigureJumpSite(gAddShadowSite, kAddShadowSiteVA, {0x8B, 0xCD, 0x57, 0xFF, 0x52, 0x2C},
 		                  resolve(kAddShadowSiteVA), &AddShadowLivePropStub);
-		PatchSite *const networkSites[]{&gNetworkGate, &gMapResult, &gPrebuiltDraw};
+		PatchSite *const networkSites[]{&gNetworkGate, &gMapResult, &gPrebuiltDraw, &gPrebuiltModels,
+		                                &gModelInstanceDraw};
 		PatchSite *const propSites[]{&gPropGroundModel, &gAddShadowSite};
 		std::vector<PatchSite *> sites;
 		if (mode == Mode::Network || mode == Mode::All)
@@ -677,6 +865,11 @@ namespace nSCD3D11::NativeShadowMasks {
 			std::lock_guard<std::mutex> lock(gPropMutex);
 			gLivePropMeshes.clear();
 		}
+		{
+			std::unique_lock<std::shared_mutex> lock(gLiveModelMutex);
+			gLiveModelInstances.clear();
+			gLiveModelInstanceCount.store(0, std::memory_order_relaxed);
+		}
 		gMode = mode;
 		tLiveNetworkDrawDepth = 0;
 		for (PatchSite *site: sites) {
@@ -694,6 +887,12 @@ namespace nSCD3D11::NativeShadowMasks {
 		Log(LogCategory::Initialization, "native shadows installed (%s), %u manifest instances",
 		    mode == Mode::All ? "all" : mode == Mode::Props ? "props" : "network",
 		    static_cast<unsigned>(gMaskInstances.size()));
+		Log(LogCategory::Initialization,
+		    "live shadows: capture indexed+array+terrain, textured+untextured; bracket tracing %s",
+		    std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr ? "on" : "off");
+		if (mode == Mode::Network || mode == Mode::All)
+			Log(LogCategory::Initialization,
+			    "live shadows: bracketing prebuilt piece models at the cS3DModelInstance drawable");
 		return true;
 #else
 		return false;
@@ -704,6 +903,8 @@ namespace nSCD3D11::NativeShadowMasks {
 		if (!gInstalled) return;
 		RestoreSite(gAddShadowSite);
 		RestoreSite(gPropGroundModel);
+		RestoreSite(gModelInstanceDraw);
+		RestoreSite(gPrebuiltModels);
 		RestoreSite(gPrebuiltDraw);
 		RestoreSite(gMapResult);
 		RestoreSite(gNetworkGate);
@@ -714,11 +915,19 @@ namespace nSCD3D11::NativeShadowMasks {
 			std::lock_guard<std::mutex> lock(gPropMutex);
 			gLivePropMeshes.clear();
 		}
+		{
+			std::unique_lock<std::shared_mutex> lock(gLiveModelMutex);
+			gLiveModelInstances.clear();
+			gLiveModelInstanceCount.store(0, std::memory_order_relaxed);
+		}
 		Log(LogCategory::Initialization,
 		    "native shadows uninstalled: %u live network draws, %u pieces relaxed, %u masks supplied, %u fell back, "
 		    "%u live prop meshes, %u native prop calls suppressed",
 		    gLiveNetworkDraws, gNetworkGateRelaxed, gNetworkMaskSupplied, gNetworkFellBack,
 		    gPropMeshesRegistered, gPropCallsSuppressed);
+		Log(LogCategory::Initialization,
+		    "prebuilt models: %u instances registered, %u bracketed draws, %u stale entries rejected",
+		    gLiveModelsRegistered, gLiveModelDraws, gLiveModelsRejected);
 	}
 
 } // namespace nSCD3D11::NativeShadowMasks

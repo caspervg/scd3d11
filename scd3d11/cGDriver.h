@@ -220,6 +220,9 @@ namespace nSCD3D11 {
 			uint32_t alphaFunction = 7;
 			float alphaReference = 0.0f;
 			bool alphaTest = false;
+			// True when captured inside the bracketed prebuilt-network Draw, as
+			// opposed to a signature-matched prop draw. Used only for diagnostics.
+			bool network = false;
 			D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 		};
 		struct LiveShadowPipeline {
@@ -243,6 +246,10 @@ namespace nSCD3D11 {
 			uint32_t indexCapacity = 0;
 		} liveShadows;
 		std::vector<LiveShadowDraw> liveShadowDraws;
+		// Diagnostic counters for MatchesLiveShadowMesh: calls vs positive
+		// matches. Reported in the -LiveShadowDiag frame summary.
+		uint64_t liveShadowMatchCalls = 0;
+		uint64_t liveShadowMatchHits = 0;
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;
@@ -520,6 +527,11 @@ namespace nSCD3D11 {
 		void CaptureLiveShadowDraw(
 			uint32_t firstVertex, uint32_t vertexCount, std::vector<uint32_t> const &indices,
 			D3D11_PRIMITIVE_TOPOLOGY topology);
+		// Shared tail of every capture path: snapshots the texture (which may be
+		// null for untextured casters), sampler, matrices and alpha state.
+		void AppendLiveShadowDraw(
+			std::vector<D3D11Vertex> vertices, std::vector<uint32_t> indices,
+			D3D11_PRIMITIVE_TOPOLOGY topology, bool networkCaster);
 
 		void FinishReShadeFrame(void);
 

@@ -18,9 +18,11 @@
 
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
+#include "../NativeShadowMasks.h"
 #include "../VertexFormatUtils.h"
 
 #include <limits>
+#include <vector>
 
 namespace nSCD3D11 {
 	char const *cGDriver::GetVertexBufferName(uint32_t gdVertexFormat) {
@@ -96,6 +98,34 @@ namespace nSCD3D11 {
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
 		if (name != 0 || !UploadExtensionVertices(byteSize)) return;
+		// The terrain reservation path never went through MatchesLiveShadowMesh,
+		// so bracketed network draws issued here were silently dropped.
+		if (NativeShadowMasks::LiveNetworkDrawActive()) {
+			static bool loggedBracketPrims = false;
+			if (!loggedBracketPrims) {
+				loggedBracketPrims = true;
+				Log(LogCategory::Initialization,
+				    "live bracket draw via DrawPrims (bytes=%u)", byteSize);
+			}
+			D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
+			uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
+			uint32_t const stride = RZVertexFormatStride(format);
+			uint32_t const count = stride == 0 ? 0 : byteSize / stride;
+			if (topology != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED && count >= 3 &&
+			    byteSize % stride == 0) {
+				try {
+					uint8_t const *const source = extensionVertexData.data() +
+						static_cast<size_t>(extensionVertexStart) * stride;
+					std::vector<D3D11Vertex> vertices;
+					std::vector<uint32_t> liveIndices(count);
+					if (ConvertVertices(format, stride, source, count, vertices)) {
+						for (uint32_t index = 0; index < count; ++index) liveIndices[index] = index;
+						AppendLiveShadowDraw(std::move(vertices), std::move(liveIndices), topology, true);
+					}
+				} catch (std::bad_alloc const &) {
+				}
+			}
+		}
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
@@ -123,6 +153,30 @@ namespace nSCD3D11 {
 			static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
 			dynamicIndexBuffer, dynamicIndexBufferOffset)) {
 			return;
+		}
+		if (NativeShadowMasks::LiveNetworkDrawActive()) {
+			static bool loggedBracketPrimsIndexed = false;
+			if (!loggedBracketPrimsIndexed) {
+				loggedBracketPrimsIndexed = true;
+				Log(LogCategory::Initialization,
+				    "live bracket draw via DrawPrimsIndexed (count=%u)", count);
+			}
+			D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
+			uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
+			uint32_t const stride = RZVertexFormatStride(format);
+			uint32_t const vertexCount = static_cast<uint32_t>(maximumIndex) + 1;
+			if (topology != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED && count >= 3 && vertexCount >= 3) {
+				try {
+					uint8_t const *const source = extensionVertexData.data() +
+						static_cast<size_t>(extensionVertexStart) * stride;
+					std::vector<D3D11Vertex> vertices;
+					if (ConvertVertices(format, stride, source, vertexCount, vertices)) {
+						std::vector<uint32_t> liveIndices(indices, indices + count);
+						AppendLiveShadowDraw(std::move(vertices), std::move(liveIndices), topology, true);
+					}
+				} catch (std::bad_alloc const &) {
+				}
+			}
 		}
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
