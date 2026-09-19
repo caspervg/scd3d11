@@ -819,7 +819,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
-		if (count <= 0 || indices == nullptr || (type != 3 && type != 5)) {
+		if (count == 0) return;
+		if (count < 0 || indices == nullptr || (type != 3 && type != 5)) {
 			Log(LogCategory::Unsupported, "invalid indexed draw type %u count %d pointer %p", type, count, indices);
 			return;
 		}
@@ -853,6 +854,23 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 		INT const baseVertex = -static_cast<INT>(minimumIndex);
+		if (MatchesLiveShadowMesh(minimumIndex, maximumIndex - minimumIndex + 1)) {
+			std::vector<uint32_t> liveIndices;
+			try {
+				if (convertPrimitive) liveIndices = drawIndexScratch;
+				else if (type == 3) {
+					auto const *source = static_cast<uint16_t const *>(indices);
+					liveIndices.assign(source, source + count);
+				} else {
+					auto const *source = static_cast<uint32_t const *>(indices);
+					liveIndices.assign(source, source + count);
+				}
+				for (uint32_t &index: liveIndices) index -= minimumIndex;
+				CaptureLiveShadowDraw(minimumIndex, maximumIndex - minimumIndex + 1, liveIndices,
+				                      convertPrimitive ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : topology);
+			} catch (std::bad_alloc const &) {
+			}
+		}
 
 		if (!convertPrimitive) {
 			DXGI_FORMAT const indexFormat = type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;

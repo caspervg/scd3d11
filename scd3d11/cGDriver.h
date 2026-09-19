@@ -209,6 +209,40 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
 			float encodedFarPlane = 0.0f;
 		} sceneDepth;
+		struct LiveShadowDraw {
+			std::vector<D3D11Vertex> vertices;
+			std::vector<uint32_t> indices;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> texture;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+			float modelView[16]{};
+			float projection[16]{};
+			float textureMatrix[16]{};
+			uint32_t alphaFunction = 7;
+			float alphaReference = 0.0f;
+			bool alphaTest = false;
+			D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+		};
+		struct LiveShadowPipeline {
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> casterVS;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> casterPS;
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> compositeVS;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> compositePS;
+			Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> vertices;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> indices;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> constants;
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> map;
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilView> mapDepth;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> mapView;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> mapSampler;
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> casterDepth;
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> compositeDepth;
+			Microsoft::WRL::ComPtr<ID3D11BlendState> shadowBlend;
+			Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+			uint32_t vertexCapacity = 0;
+			uint32_t indexCapacity = 0;
+		} liveShadows;
+		std::vector<LiveShadowDraw> liveShadowDraws;
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;
@@ -482,12 +516,19 @@ namespace nSCD3D11 {
 		HRESULT UpdateSceneDepth(void);
 
 		void CaptureShadowUniforms(void);
+		bool MatchesLiveShadowMesh(uint32_t firstVertex, uint32_t vertexCount);
+		void CaptureLiveShadowDraw(
+			uint32_t firstVertex, uint32_t vertexCount, std::vector<uint32_t> const &indices,
+			D3D11_PRIMITIVE_TOPOLOGY topology);
 
 		void FinishReShadeFrame(void);
 
 	public:
 		// Called at the end of cSC43DRender::Draw: the city view is complete and no UI is drawn yet.
 		void RenderSceneEffects(void);
+		// Called immediately after SC4's static-view pass so the shadow becomes part of
+		// the backing store, and again at scene end for any dynamic casters.
+		void RenderLivePropShadows(void);
 
 		cGDriver();
 

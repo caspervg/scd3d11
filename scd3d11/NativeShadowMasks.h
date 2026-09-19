@@ -10,14 +10,26 @@
 
 #pragma once
 
-// Production shadow-mask patches, opt-in with
-// -NativeShadowMasks:network, :props or :all.
+#include <cstdint>
+
+// Native shadow support, opt-in with -NativeShadowMasks:network, :props or
+// :all. Prebuilt network pieces and True3D props are captured as indexed live
+// casters and rendered by cGDriver. SC4's existing network mask decals remain
+// available as a fallback for geometry outside the prebuilt-model draw path.
 //
 // Independent of NativeShadowExperiment, which stays a research toggle.
 
 namespace nSCD3D11::NativeShadowMasks {
-
 	bool Install();
 	void Uninstall();
+
+	// Native shadow pixels extend beyond SC4's ordinary object dirty rectangles,
+	// so translated backing-store updates must rebuild the static view.
+	bool RequiresCleanTranslatedRedraw();
+	bool LiveNetworkEnabled();
+	bool LiveNetworkDrawActive();
+	bool LivePropsEnabled();
+	bool HasLivePropMeshes();
+	bool MatchLivePropSignature(uint64_t signature);
 
 } // namespace nSCD3D11::NativeShadowMasks

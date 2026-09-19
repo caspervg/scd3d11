@@ -414,122 +414,132 @@ class S3dMesh:
 
 
 def parse_s3d(data: bytes) -> list[S3dMesh]:
-    """Extract per-group positions and triangle indices from a 3DMD model.
+    """Extract the meshes used by an S3D model's animation frames.
 
-    The container is a flat run of contiguous `tag(4) + size(4) + body` sections
-    starting at offset 8, verified by each section ending exactly on the next
-    tag. Inside VERT and INDX the body is a uint32 group count followed by
-    groups; a VERT group header is `unknown, count, format, stride` and an INDX
-    group header is `unknown, format, count`. The stride is stored, so no
-    vertex-format table is needed.
-
-    Only VERT and INDX matter for a shadow: the silhouette is the union of the
-    projected triangles, so materials, animation and UVs are ignored.
+    S3D block length fields are not safe offsets (stock files contain values
+    larger than the entire decoded entry), so blocks must be decoded in their
+    defined order. ANIM supplies the essential mapping between VERT, INDX and
+    PRIM blocks; pairing those arrays by ordinal loses valid geometry whenever
+    their group counts differ.
     """
     if data[:4] != b"3DMD":
         raise ValueError("not an S3D model")
-    sections: dict[bytes, list[bytes]] = {}
-    pos = 8
-    while pos + 8 <= len(data):
-        tag = data[pos:pos + 4]
-        if not tag.isalpha() and not tag.isalnum():
-            break
-        size = struct.unpack_from("<I", data, pos + 4)[0]
-        if size < 8 or pos + size > len(data):
-            break
-        sections.setdefault(tag, []).append(data[pos + 8:pos + size])
-        pos += size
 
-    vertex_groups: list[list[tuple[float, float, float]]] = []
-    for body in sections.get(b"VERT", []):
-        vertex_groups.extend(_parse_vertex_section(body))
+    cursor = 8
 
-    index_groups: list[list[int]] = []
-    for body in sections.get(b"INDX", []):
-        count = struct.unpack_from("<I", body, 0)[0]
-        cursor = 4
+    def take_tag(expected: bytes) -> None:
+        nonlocal cursor
+        if data[cursor:cursor + 4] != expected:
+            raise ValueError(f"expected {expected.decode()} at 0x{cursor:X}")
+        cursor += 8  # tag and advisory block length
+
+    take_tag(b"HEAD")
+    major, minor = struct.unpack_from("<HH", data, cursor)
+    cursor += 4
+    if major != 1 or minor not in range(1, 6):
+        raise ValueError(f"unsupported S3D version {major}.{minor}")
+
+    take_tag(b"VERT")
+    vertex_groups = []
+    group_count = struct.unpack_from("<I", data, cursor)[0]
+    cursor += 4
+    for _ in range(group_count):
+        _flags, count = struct.unpack_from("<HH", data, cursor)
+        cursor += 4
+        if minor >= 4:
+            vertex_format = struct.unpack_from("<I", data, cursor)[0]
+            cursor += 4
+            coords, colours, textures = _vertex_format_counts(vertex_format)
+            stride = coords * 12 + colours * 4 + textures * 8
+        else:
+            _vertex_format, stride = struct.unpack_from("<HH", data, cursor)
+            cursor += 4
+        if stride < 12 or cursor + count * stride > len(data):
+            raise ValueError("invalid S3D vertex buffer")
+        vertex_groups.append([
+            struct.unpack_from("<fff", data, cursor + index * stride)
+            for index in range(count)
+        ])
+        cursor += count * stride
+
+    take_tag(b"INDX")
+    index_groups = []
+    group_count = struct.unpack_from("<I", data, cursor)[0]
+    cursor += 4
+    for _ in range(group_count):
+        _flags, stride, count = struct.unpack_from("<HHH", data, cursor)
+        cursor += 6
+        if stride != 2:
+            raise ValueError(f"unsupported S3D index stride {stride}")
+        index_groups.append(list(struct.unpack_from(f"<{count}H", data, cursor)))
+        cursor += count * stride
+
+    take_tag(b"PRIM")
+    primitive_groups = []
+    group_count = struct.unpack_from("<I", data, cursor)[0]
+    cursor += 4
+    for _ in range(group_count):
+        count = struct.unpack_from("<H", data, cursor)[0]
+        cursor += 2
+        group = []
         for _ in range(count):
-            _unknown, _format, indices = struct.unpack_from("<HHH", body, cursor)
-            cursor += 6
-            index_groups.append(list(struct.unpack_from(f"<{indices}H", body, cursor)))
-            cursor += indices * 2
+            primitive_type, first, length = struct.unpack_from("<III", data, cursor)
+            cursor += 12
+            group.append((primitive_type, first, length))
+        primitive_groups.append(group)
+
+    # Material records are irrelevant to silhouette generation. ANIM is the
+    # next required block and provides the buffer indices for each mesh/frame.
+    cursor = data.find(b"ANIM", cursor)
+    if cursor < 0:
+        raise ValueError("S3D has no ANIM block")
+    take_tag(b"ANIM")
+    frame_count, _rate, _mode = struct.unpack_from("<HHH", data, cursor)
+    cursor += 6
+    _flags, _displacement = struct.unpack_from("<If", data, cursor)
+    cursor += 8
+    mesh_count = struct.unpack_from("<H", data, cursor)[0]
+    cursor += 2
+
+    mappings = []
+    for _ in range(mesh_count):
+        name_length, _flags = struct.unpack_from("<BB", data, cursor)
+        cursor += 2 + name_length
+        for _ in range(frame_count):
+            mappings.append(struct.unpack_from("<HHHH", data, cursor)[:3])
+            cursor += 8
 
     meshes = []
-    for i, group in enumerate(vertex_groups):
-        indices = index_groups[i] if i < len(index_groups) else list(range(len(group)))
-        meshes.append(S3dMesh(group, indices))
+    seen = set()
+    for vertex_index, index_index, primitive_index in mappings:
+        key = (vertex_index, index_index, primitive_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        if vertex_index >= len(vertex_groups) or index_index >= len(index_groups):
+            continue
+        indices = index_groups[index_index]
+        if primitive_index < len(primitive_groups) and primitive_groups[primitive_index]:
+            selected = []
+            for _kind, first, length in primitive_groups[primitive_index]:
+                selected.extend(indices[first:first + length])
+            indices = selected
+        if len(indices) < 3:
+            continue
+        meshes.append(S3dMesh(vertex_groups[vertex_index], indices))
     return meshes
 
 
-# Vertex strides seen in SC4 models: position alone, position plus one or two
-# texture coordinate sets, and the same again with a normal or a colour.
-_CANDIDATE_STRIDES = (12, 16, 20, 24, 28, 32, 36, 40, 44, 48)
-
-
-def _parse_vertex_section(body: bytes) -> list[list[tuple[float, float, float]]]:
-    """Split a VERT body into groups, deducing each group's stride.
-
-    Groups are not a block of headers followed by a block of data: each group
-    is its own 8-byte header immediately followed by that group's vertices, so
-    the next header cannot be found without knowing the current stride. The
-    header does carry the vertex count, but the two words after it are not a
-    plain (format, stride) pair - a 4-vertex 20-byte-stride group and a
-    7-vertex 20-byte-stride group store 0x00140002 and 0x80004001 there.
-
-    Rather than guess at the declaration bits, the strides are solved for: the
-    walk tries each candidate per group and keeps the assignment that lands the
-    last group exactly on the end of the section. A wrong stride almost always
-    overruns the section or makes a later group's count implausible, so the fit
-    is effectively unique and cannot silently mis-read a vertex.
-    """
-    if len(body) < 4:
-        return []
-    count = struct.unpack_from("<I", body, 0)[0]
-    if count == 0 or count > 256:
-        return []
-
-    # The search is exponential without these two guards. A model whose groups
-    # admit no consistent set of strides made the walk explore every
-    # combination, and a single such model in the NAM stalled a whole bulk bake
-    # on one core for minutes. Memoising the (group, offset) states that cannot
-    # lead to a fit makes the walk polynomial, and the node budget bounds even
-    # the pathological shapes that slip past it.
-    failed: set[tuple[int, int]] = set()
-    budget = 100000
-
-    def walk(index: int, cursor: int, chosen: list[tuple[int, int, int]]):
-        nonlocal budget
-        if index == count:
-            return list(chosen) if cursor == len(body) else None
-        if cursor + 8 > len(body):
-            return None
-        state = (index, cursor)
-        if state in failed:
-            return None
-        budget -= 1
-        if budget <= 0:
-            return None
-        vertices = struct.unpack_from("<H", body, cursor + 2)[0]
-        data = cursor + 8
-        if vertices == 0:
-            return walk(index + 1, data, chosen)
-        for stride in _CANDIDATE_STRIDES:
-            need = vertices * stride
-            if data + need > len(body):
-                break
-            chosen.append((data, vertices, stride))
-            found = walk(index + 1, data + need, chosen)
-            chosen.pop()
-            if found is not None:
-                return found
-        failed.add(state)
-        return None
-
-    layout = walk(0, 4, [])
-    if layout is None:
-        return []
-    return [[struct.unpack_from("<fff", body, offset + v * stride) for v in range(vertices)]
-            for offset, vertices, stride in layout]
+def _vertex_format_counts(vertex_format: int) -> tuple[int, int, int]:
+    if vertex_format & 0x80000000:
+        return vertex_format & 3, (vertex_format >> 8) & 3, (vertex_format >> 14) & 3
+    return {
+        1: (1, 1, 0),
+        2: (1, 0, 1),
+        3: (1, 0, 2),
+        10: (1, 1, 1),
+        11: (1, 1, 2),
+    }.get(vertex_format, (1, 0, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -677,44 +687,6 @@ def _dilate(alpha: bytearray, size: int) -> bytearray:
                 out[y * size + x] = best // 2
     return out
 
-
-
-def mesh_signature(vertex_count: int, extent_x: float, extent_y: float, extent_z: float) -> int:
-    """Identify a mesh the way -NativeShadowMasks:props does at the call site.
-
-    The resolved model TGI is not recoverable at the AddShadow call site - the
-    resolver never writes the instance back into the key buffer - so the DLL
-    keys its proxy lookup on the vertex count plus the vertex extents quantised
-    to 1/16 of a unit. The two horizontal extents are sorted so the signature
-    survives the four map rotations. This must stay identical to MeshSignature
-    in scd3d11/NativeShadowMasks.cpp.
-    """
-    flat, deep = sorted((extent_x, extent_z))
-    parts = (vertex_count,
-             int(flat * 16.0 + 0.5) & 0xFFFFFFFFFFFFFFFF,
-             int(extent_y * 16.0 + 0.5) & 0xFFFFFFFFFFFFFFFF,
-             int(deep * 16.0 + 0.5) & 0xFFFFFFFFFFFFFFFF)
-    digest = 0xCBF29CE484222325
-    for part in parts:
-        digest = ((digest ^ part) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return digest
-
-
-def model_signatures(meshes: list[S3dMesh]) -> list[tuple[int, int]]:
-    """Per-mesh (vertex count, signature) for every mesh AddShadow would see."""
-    out = []
-    for mesh in meshes:
-        if len(mesh.positions) < 3:
-            continue
-        xs = [p[0] for p in mesh.positions]
-        ys = [p[1] for p in mesh.positions]
-        zs = [p[2] for p in mesh.positions]
-        out.append((len(mesh.positions),
-                    mesh_signature(len(mesh.positions), max(xs) - min(xs),
-                                   max(ys) - min(ys), max(zs) - min(zs))))
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -812,21 +784,6 @@ def command_bake(args) -> int:
     return 0
 
 
-def command_propsig(args) -> int:
-    """Print manifest lines enabling the prop proxy for a model's meshes."""
-    reader = DbpfReader(args.package)
-    model = Tgi.parse(args.model) if "-" in args.model else Tgi(S3D_TYPE, S3D_GROUP, int(args.model, 16))
-    meshes = parse_s3d(reader.read(model))
-    signatures = model_signatures(meshes)
-    if not signatures:
-        print(f"{model}: no usable meshes")
-        return 1
-    print(f"# {model}: {len(signatures)} mesh(es)")
-    for count, signature in signatures:
-        print(f"P{signature:016X}   # {count} vertices")
-    return 0
-
-
 def command_show(args) -> int:
     reader = DbpfReader(args.package)
     tgi = Tgi.parse(args.tgi)
@@ -859,10 +816,6 @@ def main(argv=None) -> int:
     p.add_argument("-p", "--padding", type=float, default=0.5)
     p.add_argument("-s", "--supersample", type=int, default=4)
 
-    p = sub.add_parser("propsig", help="print prop-proxy manifest lines for a model")
-    p.add_argument("package")
-    p.add_argument("model", help="model instance or full TYPE-GROUP-INSTANCE")
-
     p = sub.add_parser("show", help="print an FSH mask as ASCII")
     p.add_argument("package")
     p.add_argument("tgi")
@@ -872,7 +825,6 @@ def main(argv=None) -> int:
         "selftest": command_selftest,
         "testmask": command_testmask,
         "bake": command_bake,
-        "propsig": command_propsig,
         "show": command_show,
     }[args.command](args)
 

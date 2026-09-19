@@ -339,6 +339,8 @@ namespace nSCD3D11 {
 		backBufferTexture.Reset();
 		swapChainBuffer.Reset();
 		sceneDepth = SceneDepthPipeline{};
+		liveShadows = LiveShadowPipeline{};
+		liveShadowDraws.clear();
 		blit = BlitPipeline{};
 		if (preserveResources) {
 			for (auto &entry: textures) {

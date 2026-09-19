@@ -274,15 +274,21 @@ def main(argv=None) -> int:
     print(f"scanning {len(packages)} packages under {args.root}")
 
     existing: set[int] = set()
-    package_models: dict[str, list[int]] = {}
+    # SC4 resolves duplicate TGIs from the last-loaded package. Keep the last
+    # lexical source for each model too, instead of baking duplicate instances
+    # concurrently and letting worker completion order choose the winner.
+    model_sources: dict[int, str] = {}
     with Pool(args.jobs) as pool:
         stream = pool.imap(scan_package, packages, chunksize=8)
         for path, (models, masks) in tqdm(zip(packages, stream), total=len(packages),
                                           desc="scanning", unit="pkg"):
-            if models:
-                package_models[path] = models
+            for instance in models:
+                model_sources[instance] = path
             existing.update(masks)
-    total = sum(len(v) for v in package_models.values())
+    package_models: dict[str, list[int]] = collections.defaultdict(list)
+    for instance, path in model_sources.items():
+        package_models[path].append(instance)
+    total = len(model_sources)
     print(f"  {total} S3D models, {len(existing)} instances already have a mask "
           f"({time.time() - started:.0f}s)")
 
@@ -318,7 +324,10 @@ def main(argv=None) -> int:
     os.makedirs(args.output, exist_ok=True)
     stats = collections.Counter()
     pending: dict[S.Tgi, bytes] = {}
-    manifest: list[int] = []
+    # The DLL manifest is an availability list, not an ownership list. Include
+    # masks supplied by the input plugins as well as newly generated masks so
+    # a gate-relaxed piece can use an existing mask that this run skipped.
+    manifest: list[int] = list(existing)
     written = 0
     done = 0
 
@@ -358,7 +367,7 @@ def main(argv=None) -> int:
     manifest_path = os.path.join(args.output, "SC4ShadowMasks.txt")
     with open(manifest_path, "w", encoding="ascii") as handle:
         handle.write("# Generated shadow-mask instances for -NativeShadowMasks.\n")
-        handle.write(f"# {len(set(manifest))} masks baked from {args.root}\n")
+        handle.write(f"# {len(set(manifest))} available masks found or baked from {args.root}\n")
         for instance in sorted(set(manifest)):
             handle.write(f"{instance:08X}\n")
 

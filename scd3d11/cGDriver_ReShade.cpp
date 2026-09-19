@@ -28,6 +28,7 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
+#include "NativeShadowMasks.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -42,6 +43,10 @@ namespace nSCD3D11 {
 		// The cSC43DRender vtable slot for cSC43DRender::Draw, its only reference (SimCity 4 1.1.641).
 		constexpr uintptr_t kDrawSlotVA = 0x00ABABB4;
 		constexpr uintptr_t kDrawVA = 0x007CB530;
+		// DrawPostStaticView is called after every static-view submission, including
+		// dirty-rectangle updates, and before SC4 saves that image to its backing store.
+		constexpr uintptr_t kDrawPostStaticViewVA = 0x007C3ED0;
+		constexpr uintptr_t kDrawPostStaticViewRejoinVA = 0x007C3EDA;
 
 		char const kShaderSource[] = R"(
 float4 VSMain(uint id : SV_VertexID) : SV_POSITION {
@@ -62,6 +67,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		using DrawFunction = bool(__fastcall *)(void *self, void *edx);
 
 		DrawFunction gOriginalDraw = nullptr;
+		uintptr_t gDrawPostStaticViewRejoin = 0;
 		cGDriver *gDriver = nullptr;
 		reshade::api::effect_runtime *gRuntime = nullptr;
 		ID3D11ShaderResourceView *gSceneDepthView = nullptr;
@@ -93,10 +99,77 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		}
 
 		bool __fastcall DrawHook(void *self, void *edx) {
+			// AttemptTranslatedViewUpdate shifts the existing backing-store pixels and
+			// redraws only the newly exposed strips. That dirty region knows the prop's
+			// original footprint, but not LiveShadows' displaced footprint, so baked
+			// shadows otherwise leave trails and get blended repeatedly. Invalidate only
+			// translated updates while native network or prop shadows are enabled; SC4
+			// then takes its own established full-redraw path and builds a clean backing
+			// store at the new view.
+			if (self != nullptr && NativeShadowMasks::RequiresCleanTranslatedRedraw()) {
+				auto *const bytes = static_cast<uint8_t *>(self);
+				uint32_t const horizontal = *reinterpret_cast<uint32_t const *>(bytes + 0xE0);
+				uint32_t const vertical = *reinterpret_cast<uint32_t const *>(bytes + 0xE4);
+				bool translated = horizontal != 0 || vertical != 0;
+
+				// cSC43DRender+0x8c owns cSC4CameraControl. Its current zoom and
+				// rotation are the integers at +0x108/+0x10c, written by
+				// cSC4CameraControl::SetZoomAndRotation before Draw is entered.
+				// Detect them here, before RestoreBackingStore can reuse pixels made
+				// with the previous projection.
+				static void *lastRender = nullptr;
+				static int32_t lastZoom = 0;
+				static int32_t lastRotation = 0;
+				static bool haveCameraState = false;
+				auto *const camera = *reinterpret_cast<uint8_t **>(bytes + 0x8C);
+				bool cameraChanged = false;
+				if (camera != nullptr) {
+					int32_t const zoom = *reinterpret_cast<int32_t const *>(camera + 0x108);
+					int32_t const rotation = *reinterpret_cast<int32_t const *>(camera + 0x10C);
+					cameraChanged = haveCameraState && lastRender == self &&
+					                (zoom != lastZoom || rotation != lastRotation);
+					lastRender = self;
+					lastZoom = zoom;
+					lastRotation = rotation;
+					haveCameraState = true;
+				}
+
+				if (translated || cameraChanged) {
+					bytes[0x65] = 0; // cSC43DRender::mbBackingStoreValid
+					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;
+					if (translated && !loggedTranslationInvalidation) {
+						loggedTranslationInvalidation = true;
+						Log(LogCategory::Initialization,
+						    "native shadows: translated backing-store updates force a clean static redraw");
+					}
+					if (cameraChanged && !loggedCameraInvalidation) {
+						loggedCameraInvalidation = true;
+						Log(LogCategory::Initialization,
+						    "native shadows: zoom/rotation changes force a clean static redraw");
+					}
+				}
+			}
 			bool const drawn = gOriginalDraw(self, edx);
 			if (drawn && gDriver != nullptr) gDriver->RenderSceneEffects();
 			return drawn;
 		}
+
+#if defined(_MSC_VER) && defined(_M_IX86)
+		__declspec(naked) void __fastcall DrawPostStaticViewOriginal(void *, void *) {
+			__asm {
+				push esi
+				push edi
+				mov  edi, ecx
+				mov  eax, dword ptr [edi + 0x11c]
+				jmp  dword ptr [gDrawPostStaticViewRejoin]
+			}
+		}
+
+		void __fastcall DrawPostStaticViewHook(void *self, void *edx) {
+			DrawPostStaticViewOriginal(self, edx);
+			if (gDriver != nullptr) gDriver->RenderLivePropShadows();
+		}
+#endif
 
 		void OnReloadedEffects(reshade::api::effect_runtime *runtime) {
 			char value[32]{};
@@ -155,6 +228,31 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			VirtualProtect(slot, sizeof(*slot), protection, &protection);
 			return true;
 		}
+
+		bool PatchDrawPostStaticView(void *module) {
+#if defined(_MSC_VER) && defined(_M_IX86)
+			auto *const target = static_cast<uint8_t *>(module) + (kDrawPostStaticViewVA - kImageBase);
+			uint8_t const expected[]{0x56, 0x57, 0x8B, 0xF9, 0x8B, 0x87, 0x1C, 0x01, 0x00, 0x00};
+			if (std::memcmp(target, expected, sizeof(expected)) != 0) return false;
+			uint8_t replacement[sizeof(expected)]{};
+			std::memset(replacement, 0x90, sizeof(replacement));
+			replacement[0] = 0xE9;
+			int32_t const displacement = static_cast<int32_t>(
+				reinterpret_cast<uintptr_t>(&DrawPostStaticViewHook) - (reinterpret_cast<uintptr_t>(target) + 5));
+			std::memcpy(replacement + 1, &displacement, sizeof(displacement));
+			gDrawPostStaticViewRejoin = reinterpret_cast<uintptr_t>(target + sizeof(expected));
+			DWORD protection = 0;
+			if (!VirtualProtect(target, sizeof(expected), PAGE_EXECUTE_READWRITE, &protection)) return false;
+			std::memcpy(target, replacement, sizeof(replacement));
+			DWORD ignored = 0;
+			VirtualProtect(target, sizeof(expected), protection, &ignored);
+			FlushInstructionCache(GetCurrentProcess(), target, sizeof(expected));
+			return true;
+#else
+			(void)module;
+			return false;
+#endif
+		}
 	}
 
 	void cGDriver::InstallReShadeAddon(void) {
@@ -164,6 +262,22 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			return;
 		}
 		attempted = true;
+		void *const executable = GetModuleHandleW(nullptr);
+		auto const draw = reinterpret_cast<void *>(
+			reinterpret_cast<uintptr_t>(executable) + (kDrawVA - kImageBase));
+		if (!PatchDrawSlot(reinterpret_cast<void *>(&DrawHook), draw)) {
+			Log(LogCategory::Initialization, "scene effects: cSC43DRender::Draw not found");
+			return;
+		}
+		gOriginalDraw = reinterpret_cast<DrawFunction>(draw);
+		gDriver = this;
+		if (!PatchDrawPostStaticView(executable)) {
+			Log(LogCategory::Initialization,
+			    "live shadows: DrawPostStaticView byte guard failed; using end-of-scene fallback");
+		} else {
+			Log(LogCategory::Initialization,
+			    "live shadows: static pass hooked before SC4 backing-store save");
+		}
 		if (std::strstr(GetCommandLineA(), "-ReShade:off") != nullptr) return;
 
 		HMODULE module = nullptr;
@@ -172,16 +286,6 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		    !reshade::register_addon(module)) {
 			return; // ReShade is not loaded, or is older than 6.0
 		}
-
-		auto const draw = reinterpret_cast<void *>(
-			reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawVA - kImageBase));
-		if (!PatchDrawSlot(reinterpret_cast<void *>(&DrawHook), draw)) {
-			Log(LogCategory::Initialization, "reshade: cSC43DRender::Draw not found, using ReShade's default rendering");
-			reshade::unregister_addon(module);
-			return;
-		}
-		gOriginalDraw = reinterpret_cast<DrawFunction>(draw);
-		gDriver = this;
 
 		reshade::register_event<reshade::addon_event::init_effect_runtime>(&OnInitEffectRuntime);
 		reshade::register_event<reshade::addon_event::destroy_effect_runtime>(&OnDestroyEffectRuntime);
@@ -315,6 +419,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 	}
 
 	void cGDriver::RenderSceneEffects(void) {
+		RenderLivePropShadows();
 		if (gRuntime == nullptr || !IsDeviceReady()) return;
 
 		gSceneDepthView = SUCCEEDED(UpdateSceneDepth()) ? sceneDepth.view.Get() : nullptr;

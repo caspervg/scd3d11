@@ -57,6 +57,7 @@ target_compile_definitions(scd3d11_common INTERFACE
 set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
+        scd3d11/cGDriver_LiveShadows.cpp
         scd3d11/cGDriversCOMDirector.cpp
         scd3d11/CpuScheduling.cpp
         scd3d11/NativeShadowDiagnostics.cpp

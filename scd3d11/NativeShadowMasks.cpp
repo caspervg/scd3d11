@@ -8,7 +8,7 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
-// Shadow masks for prebuilt network pieces and True3D props.
+// Native shadows for prebuilt network pieces and True3D props.
 //
 // SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
 // -NativeShadowMasks:network, :props or :all. Every site is guarded by its
@@ -17,7 +17,7 @@
 // What the Phase 1 instrumentation established, and why the patches are shaped
 // this way (see docs/true3d-shadows-phase1.md):
 //
-//  * A prebuilt network piece casts a shadow if and only if an FSH exists at
+//  * A prebuilt network piece casts a native shadow if and only if an FSH exists at
 //    {0x7AB50E44, 0x2BC2759A, base + zoom}. Blanking those masks removed every
 //    network shadow in the city, so the decal, its terrain following and its
 //    lifetime need no patching at all. Nothing here creates decals.
@@ -30,43 +30,21 @@
 //    relaxation, returns 0 when no mask is available. A zero return is the
 //    game's own "no shadow texture" path at 0x0061E5A0, so a missing mask falls
 //    back to exactly the original behaviour.
-//  * True3D props fail for three measured reasons: geometry sitting above the
-//    decal plane, UVs outside [0,1], and one decal per mesh. Site C reruns the
-//    Is Ground Model test itself and records the occupants it rejects; site D
-//    then acts only on those occupants and skips the call outright for a mesh
-//    with no generated proxy. The render model is never touched, the property
-//    test is never disabled, and a prop without a proxy keeps the no-shadow
-//    behaviour it has today.
-//
-//    INCOMPLETE: the proxy currently substitutes geometry only - the source
-//    mesh flattened onto its base plane, with UVs wrapped into the unit
-//    square - and that is not enough. Tested in-game on an 837-vertex
-//    catenary prop it produces one solid dark parallelogram: flattening
-//    removes the height smear, but AddShadow still stamps every triangle, so
-//    the result is the model's filled footprint rather than a silhouette, and
-//    wrapping the UVs destroys the mapping that would otherwise let the
-//    material's alpha cut it.
-//
-//    A correct proxy needs both halves that the design calls for: a single
-//    quad with 0..1 UVs *and* a generated alpha mask bound as the texture.
-//    The missing piece is a cS3DTextureBinding for a generated FSH, which
-//    means finding the binding factory on Windows (the Mac reference has
-//    GZCOM_cS3DTextureBindingFactoryCLSID) and creating one from the key
-//    {0x7AB50E44, 0x2BC2759A, <generated instance>}. Until that exists,
-//    :props is inert unless a signature is added to the manifest by hand, and
-//    doing so currently looks worse than no shadow.
-//
 // Verified sites:
 //
 //   A 0x0061E35C  35 bytes  the HasNetworkFlag(1)/(4)/quality gate
 //   B 0x0061E589   7 bytes  TEST EAX,EAX / MOV ECX,-2 after MapShadowTexture
-//   C 0x0049134B   5 bytes  LEA ECX,[ESP+0x13] / PUSH ECX, the Is Ground Model test
-//   D 0x0049195E   6 bytes  MOV ECX,EBP / PUSH EDI / CALL [EDX+0x2C]
+//   C 0x0049134B   5 bytes  the Is Ground Model property test
+//   D 0x0049195E   6 bytes  the cSTEOverlayManager::AddShadow call
 //
-// Sites C and D are shared with other modules: D is also the diagnostics
-// AddShadow hook and C is also NativeShadowExperiment's patch B. This module
-// installs first, and the others' byte guards make them skip rather than
-// fight over the bytes.
+// Prebuilt-network Draw (site E) and the rejected True3D prop path identify the
+// corresponding cGDriver draws. The driver still has the index buffer and can
+// therefore project the actual alpha-tested triangles. Existing network mask
+// decals are retained for non-prebuilt/fallback geometry.
+// Sites C and D are shared with the diagnostics and research modules. This
+// module installs first; their byte guards make them skip rather than overlap.
+//
+//   E 0x0061E860   5 bytes  cSC4NetworkOccupantWithPreBuiltModel::Draw wrapper
 
 #include "NativeShadowMasks.h"
 
@@ -81,6 +59,7 @@
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
+#include <mutex>
 #include <vector>
 
 #include <windows.h>
@@ -95,18 +74,16 @@ namespace nSCD3D11::NativeShadowMasks {
 		constexpr uintptr_t kNetworkGateRejectVA = 0x0061E383; // XOR BL,BL
 		constexpr uintptr_t kMapResultVA = 0x0061E589;
 		constexpr uintptr_t kMapResultRejoinVA = 0x0061E590;
+		constexpr uintptr_t kPrebuiltDrawVA = 0x0061E860;
+		constexpr uintptr_t kPrebuiltDrawRejoinVA = 0x0061E865;
+		constexpr uintptr_t kRenderPropertiesPointerVA = 0x00B43CC4;
 		constexpr uintptr_t kPropGroundModelVA = 0x0049134B;
 		constexpr uintptr_t kPropGroundModelRejoinVA = 0x0049136A;
-		constexpr uintptr_t kGetBoolPropertyVA = 0x005FD390; // __cdecl(exemplar, id, out)
-		constexpr uintptr_t kIsGroundModelProperty = 0x8A5E5DB8;
+		constexpr uintptr_t kGetBoolPropertyVA = 0x005FD390;
 		constexpr uintptr_t kAddShadowSiteVA = 0x0049195E;
 		constexpr uintptr_t kAddShadowRejoinVA = 0x00491964;
-
-		// CreateOccupantShadow frame, relative to the body stack pointer B.
-		// At the AddShadow site B is ESP + 0x14, the five pushed arguments.
 		constexpr ptrdiff_t kFrameOccupant = 0xE0;
 		constexpr ptrdiff_t kAddShadowArgumentBytes = 0x14;
-
 		// HasNetworkFlag on the base subobject at this+4.
 		constexpr size_t kHasNetworkFlagSlot = 0x80 / sizeof(void *);
 
@@ -126,6 +103,7 @@ namespace nSCD3D11::NativeShadowMasks {
 
 		PatchSite gNetworkGate;
 		PatchSite gMapResult;
+		PatchSite gPrebuiltDraw;
 		PatchSite gPropGroundModel;
 		PatchSite gAddShadowSite;
 
@@ -135,44 +113,36 @@ namespace nSCD3D11::NativeShadowMasks {
 		uintptr_t gNetworkGateAccept = 0;
 		uintptr_t gNetworkGateReject = 0;
 		uintptr_t gMapResultRejoin = 0;
-		uintptr_t gAddShadowRejoin = 0;
+		uintptr_t gPrebuiltDrawRejoin = 0;
+		uintptr_t gRenderPropertiesPointer = 0;
 		uintptr_t gPropGroundModelRejoin = 0;
+		uintptr_t gAddShadowRejoin = 0;
 		uintptr_t gGetBoolProperty = 0;
 
-		// Generated mask instances, sorted for binary search, plus explicit
+		// Available mask instances, sorted for binary search, plus explicit
 		// source -> generated remappings. Loaded once; never touched during a
 		// frame, so lookups need no lock.
 		std::vector<uint32_t> gMaskInstances;
 		std::vector<std::pair<uint32_t, uint32_t>> gMaskRemaps;
-		// Mesh signatures with a generated proxy, from "P <hex>" manifest lines.
-		std::vector<uint64_t> gPropSignatures;
 
 		// Set by the gate stub, read by the mapping stub a few calls later on
 		// the same thread inside the same UpdateShadow.
 		thread_local bool tGatePassedOriginally = false;
-
-		// The occupant whose Is Ground Model test just failed. Only that one
-		// occupant's meshes may be proxied or suppressed at the AddShadow site,
-		// so buildings, flora, power poles and genuine ground-model props keep
-		// running through the original path untouched.
+		thread_local uint32_t tLiveNetworkDrawDepth = 0;
 		thread_local void *tRelaxedPropOccupant = nullptr;
 
-		struct Vector3 {
-			float x, y, z;
+		std::mutex gPropMutex;
+		struct LivePropMesh {
+			uint64_t signature = 0;
 		};
-
-		struct Vector2 {
-			float u, v;
-		};
-
-		thread_local std::vector<Vector3> tProxyPositions;
-		thread_local std::vector<Vector2> tProxyUVs;
+		std::vector<LivePropMesh> gLivePropMeshes;
 
 		unsigned gNetworkGateRelaxed = 0;
 		unsigned gNetworkMaskSupplied = 0;
 		unsigned gNetworkFellBack = 0;
-		unsigned gPropProxies = 0;
-		unsigned gPropSuppressed = 0;
+		unsigned gLiveNetworkDraws = 0;
+		unsigned gPropMeshesRegistered = 0;
+		unsigned gPropCallsSuppressed = 0;
 
 		// ------------------------------------------------------------------
 		// Guarded reads
@@ -200,7 +170,6 @@ namespace nSCD3D11::NativeShadowMasks {
 		}
 #else
 		bool SafeCopy(void const *, void *, size_t) { return false; }
-
 		bool SafeHasNetworkFlag(void *, uint32_t, bool &) { return false; }
 #endif
 
@@ -208,34 +177,20 @@ namespace nSCD3D11::NativeShadowMasks {
 			return std::binary_search(gMaskInstances.begin(), gMaskInstances.end(), instance);
 		}
 
-		bool HasPropProxy(uint64_t signature) {
-			return std::binary_search(gPropSignatures.begin(), gPropSignatures.end(), signature);
-		}
-
-		// Identifies a mesh without needing its TGI, which Phase 1 showed is not
-		// recoverable at this call site: the resolver never writes the resolved
-		// instance back into the key buffer. Vertex count plus the bounding box
-		// extents quantised to 1/16 of a unit is stable across runs, and sorting
-		// the two horizontal extents makes it survive the four map rotations.
-		uint64_t MeshSignature(uint32_t vertexCount, float extentX, float extentY, float extentZ) {
-			float const flat = (std::min)(extentX, extentZ);
-			float const deep = (std::max)(extentX, extentZ);
-			uint64_t parts[4] = {
-				vertexCount,
-				static_cast<uint64_t>(static_cast<int64_t>(flat * 16.0f + 0.5f)),
-				static_cast<uint64_t>(static_cast<int64_t>(extentY * 16.0f + 0.5f)),
-				static_cast<uint64_t>(static_cast<int64_t>(deep * 16.0f + 0.5f)),
-			};
-			uint64_t hash = 0xCBF29CE484222325ull;
-			for (uint64_t const part: parts) hash = (hash ^ part) * 0x100000001B3ull;
-			return hash;
-		}
-
 		uint32_t RemapInstance(uint32_t instance) {
 			for (auto const &entry: gMaskRemaps) {
 				if (entry.first == instance) return entry.second;
 			}
 			return 0;
+		}
+
+		void HashWord(uint64_t &hash, uint32_t word) {
+			hash = (hash ^ word) * 0x100000001B3ull;
+		}
+
+		bool LiveShadowDiagnosticsEnabled() {
+			static bool const enabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
+			return enabled;
 		}
 
 		// ------------------------------------------------------------------
@@ -254,8 +209,8 @@ namespace nSCD3D11::NativeShadowMasks {
 			return std::filesystem::path(path).parent_path() / L"SC4ShadowMasks.txt";
 		}
 
-		// One hex instance per line, or "source -> generated" to point a piece
-		// at a mask baked under a different id. Blank lines and # are ignored.
+		// One available hex instance per line, or "source -> generated" to point
+		// a piece at a mask baked under a different id. Blank lines and # are ignored.
 		void LoadManifest() {
 			gMaskInstances.clear();
 			gMaskRemaps.clear();
@@ -271,12 +226,10 @@ namespace nSCD3D11::NativeShadowMasks {
 				char *cursor = line;
 				while (*cursor == ' ' || *cursor == '\t') ++cursor;
 				if (*cursor == '#' || *cursor == '\0' || *cursor == '\n' || *cursor == '\r') continue;
-				if (*cursor == 'P' || *cursor == 'p') {
-					char *signatureEnd = nullptr;
-					unsigned long long const signature = _strtoui64(cursor + 1, &signatureEnd, 16);
-					if (signatureEnd != cursor + 1) gPropSignatures.push_back(signature);
-					continue;
-				}
+				// Old experimental prop-proxy records are ignored. Geometry-only
+				// proxies are known to generate solid slabs and are no longer a
+				// supported runtime mode.
+				if (*cursor == 'P' || *cursor == 'p') continue;
 				char *end = nullptr;
 				unsigned long const source = std::strtoul(cursor, &end, 16);
 				if (end == cursor) continue;
@@ -295,16 +248,12 @@ namespace nSCD3D11::NativeShadowMasks {
 				gMaskInstances.push_back(static_cast<uint32_t>(source));
 			}
 			std::fclose(file);
-			std::sort(gPropSignatures.begin(), gPropSignatures.end());
-			gPropSignatures.erase(std::unique(gPropSignatures.begin(), gPropSignatures.end()),
-			                      gPropSignatures.end());
 			std::sort(gMaskInstances.begin(), gMaskInstances.end());
 			gMaskInstances.erase(std::unique(gMaskInstances.begin(), gMaskInstances.end()),
 			                     gMaskInstances.end());
 			Log(LogCategory::Initialization,
-			    "native shadow masks: manifest has %u instances, %u remappings, %u prop proxies",
-			    static_cast<unsigned>(gMaskInstances.size()), static_cast<unsigned>(gMaskRemaps.size()),
-			    static_cast<unsigned>(gPropSignatures.size()));
+			    "native shadow masks: manifest has %u instances and %u remappings",
+			    static_cast<unsigned>(gMaskInstances.size()), static_cast<unsigned>(gMaskRemaps.size()));
 		}
 
 	} // namespace
@@ -351,98 +300,124 @@ namespace nSCD3D11::NativeShadowMasks {
 		return 0;
 	}
 
-	// Called only when the Is Ground Model test has just rejected this prop.
-	// Recording the occupant, rather than a bare flag, is what keeps the
-	// suppression below scoped: the AddShadow site is shared by buildings,
-	// flora and power poles, and a stale flag would have silenced those too.
 	extern "C" void __cdecl SCD3D11_MaskNoteRelaxedProp(void *occupant) {
 		tRelaxedPropOccupant = occupant;
 	}
 
-	// Runs just before cSTEOverlayManager::AddShadow. Returns 0 to let the call
-	// proceed untouched, 1 after substituting a flattened proxy, or 2 to skip
-	// the call entirely.
-	//
-	// Only meshes belonging to a prop the Is Ground Model test rejected are
-	// eligible, so nothing else on this shared call site changes behaviour. Of
-	// those, a mesh with no generated proxy is skipped rather than stamped,
-	// which leaves the prop with no shadow - exactly what it has today.
-	extern "C" uint32_t __cdecl SCD3D11_MaskAddShadowProxy(uint32_t *stackArguments) {
+	// The rejected prop has reached the point where SC4 extracted its position
+	// and UV streams. Record a stable mesh signature for the indexed renderer,
+	// then suppress AddShadow: its one affine projector is exactly the path that
+	// produced the giant filled slabs.
+	extern "C" uint32_t __cdecl SCD3D11_RegisterLiveProp(uint32_t *stackArguments) {
 		uint8_t const *const frameBase =
 			reinterpret_cast<uint8_t const *>(stackArguments) + kAddShadowArgumentBytes;
 		uint32_t occupant = 0;
-		if (!SafeCopy(frameBase + kFrameOccupant, &occupant, sizeof(occupant))) return 0;
-		if (occupant == 0 || reinterpret_cast<void *>(occupant) != tRelaxedPropOccupant) return 0;
+		if (!SafeCopy(frameBase + kFrameOccupant, &occupant, sizeof(occupant)) || occupant == 0 ||
+		    reinterpret_cast<void *>(occupant) != tRelaxedPropOccupant) return 0;
 
-		uint32_t const vertexCount = stackArguments[0];
-		auto *const positions = reinterpret_cast<Vector3 *>(stackArguments[1]);
-		auto *const uvs = reinterpret_cast<Vector2 *>(stackArguments[2]);
-		if (vertexCount < 3 || vertexCount > 0xFFFF || positions == nullptr || uvs == nullptr) return 0;
-
-		tProxyPositions.resize(vertexCount);
-		if (!SafeCopy(positions, tProxyPositions.data(), vertexCount * sizeof(Vector3))) return 0;
-
-		// Extents come from the vertices, not from the bounding-box argument:
-		// the ShadowQuality >= 5 branch at 0x00491941 passes a different box,
-		// and a signature that changed with the quality setting would match the
-		// manifest at some settings and not others.
-		Vector3 lowest = tProxyPositions[0];
-		Vector3 highest = tProxyPositions[0];
-		for (Vector3 const &vertex: tProxyPositions) {
-			lowest.x = (std::min)(lowest.x, vertex.x);
-			lowest.y = (std::min)(lowest.y, vertex.y);
-			lowest.z = (std::min)(lowest.z, vertex.z);
-			highest.x = (std::max)(highest.x, vertex.x);
-			highest.y = (std::max)(highest.y, vertex.y);
-			highest.z = (std::max)(highest.z, vertex.z);
+		struct Vector3 { float x, y, z; };
+		struct Vector2 { float u, v; };
+		uint32_t const count = stackArguments[0];
+		auto const *const positions = reinterpret_cast<Vector3 const *>(stackArguments[1]);
+		auto const *const uvs = reinterpret_cast<Vector2 const *>(stackArguments[2]);
+		if (count < 3 || count > 0x100000 || positions == nullptr || uvs == nullptr) return 2;
+		uint64_t signature = 0xCBF29CE484222325ull;
+		HashWord(signature, count);
+		for (uint32_t index = 0; index < count; ++index) {
+			Vector3 position{};
+			Vector2 uv{};
+			if (!SafeCopy(positions + index, &position, sizeof(position)) ||
+			    !SafeCopy(uvs + index, &uv, sizeof(uv))) return 2;
+			uint32_t words[5]{};
+			std::memcpy(words, &position, sizeof(position));
+			std::memcpy(words + 3, &uv, sizeof(uv));
+			for (uint32_t word: words) HashWord(signature, word);
 		}
-		uint64_t const signature = MeshSignature(vertexCount, highest.x - lowest.x,
-		                                         highest.y - lowest.y, highest.z - lowest.z);
-		if (!HasPropProxy(signature)) {
-			// Logged on the first occurrence and then sparsely: a run that is
-			// killed rather than shut down never reaches Uninstall's summary,
-			// and without this there is no evidence the path ran at all.
-			if ((gPropSuppressed++ & 0xFF) == 0) {
+		{
+			std::lock_guard<std::mutex> lock(gPropMutex);
+			auto const found = std::lower_bound(
+				gLivePropMeshes.begin(), gLivePropMeshes.end(), signature,
+				[](LivePropMesh const &mesh, uint64_t value) { return mesh.signature < value; });
+			bool const inserted = found == gLivePropMeshes.end() || found->signature != signature;
+			if (inserted) {
+				LivePropMesh mesh{};
+				mesh.signature = signature;
+				gLivePropMeshes.insert(found, std::move(mesh));
+				++gPropMeshesRegistered;
 				Log(LogCategory::Initialization,
-				    "native shadow masks: no proxy for prop mesh sig=%08X%08X verts=%u "
-				    "extent=%.2f/%.2f/%.2f, leaving it shadowless",
-				    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature),
-				    vertexCount, highest.x - lowest.x, highest.y - lowest.y, highest.z - lowest.z);
+				    "native shadows: registered live prop mesh sig=%08X%08X verts=%u",
+				    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature), count);
 			}
-			return 2;
+			if (!inserted && LiveShadowDiagnosticsEnabled()) {
+				Log(LogCategory::Initialization,
+				    "liveshadow-reg reused sig=%08X%08X verts=%u",
+				    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature), count);
+			}
 		}
+		++gPropCallsSuppressed;
+		return 2;
+	}
 
-		tProxyUVs.resize(vertexCount);
-		if (!SafeCopy(uvs, tProxyUVs.data(), vertexCount * sizeof(Vector2))) return 2;
+	bool LivePropsEnabled() {
+		return gInstalled && (gMode == Mode::Props || gMode == Mode::All);
+	}
 
-		// Flatten onto the mesh's own base plane. The measured failure is that
-		// geometry above the plane is displaced along the shadow direction in
-		// proportion to its height, so removing the height removes the smear
-		// while leaving the silhouette where the object stands.
-		for (Vector3 &vertex: tProxyPositions) vertex.y = lowest.y;
+	bool LiveNetworkEnabled() {
+		return gInstalled && (gMode == Mode::Network || gMode == Mode::All);
+	}
 
-		// Wrap UVs into the unit square. Every broken case measured in Phase 1
-		// had v running negative across one or two texture repeats, which a
-		// clamped decal sampler cannot represent.
-		for (Vector2 &coordinate: tProxyUVs) {
-			coordinate.u -= std::floor(coordinate.u);
-			coordinate.v -= std::floor(coordinate.v);
-		}
+	bool LiveNetworkDrawActive() {
+		return LiveNetworkEnabled() && tLiveNetworkDrawDepth != 0;
+	}
 
-		stackArguments[1] = reinterpret_cast<uint32_t>(tProxyPositions.data());
-		stackArguments[2] = reinterpret_cast<uint32_t>(tProxyUVs.data());
-		if ((gPropProxies++ & 0x3F) == 0) {
-			Log(LogCategory::Initialization,
-			    "native shadow masks: prop proxy applied sig=%08X%08X verts=%u flattened to y=%.2f",
-			    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature), vertexCount,
-			    lowest.y);
-		}
-		return 1;
+	bool RequiresCleanTranslatedRedraw() {
+		return gInstalled && gMode != Mode::Off;
+	}
+
+	bool HasLivePropMeshes() {
+		if (!LivePropsEnabled()) return false;
+		std::lock_guard<std::mutex> lock(gPropMutex);
+		return !gLivePropMeshes.empty();
+	}
+
+	bool MatchLivePropSignature(uint64_t signature) {
+		if (!LivePropsEnabled()) return false;
+		std::lock_guard<std::mutex> lock(gPropMutex);
+		auto const found = std::lower_bound(
+			gLivePropMeshes.begin(), gLivePropMeshes.end(), signature,
+			[](LivePropMesh const &mesh, uint64_t value) { return mesh.signature < value; });
+		return found != gLivePropMeshes.end() && found->signature == signature;
 	}
 
 	namespace {
 
 #if defined(_MSC_VER) && defined(_M_IX86)
+
+		// Windows 1.1.641 0x0061E860 is the two-argument __thiscall wrapper used
+		// to draw cSC4NetworkOccupantWithPreBuiltModel. It refreshes UpdateShadow,
+		// then calls the ordinary network-occupant renderer. Bracketing that call
+		// lets cGDriver recognize its indexed S3D draws without admitting terrain,
+		// water, UI or unrelated overlays into the live shadow map.
+		__declspec(naked) void PrebuiltDrawOriginal() {
+			__asm {
+				push edx
+				mov  edx, dword ptr [gRenderPropertiesPointer]
+				mov  eax, dword ptr [edx]
+				pop  edx
+				jmp  dword ptr [gPrebuiltDrawRejoin]
+			}
+		}
+
+		uint32_t __fastcall PrebuiltDrawLiveShadowHook(
+			void *self, void *, void *drawContext, void *drawState) {
+			using Original = uint32_t (__thiscall *)(void *, void *, void *);
+			++tLiveNetworkDrawDepth;
+			uint32_t const result =
+				reinterpret_cast<Original>(&PrebuiltDrawOriginal)(self, drawContext, drawState);
+			--tLiveNetworkDrawDepth;
+			++gLiveNetworkDraws;
+			return result;
+		}
 
 		// ESI is the occupant, EDI the flag subobject at ESI+4 and EBX holds
 		// ShadowQuality. Rejoins at MOV BL,1 or XOR BL,BL, so the original
@@ -486,12 +461,17 @@ namespace nSCD3D11::NativeShadowMasks {
 			}
 		}
 
-		// Reruns the Is Ground Model test that the patch displaced, so a prop
-		// that genuinely sets the property keeps its original behaviour and is
-		// never marked. Only a prop the test rejects is recorded, and 0x0049136A
-		// is where both outcomes rejoin.
 		__declspec(naked) void PropGroundModelStub() {
 			__asm {
+				push eax
+				push ecx
+				push edx
+				push 0
+				call SCD3D11_MaskNoteRelaxedProp
+				add  esp, 4
+				pop  edx
+				pop  ecx
+				pop  eax
 				lea  ecx, [esp + 0x13]
 				push ecx
 				push 0x8a5e5db8
@@ -518,22 +498,17 @@ namespace nSCD3D11::NativeShadowMasks {
 			}
 		}
 
-		// Replaces MOV ECX,EBP / PUSH EDI / CALL [EDX+0x2C]. The five pushed
-		// arguments start at ESP, and the helper may rewrite the position and
-		// UV pointers in place before the original call runs. Its verdict is
-		// written into the pushad frame's EAX slot so it survives POPAD.
-		__declspec(naked) void AddShadowProxyStub() {
+		__declspec(naked) void AddShadowLivePropStub() {
 			__asm {
 				pushad
 				pushfd
 				lea  eax, [esp + 0x24]
 				push eax
-				call SCD3D11_MaskAddShadowProxy
+				call SCD3D11_RegisterLiveProp
 				add  esp, 4
 				mov  dword ptr [esp + 0x20], eax
 				popfd
 				popad
-
 				cmp  eax, 2
 				je   suppress
 				mov  ecx, ebp
@@ -541,9 +516,6 @@ namespace nSCD3D11::NativeShadowMasks {
 				call dword ptr [edx + 0x2c]
 				jmp  dword ptr [gAddShadowRejoin]
 			suppress:
-				// AddShadow is callee-clean, so skipping it means dropping its
-				// five arguments here. -1 is the value the original returns when
-				// it refuses a decal, and the next instruction tests for it.
 				add  esp, 0x14
 				or   eax, 0xffffffff
 				jmp  dword ptr [gAddShadowRejoin]
@@ -661,10 +633,11 @@ namespace nSCD3D11::NativeShadowMasks {
 		gNetworkGateAccept = reinterpret_cast<uintptr_t>(resolve(kNetworkGateAcceptVA));
 		gNetworkGateReject = reinterpret_cast<uintptr_t>(resolve(kNetworkGateRejectVA));
 		gMapResultRejoin = reinterpret_cast<uintptr_t>(resolve(kMapResultRejoinVA));
-		gAddShadowRejoin = reinterpret_cast<uintptr_t>(resolve(kAddShadowRejoinVA));
+		gPrebuiltDrawRejoin = reinterpret_cast<uintptr_t>(resolve(kPrebuiltDrawRejoinVA));
+		gRenderPropertiesPointer = reinterpret_cast<uintptr_t>(resolve(kRenderPropertiesPointerVA));
 		gPropGroundModelRejoin = reinterpret_cast<uintptr_t>(resolve(kPropGroundModelRejoinVA));
+		gAddShadowRejoin = reinterpret_cast<uintptr_t>(resolve(kAddShadowRejoinVA));
 		gGetBoolProperty = reinterpret_cast<uintptr_t>(resolve(kGetBoolPropertyVA));
-
 		ConfigureJumpSite(gNetworkGate, kNetworkGateVA,
 		                  {0x6A, 0x01, 0x8B, 0xCF, 0xFF, 0x92, 0x80, 0x00, 0x00, 0x00, 0x84, 0xC0, 0x74,
 		                   0x19, 0x8B, 0x07, 0x6A, 0x04, 0x8B, 0xCF, 0xFF, 0x90, 0x80, 0x00, 0x00, 0x00,
@@ -672,20 +645,19 @@ namespace nSCD3D11::NativeShadowMasks {
 		                  resolve(kNetworkGateVA), &NetworkGateStub);
 		ConfigureJumpSite(gMapResult, kMapResultVA, {0x85, 0xC0, 0xB9, 0xFE, 0xFF, 0xFF, 0xFF},
 		                  resolve(kMapResultVA), &MapResultStub);
+		ConfigureJumpSite(gPrebuiltDraw, kPrebuiltDrawVA, {0xA1, 0xC4, 0x3C, 0xB4, 0x00},
+		                  resolve(kPrebuiltDrawVA), &PrebuiltDrawLiveShadowHook);
 		ConfigureJumpSite(gPropGroundModel, kPropGroundModelVA, {0x8D, 0x4C, 0x24, 0x13, 0x51},
 		                  resolve(kPropGroundModelVA), &PropGroundModelStub);
 		ConfigureJumpSite(gAddShadowSite, kAddShadowSiteVA, {0x8B, 0xCD, 0x57, 0xFF, 0x52, 0x2C},
-		                  resolve(kAddShadowSiteVA), &AddShadowProxyStub);
-
-		PatchSite *const networkSites[] = {&gNetworkGate, &gMapResult};
-		PatchSite *const propSites[] = {&gPropGroundModel, &gAddShadowSite};
+		                  resolve(kAddShadowSiteVA), &AddShadowLivePropStub);
+		PatchSite *const networkSites[]{&gNetworkGate, &gMapResult, &gPrebuiltDraw};
+		PatchSite *const propSites[]{&gPropGroundModel, &gAddShadowSite};
 		std::vector<PatchSite *> sites;
-		if (mode == Mode::Network || mode == Mode::All) {
+		if (mode == Mode::Network || mode == Mode::All)
 			sites.insert(sites.end(), std::begin(networkSites), std::end(networkSites));
-		}
-		if (mode == Mode::Props || mode == Mode::All) {
+		if (mode == Mode::Props || mode == Mode::All)
 			sites.insert(sites.end(), std::begin(propSites), std::end(propSites));
-		}
 		for (PatchSite *site: sites) site->address = resolve(site->virtualAddress);
 		for (PatchSite const *site: sites) {
 			if (!BytesMatch(*site)) {
@@ -696,8 +668,17 @@ namespace nSCD3D11::NativeShadowMasks {
 			}
 		}
 
-		LoadManifest();
+		if (mode == Mode::Network || mode == Mode::All) LoadManifest();
+		else {
+			gMaskInstances.clear();
+			gMaskRemaps.clear();
+		}
+		{
+			std::lock_guard<std::mutex> lock(gPropMutex);
+			gLivePropMeshes.clear();
+		}
 		gMode = mode;
+		tLiveNetworkDrawDepth = 0;
 		for (PatchSite *site: sites) {
 			if (!WriteSite(*site)) {
 				Log(LogCategory::Initialization,
@@ -710,7 +691,7 @@ namespace nSCD3D11::NativeShadowMasks {
 		}
 
 		gInstalled = true;
-		Log(LogCategory::Initialization, "native shadow masks installed (%s), %u manifest instances",
+		Log(LogCategory::Initialization, "native shadows installed (%s), %u manifest instances",
 		    mode == Mode::All ? "all" : mode == Mode::Props ? "props" : "network",
 		    static_cast<unsigned>(gMaskInstances.size()));
 		return true;
@@ -723,14 +704,21 @@ namespace nSCD3D11::NativeShadowMasks {
 		if (!gInstalled) return;
 		RestoreSite(gAddShadowSite);
 		RestoreSite(gPropGroundModel);
+		RestoreSite(gPrebuiltDraw);
 		RestoreSite(gMapResult);
 		RestoreSite(gNetworkGate);
 		gMode = Mode::Off;
 		gInstalled = false;
+		tLiveNetworkDrawDepth = 0;
+		{
+			std::lock_guard<std::mutex> lock(gPropMutex);
+			gLivePropMeshes.clear();
+		}
 		Log(LogCategory::Initialization,
-		    "native shadow masks uninstalled: %u pieces relaxed, %u masks supplied, %u fell back, "
-		    "%u prop proxies, %u prop calls suppressed",
-		    gNetworkGateRelaxed, gNetworkMaskSupplied, gNetworkFellBack, gPropProxies, gPropSuppressed);
+		    "native shadows uninstalled: %u live network draws, %u pieces relaxed, %u masks supplied, %u fell back, "
+		    "%u live prop meshes, %u native prop calls suppressed",
+		    gLiveNetworkDraws, gNetworkGateRelaxed, gNetworkMaskSupplied, gNetworkFellBack,
+		    gPropMeshesRegistered, gPropCallsSuppressed);
 	}
 
 } // namespace nSCD3D11::NativeShadowMasks
