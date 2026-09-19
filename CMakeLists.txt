@@ -59,6 +59,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriversCOMDirector.cpp
         scd3d11/CpuScheduling.cpp
+        scd3d11/NativeShadowExperiment.cpp
         scd3d11/ParallelRenderCull.cpp
         scd3d11/SimTickBudget.cpp
         scd3d11/cGDriver_Info.cpp

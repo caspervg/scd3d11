@@ -20,6 +20,7 @@
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
 #include "CpuScheduling.h"
+#include "NativeShadowExperiment.h"
 #include "ParallelRenderCull.h"
 #include "SimTickBudget.h"
 
@@ -45,6 +46,7 @@ namespace nSCD3D11
 		}
 
 		bool PreAppShutdown() {
+			NativeShadowExperiment::Uninstall();
 			ParallelRenderCull::Uninstall();
 			SimTickBudget::Uninstall();
 			return true;
@@ -54,6 +56,7 @@ namespace nSCD3D11
 			unsigned const logicalProcessors = CpuScheduling::Apply();
 			ParallelRenderCull::Install(logicalProcessors);
 			SimTickBudget::Install();
+			NativeShadowExperiment::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePreAppInit) {
