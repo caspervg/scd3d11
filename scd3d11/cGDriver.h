@@ -250,6 +250,14 @@ namespace nSCD3D11 {
 		// matches. Reported in the -LiveShadowDiag frame summary.
 		uint64_t liveShadowMatchCalls = 0;
 		uint64_t liveShadowMatchHits = 0;
+		// Set when a scissored (partial) static pass ran while shadows were live,
+		// so the next cSC43DRender::Draw can rebuild the backing store cleanly.
+		bool liveShadowCleanRedrawPending = false;
+		// A partial pass only ever sees the casters inside its own rectangle, so
+		// once anything has cast a shadow the partial path can no longer be
+		// trusted. Nothing is forced before the first caster appears.
+		bool liveShadowEverCaptured = false;
+		unsigned liveShadowPartialPasses = 0;
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;
@@ -541,6 +549,10 @@ namespace nSCD3D11 {
 		// Called immediately after SC4's static-view pass so the shadow becomes part of
 		// the backing store, and again at scene end for any dynamic casters.
 		void RenderLivePropShadows(void);
+		// True once, for each partial static pass that ran while shadows were
+		// live. The caller invalidates SC4's backing store so the next draw is a
+		// clean full redraw.
+		bool ConsumeLiveShadowCleanRedraw(void);
 
 		cGDriver();
 

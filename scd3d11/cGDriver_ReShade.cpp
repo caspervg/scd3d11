@@ -111,6 +111,11 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				uint32_t const horizontal = *reinterpret_cast<uint32_t const *>(bytes + 0xE0);
 				uint32_t const vertical = *reinterpret_cast<uint32_t const *>(bytes + 0xE4);
 				bool translated = horizontal != 0 || vertical != 0;
+				// A dirty-rectangle update that ran last draw cannot have
+				// produced correct shadows, whether or not the view also moved,
+				// so it asks for the same clean rebuild a translation does.
+				bool const partialShadowPass =
+					gDriver != nullptr && gDriver->ConsumeLiveShadowCleanRedraw();
 
 				// cSC43DRender+0x8c owns cSC4CameraControl. Its current zoom and
 				// rotation are the integers at +0x108/+0x10c, written by
@@ -134,7 +139,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 					haveCameraState = true;
 				}
 
-				if (translated || cameraChanged) {
+				if (translated || cameraChanged || partialShadowPass) {
 					bytes[0x65] = 0; // cSC43DRender::mbBackingStoreValid
 					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;
 					if (translated && !loggedTranslationInvalidation) {

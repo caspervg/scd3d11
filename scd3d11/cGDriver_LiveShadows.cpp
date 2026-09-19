@@ -5,6 +5,7 @@
  */
 
 #include "cGDriver.h"
+#include "D3D11Conversions.h"
 #include "Diagnostics.h"
 #include "NativeShadowMasks.h"
 #include "VertexFormatUtils.h"
@@ -23,6 +24,13 @@ namespace nSCD3D11 {
         bool LiveShadowDiagnosticsEnabled() {
             static bool const enabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
             return enabled;
+        }
+
+        // Escape hatch for measuring the cost of the clean-rebuild rule: keeps
+        // SC4's partial static updates and accepts the stale shadows they leave.
+        bool KeepPartialStaticUpdates() {
+            static bool const keep = std::strstr(GetCommandLineA(), "-LiveShadowKeepPartial") != nullptr;
+            return keep;
         }
 
         char const kLiveShadowShader[] = R"(
@@ -296,12 +304,43 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         }
     }
 
+    bool cGDriver::ConsumeLiveShadowCleanRedraw() {
+        bool const pending = liveShadowCleanRedrawPending;
+        liveShadowCleanRedrawPending = false;
+        return pending;
+    }
+
     void cGDriver::RenderLivePropShadows() {
         static uint64_t diagnosticFrame = 0;
         bool const diagnosticLog = LiveShadowDiagnosticsEnabled() && diagnosticFrame++ % 120 == 0;
+        // SC4 updates the static view in place for localized changes, handing the
+        // driver the dirty rectangle as a scissored viewport. A shadow is not a
+        // local effect: the casters inside the rectangle throw onto receivers
+        // outside it, and receivers inside it are darkened by casters that were
+        // never redrawn and so never captured. Neither half can be reconstructed
+        // from the rectangle alone, so a partial pass composites what it honestly
+        // has - clipped to the rectangle, below - and then asks for a clean
+        // rebuild. Nothing is forced until something has actually cast a shadow,
+        // and a full-window pass is never treated as partial, so this cannot
+        // drive a redraw loop.
+        bool const partialPass =
+            scissorEnabled && (viewportX > 0 || viewportY > 0 || viewportWidth < windowWidth ||
+                               viewportHeight < windowHeight);
+        if (partialPass && liveShadowEverCaptured && !KeepPartialStaticUpdates()) {
+            liveShadowCleanRedrawPending = true;
+            ++liveShadowPartialPasses;
+            static bool loggedPartial = false;
+            if (!loggedPartial) {
+                loggedPartial = true;
+                Log(LogCategory::Initialization,
+                    "live shadows: partial static pass (%dx%d at %d,%d) forces a clean redraw",
+                    viewportWidth, viewportHeight, viewportX, viewportY);
+            }
+        }
         if (diagnosticLog && liveShadowDraws.empty())
             Log(LogCategory::Initialization, "liveshadow frame: no matched caster draws");
         if (liveShadowDraws.empty()) return;
+        liveShadowEverCaptured = true;
         if (!IsDeviceReady() || !depthShaderView) {
             // Captures are frame-local. Never render stale geometry from a frame
             // where the depth buffer was temporarily unavailable.
@@ -490,13 +529,14 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
             }
             Log(LogCategory::Initialization,
-                "liveshadow frame: draws=%u (network=%u prop=%u) match=%llu/%llu vertices=%u indices=%u view=[%.3g %.3g %.3g]-[%.3g %.3g %.3g]",
+                "liveshadow frame: draws=%u (network=%u prop=%u) match=%llu/%llu vertices=%u indices=%u partial=%u view=[%.3g %.3g %.3g]-[%.3g %.3g %.3g]",
                 static_cast<unsigned>(liveShadowDraws.size()), static_cast<unsigned>(networkCount),
                 static_cast<unsigned>(liveShadowDraws.size() - networkCount),
                 static_cast<unsigned long long>(liveShadowMatchCalls),
                 static_cast<unsigned long long>(liveShadowMatchHits),
                 static_cast<unsigned>(vertexCount),
-                static_cast<unsigned>(indexCount), boundsLow[0], boundsLow[1], boundsLow[2],
+                static_cast<unsigned>(indexCount), liveShadowPartialPasses,
+                boundsLow[0], boundsLow[1], boundsLow[2],
                 boundsHigh[0], boundsHigh[1], boundsHigh[2]);
             Log(LogCategory::Initialization,
                 "liveshadow projection: up=%.4f/%.4f/%.4f ray=%.4f/%.4f/%.4f "
@@ -576,7 +616,19 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         d3dContext->UpdateSubresource(pipeline.constants.Get(), 0, nullptr, &composite, 0, 0);
         ID3D11RenderTargetView* target = renderTargetView.Get();
         d3dContext->OMSetRenderTargets(1, &target, nullptr);
+        // The composite is a fullscreen triangle, so the viewport is what bounds
+        // it. Outside a partial pass's dirty rectangle SC4 keeps the pixels it
+        // already has, and darkening them again would re-blend the same shadow
+        // over itself on every update. The pixel shader reads SV_Position and the
+        // depth buffer's own dimensions, so a smaller viewport clips the output
+        // without disturbing the reconstruction.
         D3D11_VIEWPORT viewport{0, 0, static_cast<float>(windowWidth), static_cast<float>(windowHeight), 0, 1};
+        if (partialPass) {
+            viewport.TopLeftX = static_cast<float>(viewportX);
+            viewport.TopLeftY = static_cast<float>(D3D11TopLeftY(windowHeight, viewportY, viewportHeight));
+            viewport.Width = static_cast<float>(viewportWidth);
+            viewport.Height = static_cast<float>(viewportHeight);
+        }
         d3dContext->RSSetViewports(1, &viewport);
         d3dContext->RSSetState(pipeline.rasterizer.Get());
         d3dContext->OMSetDepthStencilState(pipeline.compositeDepth.Get(), 0);
