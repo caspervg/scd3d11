@@ -29,10 +29,12 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <d3dcompiler.h>
 #include <reshade.hpp>
+#include <vector>
 
 namespace nSCD3D11 {
 	namespace {
@@ -66,6 +68,26 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		bool gDepthBound = false;
 		float gFarPlane = 1000.0f; // ReShade.fxh's default
 
+		// Uniforms carrying a "source" annotation are never written by ReShade itself, so an add-on
+		// owns them. Handles are resolved once per effect reload rather than per frame.
+		struct ShadowUniformBindings {
+			std::vector<reshade::api::effect_uniform_variable> valid;
+			std::vector<reshade::api::effect_uniform_variable> depthScale;
+			std::vector<reshade::api::effect_uniform_variable> worldPerScreen;
+
+			void Clear(void) {
+				valid.clear();
+				depthScale.clear();
+				worldPerScreen.clear();
+			}
+
+			bool Any(void) const {
+				return !valid.empty() || !depthScale.empty() || !worldPerScreen.empty();
+			}
+		};
+
+		ShadowUniformBindings gShadowBindings;
+
 		reshade::api::resource_view ViewHandle(ID3D11View *view) {
 			return reshade::api::resource_view{static_cast<uint64_t>(reinterpret_cast<uintptr_t>(view))};
 		}
@@ -82,14 +104,28 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				                       ? std::strtof(value, nullptr)
 				                       : 1000.0f;
 			gFarPlane = farPlane >= 1.0f ? farPlane : 1000.0f;
+			gShadowBindings.Clear();
 			runtime->enumerate_uniform_variables(nullptr, [](reshade::api::effect_runtime *runtime,
 			                                                 reshade::api::effect_uniform_variable variable) {
 				char source[32]{};
-				if (runtime->get_annotation_string_from_uniform_variable(variable, "source", source) &&
-				    std::strcmp(source, "bufready_depth") == 0) {
-					runtime->set_uniform_value_bool(variable, true);
-				}
+				if (!runtime->get_annotation_string_from_uniform_variable(variable, "source", source)) return;
+				if (std::strcmp(source, "bufready_depth") == 0) runtime->set_uniform_value_bool(variable, true);
+				else if (std::strcmp(source, "sc4_sun_valid") == 0) gShadowBindings.valid.push_back(variable);
+				else if (std::strcmp(source, "sc4_depth_scale") == 0) gShadowBindings.depthScale.push_back(variable);
+				else if (std::strcmp(source, "sc4_world_per_screen_height") == 0) gShadowBindings.worldPerScreen.push_back(variable);
 			});
+		}
+
+		// Pushes the snapshotted projection parameters into every effect that asked for them. Effects that do
+		// not declare the uniforms cost nothing here.
+		void PublishShadowUniforms(reshade::api::effect_runtime *runtime, bool valid, float depthScale,
+		                           float worldPerScreenHeight) {
+			if (!gShadowBindings.Any()) return;
+			for (auto const variable : gShadowBindings.valid) runtime->set_uniform_value_bool(variable, valid);
+			if (!valid) return;
+			for (auto const variable : gShadowBindings.depthScale) runtime->set_uniform_value_float(variable, depthScale);
+			for (auto const variable : gShadowBindings.worldPerScreen)
+				runtime->set_uniform_value_float(variable, worldPerScreenHeight);
 		}
 
 		void OnInitEffectRuntime(reshade::api::effect_runtime *runtime) {
@@ -251,10 +287,52 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		return S_OK;
 	}
 
+	// Derives world-space depth and screen scales from the orthographic projection used by the last
+	// scene draw. The shadow effect still supplies the sun direction and slope, but these scales keep
+	// that slope and all depth thresholds stable across zoom levels.
+	void cGDriver::CaptureShadowUniforms(void) {
+		// OpenGL column-major, m[column * 4 + row]. For SC4's orthographic projection
+		// p[5] = 2 / (top - bottom) and p[10] = -2 / (far - near).
+		float const *const p = matrices[PROJECTION];
+
+		// A perspective matrix has a non-zero w row; anything degenerate is not a usable ortho either.
+		bool const orthographic = p[3] == 0.0f && p[7] == 0.0f && p[11] == 0.0f;
+		if (!orthographic || std::fabs(p[5]) < 1e-12f || std::fabs(p[10]) < 1e-12f) {
+			shadowUniforms.valid = false;
+			return;
+		}
+
+		// SC4 supplies a GL-convention projection (z in -1..1) which the vertex shader remaps to D3D's
+		// 0..1 with (z + w) * 0.5, so the 0..1 depth range spans (far - near) = 2 / |p[10]| world units.
+		// Multiplying buffer depth by that returns world units, which lets an effect express its
+		// thresholds in metres and keeps them valid at every zoom level.
+		shadowUniforms.depthScale = 2.0f / std::fabs(p[10]);
+
+		// World units spanned by the viewport height. A ray march expressed as a slope (rise over run)
+		// can then be converted to world units without knowing the zoom.
+		shadowUniforms.worldPerScreenHeight = 2.0f / std::fabs(p[5]);
+		shadowUniforms.valid = true;
+	}
+
 	void cGDriver::RenderSceneEffects(void) {
 		if (gRuntime == nullptr || !IsDeviceReady()) return;
 
 		gSceneDepthView = SUCCEEDED(UpdateSceneDepth()) ? sceneDepth.view.Get() : nullptr;
+		PublishShadowUniforms(gRuntime, shadowUniforms.valid, shadowUniforms.depthScale,
+		                      shadowUniforms.worldPerScreenHeight);
+		static bool loggedValid = false;
+		static bool loggedInvalid = false;
+		if (shadowUniforms.valid && !loggedValid) {
+			loggedValid = true;
+			Log(LogCategory::Initialization,
+			    "reshade: shadow uniforms published (depth scale %.4f, world per screen height %.4f, %u bindings)",
+			    shadowUniforms.depthScale, shadowUniforms.worldPerScreenHeight,
+			    static_cast<unsigned>(gShadowBindings.depthScale.size() + gShadowBindings.worldPerScreen.size()));
+		} else if (!shadowUniforms.valid && !loggedInvalid) {
+			loggedInvalid = true;
+			Log(LogCategory::Initialization,
+			    "reshade: no orthographic projection captured yet; shadow uniforms stay unset");
+		}
 		reshade::api::command_list *const commands = gRuntime->get_command_queue()->get_immediate_command_list();
 		gRuntime->render_effects(commands, ViewHandle(renderTargetView.Get()), ViewHandle(renderTargetViewSrgb.Get()));
 		if (gDepthBound) {

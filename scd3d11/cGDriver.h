@@ -212,6 +212,20 @@ namespace nSCD3D11 {
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;
+		// Projection parameters published to ReShade effects as the sc4_* uniforms, so a
+		// screen-space shadow effect does not have to be hand-calibrated per zoom level.
+		// Both values come from the last orthographic projection used by a scene draw. Deriving the
+		// sun direction from render state would be more direct, but SC4 bakes its lighting into vertex
+		// colours and never enables fixed-function lighting for the city view.
+		struct ShadowUniforms {
+			// Multiplier turning linear buffer depth into world units, so effect thresholds are
+			// expressed in metres and stay valid at every zoom level.
+			float depthScale = 1.0f;
+			// World units spanned by the viewport's height, which is what makes a ray march
+			// expressed as a slope independent of zoom.
+			float worldPerScreenHeight = 1.0f;
+			bool valid = false;
+		} shadowUniforms;
 		// Plain (non-depth-stencil-bound) copy of the depth buffer; partial CopySubresourceRegion
 		// is illegal on D3D11_BIND_DEPTH_STENCIL resources, so depth region blits bounce through this.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthRegionScratch;
@@ -466,6 +480,8 @@ namespace nSCD3D11 {
 		void UninstallReShadeAddon(void);
 
 		HRESULT UpdateSceneDepth(void);
+
+		void CaptureShadowUniforms(void);
 
 		void FinishReShadeFrame(void);
 

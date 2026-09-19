@@ -643,6 +643,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 			memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
 			memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
 			memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+			// Snapshot the projection for the ReShade shadow uniforms. Not gated on lighting: SC4 bakes
+			// its lighting into vertex colours and leaves fixed-function lighting off for the city view,
+			// so waiting for a lit draw would never capture anything. RenderSceneEffects runs at the end
+			// of cSC43DRender::Draw, before any UI, so the last projection seen here is the scene's.
+			CaptureShadowUniforms();
 			memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
 			memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
 			memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
