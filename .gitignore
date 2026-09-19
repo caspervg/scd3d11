@@ -16,3 +16,4 @@ runtime-captures/
 docs/
 .mcp.json
 .claude
+cmake-build-minsizerel/
