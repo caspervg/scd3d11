@@ -23,8 +23,9 @@ namespace nSCD3D11::TerrainShadows {
 	// SC4 already darkens terrain and models below the terrain's shadow, softly
 	// and at vertex resolution: cSC4LightingManager bends their lighting normals
 	// by how deep they lie under its own shadow-height grid. These shadows
-	// replace that, so Install keeps the lighting manager's switch for it off.
-	// Called after NativeShadowRegistry::Install, before SC4's lighting starts.
+	// replace that, so Install makes that depth always zero, leaving the grids
+	// SC4 also sizes BAT shadows with untouched. Called after
+	// NativeShadowRegistry::Install, before SC4 lights anything.
 	void Install();
 	void Uninstall();
 

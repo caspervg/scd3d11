@@ -35,15 +35,20 @@
 // SC4's own terrain self-shading: cSC4LightingManager keeps a shadow-height
 // grid (+0x198, ground heights at +0x18C) and ShadowDepth_ (0x007D6950) returns
 // how far a point lies below it. GetTerrainLighting, GetTerrainColor,
-// GetModelLight and GetColor3/6 bend the lighting normal away from the sun by
-// that depth (BendShadowedNormal_, 0x007D68B0), which bakes soft, vertex-sized
-// shadows into the terrain's vertex colours and into model lighting. Every use
-// is behind the byte at +0x1D4, which Init (0x007DB6A0) sets once from render
-// property 12 >= 2 and the terrain-change handler also checks before
-// maintaining the grid. Drawn under these shadows it darkens the same slopes
-// twice, so Install turns Init's SETGE CL at 0x007DB6CA into XOR CL,CL. The grid
-// is still allocated, so GetShadowStrengthFromLocation, which reads it without
-// the switch, keeps working (it just never finds a shadow).
+// GetModelLight and GetColor3/6 - its only callers - bend the lighting normal
+// away from the sun when that depth is positive (BendShadowedNormal_,
+// 0x007D68B0), which bakes soft, vertex-sized shadows into the terrain's vertex
+// colours and into model lighting. Drawn under these shadows it darkens the
+// same slopes twice, so Install makes ShadowDepth_ return 0.
+//
+// The grids themselves must stay: CalcShadowTerrainRect (0x007D6CC0) marches
+// every BAT shadow down the sun across the ground heights until it meets the
+// ground, and the overlay manager files the shadow under the rectangle it
+// covers. The byte at +0x1D4 that gates the self-shading also gates the
+// terrain-change handler's refresh of those heights; switching it off left
+// them at zero, so on raised terrain every shadow ran down to altitude 0 and
+// covered hundreds of spatial buckets, stalling SDSRemove_ for seconds
+// whenever a zoom or rotation replaced the city's shadows.
 
 #include "TerrainShadows.h"
 
@@ -81,22 +86,15 @@ namespace nSCD3D11::TerrainShadows {
 		constexpr uint16_t kFlippedFlags = 0x3000;
 
 		constexpr uintptr_t kImageBase = 0x00400000;
-		// CMP EAX,2 / PUSH 0 / SETGE CL / LEA EAX,[ESP+0x14] / PUSH EAX /
-		// MOV [EBP+0x1D4],CL; nothing after it reads the flags.
-		constexpr uintptr_t kSelfShadingGuardVA = 0x007DB6C5;
-		constexpr uint8_t kSelfShadingGuard[]{
-			0x83, 0xF8, 0x02, 0x6A, 0x00, 0x0F, 0x9D, 0xC1, 0x8D, 0x44, 0x24, 0x14, 0x50, 0x88, 0x8D, 0xD4, 0x01,
-			0x00, 0x00
-		};
-		constexpr size_t kSelfShadingPatchOffset = 5;
-		constexpr uint8_t kSelfShadingPatch[]{0x32, 0xC9, 0x90};
-		// spLightingManager, as cSTETerrain::DoLighting (0x00742930) loads it.
-		constexpr uintptr_t kLightingManagerPointerVA = 0x00B43DDC;
-		constexpr ptrdiff_t kLightingSelfShading = 0x1D4;
+		// ShadowDepth_: PUSH EBX / PUSH ESI / PUSH EDI / MOV EDI,[ESP+0x10] /
+		// FLD [EDI], __thiscall, RET 4, float result on the x87 stack.
+		constexpr uintptr_t kShadowDepthVA = 0x007D6950;
+		constexpr uint8_t kShadowDepthGuard[]{0x53, 0x56, 0x57, 0x8B, 0x7C, 0x24, 0x10, 0xD9, 0x07};
+		// FLDZ / RET 4: never below the shadow.
+		constexpr uint8_t kShadowDepthPatch[]{0xD9, 0xEE, 0xC2, 0x04, 0x00};
 
-		uint8_t *gSelfShadingSite = nullptr;
-		bool gSelfShadingPatched = false;
-		void const *gCheckedTerrain = nullptr;
+		uint8_t *gShadowDepthSite = nullptr;
+		bool gShadowDepthPatched = false;
 
 		TerrainShadowMap::HeightField gField;
 		TerrainShadowMap::HeightField gScratch;
@@ -185,31 +183,6 @@ namespace nSCD3D11::TerrainShadows {
 			}
 		}
 
-		// SC4's self-shading switch in the live lighting manager.
-		bool SafeSelfShading(uintptr_t pointer, uint8_t *&flag, uint8_t &value) {
-			__try {
-				uint8_t *const manager = *reinterpret_cast<uint8_t **>(pointer);
-				if (manager == nullptr) return false;
-				flag = manager + kLightingSelfShading;
-				value = *flag;
-				return true;
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				return false;
-			}
-		}
-
-		bool SafeDoLighting(cISTETerrain *terrain, uint32_t verticesX, uint32_t verticesZ) {
-			__try {
-				SC4Rect<int32_t> const rect{
-					0, 0, static_cast<int32_t>(verticesX - 1), static_cast<int32_t>(verticesZ - 1)
-				};
-				terrain->DoLighting(rect);
-				return true;
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				return false;
-			}
-		}
-
 		bool SafeBoolValue(cISC4RenderProperties *properties, int32_t id, bool &value) {
 			__try {
 				value = properties->BoolValue(id);
@@ -223,8 +196,6 @@ namespace nSCD3D11::TerrainShadows {
 		bool SafeGetAltitudes(cISTETerrain *, uint32_t, uint32_t, float *) { return false; }
 		bool SafeReadRecords(cISTETerrain *, size_t, float const *, uint8_t *, float *) { return false; }
 		bool SafeFindBoolProperty(cISC4RenderProperties *, char const *, int32_t &) { return false; }
-		bool SafeSelfShading(uintptr_t, uint8_t *&, uint8_t &) { return false; }
-		bool SafeDoLighting(cISTETerrain *, uint32_t, uint32_t) { return false; }
 		bool SafeBoolValue(cISC4RenderProperties *, int32_t, bool &) { return false; }
 #endif
 
@@ -305,36 +276,6 @@ namespace nSCD3D11::TerrainShadows {
 			                                           region.minZ, region.maxX, region.maxZ);
 		}
 
-		// Once per city: Install should have kept SC4's self-shading off from the
-		// start. If the lighting manager was set up before that, the switch is
-		// cleared here and the terrain's vertex colours are relit without it.
-		void CheckSelfShading(cISTETerrain *terrain, TerrainShadowMap::HeightField const &field) {
-			if (terrain == gCheckedTerrain) return;
-			gCheckedTerrain = terrain;
-			uint8_t *flag = nullptr;
-			uint8_t value = 0;
-			if (!SafeSelfShading(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) +
-			                     (kLightingManagerPointerVA - kImageBase), flag, value)) {
-				Log(LogCategory::Initialization, "terrain shadows: SC4's terrain self-shading switch is unreadable");
-				return;
-			}
-			if (value == 0) {
-				Log(LogCategory::Initialization, "terrain shadows: SC4's terrain self-shading is off%s",
-				    gSelfShadingPatched ? " (kept off at lighting init)" : "");
-				return;
-			}
-			*flag = 0;
-			bool const relit = SafeDoLighting(terrain, field.verticesX, field.verticesZ);
-			if (relit) {
-				NativeShadowRegistry::RedisplayTerrainRect(
-					terrain, true, 0.0f, 0.0f, static_cast<float>(field.verticesX - 1) * field.cellWidth,
-					static_cast<float>(field.verticesZ - 1) * field.cellWidth);
-			}
-			Log(LogCategory::Initialization,
-			    "terrain shadows: SC4's terrain self-shading was on for this city; switched off, terrain %s",
-			    relit ? "relit" : "not relit");
-		}
-
 		double Milliseconds(LARGE_INTEGER const &start) {
 			LARGE_INTEGER end{}, frequency{};
 			QueryPerformanceCounter(&end);
@@ -350,42 +291,38 @@ namespace nSCD3D11::TerrainShadows {
 	}
 
 	void Install() {
-		if (gSelfShadingPatched || !Enabled()) return;
-		uint8_t *const site = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr)) +
-		                      (kSelfShadingGuardVA - kImageBase);
-		if (std::memcmp(site, kSelfShadingGuard, sizeof(kSelfShadingGuard)) != 0) {
+		if (gShadowDepthPatched || !Enabled()) return;
+		uint8_t *const site = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr)) + (kShadowDepthVA - kImageBase);
+		if (std::memcmp(site, kShadowDepthGuard, sizeof(kShadowDepthGuard)) != 0) {
 			Log(LogCategory::Initialization,
-			    "terrain shadows: guard failed at 0x%08lX, SC4's terrain self-shading stays as configured",
-			    static_cast<unsigned long>(kSelfShadingGuardVA));
+			    "terrain shadows: guard failed at 0x%08lX, SC4's terrain self-shading stays on",
+			    static_cast<unsigned long>(kShadowDepthVA));
 			return;
 		}
-		uint8_t *const patch = site + kSelfShadingPatchOffset;
 		DWORD protection = 0;
-		if (!VirtualProtect(patch, sizeof(kSelfShadingPatch), PAGE_EXECUTE_READWRITE, &protection)) return;
-		std::memcpy(patch, kSelfShadingPatch, sizeof(kSelfShadingPatch));
+		if (!VirtualProtect(site, sizeof(kShadowDepthPatch), PAGE_EXECUTE_READWRITE, &protection)) return;
+		std::memcpy(site, kShadowDepthPatch, sizeof(kShadowDepthPatch));
 		DWORD ignored = 0;
-		VirtualProtect(patch, sizeof(kSelfShadingPatch), protection, &ignored);
-		FlushInstructionCache(GetCurrentProcess(), patch, sizeof(kSelfShadingPatch));
-		gSelfShadingSite = site;
-		gSelfShadingPatched = true;
-		Log(LogCategory::Initialization, "terrain shadows installed: SC4's own terrain self-shading kept off");
+		VirtualProtect(site, sizeof(kShadowDepthPatch), protection, &ignored);
+		FlushInstructionCache(GetCurrentProcess(), site, sizeof(kShadowDepthPatch));
+		gShadowDepthSite = site;
+		gShadowDepthPatched = true;
+		Log(LogCategory::Initialization, "terrain shadows installed: SC4's own terrain self-shading replaced");
 	}
 
 	void Uninstall() {
-		if (!gSelfShadingPatched) return;
-		uint8_t *const patch = gSelfShadingSite + kSelfShadingPatchOffset;
-		if (std::memcmp(patch, kSelfShadingPatch, sizeof(kSelfShadingPatch)) == 0) {
+		if (!gShadowDepthPatched) return;
+		if (std::memcmp(gShadowDepthSite, kShadowDepthPatch, sizeof(kShadowDepthPatch)) == 0) {
 			DWORD protection = 0;
-			if (VirtualProtect(patch, sizeof(kSelfShadingPatch), PAGE_EXECUTE_READWRITE, &protection)) {
-				std::memcpy(patch, kSelfShadingGuard + kSelfShadingPatchOffset, sizeof(kSelfShadingPatch));
+			if (VirtualProtect(gShadowDepthSite, sizeof(kShadowDepthPatch), PAGE_EXECUTE_READWRITE, &protection)) {
+				std::memcpy(gShadowDepthSite, kShadowDepthGuard, sizeof(kShadowDepthPatch));
 				DWORD ignored = 0;
-				VirtualProtect(patch, sizeof(kSelfShadingPatch), protection, &ignored);
-				FlushInstructionCache(GetCurrentProcess(), patch, sizeof(kSelfShadingPatch));
+				VirtualProtect(gShadowDepthSite, sizeof(kShadowDepthPatch), protection, &ignored);
+				FlushInstructionCache(GetCurrentProcess(), gShadowDepthSite, sizeof(kShadowDepthPatch));
 			}
 		}
-		gSelfShadingPatched = false;
-		gSelfShadingSite = nullptr;
-		gCheckedTerrain = nullptr;
+		gShadowDepthPatched = false;
+		gShadowDepthSite = nullptr;
 		gMapValid = false;
 		gTerrain = nullptr;
 	}
@@ -414,7 +351,6 @@ namespace nSCD3D11::TerrainShadows {
 			gTerrain = nullptr;
 			return nullptr;
 		}
-		CheckSelfShading(terrain, gScratch);
 		bool const sameTerrain = gMapValid && terrain == gTerrain && SameField(gScratch, gField);
 		bool const sameSun = gMapValid && std::fabs(sun[0] - gSun[0]) <= kSunTolerance &&
 		                     std::fabs(sun[1] - gSun[1]) <= kSunTolerance &&
