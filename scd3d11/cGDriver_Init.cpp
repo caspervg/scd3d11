@@ -341,6 +341,8 @@ namespace nSCD3D11 {
 		sceneDepth = SceneDepthPipeline{};
 		liveShadows = LiveShadowPipeline{};
 		liveShadowDraws.clear();
+		liveShadowWorldCasters.clear();
+		liveShadowWorldCastersValid = false;
 		blit = BlitPipeline{};
 		if (preserveResources) {
 			for (auto &entry: textures) {

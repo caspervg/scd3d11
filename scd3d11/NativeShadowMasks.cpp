@@ -11,8 +11,9 @@
 // Native shadows for prebuilt network pieces and True3D props.
 //
 // SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
-// -NativeShadowMasks:network, :props or :all. Every site is guarded by its
-// exact bytes and restored during PreAppShutdown.
+// -NativeShadowMasks:network, :props or :all; :replace is :all plus
+// NativeShadowRegistry. Every site is guarded by its exact bytes and restored
+// during PreAppShutdown.
 //
 // What the Phase 1 instrumentation established, and why the patches are shaped
 // this way (see docs/true3d-shadows-phase1.md):
@@ -749,7 +750,9 @@ namespace nSCD3D11::NativeShadowMasks {
 				return _strnicmp(value, expected, length) == 0 &&
 				       (value[length] == '\0' || value[length] == ' ' || value[length] == '\t');
 			};
-			if (matches(argument, "all")) return Mode::All;
+			// replace = every live path plus NativeShadowRegistry, which takes over
+			// the AddShadow records these paths leave to SC4.
+			if (matches(argument, "all") || matches(argument, "replace")) return Mode::All;
 			if (matches(argument, "props")) return Mode::Props;
 			if (matches(argument, "network")) return Mode::Network;
 			return Mode::Off;

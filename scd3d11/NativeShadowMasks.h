@@ -13,9 +13,10 @@
 #include <cstdint>
 
 // Native shadow support, opt-in with -NativeShadowMasks:network, :props or
-// :all. Prebuilt network pieces and True3D props are captured as indexed live
-// casters and rendered by cGDriver. SC4's existing network mask decals remain
-// available as a fallback for geometry outside the prebuilt-model draw path.
+// :all (:replace also installs NativeShadowRegistry). Prebuilt network pieces
+// and True3D props are captured as indexed live casters and rendered by cGDriver.
+// SC4's existing network mask decals remain available as a fallback for
+// geometry outside the prebuilt-model draw path.
 //
 // Independent of NativeShadowExperiment, which stays a research toggle.
 

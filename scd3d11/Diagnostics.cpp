@@ -23,9 +23,6 @@ namespace nSCD3D11
 {
 	namespace
 	{
-		// Window and swap chain events repeat on every focus change, so they get a larger budget.
-		constexpr unsigned int kMessagesPerCategory[] = { 128, 128, 1024, 128, 128, 128, 1024 };
-		std::atomic<unsigned int> messageCounts[static_cast<unsigned int>(LogCategory::Count)]{};
 		std::unordered_set<uint64_t> observed[static_cast<unsigned int>(ObservedCategory::Count)];
 
 		char const* CategoryName(LogCategory category) {
@@ -68,20 +65,10 @@ namespace nSCD3D11
 				return;
 			}
 
-			unsigned int const count = messageCounts[index]++;
-			if (count > kMessagesPerCategory[index]) {
-				return;
-			}
-
 			char message[1024]{};
-			if (count == kMessagesPerCategory[index]) {
-				sprintf_s(message, "[SC4D3D11][%s] further messages suppressed\n", CategoryName(category));
-			}
-			else {
-				char detail[896]{};
-				vsnprintf_s(detail, sizeof(detail), _TRUNCATE, format, arguments);
-				sprintf_s(message, "[SC4D3D11][%s] %s\n", CategoryName(category), detail);
-			}
+			char detail[896]{};
+			vsnprintf_s(detail, sizeof(detail), _TRUNCATE, format, arguments);
+			sprintf_s(message, "[SC4D3D11][%s] %s\n", CategoryName(category), detail);
 
 			OutputDebugStringA(message);
 			WriteLogLine(message);

@@ -98,6 +98,7 @@ namespace nSCD3D11 {
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
 		if (name != 0 || !UploadExtensionVertices(byteSize)) return;
+		NoteLiveShadowTerrainView();
 		// The terrain reservation path never went through MatchesLiveShadowMesh,
 		// so bracketed network draws issued here were silently dropped.
 		if (NativeShadowMasks::LiveNetworkDrawActive()) {
@@ -147,6 +148,7 @@ namespace nSCD3D11 {
 		uint32_t const byteSize =
 			(static_cast<uint32_t>(maximumIndex) + 1) * RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
 		if (!UploadExtensionVertices(byteSize)) return;
+		NoteLiveShadowTerrainView();
 		if (!UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 			IndexCacheKey(DXGI_FORMAT_R16_UINT, indices, count),

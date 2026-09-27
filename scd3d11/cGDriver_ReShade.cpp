@@ -29,6 +29,7 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 #include "NativeShadowMasks.h"
+#include "NativeShadowRegistry.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -105,12 +106,14 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			// shadows otherwise leave trails and get blended repeatedly. Invalidate only
 			// translated updates while native network or prop shadows are enabled; SC4
 			// then takes its own established full-redraw path and builds a clean backing
-			// store at the new view.
+			// store at the new view. With -NativeShadowMasks:replace the strips are
+			// correct as drawn - every caster that can reach them is known in world
+			// space - so translated updates keep SC4's fast path.
 			if (self != nullptr && NativeShadowMasks::RequiresCleanTranslatedRedraw()) {
 				auto *const bytes = static_cast<uint8_t *>(self);
 				uint32_t const horizontal = *reinterpret_cast<uint32_t const *>(bytes + 0xE0);
 				uint32_t const vertical = *reinterpret_cast<uint32_t const *>(bytes + 0xE4);
-				bool translated = horizontal != 0 || vertical != 0;
+				bool translated = (horizontal != 0 || vertical != 0) && !NativeShadowRegistry::Enabled();
 				// A dirty-rectangle update that ran last draw cannot have
 				// produced correct shadows, whether or not the view also moved,
 				// so it asks for the same clean rebuild a translation does.
@@ -172,7 +175,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 
 		void __fastcall DrawPostStaticViewHook(void *self, void *edx) {
 			DrawPostStaticViewOriginal(self, edx);
-			if (gDriver != nullptr) gDriver->RenderLivePropShadows();
+			if (gDriver != nullptr) gDriver->RenderLivePropShadows(true);
 		}
 #endif
 
@@ -410,6 +413,8 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			shadowUniforms.valid = false;
 			return;
 		}
+		std::memcpy(liveShadowSceneProjection, p, sizeof(liveShadowSceneProjection));
+		liveShadowSceneProjectionValid = true;
 
 		// SC4 supplies a GL-convention projection (z in -1..1) which the vertex shader remaps to D3D's
 		// 0..1 with (z + w) * 0.5, so the 0..1 depth range spans (far - near) = 2 / |p[10]| world units.
@@ -424,7 +429,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 	}
 
 	void cGDriver::RenderSceneEffects(void) {
-		RenderLivePropShadows();
+		RenderLivePropShadows(false);
 		if (gRuntime == nullptr || !IsDeviceReady()) return;
 
 		gSceneDepthView = SUCCEEDED(UpdateSceneDepth()) ? sceneDepth.view.Get() : nullptr;

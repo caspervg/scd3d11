@@ -23,6 +23,7 @@
 #include "NativeShadowDiagnostics.h"
 #include "NativeShadowExperiment.h"
 #include "NativeShadowMasks.h"
+#include "NativeShadowRegistry.h"
 #include "ParallelRenderCull.h"
 #include "SimTickBudget.h"
 
@@ -49,6 +50,7 @@ namespace nSCD3D11
 
 		bool PreAppShutdown() {
 			NativeShadowExperiment::Uninstall();
+			NativeShadowRegistry::Uninstall();
 			NativeShadowMasks::Uninstall();
 			NativeShadowDiagnostics::Uninstall();
 			ParallelRenderCull::Uninstall();
@@ -61,6 +63,7 @@ namespace nSCD3D11
 			ParallelRenderCull::Install(logicalProcessors);
 			SimTickBudget::Install();
 			NativeShadowMasks::Install();
+			NativeShadowRegistry::Install();
 			NativeShadowDiagnostics::Install();
 			NativeShadowExperiment::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
