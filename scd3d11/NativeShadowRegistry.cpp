@@ -54,10 +54,23 @@
 // +0 vertex buffer {+0 format, +6 u16 count, +8 data}, +4 index holder whose
 // first word is the u16 index array (null for DrawArrays meshes), +8 primitive
 // list {+4 begin, +8 end} of {primitive, start, count}.
+//
+// Props without Is Ground Model (0x8A5E5DB8) are never shadowed by SC4. With
+// -NativeShadowMasks:replace, NativeShadowMasks' site D lets their AddShadow run
+// and flags it (ExpectMeshCaster); the record then only exists for its lifetime
+// and dirty rectangle. Such a prop floating above the terrain - the building
+// zots AddBuildingZotProp places, 46-56 m up - stays unshadowed; one whose UVs
+// the projector reproduces is a prerendered BAT prop and casts through the
+// projector; anything else is a True3D unwrap and casts through its own UVs.
+//
+// RedisplayWorldRect reuses what RedisplayStaticOverlay (0x00737D40) does: the
+// manager's terrain (+0x88) RedisplayTerrain (vtable +0x110, 0x00749850) with a
+// rectangle of terrain cells, which queues a partial static pass.
 
 #include "NativeShadowRegistry.h"
 
 #include "Diagnostics.h"
+#include "NativeShadowMasks.h"
 
 #include <algorithm>
 #include <array>
@@ -127,6 +140,16 @@ namespace nSCD3D11::NativeShadowRegistry {
 		constexpr ptrdiff_t kFramePositions = 0x24;
 		constexpr ptrdiff_t kFrameTransform = 0x58;
 		constexpr ptrdiff_t kFrameUVs = 0xA8;
+
+		// Relaxed props - those without Is Ground Model (0x8A5E5DB8), which SC4
+		// never shadows - are sorted by what their mesh shows. One whose lowest
+		// point floats this far above the terrain is not a ground model at all
+		// (the building zots are such props) and casts nothing, as in vanilla.
+		constexpr float kFloatingPropHeight = 2.0f;
+		// UVs the projector reproduces this closely are a prerendered view (a BAT
+		// prop without the flag), which casts through the projector like any BAT
+		// caster; anything else is a real unwrap and casts through its own UVs.
+		constexpr double kPrerenderedResidual = 0.01;
 
 		constexpr uint32_t kMaxVertices = 0xFFFF;
 		constexpr uint32_t kMaxPrimitiveRuns = 4096;
@@ -202,6 +225,9 @@ namespace nSCD3D11::NativeShadowRegistry {
 		// index recovery, never correctness.
 		void const *gStashedMesh = nullptr;
 		uint8_t const *gStashedFrame = nullptr;
+		// Set by NativeShadowMasks' site D stub for a relaxed prop, consumed by
+		// the AddShadow call that follows on the same thread.
+		thread_local bool tExpectMeshCaster = false;
 
 		std::mutex gMutex;
 		std::unordered_map<uint32_t, std::shared_ptr<Caster const>> gCasters;
@@ -211,6 +237,10 @@ namespace nSCD3D11::NativeShadowRegistry {
 		std::unordered_set<uint32_t> gPassIds;
 
 		unsigned gRegistered = 0;
+		unsigned gMeshCasters = 0;
+		unsigned gMeshFallbacks = 0;
+		unsigned gFloatingProps = 0;
+		unsigned gPrerenderedProps = 0;
 		unsigned gWithIndices = 0;
 		unsigned gQuadOnly = 0;
 		unsigned gRemoved = 0;
@@ -419,6 +449,20 @@ namespace nSCD3D11::NativeShadowRegistry {
 			return !triangles.empty();
 		}
 
+		// RMS distance between the mesh's UVs and what the projector gives for
+		// the same world positions.
+		double ProjectorResidual(Caster const &caster, float const *uvs, uint32_t count) {
+			double squared = 0.0;
+			for (uint32_t vertex = 0; vertex < count; ++vertex) {
+				float const *const world = caster.positions.data() + vertex * 3;
+				float const *const m = caster.projector;
+				double const du = m[0] * world[0] + m[4] * world[1] + m[8] * world[2] + m[12] - uvs[vertex * 2 + 0];
+				double const dv = m[1] * world[0] + m[5] * world[1] + m[9] * world[2] + m[13] - uvs[vertex * 2 + 1];
+				squared += du * du + dv * dv;
+			}
+			return count == 0 ? 0.0 : std::sqrt(squared / count);
+		}
+
 		// -LiveShadowDiag checks 2 and 3 of the design: the projector reproduces
 		// the mesh's UVs from world positions, and the transformed mesh sits
 		// where AddShadow's bounding box says the model is.
@@ -450,7 +494,8 @@ namespace nSCD3D11::NativeShadowRegistry {
 		}
 
 		void Register(void *manager, int32_t id, void const *binding, int32_t count, void const *positions,
-		              void const *uvs, void const *box, void const *transform, uint8_t const *returnSlot) {
+		              void const *uvs, void const *box, void const *transform, uint8_t const *returnSlot,
+		              bool meshCaster) {
 			auto erase = [&] {
 				std::lock_guard<std::mutex> lock(gMutex);
 				gCasters.erase(static_cast<uint32_t>(id));
@@ -507,7 +552,44 @@ namespace nSCD3D11::NativeShadowRegistry {
 
 			bool const indexed = RecoverIndices(returnSlot, vertexCount, positions, uvs, transform, caster->indices);
 			if (!indexed) caster->indices.clear();
-			LogProjectorCheck(*caster, uvValues.data(), vertexCount, box);
+			if (meshCaster) {
+				void *terrain = nullptr;
+				float ground = caster->low[1];
+				if (Read(static_cast<uint8_t const *>(manager) + kManagerTerrain, terrain) && terrain != nullptr) {
+					float altitude = 0.0f;
+					if (SafeTerrainAltitude(terrain, (caster->low[0] + caster->high[0]) * 0.5f,
+					                        (caster->low[2] + caster->high[2]) * 0.5f, altitude) &&
+					    std::isfinite(altitude))
+						ground = altitude;
+				}
+				double const residual = ProjectorResidual(*caster, uvValues.data(), vertexCount);
+				bool const floating = caster->low[1] - ground > kFloatingPropHeight;
+				if (DiagnosticsEnabled() && gMeshCasters + gFloatingProps + gPrerenderedProps < 24) {
+					Log(LogCategory::Initialization,
+					    "shadow registry: relaxed prop id=%d verts=%u lowest %.2f above terrain, residual %.4f -> %s",
+					    id, vertexCount, caster->low[1] - ground, residual,
+					    floating ? "floating, no shadow" : residual < kPrerenderedResidual ? "projector"
+						    : indexed ? "own UVs" : "per-draw");
+				}
+				if (floating) {
+					caster->suppressOnly = true;
+					++gFloatingProps;
+				} else if (residual < kPrerenderedResidual) {
+					++gPrerenderedProps;
+				} else if (indexed) {
+					caster->meshUVs = true;
+					caster->uvs = std::move(uvValues);
+					++gMeshCasters;
+				} else {
+					// Without triangles the UVs cannot be drawn. The prop casts
+					// through the per-draw path instead, and its record - whose
+					// projector would stamp a slab - is only kept out of DrawShadows.
+					caster->suppressOnly = true;
+					NativeShadowMasks::RegisterLivePropMesh(vertexCount, positions, uvs);
+					++gMeshFallbacks;
+				}
+			}
+			if (!caster->meshUVs) LogProjectorCheck(*caster, uvValues.data(), vertexCount, box);
 
 			std::lock_guard<std::mutex> lock(gMutex);
 			if (gManager != manager) {
@@ -605,6 +687,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 					continue;
 				}
 				if ((flags & kShadowDrawFlags) != kShadowDrawFlags) continue; // disabled: native skips it too
+				if (caster.suppressOnly) continue;
 				if (!Read(binding, textureObject) || textureObject == nullptr || !Read(textureObject, texture)) {
 					kept[write++] = id;
 					continue;
@@ -668,15 +751,22 @@ namespace nSCD3D11::NativeShadowRegistry {
 		int32_t __fastcall AddShadowHook(void *manager, void *, void const *binding, int32_t count,
 		                                 void const *positions, void const *uvs, void const *box,
 		                                 void const *transform) {
+			bool const meshCaster = tExpectMeshCaster;
+			tExpectMeshCaster = false;
 			int32_t const id = gOriginalAddShadow(manager, binding, count, positions, uvs, box, transform);
 			if (id >= 0) {
 				try {
 					Register(manager, id, binding, count, positions, uvs, box, transform,
-					         static_cast<uint8_t const *>(_AddressOfReturnAddress()));
+					         static_cast<uint8_t const *>(_AddressOfReturnAddress()), meshCaster);
 				} catch (std::bad_alloc const &) {
 					std::lock_guard<std::mutex> lock(gMutex);
 					gCasters.erase(static_cast<uint32_t>(id));
 				}
+			} else if (meshCaster && count > 0) {
+				// CalcShadowProjection rejected the fit, so there is no record to
+				// keep: the prop casts through the per-draw path as before.
+				NativeShadowMasks::RegisterLivePropMesh(static_cast<uint32_t>(count), positions, uvs);
+				++gMeshFallbacks;
 			}
 			return id;
 		}
@@ -939,6 +1029,10 @@ namespace nSCD3D11::NativeShadowRegistry {
 			gPassIds.clear();
 		}
 		Log(LogCategory::Initialization,
+		    "shadow registry uninstalled: relaxed props: %u True3D kept with their UVs, %u prerendered through the "
+		    "projector, %u floating left unshadowed, %u left to per-draw capture",
+		    gMeshCasters, gPrerenderedProps, gFloatingProps, gMeshFallbacks);
+		Log(LogCategory::Initialization,
 		    "shadow registry uninstalled: %u registered (%u indexed, %u ground quad only), %u removed, "
 		    "%u stale, %u passes, %u live at exit; DrawShadows calls %u (%u gathered, %u left native)",
 		    gRegistered, gWithIndices, gQuadOnly, gRemoved, gStaleRecords, gPasses,
@@ -947,6 +1041,10 @@ namespace nSCD3D11::NativeShadowRegistry {
 
 	bool Enabled() {
 		return gInstalled;
+	}
+
+	void ExpectMeshCaster() {
+		tExpectMeshCaster = gInstalled;
 	}
 
 	bool RedisplayWorldRect(float minX, float minZ, float maxX, float maxZ) {

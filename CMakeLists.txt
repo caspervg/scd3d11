@@ -152,6 +152,7 @@ if (BUILD_TESTING)
     scd3d11_add_test(NativeShadowRegistryTest
             tests/NativeShadowRegistryTest.cpp
             scd3d11/NativeShadowRegistry.cpp
+            scd3d11/NativeShadowMasks.cpp
             scd3d11/Diagnostics.cpp)
     target_link_libraries(NativeShadowRegistryTest PRIVATE version)
 

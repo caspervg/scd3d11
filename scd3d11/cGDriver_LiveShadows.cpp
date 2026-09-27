@@ -36,8 +36,11 @@ namespace nSCD3D11 {
         // the composite bias along the 45-degree sun.
         constexpr float kGroundLiftWorld = 0.2f;
         // Used when SC4 reports no alpha-test scale: DrawShadows then blends the
-        // texture alpha without a test, and the shadow map needs some cut.
+        // texture alpha without a test, and the shadow map needs some cut. Also
+        // the cut for True3D props cast through their own UVs.
         constexpr float kDefaultRegistryAlphaReference = 0.5f;
+        // A registry vertex: world position, then UV (zero for projector casters).
+        constexpr UINT kRegistryVertexFloats = 5;
         // How far below a per-draw caster its shadow is assumed to fall when the
         // terrain altitude under it is unknown; only sizes redisplay regions.
         constexpr float kUnknownGroundDrop = 32.0f;
@@ -111,18 +114,28 @@ void CasterPS(CasterOutput input) {
 	clip(alphaPass ? 1.0 : -1.0);
 }
 
-struct RegistryOutput { float4 position : SV_POSITION; float3 world : TEXCOORD0; };
+struct RegistryOutput {
+	float4 position : SV_POSITION;
+	float3 world : TEXCOORD0;
+	float2 uv : TEXCOORD1;
+};
 
-RegistryOutput RegistryVS(float3 position : POSITION) {
+RegistryOutput RegistryVS(float3 position : POSITION, float2 uv : TEXCOORD0) {
 	RegistryOutput output;
 	output.position = mul(lightMatrix, float4(position, 1.0));
 	output.world = position;
+	output.uv = uv;
 	return output;
 }
 // A texel casts where SC4's own projected shadow would: the projector maps the
 // point to the prerendered texture, the UV rectangle clips it as DrawShadows'
-// second stage does, and the alpha test is DrawShadows' GEQUAL.
+// second stage does, and the alpha test is DrawShadows' GEQUAL. A True3D prop
+// (material.z) has real UVs instead and is alpha-tested through them.
 void RegistryPS(RegistryOutput input) {
+	if (material.z != 0.0) {
+		clip(sourceTexture.Sample(sourceSampler, input.uv).a - material.y);
+		return;
+	}
 	float2 uv = mul(textureMatrix, float4(input.world, 1.0)).xy;
 	float2 inside = step(uvBounds.xy, uv) * step(uv, uvBounds.zw);
 	clip(inside.x * inside.y - 0.5);
@@ -194,12 +207,14 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         };
 
         // A registry caster that survived culling, with where its geometry
-        // landed in this pass's upload.
+        // landed in this pass's upload. The ground quad always bounds the
+        // caster's reach; it is drawn only for projector casters.
         struct RegistryDraw {
             NativeShadowRegistry::PassCaster const *caster = nullptr;
             ID3D11ShaderResourceView *texture = nullptr;
             float quad[4][3]{};
             bool hasQuad = false;
+            bool drawQuad = false;
             UINT startIndex = 0;
             UINT indexCount = 0;
             INT baseVertex = 0;
@@ -861,10 +876,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             if (SUCCEEDED(result)) result = d3dDevice->CreateInputLayout(
                 elements, 5, casterVS->GetBufferPointer(), casterVS->GetBufferSize(), &pipeline.inputLayout);
             D3D11_INPUT_ELEMENT_DESC const registryElements[]{
-                {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0}
+                {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, sizeof(float) * 3, D3D11_INPUT_PER_VERTEX_DATA, 0}
             };
             if (SUCCEEDED(result)) result = d3dDevice->CreateInputLayout(
-                registryElements, 1, registryVS->GetBufferPointer(), registryVS->GetBufferSize(),
+                registryElements, 2, registryVS->GetBufferPointer(), registryVS->GetBufferSize(),
                 &pipeline.registryLayout);
             D3D11_BUFFER_DESC buffer{sizeof(ShadowConstants), D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
             if (SUCCEEDED(result)) result = d3dDevice->CreateBuffer(&buffer, nullptr, &pipeline.constants);
@@ -1026,7 +1042,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // drawn, full window or dirty rectangle alike.
         std::vector<RegistryDraw> registryDraws;
         UINT registryVertexCount = 0, registryIndexCount = 0;
-        unsigned registryCulled = 0, registryMissingTexture = 0, registryQuadOnly = 0;
+        unsigned registryCulled = 0, registryMissingTexture = 0, registryQuadOnly = 0, registryMeshCasters = 0;
         if (haveView) {
             float sunWorld[3]{liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2]};
             if (!liveShadowSunWorldValid) TransformDirection(eyeToWorld, shadowDirection, sunWorld);
@@ -1037,7 +1053,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 RegistryDraw draw;
                 draw.caster = &passCaster;
                 draw.hasQuad = GroundQuad(caster, sunWorld, draw.quad);
-                if (caster.indices.empty() && !draw.hasQuad) continue;
+                draw.drawQuad = draw.hasQuad && !caster.meshUVs;
+                if (caster.indices.empty() && !draw.drawQuad) continue;
                 // The screen footprint of the caster together with its ground
                 // shadow bounds everything it can shade, walls included: a
                 // shadow on a wall lies between the caster and the ground.
@@ -1083,13 +1100,14 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
                 draw.texture = texture->second.view.Get();
                 for (unsigned index = 0; index < pointCount; ++index) includeBounds(points[index]);
-                UINT const vertices = static_cast<UINT>(caster.positions.size() / 3) + (draw.hasQuad ? 4u : 0u);
-                draw.indexCount = static_cast<UINT>(caster.indices.size()) + (draw.hasQuad ? 6u : 0u);
+                UINT const vertices = static_cast<UINT>(caster.positions.size() / 3) + (draw.drawQuad ? 4u : 0u);
+                draw.indexCount = static_cast<UINT>(caster.indices.size()) + (draw.drawQuad ? 6u : 0u);
                 draw.baseVertex = static_cast<INT>(registryVertexCount);
                 draw.startIndex = registryIndexCount;
                 registryVertexCount += vertices;
                 registryIndexCount += draw.indexCount;
                 if (caster.indices.empty()) ++registryQuadOnly;
+                if (caster.meshUVs) ++registryMeshCasters;
                 registryDraws.push_back(draw);
             }
         }
@@ -1147,10 +1165,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 boundsLow[0], boundsLow[1], boundsLow[2],
                 boundsHigh[0], boundsHigh[1], boundsHigh[2]);
             Log(LogCategory::Initialization,
-                "liveshadow registry: %s pass, %u gathered, %u drawn (%u ground quad only), culled=%u notex=%u "
-                "vertices=%u indices=%u tone=%.3f/%.3f/%.3f@%.3f alphaScale=%.3f",
+                "liveshadow registry: %s pass, %u gathered, %u drawn (%u ground quad only, %u True3D), culled=%u "
+                "notex=%u vertices=%u indices=%u tone=%.3f/%.3f/%.3f@%.3f alphaScale=%.3f",
                 partialPass ? "partial" : "full", static_cast<unsigned>(pass.casters.size()),
-                static_cast<unsigned>(registryDraws.size()), registryQuadOnly, registryCulled,
+                static_cast<unsigned>(registryDraws.size()), registryQuadOnly, registryMeshCasters, registryCulled,
                 registryMissingTexture, registryVertexCount, registryIndexCount, pass.colour[0], pass.colour[1],
                 pass.colour[2], pass.strength, pass.alphaScale);
             Log(LogCategory::Initialization,
@@ -1219,7 +1237,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // Registry casters: one upload for the whole pass, then one draw per
         // record, since each carries its own projector and texture.
         if (!registryDraws.empty()) {
-            UINT const vertexBytes = registryVertexCount * sizeof(float) * 3;
+            UINT const vertexBytes = registryVertexCount * sizeof(float) * kRegistryVertexFloats;
             UINT const indexBytes = registryIndexCount * sizeof(uint32_t);
             D3D11_MAPPED_SUBRESOURCE vertexMap{}, indexMap{};
             bool uploaded =
@@ -1237,15 +1255,21 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     auto* indexOut = static_cast<uint32_t*>(indexMap.pData);
                     for (RegistryDraw const& draw : registryDraws) {
                         NativeShadowRegistry::Caster const& caster = *draw.caster->caster;
-                        std::memcpy(vertexOut, caster.positions.data(), caster.positions.size() * sizeof(float));
-                        vertexOut += caster.positions.size();
+                        size_t const count = caster.positions.size() / 3;
+                        for (size_t vertex = 0; vertex < count; ++vertex) {
+                            std::memcpy(vertexOut, caster.positions.data() + vertex * 3, sizeof(float) * 3);
+                            vertexOut[3] = caster.meshUVs ? caster.uvs[vertex * 2] : 0.0f;
+                            vertexOut[4] = caster.meshUVs ? caster.uvs[vertex * 2 + 1] : 0.0f;
+                            vertexOut += kRegistryVertexFloats;
+                        }
                         std::memcpy(indexOut, caster.indices.data(), caster.indices.size() * sizeof(uint32_t));
                         indexOut += caster.indices.size();
-                        if (!draw.hasQuad) continue;
-                        uint32_t const first = static_cast<uint32_t>(caster.positions.size() / 3);
+                        if (!draw.drawQuad) continue;
+                        uint32_t const first = static_cast<uint32_t>(count);
                         for (auto const& corner : draw.quad) {
                             std::memcpy(vertexOut, corner, sizeof(corner));
-                            vertexOut += 3;
+                            vertexOut[3] = vertexOut[4] = 0.0f;
+                            vertexOut += kRegistryVertexFloats;
                         }
                         uint32_t const quad[6]{first, first + 1, first + 2, first, first + 2, first + 3};
                         std::memcpy(indexOut, quad, sizeof(quad));
@@ -1261,7 +1285,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 d3dContext->PSSetShader(pipeline.registryPS.Get(), nullptr, 0);
                 d3dContext->VSSetConstantBuffers(0, 1, &cb);
                 d3dContext->PSSetConstantBuffers(0, 1, &cb);
-                UINT stride = sizeof(float) * 3, offset = 0;
+                UINT stride = sizeof(float) * kRegistryVertexFloats, offset = 0;
                 ID3D11Buffer* vb = pipeline.registryVertices.Get();
                 d3dContext->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
                 d3dContext->IASetIndexBuffer(pipeline.registryIndices.Get(), DXGI_FORMAT_R32_UINT, 0);
@@ -1272,16 +1296,19 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     pass.alphaScale > 0.0f ? pass.alphaScale : kDefaultRegistryAlphaReference;
                 ShadowConstants constants{};
                 std::memcpy(constants.lightMatrix, lightWorld, sizeof(lightWorld));
-                constants.material[1] = alphaReference;
                 for (RegistryDraw const& draw : registryDraws) {
                     NativeShadowRegistry::Caster const& caster = *draw.caster->caster;
                     std::memcpy(constants.textureMatrix, caster.projector, sizeof(constants.textureMatrix));
                     std::memcpy(constants.uvBounds, caster.uvBounds, sizeof(constants.uvBounds));
+                    constants.material[1] = caster.meshUVs ? kDefaultRegistryAlphaReference : alphaReference;
+                    constants.material[2] = caster.meshUVs ? 1.0f : 0.0f;
                     d3dContext->UpdateSubresource(pipeline.constants.Get(), 0, nullptr, &constants, 0, 0);
                     ID3D11ShaderResourceView* texture = draw.texture;
                     d3dContext->PSSetShaderResources(0, 1, &texture);
-                    ID3D11SamplerState* sampler =
-                        draw.caster->wrap ? pipeline.wrapSampler.Get() : pipeline.clampSampler.Get();
+                    // True3D UVs routinely run past [0, 1]: those textures repeat.
+                    ID3D11SamplerState* sampler = draw.caster->wrap || caster.meshUVs
+                                                      ? pipeline.wrapSampler.Get()
+                                                      : pipeline.clampSampler.Get();
                     d3dContext->PSSetSamplers(0, 1, &sampler);
                     d3dContext->DrawIndexed(draw.indexCount, draw.startIndex, draw.baseVertex);
                 }

@@ -32,5 +32,8 @@ namespace nSCD3D11::NativeShadowMasks {
 	bool LivePropsEnabled();
 	bool HasLivePropMeshes();
 	bool MatchLivePropSignature(uint64_t signature);
+	// Registers a relaxed prop's mesh (AddShadow's position and UV streams) for
+	// per-draw capture; the registry's fallback when it cannot take the prop.
+	void RegisterLivePropMesh(uint32_t count, void const *positions, void const *uvs);
 
 } // namespace nSCD3D11::NativeShadowMasks

@@ -86,6 +86,7 @@
 #include "NativeShadowMasks.h"
 
 #include "Diagnostics.h"
+#include "NativeShadowRegistry.h"
 
 #include <algorithm>
 #include <array>
@@ -186,6 +187,9 @@ namespace nSCD3D11::NativeShadowMasks {
 			uint64_t signature = 0;
 		};
 		std::vector<LivePropMesh> gLivePropMeshes;
+		// Whether gLivePropMeshes has anything, readable without the lock:
+		// HasLivePropMeshes runs on every draw the game makes.
+		std::atomic<bool> gHaveLivePropMeshes{false};
 
 		// Model instances owned by prebuilt network pieces, mapped to the
 		// occupant that owns them so a hit can be re-validated. Read once per
@@ -424,7 +428,10 @@ namespace nSCD3D11::NativeShadowMasks {
 	// The rejected prop has reached the point where SC4 extracted its position
 	// and UV streams. Record a stable mesh signature for the indexed renderer,
 	// then suppress AddShadow: its one affine projector is exactly the path that
-	// produced the giant filled slabs.
+	// produced the giant filled slabs. With the shadow registry installed the
+	// call goes through instead: the registry keeps the mesh with its own UVs,
+	// takes the record out of DrawShadows, and SC4 keeps the record's lifetime
+	// and dirty rectangles, so the prop needs no per-draw capture at all.
 	extern "C" uint32_t __cdecl SCD3D11_RegisterLiveProp(uint32_t *stackArguments) {
 		uint8_t const *const frameBase =
 			reinterpret_cast<uint8_t const *>(stackArguments) + kAddShadowArgumentBytes;
@@ -432,19 +439,32 @@ namespace nSCD3D11::NativeShadowMasks {
 		if (!SafeCopy(frameBase + kFrameOccupant, &occupant, sizeof(occupant)) || occupant == 0 ||
 		    reinterpret_cast<void *>(occupant) != tRelaxedPropOccupant) return 0;
 
+		uint32_t const count = stackArguments[0];
+		void const *const positions = reinterpret_cast<void const *>(stackArguments[1]);
+		void const *const uvs = reinterpret_cast<void const *>(stackArguments[2]);
+		if (count < 3 || count > 0x100000 || positions == nullptr || uvs == nullptr) return 2;
+		if (NativeShadowRegistry::Enabled()) {
+			NativeShadowRegistry::ExpectMeshCaster();
+			return 0;
+		}
+		RegisterLivePropMesh(count, positions, uvs);
+		++gPropCallsSuppressed;
+		return 2;
+	}
+
+	void RegisterLivePropMesh(uint32_t count, void const *positionStream, void const *uvStream) {
 		struct Vector3 { float x, y, z; };
 		struct Vector2 { float u, v; };
-		uint32_t const count = stackArguments[0];
-		auto const *const positions = reinterpret_cast<Vector3 const *>(stackArguments[1]);
-		auto const *const uvs = reinterpret_cast<Vector2 const *>(stackArguments[2]);
-		if (count < 3 || count > 0x100000 || positions == nullptr || uvs == nullptr) return 2;
+		auto const *const positions = static_cast<Vector3 const *>(positionStream);
+		auto const *const uvs = static_cast<Vector2 const *>(uvStream);
+		if (count < 3 || count > 0x100000 || positions == nullptr || uvs == nullptr) return;
 		uint64_t signature = 0xCBF29CE484222325ull;
 		HashWord(signature, count);
 		for (uint32_t index = 0; index < count; ++index) {
 			Vector3 position{};
 			Vector2 uv{};
 			if (!SafeCopy(positions + index, &position, sizeof(position)) ||
-			    !SafeCopy(uvs + index, &uv, sizeof(uv))) return 2;
+			    !SafeCopy(uvs + index, &uv, sizeof(uv))) return;
 			uint32_t words[5]{};
 			std::memcpy(words, &position, sizeof(position));
 			std::memcpy(words + 3, &uv, sizeof(uv));
@@ -460,6 +480,7 @@ namespace nSCD3D11::NativeShadowMasks {
 				LivePropMesh mesh{};
 				mesh.signature = signature;
 				gLivePropMeshes.insert(found, std::move(mesh));
+				gHaveLivePropMeshes.store(true, std::memory_order_relaxed);
 				++gPropMeshesRegistered;
 				Log(LogCategory::Initialization,
 				    "native shadows: registered live prop mesh sig=%08X%08X verts=%u",
@@ -479,8 +500,6 @@ namespace nSCD3D11::NativeShadowMasks {
 				}
 			}
 		}
-		++gPropCallsSuppressed;
-		return 2;
 	}
 
 	bool LivePropsEnabled() {
@@ -500,9 +519,7 @@ namespace nSCD3D11::NativeShadowMasks {
 	}
 
 	bool HasLivePropMeshes() {
-		if (!LivePropsEnabled()) return false;
-		std::lock_guard<std::mutex> lock(gPropMutex);
-		return !gLivePropMeshes.empty();
+		return LivePropsEnabled() && gHaveLivePropMeshes.load(std::memory_order_relaxed);
 	}
 
 	bool MatchLivePropSignature(uint64_t signature) {
@@ -867,6 +884,7 @@ namespace nSCD3D11::NativeShadowMasks {
 		{
 			std::lock_guard<std::mutex> lock(gPropMutex);
 			gLivePropMeshes.clear();
+			gHaveLivePropMeshes.store(false, std::memory_order_relaxed);
 		}
 		{
 			std::unique_lock<std::shared_mutex> lock(gLiveModelMutex);
@@ -917,6 +935,7 @@ namespace nSCD3D11::NativeShadowMasks {
 		{
 			std::lock_guard<std::mutex> lock(gPropMutex);
 			gLivePropMeshes.clear();
+			gHaveLivePropMeshes.store(false, std::memory_order_relaxed);
 		}
 		{
 			std::unique_lock<std::shared_mutex> lock(gLiveModelMutex);

@@ -22,7 +22,11 @@
 // projector for SC4's prerendered texture. This module keeps that projector, the
 // texture and the mesh for every shadow record the game creates, takes those
 // records out of the list DrawShadows draws, and hands the driver the ones each
-// static pass would have drawn. See docs/true3d-shadows-replace-all.md.
+// static pass would have drawn. True3D props SC4 would not shadow (no Is Ground
+// Model) come through the same call once NativeShadowMasks lets it run, and cast
+// with their own UVs. Because SC4 tracks every record's lifetime and dirties its
+// rectangle when it changes, none of these casters needs a full redraw to stay
+// correct. See docs/true3d-shadows-replace-all.md.
 
 namespace nSCD3D11::NativeShadowRegistry {
 	struct Caster {
@@ -43,6 +47,14 @@ namespace nSCD3D11::NativeShadowRegistry {
 		float high[3]{};
 		// The occupant's placement height, which is where its ground quad sits.
 		float baseHeight = 0.0f;
+		// A True3D prop SC4 itself would not shadow: it casts with its own UVs
+		// (two floats per vertex) rather than through the projector, which only
+		// fits a prerendered view.
+		bool meshUVs = false;
+		std::vector<float> uvs;
+		// Taken out of DrawShadows but not cast: a relaxed prop the registry
+		// could not keep, which casts through the per-draw path instead.
+		bool suppressOnly = false;
 	};
 
 	struct PassCaster {
@@ -73,6 +85,10 @@ namespace nSCD3D11::NativeShadowRegistry {
 	bool Install();
 	void Uninstall();
 	bool Enabled();
+
+	// Marks the next AddShadow on this thread as a relaxed True3D prop
+	// (NativeShadowMasks site D), to be kept with its own UVs.
+	void ExpectMeshCaster();
 
 	// Moves out the pass gathered since the last call. False when no
 	// DrawShadows call ran in between, i.e. SC4 drew no shadows.
