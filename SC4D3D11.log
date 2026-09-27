@@ -1,0 +1,50 @@
+[SC4D3D11][init] initialized; 40 display modes available
+[SC4D3D11][init] SetVideoMode(1, wndProc=00000000, show=0)
+[SC4D3D11][window] 000E09BC WM_SHOWWINDOW show=1 status=0
+[SC4D3D11][window] 000E09BC WM_ACTIVATEAPP activated (other thread 28356)
+[SC4D3D11][window] 000E09BC WM_NCACTIVATE active
+[SC4D3D11][window] 000E09BC WM_ACTIVATE WA_ACTIVE minimized=0 other=00000000
+[SC4D3D11][window] 000E09BC WM_SETFOCUS (from 00000000)
+[SC4D3D11][window] 000E09BC WM_WINDOWPOSCHANGED 130,130 656x519 flags=0x10001843 after=0010010E
+[SC4D3D11][window] 000E09BC WM_SIZE restored 640x480
+[SC4D3D11][window] 000E09BC driver window created (-2147483648,-2147483648 656x519, style 0x16CF0000)
+[SC4D3D11][init] scene effects: cSC43DRender::Draw not found
+[SC4D3D11][init] adapter: AMD Radeon RX 7900 XTX (vendor 0x1002, device 0x744C, 3072 MB dedicated, high-performance preference)
+[SC4D3D11][resource] generic geometry pipeline created
+[SC4D3D11][swapchain] back buffer ready at 640x480
+[SC4D3D11][caps] D3D feature level 0xB100, windowed at 640x480, flip model swap chain
+[SC4D3D11][state] vertex-format=0x0000000000000001
+[SC4D3D11][resource] vertex cache segment 0 allocated at 16777216 bytes
+[SC4D3D11][state] render-state=0x0000000003FFFF86
+[SC4D3D11][state] render-state=0x1000000000000202
+[SC4D3D11][state] render-state=0x2000000000000000
+[SC4D3D11][resource] vertex cache segment 0 allocated at 16777216 bytes
+[SC4D3D11][resource] index cache segment 0 allocated at 4194304 bytes
+[SC4D3D11][resource] vertex cache segment 0 allocated at 16777216 bytes
+[SC4D3D11][resource] index cache segment 0 allocated at 4194304 bytes
+[SC4D3D11][resource] vertex cache segment 0 allocated at 16777216 bytes
+[SC4D3D11][resource] index cache segment 0 allocated at 4194304 bytes
+[SC4D3D11][state] texture-format=0x0000000100000057
+[SC4D3D11][state] texture-format=0x0000000300000001
+[SC4D3D11][state] texture-format=0x0000000500000047
+[SC4D3D11][state] texture-format=0x0000000700000000
+[SC4D3D11][unsupported] vertex upload exceeds 32-bit limits
+[SC4D3D11][unsupported] vertex upload exceeds 32-bit limits
+[SC4D3D11][unsupported] vertex upload exceeds 32-bit limits
+[SC4D3D11][unsupported] vertex upload exceeds 32-bit limits
+[SC4D3D11][resource] vertex cache segment 0 allocated at 16777216 bytes
+[SC4D3D11][init] recreating D3D11 device after device loss
+[SC4D3D11][window] 000E09BC destroying driver window
+[SC4D3D11][window] 000E09BC WM_WINDOWPOSCHANGED 130,130 656x519 flags=0x20001897 after=00000000
+[SC4D3D11][window] 000E09BC WM_DESTROY
+[SC4D3D11][window] 000E09BC WM_NCDESTROY
+[SC4D3D11][init] SetVideoMode(1, wndProc=00000000, show=0)
+[SC4D3D11][window] 000F09BC WM_SHOWWINDOW show=1 status=0
+[SC4D3D11][window] 000F09BC WM_ACTIVATEAPP activated (other thread 0)
+[SC4D3D11][window] 000F09BC WM_NCACTIVATE inactive
+[SC4D3D11][window] 000F09BC WM_ACTIVATE WA_ACTIVE minimized=0 other=00000000
+[SC4D3D11][window] 000F09BC WM_SETFOCUS (from 00000000)
+[SC4D3D11][window] 000F09BC WM_WINDOWPOSCHANGED 156,156 656x519 flags=0x10001843 after=0011010E
+[SC4D3D11][window] 000F09BC WM_SIZE restored 640x480
+[SC4D3D11][window] 000F09BC driver window created (-2147483648,-2147483648 656x519, style 0x16CF0000)
+[SC4D3D11][init] adapter: AMD Radeon RX 7900 XTX (vendor 0x1002, device 0x744C, 3072 MB dedicated, high-performance preference)

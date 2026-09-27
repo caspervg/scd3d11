@@ -26,6 +26,7 @@
 #include "NativeShadowRegistry.h"
 #include "ParallelRenderCull.h"
 #include "SimTickBudget.h"
+#include "TerrainShadows.h"
 
 namespace nSCD3D11
 {
@@ -50,6 +51,7 @@ namespace nSCD3D11
 
 		bool PreAppShutdown() {
 			NativeShadowExperiment::Uninstall();
+			TerrainShadows::Uninstall();
 			NativeShadowRegistry::Uninstall();
 			NativeShadowMasks::Uninstall();
 			NativeShadowDiagnostics::Uninstall();
@@ -64,6 +66,7 @@ namespace nSCD3D11
 			SimTickBudget::Install();
 			NativeShadowMasks::Install();
 			NativeShadowRegistry::Install();
+			TerrainShadows::Install();
 			NativeShadowDiagnostics::Install();
 			NativeShadowExperiment::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();

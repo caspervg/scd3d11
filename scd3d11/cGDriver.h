@@ -266,6 +266,19 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
 			uint32_t registryVertexCapacity = 0;
 			uint32_t registryIndexCapacity = 0;
+			// TerrainShadows' ceiling map, uploaded whenever its generation moves.
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainMap;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainMapView;
+			uint32_t terrainMapWidth = 0;
+			uint32_t terrainMapHeight = 0;
+			uint64_t terrainMapGeneration = 0;
+			// The height field it was built from, one texel per vertex: altitude,
+			// normal x and z, cell flipped. The composite rebuilds the drawn
+			// triangles and SC4's lighting normals from it.
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainAltitude;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainAltitudeView;
+			uint32_t terrainAltitudeWidth = 0;
+			uint32_t terrainAltitudeHeight = 0;
 		} liveShadows;
 		std::vector<LiveShadowDraw> liveShadowDraws;
 		// -NativeShadowMasks:replace: every per-draw caster seen since the last
@@ -277,8 +290,10 @@ namespace nSCD3D11 {
 		// The model-view of the first terrain draw of a static pass. Terrain
 		// vertices are world coordinates, so it is the pass's view, and unlike
 		// DrawShadows' matrix it exists even where there is no overlay to draw.
-		// Only trusted once it has matched DrawShadows' view in some pass.
+		// Only trusted once it has matched DrawShadows' view in some pass, or
+		// for a pass whose first terrain vertex lies on the city's height field.
 		float liveShadowTerrainView[16]{};
+		float liveShadowTerrainVertex[3]{};
 		bool liveShadowTerrainViewValid = false;
 		bool liveShadowTerrainViewTrusted = false;
 		bool liveShadowTerrainViewRejected = false;

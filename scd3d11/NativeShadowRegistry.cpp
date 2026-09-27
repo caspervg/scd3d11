@@ -1050,8 +1050,17 @@ namespace nSCD3D11::NativeShadowRegistry {
 	bool RedisplayWorldRect(float minX, float minZ, float maxX, float maxZ) {
 		void *terrain = nullptr;
 		bool updateView = false;
+		return gInstalled && CityTerrain(terrain, updateView) &&
+		       RedisplayTerrainRect(terrain, updateView, minX, minZ, maxX, maxZ);
+	}
+
+	bool OverlayTerrain(void *&terrain, bool &updateView) {
+		return gInstalled && CityTerrain(terrain, updateView);
+	}
+
+	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ) {
 		TerrainGrid grid{};
-		if (!gInstalled || !(minX <= maxX) || !(minZ <= maxZ) || !CityTerrain(terrain, updateView) ||
+		if (!gInstalled || terrain == nullptr || !(minX <= maxX) || !(minZ <= maxZ) ||
 		    !SafeTerrainGrid(terrain, grid) || !(grid.cellWidth > 0.0f) || grid.cellsX == 0 || grid.cellsZ == 0)
 			return false;
 		// A cell of margin on every side, clamped to the city: RedisplayTerrain
@@ -1073,6 +1082,26 @@ namespace nSCD3D11::NativeShadowRegistry {
 		bool updateView = false;
 		return gInstalled && CityTerrain(terrain, updateView) && SafeTerrainAltitude(terrain, x, z, altitude) &&
 		       std::isfinite(altitude);
+	}
+
+	bool SunDirection(float direction[3]) {
+		float sun[3]{};
+		if (!gInstalled || !SafeShadowDirection(gRendererPointer, sun) || !std::isfinite(sun[0]) ||
+		    !std::isfinite(sun[1]) || !std::isfinite(sun[2]))
+			return false;
+		std::memcpy(direction, sun, sizeof(sun));
+		return true;
+	}
+
+	bool ShadowParams(float colour[3], float &strength) {
+		float tone[3]{};
+		float value = 0.0f;
+		if (!gInstalled || !SafeCopy(reinterpret_cast<void const *>(gShadowColour), tone, sizeof(tone)) ||
+		    !Read(reinterpret_cast<void const *>(gShadowStrength), value))
+			return false;
+		std::memcpy(colour, tone, sizeof(tone));
+		strength = value;
+		return true;
 	}
 
 	bool TakePass(Pass &pass) {

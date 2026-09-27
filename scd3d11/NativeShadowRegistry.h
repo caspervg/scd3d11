@@ -99,8 +99,24 @@ namespace nSCD3D11::NativeShadowRegistry {
 	// removed. The redraw happens as a partial static pass on a later frame.
 	bool RedisplayWorldRect(float minX, float minZ, float maxX, float maxZ);
 
+	// The same for a terrain the caller already has: a city's before any
+	// shadow record has shown the registry its overlay manager.
+	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ);
+
+	// The terrain and view-update flag RedisplayWorldRect uses: those of the
+	// overlay manager the last shadow record came from, which a city without
+	// records has not replaced yet.
+	bool OverlayTerrain(void *&terrain, bool &updateView);
+
 	// Terrain altitude at a world position; false when there is no city.
 	bool TerrainAltitude(float x, float z, float &altitude);
+
+	// GetShadowDirection: the world-space direction the light travels. Unlike
+	// Pass::sunDirection it is available in a pass without shadow records.
+	bool SunDirection(float direction[3]);
+
+	// GetShadowParams' colour and strength, read directly for the same reason.
+	bool ShadowParams(float colour[3], float &strength);
 
 	// Exposed for tests: SC4's SimGL primitive enumeration to a triangle list.
 	// Points and lines append nothing and return false.

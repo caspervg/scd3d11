@@ -66,6 +66,8 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/NativeShadowExperiment.cpp
         scd3d11/ParallelRenderCull.cpp
         scd3d11/SimTickBudget.cpp
+        scd3d11/TerrainShadowMap.cpp
+        scd3d11/TerrainShadows.cpp
         scd3d11/cGDriver_Info.cpp
         scd3d11/cGDriver_Init.cpp
         scd3d11/cGDriver_State.cpp
@@ -155,6 +157,10 @@ if (BUILD_TESTING)
             scd3d11/NativeShadowMasks.cpp
             scd3d11/Diagnostics.cpp)
     target_link_libraries(NativeShadowRegistryTest PRIVATE version)
+
+    scd3d11_add_test(TerrainShadowMapTest
+            tests/TerrainShadowMapTest.cpp
+            scd3d11/TerrainShadowMap.cpp)
 
     scd3d11_add_test(D3D11DepthRegionCopyTest tests/D3D11DepthRegionCopyTest.cpp)
     target_link_libraries(D3D11DepthRegionCopyTest PRIVATE d3d11)

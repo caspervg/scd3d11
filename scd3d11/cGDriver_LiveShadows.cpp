@@ -8,6 +8,10 @@
  * props and poles cast through SC4's own world-to-UV projector and prerendered
  * texture, so their silhouettes match the game's while landing on slopes and
  * other buildings, and overlaps no longer stack.
+ *
+ * The same composite also darkens whatever lies in the terrain's own shadow
+ * (TerrainShadows), which SC4 never drew: hills shade the valleys and the
+ * buildings behind them, with the same tone and without stacking.
  */
 
 #include "cGDriver.h"
@@ -15,6 +19,7 @@
 #include "Diagnostics.h"
 #include "NativeShadowMasks.h"
 #include "NativeShadowRegistry.h"
+#include "TerrainShadows.h"
 #include "VertexFormatUtils.h"
 
 #include <algorithm>
@@ -23,6 +28,7 @@
 #include <cstring>
 #include <d3dcompiler.h>
 #include <limits>
+#include <new>
 
 namespace nSCD3D11 {
     namespace {
@@ -48,6 +54,16 @@ namespace nSCD3D11 {
         // world boxes agree this closely; the view changes between passes, so
         // model-to-world is only reproduced up to rounding.
         constexpr float kSameCasterTolerance = 0.05f;
+        // A receiver starts to darken this far below the terrain's shadow
+        // ceiling and is fully shadowed this much further down: a few metres,
+        // the sun's penumbra a few hundred metres from a ridge.
+        constexpr float kTerrainShadowBias = 0.5f;
+        constexpr float kTerrainShadowSoftness = 3.0f;
+        // A terrain draw's vertex lies this close to the height field when its
+        // model space is world space.
+        constexpr float kTerrainVertexTolerance = 0.05f;
+        // A pixel this close to the drawn terrain surface is terrain.
+        constexpr float kTerrainPixelTolerance = 1.0f;
 
         bool LiveShadowDiagnosticsEnabled() {
             static bool const enabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
@@ -78,13 +94,21 @@ cbuffer ShadowConstants : register(b0) {
 	float4 uvBounds;    // registry casters: u min, v min, u max, v max
 	float4 viewport;    // composite: target viewport x, y, width, height
 	float4 tone;        // composite: shadow colour
-	float4 sun;         // composite: direction light travels in view space, w = facing test on
+	float4 sun;         // composite: direction light travels in view space, w = 1 / N.L of flat ground (0: all faces)
+	column_major float4x4 eyeToWorld; // composite: view space to world, for the terrain map
+	float4 terrainAxes; // composite: world xz to the map's along (xy) and across (zw) axes
+	float4 terrainGrid; // composite: map uv = (along * x + y, across * z + w)
+	float4 terrainShade; // composite: terrain map on, bias, 1 / softness, caster map on
+	float4 terrainCell;  // composite: cell width, how close to the terrain a terrain pixel lies, vertices x, z
 };
 Texture2D sourceTexture : register(t0);
 Texture2D<float> sceneDepth : register(t0);
 Texture2D<float> shadowMap : register(t1);
+Texture2D<float> terrainCeiling : register(t2);
+Texture2D<float4> terrainVertices : register(t3); // altitude, normal x, normal z, cell flipped
 SamplerState sourceSampler : register(s0);
 SamplerState shadowSampler : register(s1);
+SamplerState terrainSampler : register(s2);
 
 struct VSInput {
 	float3 position : POSITION;
@@ -165,32 +189,83 @@ float3 SurfaceStep(int2 pixel, float3 centre, int2 axis) {
 	float3 backward = centre - ViewPosition(pixel - axis, sceneDepth.Load(int3(pixel - axis, 0)));
 	return abs(forward.z) < abs(backward.z) ? forward : backward;
 }
+// The terrain under a world position as SC4 draws it: the cell's two
+// triangles, split along the diagonal its flip flag picks, with the vertex
+// normals its lighting uses interpolated across them. Returns the altitude.
+float TerrainSurface(float2 xz, out float3 normal) {
+	float2 grid = xz / terrainCell.x;
+	int2 cell = clamp(int2(floor(grid)), int2(0, 0), int2(terrainCell.zw) - 2);
+	float2 f = saturate(grid - float2(cell));
+	float4 v00 = terrainVertices.Load(int3(cell, 0));
+	float4 v10 = terrainVertices.Load(int3(cell + int2(1, 0), 0));
+	float4 v01 = terrainVertices.Load(int3(cell + int2(0, 1), 0));
+	float4 v11 = terrainVertices.Load(int3(cell + int2(1, 1), 0));
+	float4 v;
+	if (v00.w != 0.0) {
+		v = f.x + f.y <= 1.0 ? v00 * (1.0 - f.x - f.y) + v10 * f.x + v01 * f.y
+		                     : v11 * (f.x + f.y - 1.0) + v01 * (1.0 - f.x) + v10 * (1.0 - f.y);
+	} else {
+		v = f.x >= f.y ? v00 * (1.0 - f.x) + v10 * (f.x - f.y) + v11 * f.y
+		               : v00 * (1.0 - f.y) + v01 * (f.y - f.x) + v11 * f.x;
+	}
+	normal = normalize(float3(v.y, sqrt(saturate(1.0 - v.y * v.y - v.z * v.z)), v.z));
+	return v.x;
+}
+
 float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 	int2 pixel = int2(position.xy);
 	float depth = sceneDepth.Load(int3(pixel, 0));
 	if (depth >= 0.999999) discard;
 	float3 viewPosition = ViewPosition(pixel, depth);
-	// A face turned away from the sun is already unlit in SC4's prerendered
-	// art and vertex lighting; shading it again only darkens it twice.
+	bool terrainMap = terrainShade.x != 0.0;
+	float3 world = terrainMap ? mul(eyeToWorld, float4(viewPosition, 1.0)).xyz : float3(0.0, 0.0, 0.0);
+	// A shadow takes away the sun's direct light, which SC4's prerendered art
+	// and vertex lighting give a face in proportion to N.L. So it darkens fully
+	// where N.L is that of flat ground - what SC4's shadow strength is set for -
+	// less on a face turned partly away, and not at all on one turned fully
+	// away, which is already unlit; shading that again only darkens it twice.
 	float facing = 1.0;
 	if (sun.w != 0.0) {
 		float3 normal = normalize(cross(SurfaceStep(pixel, viewPosition, int2(0, 1)),
 		                                SurfaceStep(pixel, viewPosition, int2(1, 0))));
 		if (normal.z < 0.0) normal = -normal;
-		facing = saturate((dot(normal, -sun.xyz) - 0.02) / 0.15);
+		float light = dot(normal, -sun.xyz);
+		if (terrainMap) {
+			// SC4 lights the terrain through vertex normals interpolated across
+			// each triangle. The facets' own normals would switch the shadow on
+			// and off along every crease, so terrain pixels use SC4's.
+			float3 vertexNormal;
+			float ground = TerrainSurface(world.xz, vertexNormal);
+			float3 worldNormal = mul((float3x3)eyeToWorld, normal);
+			if (abs(world.y - ground) < terrainCell.y && worldNormal.y > 0.3 * length(worldNormal))
+				light = dot(vertexNormal, -normalize(mul((float3x3)eyeToWorld, sun.xyz)));
+		}
+		facing = saturate(light * sun.w);
 		clip(facing - 0.001);
 	}
-	float4 light = mul(lightMatrix, float4(viewPosition, 1.0));
-	float2 shadowUV = light.xy * float2(0.5, -0.5) + 0.5;
-	if (any(shadowUV < 0.0) || any(shadowUV > 1.0) || light.z < 0.0 || light.z > 1.0) discard;
-	float visibility = 0.0;
-	[unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
-		float caster = shadowMap.SampleLevel(shadowSampler, shadowUV + float2(x, y) * projection1.z, 0);
-		visibility += light.z > caster + material.x ? 1.0 : 0.0;
+	float shade = 0.0;
+	if (terrainShade.w != 0.0) {
+		float4 light = mul(lightMatrix, float4(viewPosition, 1.0));
+		float2 shadowUV = light.xy * float2(0.5, -0.5) + 0.5;
+		if (all(shadowUV >= 0.0) && all(shadowUV <= 1.0) && light.z >= 0.0 && light.z <= 1.0) {
+			[unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
+				float caster = shadowMap.SampleLevel(shadowSampler, shadowUV + float2(x, y) * projection1.z, 0);
+				shade += light.z > caster + material.x ? 1.0 : 0.0;
+			}
+			shade /= 9.0;
+		}
 	}
-	visibility *= facing / 9.0;
-	clip(visibility - 0.001);
-	return float4(tone.rgb, visibility * projection1.w);
+	// The terrain up-sun of a point shadows it when the point lies below the
+	// ceiling the map holds for its (x, z); walls and roofs read it the same way.
+	// The larger of the two shadows wins, so they never stack.
+	if (terrainMap) {
+		float2 axes = float2(dot(world.xz, terrainAxes.xy), dot(world.xz, terrainAxes.zw));
+		float ceiling = terrainCeiling.SampleLevel(terrainSampler, axes * terrainGrid.xz + terrainGrid.yw, 0);
+		shade = max(shade, saturate((ceiling - world.y - terrainShade.y) * terrainShade.z));
+	}
+	shade *= facing;
+	clip(shade - 0.001);
+	return float4(tone.rgb, shade * projection1.w);
 }
 )";
 
@@ -204,7 +279,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             float viewport[4];
             float tone[4];
             float sun[4];
+            float eyeToWorld[16];
+            float terrainAxes[4];
+            float terrainGrid[4];
+            float terrainShade[4];
+            float terrainCell[4];
         };
+        static_assert(sizeof(ShadowConstants) % 16 == 0, "constant buffers are sized in 16-byte registers");
 
         // A registry caster that survived culling, with where its geometry
         // landed in this pass's upload. The ground quad always bounds the
@@ -517,6 +598,12 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
     void cGDriver::NoteLiveShadowTerrainView() {
         if (liveShadowTerrainViewValid || liveShadowTerrainViewRejected || !NativeShadowRegistry::Enabled()) return;
         std::memcpy(liveShadowTerrainView, matrices[MODEL_VIEW], sizeof(liveShadowTerrainView));
+        // Called right after the reservation was uploaded, which holds at least
+        // one vertex; its format leads with the position.
+        std::memcpy(liveShadowTerrainVertex,
+                    extensionVertexData.data() + static_cast<size_t>(extensionVertexStart) *
+                                                 RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F),
+                    sizeof(liveShadowTerrainVertex));
         liveShadowTerrainViewValid = true;
     }
 
@@ -707,6 +794,31 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             std::memcpy(liveShadowColour, pass.colour, sizeof(liveShadowColour));
             liveShadowStrength = pass.strength;
             liveShadowToneValid = true;
+        } else if (replaceMode && staticPass &&
+                   NativeShadowRegistry::ShadowParams(liveShadowColour, liveShadowStrength)) {
+            // A pass without shadow records still shades with SC4's parameters.
+            liveShadowToneValid = true;
+        }
+        if (havePass && pass.sunValid) {
+            std::memcpy(liveShadowSunWorld, pass.sunDirection, sizeof(liveShadowSunWorld));
+            liveShadowSunWorldValid = true;
+        } else if (replaceMode && staticPass && NativeShadowRegistry::SunDirection(liveShadowSunWorld)) {
+            // Asked directly, so a rotation since the last DrawShadows call
+            // cannot leave a stale sun behind.
+            liveShadowSunWorldValid = true;
+        }
+        // The terrain's shadow ceiling, rebuilt only when the height field or
+        // the sun moved. A partial pass cannot repaint what changed outside its
+        // rectangle, so TerrainShadows redisplays that.
+        TerrainShadowMap::Map const* terrainMap = nullptr;
+        uint64_t terrainGeneration = 0;
+        if (replaceMode && staticPass && liveShadowSunWorldValid && TerrainShadows::Enabled() &&
+            TerrainShadows::ShadowsRendered()) {
+            try {
+                terrainMap = TerrainShadows::Update(liveShadowSunWorld, partialPass, terrainGeneration);
+            } catch (std::bad_alloc const&) {
+                terrainMap = nullptr;
+            }
         }
         // DrawShadows' first argument maps eye space to world for SC4's texgen,
         // so its inverse is the view transform of every draw in this pass: the
@@ -727,17 +839,33 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 liveShadowTerrainViewRejected = !liveShadowTerrainViewTrusted;
                 Log(LogCategory::Initialization, "live shadows: terrain model-view %s the DrawShadows view (%.3g)",
                     liveShadowTerrainViewTrusted ? "matches" : "differs from", worst);
-            } else if (!haveView && liveShadowTerrainViewTrusted && Invert(liveShadowTerrainView, eyeToWorld)) {
-                std::memcpy(worldToView, liveShadowTerrainView, sizeof(worldToView));
-                haveView = true;
+            } else if (!haveView) {
+                // Before any DrawShadows call - a city without shadow records -
+                // the terrain's own vertex vouches for it: lying on the height
+                // field, it is in world coordinates, so the model-view is the view.
+                float altitude = 0.0f;
+                bool const onTerrain = !liveShadowTerrainViewTrusted &&
+                                       TerrainShadows::Altitude(liveShadowTerrainVertex[0],
+                                                                liveShadowTerrainVertex[2], altitude) &&
+                                       std::fabs(altitude - liveShadowTerrainVertex[1]) <= kTerrainVertexTolerance;
+                if (!liveShadowTerrainViewTrusted) {
+                    static bool loggedVertexCheck = false;
+                    if (!loggedVertexCheck) {
+                        loggedVertexCheck = true;
+                        Log(LogCategory::Initialization,
+                            "live shadows: terrain vertex %.2f/%.2f/%.2f %s the height field (%.3f there)",
+                            liveShadowTerrainVertex[0], liveShadowTerrainVertex[1], liveShadowTerrainVertex[2],
+                            onTerrain ? "lies on" : "is off", altitude);
+                    }
+                }
+                if ((liveShadowTerrainViewTrusted || onTerrain) && Invert(liveShadowTerrainView, eyeToWorld)) {
+                    std::memcpy(worldToView, liveShadowTerrainView, sizeof(worldToView));
+                    haveView = true;
+                }
             }
         }
         // The next pass - or the next frame after a scroll - has its own view.
         liveShadowTerrainViewValid = false;
-        if (havePass && pass.sunValid) {
-            std::memcpy(liveShadowSunWorld, pass.sunDirection, sizeof(liveShadowSunWorld));
-            liveShadowSunWorldValid = true;
-        }
         // The composite reconstructs view positions through the pass's own
         // projection, which a partial pass fits to its dirty rectangle.
         float projection[16]{};
@@ -758,7 +886,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 // A pass the world-space set cannot follow - no DrawShadows call,
                 // so no view - leaves it stale. A partial one also leaves pixels
                 // outside it wrong, so it falls back to a clean rebuild.
-                bool const affected = !liveShadowDraws.empty() || !liveShadowWorldCasters.empty();
+                bool const affected =
+                        !liveShadowDraws.empty() || !liveShadowWorldCasters.empty() || terrainMap != nullptr;
                 liveShadowWorldCastersValid = false;
                 if (partialPass && affected && !KeepPartialStaticUpdates()) {
                     liveShadowCleanRedrawPending = true;
@@ -785,7 +914,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             for (LiveShadowDraw& draw : liveShadowDraws) casters.push_back(&draw);
         }
 
-        if (casters.empty() && pass.casters.empty()) {
+        // Terrain shadows are composited in world space, so they need the view.
+        bool const terrainShadows = terrainMap != nullptr && haveView;
+        if (casters.empty() && pass.casters.empty() && !terrainShadows) {
             // Most calls are dynamic-view frames with nothing to cast; saying so
             // every 120 calls used to exhaust the init log budget in seconds.
             static bool loggedEmpty = false;
@@ -1121,7 +1252,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     registryCulled, registryMissingTexture, haveView ? "known" : "unknown");
             }
         }
-        if (casters.empty() && registryDraws.empty()) {
+        // A pass with no caster in reach can still lie in the terrain's shadow;
+        // it skips the shadow map and composites the terrain alone.
+        bool const haveCasters = !casters.empty() || !registryDraws.empty();
+        if (!haveCasters && !terrainShadows) {
             if (diagnosticLog)
                 Log(LogCategory::Initialization,
                     "liveshadow frame: registry %u gathered, none visible (culled=%u notex=%u)",
@@ -1130,10 +1264,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         }
 
         float lightView[16]{};
-        float const lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView);
+        float lightDepthRange = 1.0f;
+        if (haveCasters) lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView);
         float lightWorld[16]{};
-        if (haveView) Multiply(lightView, worldToView, lightWorld);
-        if (diagnosticLog) {
+        if (haveCasters && haveView) Multiply(lightView, worldToView, lightWorld);
+        if (diagnosticLog && haveCasters) {
             size_t vertexCount = 0, indexCount = 0, networkCount = 0;
             for (LiveShadowDraw const* caster : casters) {
                 vertexCount += caster->vertices.size();
@@ -1179,16 +1314,20 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 lightLow[0], lightLow[1], lightLow[2], lightHigh[0], lightHigh[1], lightHigh[2],
                 lightDepthRange, kShadowDepthBiasWorld / lightDepthRange);
         }
-        d3dContext->ClearDepthStencilView(pipeline.mapDepth.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-        d3dContext->OMSetRenderTargets(0, nullptr, pipeline.mapDepth.Get());
-        D3D11_VIEWPORT mapViewport{0, 0, static_cast<float>(kShadowMapSize), static_cast<float>(kShadowMapSize), 0, 1};
-        d3dContext->RSSetViewports(1, &mapViewport);
-        d3dContext->RSSetState(pipeline.rasterizer.Get());
-        d3dContext->OMSetDepthStencilState(pipeline.casterDepth.Get(), 0);
-        d3dContext->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-        d3dContext->IASetInputLayout(pipeline.inputLayout.Get());
-        d3dContext->VSSetShader(pipeline.casterVS.Get(), nullptr, 0);
-        d3dContext->PSSetShader(pipeline.casterPS.Get(), nullptr, 0);
+        if (haveCasters) {
+            d3dContext->ClearDepthStencilView(pipeline.mapDepth.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+            d3dContext->OMSetRenderTargets(0, nullptr, pipeline.mapDepth.Get());
+            D3D11_VIEWPORT mapViewport{
+                0, 0, static_cast<float>(kShadowMapSize), static_cast<float>(kShadowMapSize), 0, 1
+            };
+            d3dContext->RSSetViewports(1, &mapViewport);
+            d3dContext->RSSetState(pipeline.rasterizer.Get());
+            d3dContext->OMSetDepthStencilState(pipeline.casterDepth.Get(), 0);
+            d3dContext->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+            d3dContext->IASetInputLayout(pipeline.inputLayout.Get());
+            d3dContext->VSSetShader(pipeline.casterVS.Get(), nullptr, 0);
+            d3dContext->PSSetShader(pipeline.casterPS.Get(), nullptr, 0);
+        }
         auto ensureBuffer = [&](Microsoft::WRL::ComPtr<ID3D11Buffer>& buffer, uint32_t& capacity, UINT bytes,
                                 UINT bind) {
             if (buffer && capacity >= bytes) return S_OK;
@@ -1324,9 +1463,118 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         ID3D11ShaderResourceView* nullView = nullptr;
         d3dContext->PSSetShaderResources(0, 1, &nullView);
 
+        // The terrain's shadow ceiling only changes with the height field or the
+        // sun, so it is uploaded once per change rather than per pass.
+        bool terrainBound = false;
+        if (terrainShadows) {
+            TerrainShadowMap::Map const& map = *terrainMap;
+            if (pipeline.terrainMapGeneration != terrainGeneration) {
+                if (!pipeline.terrainMap || pipeline.terrainMapWidth != map.width ||
+                    pipeline.terrainMapHeight != map.height) {
+                    pipeline.terrainMap.Reset();
+                    pipeline.terrainMapView.Reset();
+                    D3D11_TEXTURE2D_DESC texture{};
+                    texture.Width = map.width;
+                    texture.Height = map.height;
+                    texture.MipLevels = 1;
+                    texture.ArraySize = 1;
+                    texture.Format = DXGI_FORMAT_R32_FLOAT;
+                    texture.SampleDesc.Count = 1;
+                    texture.Usage = D3D11_USAGE_DEFAULT;
+                    texture.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                    HRESULT created = d3dDevice->CreateTexture2D(&texture, nullptr, &pipeline.terrainMap);
+                    if (SUCCEEDED(created))
+                        created = d3dDevice->CreateShaderResourceView(pipeline.terrainMap.Get(), nullptr,
+                                                                      &pipeline.terrainMapView);
+                    if (FAILED(created)) {
+                        LogHRESULT(LogCategory::Resource, "terrain shadow map", created);
+                        pipeline.terrainMap.Reset();
+                        pipeline.terrainMapView.Reset();
+                    }
+                    pipeline.terrainMapWidth = pipeline.terrainMap ? map.width : 0;
+                    pipeline.terrainMapHeight = pipeline.terrainMap ? map.height : 0;
+                }
+                TerrainShadowMap::HeightField const& field = TerrainShadows::Terrain();
+                // Altitude, normal x and z (its y is up and recovered), and the
+                // flip of the cell this vertex is the lowest corner of.
+                std::vector<float> vertices(static_cast<size_t>(field.verticesX) * field.verticesZ * 4);
+                for (uint32_t z = 0; z < field.verticesZ; ++z) {
+                    for (uint32_t x = 0; x < field.verticesX; ++x) {
+                        size_t const index = static_cast<size_t>(z) * field.verticesX + x;
+                        float normal[3]{};
+                        TerrainShadowMap::VertexNormal(field, x, z, normal);
+                        vertices[index * 4 + 0] = field.altitudes[index];
+                        vertices[index * 4 + 1] = normal[0];
+                        vertices[index * 4 + 2] = normal[2];
+                        vertices[index * 4 + 3] = !field.flipped.empty() && field.flipped[index] != 0 ? 1.0f : 0.0f;
+                    }
+                }
+                if (!pipeline.terrainAltitude || pipeline.terrainAltitudeWidth != field.verticesX ||
+                    pipeline.terrainAltitudeHeight != field.verticesZ) {
+                    pipeline.terrainAltitude.Reset();
+                    pipeline.terrainAltitudeView.Reset();
+                    D3D11_TEXTURE2D_DESC texture{};
+                    texture.Width = field.verticesX;
+                    texture.Height = field.verticesZ;
+                    texture.MipLevels = 1;
+                    texture.ArraySize = 1;
+                    texture.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+                    texture.SampleDesc.Count = 1;
+                    texture.Usage = D3D11_USAGE_DEFAULT;
+                    texture.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                    HRESULT created = d3dDevice->CreateTexture2D(&texture, nullptr, &pipeline.terrainAltitude);
+                    if (SUCCEEDED(created))
+                        created = d3dDevice->CreateShaderResourceView(pipeline.terrainAltitude.Get(), nullptr,
+                                                                      &pipeline.terrainAltitudeView);
+                    if (FAILED(created)) {
+                        LogHRESULT(LogCategory::Resource, "terrain altitude map", created);
+                        pipeline.terrainAltitude.Reset();
+                        pipeline.terrainAltitudeView.Reset();
+                    }
+                    pipeline.terrainAltitudeWidth = pipeline.terrainAltitude ? field.verticesX : 0;
+                    pipeline.terrainAltitudeHeight = pipeline.terrainAltitude ? field.verticesZ : 0;
+                }
+                if (pipeline.terrainMap && pipeline.terrainAltitude) {
+                    d3dContext->UpdateSubresource(pipeline.terrainMap.Get(), 0, nullptr, map.ceiling.data(),
+                                                  map.width * sizeof(float), 0);
+                    d3dContext->UpdateSubresource(pipeline.terrainAltitude.Get(), 0, nullptr, vertices.data(),
+                                                  field.verticesX * sizeof(float) * 4, 0);
+                    pipeline.terrainMapGeneration = terrainGeneration;
+                }
+            }
+            terrainBound = pipeline.terrainMapView != nullptr && pipeline.terrainAltitudeView != nullptr &&
+                           pipeline.terrainMapGeneration == terrainGeneration;
+        }
+        if (!haveCasters && !terrainBound) {
+            liveShadowDraws.clear();
+            return;
+        }
+
         ShadowConstants composite{};
         std::memcpy(composite.lightMatrix, lightView, sizeof(lightView));
         composite.material[0] = kShadowDepthBiasWorld / lightDepthRange;
+        composite.terrainShade[3] = haveCasters ? 1.0f : 0.0f;
+        if (terrainBound) {
+            TerrainShadowMap::Map const& map = *terrainMap;
+            std::memcpy(composite.eyeToWorld, eyeToWorld, sizeof(eyeToWorld));
+            composite.terrainAxes[0] = map.along[0];
+            composite.terrainAxes[1] = map.along[1];
+            composite.terrainAxes[2] = map.across[0];
+            composite.terrainAxes[3] = map.across[1];
+            // Texel i's centre, at originAlong + i * spacing, samples at (i + 0.5) / width.
+            composite.terrainGrid[0] = 1.0f / (map.spacing * static_cast<float>(map.width));
+            composite.terrainGrid[1] = (0.5f - map.originAlong / map.spacing) / static_cast<float>(map.width);
+            composite.terrainGrid[2] = 1.0f / (map.spacing * static_cast<float>(map.height));
+            composite.terrainGrid[3] = (0.5f - map.originAcross / map.spacing) / static_cast<float>(map.height);
+            composite.terrainShade[0] = 1.0f;
+            composite.terrainShade[1] = kTerrainShadowBias;
+            composite.terrainShade[2] = 1.0f / kTerrainShadowSoftness;
+            TerrainShadowMap::HeightField const& field = TerrainShadows::Terrain();
+            composite.terrainCell[0] = field.cellWidth;
+            composite.terrainCell[1] = kTerrainPixelTolerance;
+            composite.terrainCell[2] = static_cast<float>(field.verticesX);
+            composite.terrainCell[3] = static_cast<float>(field.verticesZ);
+        }
         composite.projection0[0] = projection[0];
         composite.projection0[1] = projection[5];
         composite.projection0[2] = projection[10];
@@ -1339,7 +1587,15 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         composite.projection1[3] = liveShadowToneValid ? liveShadowStrength : kFallbackShadowOpacity;
         if (liveShadowToneValid) std::memcpy(composite.tone, liveShadowColour, sizeof(liveShadowColour));
         std::memcpy(composite.sun, shadowDirection, sizeof(shadowDirection));
-        composite.sun[3] = ShadeSunAwayFaces() ? 0.0f : 1.0f;
+        // N.L of flat ground: the sun's elevation. The camera estimate assumes
+        // SC4's 45 degrees.
+        float flatLight = 0.70710678f;
+        if (gameDirection) {
+            float sunWorld[3]{liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2]};
+            Normalize(sunWorld);
+            flatLight = (std::max)(-sunWorld[1], 0.05f);
+        }
+        composite.sun[3] = ShadeSunAwayFaces() ? 0.0f : 1.0f / flatLight;
         ID3D11RenderTargetView* target = renderTargetView.Get();
         d3dContext->OMSetRenderTargets(1, &target, nullptr);
         // The composite is a fullscreen triangle, so the viewport is what bounds
@@ -1370,13 +1626,18 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         d3dContext->PSSetShader(pipeline.compositePS.Get(), nullptr, 0);
         d3dContext->VSSetConstantBuffers(0, 1, &cb);
         d3dContext->PSSetConstantBuffers(0, 1, &cb);
-        ID3D11ShaderResourceView* views[2]{depthShaderView.Get(), pipeline.mapView.Get()};
-        d3dContext->PSSetShaderResources(0, 2, views);
-        ID3D11SamplerState* samplers[2]{pipeline.mapSampler.Get(), pipeline.mapSampler.Get()};
-        d3dContext->PSSetSamplers(0, 2, samplers);
+        ID3D11ShaderResourceView* views[4]{
+            depthShaderView.Get(), pipeline.mapView.Get(), terrainBound ? pipeline.terrainMapView.Get() : nullptr,
+            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr
+        };
+        d3dContext->PSSetShaderResources(0, 4, views);
+        ID3D11SamplerState* samplers[3]{
+            pipeline.mapSampler.Get(), pipeline.mapSampler.Get(), pipeline.clampSampler.Get()
+        };
+        d3dContext->PSSetSamplers(0, 3, samplers);
         d3dContext->Draw(3, 0);
-        views[0] = views[1] = nullptr;
-        d3dContext->PSSetShaderResources(0, 2, views);
+        views[0] = views[1] = views[2] = views[3] = nullptr;
+        d3dContext->PSSetShaderResources(0, 4, views);
         liveShadowDraws.clear();
         d3dContext->ClearState();
         InvalidateD3D11StateCache();
