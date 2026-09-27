@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 #include "SCD3D11Service.h"
+#include "ThumbnailFocusGuard.h"
 #include "VideoModeUtils.h"
 
 #include <cstring>
@@ -207,8 +208,9 @@ namespace nSCD3D11 {
 			SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(driver));
 		}
 		// windowHandle is only assigned once CreateWindowExA returns.
-		LogWindowMessage(window, driver != nullptr && (driver->windowHandle == window || driver->windowHandle == nullptr),
-		                 message, wParam, lParam);
+		bool const current = driver != nullptr && (driver->windowHandle == window || driver->windowHandle == nullptr);
+		LogWindowMessage(window, current, message, wParam, lParam);
+		if (current) ThumbnailFocusGuard::NoteWindowMessage(message, wParam);
 
 		WNDPROC procedure = driver == nullptr ? nullptr : reinterpret_cast<WNDPROC>(driver->windowProcedure);
 		if (procedure != nullptr) {

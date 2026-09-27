@@ -27,6 +27,7 @@
 #include "ParallelRenderCull.h"
 #include "SimTickBudget.h"
 #include "TerrainShadows.h"
+#include "ThumbnailFocusGuard.h"
 
 namespace nSCD3D11
 {
@@ -57,6 +58,7 @@ namespace nSCD3D11
 			NativeShadowDiagnostics::Uninstall();
 			ParallelRenderCull::Uninstall();
 			SimTickBudget::Uninstall();
+			ThumbnailFocusGuard::Uninstall();
 			return true;
 		}
 

@@ -12,6 +12,7 @@
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
 #include "SCD3D11Service.h"
+#include "ThumbnailFocusGuard.h"
 
 #include <cstring>
 #include <string>
@@ -356,6 +357,7 @@ namespace nSCD3D11 {
 		Log(LogCategory::Window, "%p driver window created (%d,%d %ldx%ld, style 0x%08lX)", window, windowX, windowY,
 		    windowRectangle.right - windowRectangle.left, windowRectangle.bottom - windowRectangle.top,
 		    static_cast<unsigned long>(style));
+		ThumbnailFocusGuard::Install(window);
 		lastPresentResult = S_OK;
 		lastFullscreenState = FALSE;
 		presentationPaused = false;

@@ -68,6 +68,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/SimTickBudget.cpp
         scd3d11/TerrainShadowMap.cpp
         scd3d11/TerrainShadows.cpp
+        scd3d11/ThumbnailFocusGuard.cpp
         scd3d11/cGDriver_Info.cpp
         scd3d11/cGDriver_Init.cpp
         scd3d11/cGDriver_State.cpp
