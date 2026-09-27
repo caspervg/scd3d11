@@ -54,6 +54,11 @@ namespace nSCD3D11 {
         // world boxes agree this closely; the view changes between passes, so
         // model-to-world is only reproduced up to rounding.
         constexpr float kSameCasterTolerance = 0.05f;
+        // Network models used as textured road surfaces sit just above the
+        // terrain. Their self-shadow only darkens the surface; an elevated deck
+        // must still cast. Check every vertex against the terrain so slopes do
+        // not make a ground-hugging piece look elevated.
+        constexpr float kGroundNetworkCasterClearance = 0.5f;
         // A receiver starts to darken this far below the terrain's shadow
         // ceiling and is fully shadowed this much further down: a few metres,
         // the sun's penumbra a few hundred metres from a ridge.
@@ -687,6 +692,21 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             }
         };
         for (LiveShadowDraw& draw : liveShadowDraws) placeInWorld(draw);
+        liveShadowDraws.erase(
+            std::remove_if(liveShadowDraws.begin(), liveShadowDraws.end(), [&](LiveShadowDraw const& draw) {
+                if (!draw.network) return false;
+                for (D3D11Vertex const& vertex : draw.vertices) {
+                    float world[3]{};
+                    TransformPoint(draw.modelToWorld, vertex.position, world);
+                    float terrain = 0.0f;
+                    // If the terrain is unavailable, preserve the caster.
+                    if (!TerrainShadows::Altitude(world[0], world[2], terrain) ||
+                        world[1] - terrain > kGroundNetworkCasterClearance)
+                        return false;
+                }
+                return true;
+            }),
+            liveShadowDraws.end());
         if (!partialPass) {
             for (LiveShadowDraw& draw : liveShadowDraws) placeShadow(draw);
             liveShadowWorldCasters = std::move(liveShadowDraws);
