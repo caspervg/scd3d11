@@ -1603,8 +1603,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         composite.projection1[1] = projection[14];
         composite.projection1[2] = 1.0f / kShadowMapSize;
         // SC4's shadow colour and strength (GetShadowParams), as DrawShadows
-        // blends them, once a pass has reported them.
-        composite.projection1[3] = liveShadowToneValid ? liveShadowStrength : kFallbackShadowOpacity;
+        // blends them, once a pass has reported them. Its fixed blue colour is
+        // a daylight shadow tint: fade the custom composite with the lighting
+        // manager's own day/night weight, even when no native overlay was drawn.
+        float daylight = 1.0f;
+        NativeShadowRegistry::ShadowDaylight(daylight);
+        composite.projection1[3] =
+            (liveShadowToneValid ? liveShadowStrength : kFallbackShadowOpacity) * daylight;
         if (liveShadowToneValid) std::memcpy(composite.tone, liveShadowColour, sizeof(liveShadowColour));
         std::memcpy(composite.sun, shadowDirection, sizeof(shadowDirection));
         // N.L of flat ground: the sun's elevation. The camera estimate assumes

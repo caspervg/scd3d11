@@ -105,6 +105,9 @@ namespace nSCD3D11::NativeShadowRegistry {
 		constexpr size_t kRendererLightingSlot = 0x24 / sizeof(void *);
 		// Lighting manager vtable 0x00ABB530 +0x34, GetShadowDirection 0x007D6B50.
 		constexpr size_t kLightingShadowDirectionSlot = 0x34 / sizeof(void *);
+		// SetTimeOfDay (0x007D9DF0) writes max((lighting red - 0.8) / 0.2, 0)
+		// here and sends it as the daylight transition parameter.
+		constexpr ptrdiff_t kLightingDaylight = 0xBC;
 		// GetShadowParams (0x007D6B70) only copies these globals out.
 		constexpr uintptr_t kShadowStrengthVA = 0x00B0DC78;
 		constexpr uintptr_t kShadowAlphaScaleVA = 0x00B4E330;
@@ -299,6 +302,22 @@ namespace nSCD3D11::NativeShadowRegistry {
 			}
 		}
 
+		bool SafeShadowDaylight(uintptr_t rendererPointer, float &daylight) {
+			__try {
+				void *const renderer = *reinterpret_cast<void **>(rendererPointer);
+				if (renderer == nullptr) return false;
+				using GetLighting = void *(__thiscall *)(void *);
+				void *const lighting =
+					reinterpret_cast<GetLighting>((*reinterpret_cast<void ***>(renderer))[kRendererLightingSlot])(
+						renderer);
+				if (lighting == nullptr) return false;
+				return SafeCopy(static_cast<uint8_t const *>(lighting) + kLightingDaylight,
+				                &daylight, sizeof(daylight));
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
 		struct TerrainGrid {
 			float cellWidth;
 			uint32_t cellsX;
@@ -341,6 +360,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 #else
 		bool SafeCopy(void const *, void *, size_t) { return false; }
 		bool SafeShadowDirection(uintptr_t, float *) { return false; }
+		bool SafeShadowDaylight(uintptr_t, float &) { return false; }
 		struct TerrainGrid {
 			float cellWidth;
 			uint32_t cellsX;
@@ -1101,6 +1121,20 @@ namespace nSCD3D11::NativeShadowRegistry {
 			return false;
 		std::memcpy(colour, tone, sizeof(tone));
 		strength = value;
+		return true;
+	}
+
+	bool ShadowDaylight(float &daylight) {
+		// The replacement hooks are optional, but the live per-draw caster path
+		// needs the same transition. Resolve the supported game's renderer here.
+		static bool const supported = IsSupportedGameVersion();
+		if (!supported) return false;
+		auto const *module = reinterpret_cast<uint8_t const *>(GetModuleHandleW(nullptr));
+		if (module == nullptr) return false;
+		float value = 0.0f;
+		if (!SafeShadowDaylight(reinterpret_cast<uintptr_t>(module + (kRendererPointerVA - kImageBase)), value) ||
+		    !std::isfinite(value)) return false;
+		daylight = (std::clamp)(value, 0.0f, 1.0f);
 		return true;
 	}
 

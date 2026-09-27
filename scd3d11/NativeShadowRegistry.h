@@ -118,6 +118,11 @@ namespace nSCD3D11::NativeShadowRegistry {
 	// GetShadowParams' colour and strength, read directly for the same reason.
 	bool ShadowParams(float colour[3], float &strength);
 
+	// The daylight blend computed by cSC4LightingManager::SetTimeOfDay from
+	// SC4's lighting curve. Available in all live-shadow modes, including when
+	// the registry's replacement hooks are not installed.
+	bool ShadowDaylight(float &daylight);
+
 	// Exposed for tests: SC4's SimGL primitive enumeration to a triangle list.
 	// Points and lines append nothing and return false.
 	bool AppendTriangles(uint32_t primitive, uint32_t const *indices, uint32_t count,
