@@ -34,6 +34,21 @@
 #include "ext/cIGZGSnapshotExtension.h"
 
 namespace nSCD3D11 {
+	// Append-only vertex and index buffers for shadow casters whose geometry
+	// does not change between passes: uploaded once, drawn from on every pass,
+	// emptied and possibly grown when full. Counts are in vertices and indices.
+	struct ShadowArena {
+		Microsoft::WRL::ComPtr<ID3D11Buffer> vertices;
+		Microsoft::WRL::ComPtr<ID3D11Buffer> indices;
+		uint32_t vertexCapacity = 0;
+		uint32_t indexCapacity = 0;
+		uint32_t vertexCursor = 0;
+		uint32_t indexCursor = 0;
+		// Unique per rebuild and never 0 once built, so a placement taken from
+		// an earlier arena - or before a device reset - is recognisably stale.
+		uint64_t generation = 0;
+	};
+
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
 	constexpr size_t MAX_TEXTURE_UNITS = 2;
 	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 8;
@@ -236,6 +251,11 @@ namespace nSCD3D11 {
 			float shadowHigh[3]{};
 			uint64_t shape = 0;
 			uint64_t seenPass = 0;
+			// Where this capture's geometry sits in the caster arena, valid
+			// while arenaGeneration matches the arena's.
+			uint64_t arenaGeneration = 0;
+			uint32_t arenaFirstVertex = 0;
+			uint32_t arenaFirstIndex = 0;
 		};
 		struct LiveShadowPipeline {
 			Microsoft::WRL::ComPtr<ID3D11VertexShader> casterVS;
@@ -243,8 +263,6 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11VertexShader> compositeVS;
 			Microsoft::WRL::ComPtr<ID3D11PixelShader> compositePS;
 			Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
-			Microsoft::WRL::ComPtr<ID3D11Buffer> vertices;
-			Microsoft::WRL::ComPtr<ID3D11Buffer> indices;
 			Microsoft::WRL::ComPtr<ID3D11Buffer> constants;
 			Microsoft::WRL::ComPtr<ID3D11Texture2D> map;
 			Microsoft::WRL::ComPtr<ID3D11DepthStencilView> mapDepth;
@@ -254,8 +272,9 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> compositeDepth;
 			Microsoft::WRL::ComPtr<ID3D11BlendState> shadowBlend;
 			Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
-			uint32_t vertexCapacity = 0;
-			uint32_t indexCapacity = 0;
+			// Per-draw casters persist across passes with
+			// -NativeShadowMasks:replace, so they are uploaded once too.
+			ShadowArena casterArena;
 			// NativeShadowRegistry casters: world positions only, alpha-tested
 			// through SC4's own projector and prerendered texture.
 			Microsoft::WRL::ComPtr<ID3D11VertexShader> registryVS;
@@ -267,11 +286,9 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
 			uint32_t registryVertexCapacity = 0;
 			uint32_t registryIndexCapacity = 0;
-			// Registry caster meshes never change, so each is uploaded once into
-			// an append-only arena and drawn from there on every pass. An entry
-			// keeps its caster alive, so the key cannot be reused while it exists;
-			// it is dropped once the registry lets go, and the arena is rebuilt
-			// when it fills up. Counts are in vertices and indices.
+			// Where each registry caster's mesh sits in registryArena. An entry
+			// keeps its caster alive, so the key cannot be reused while it
+			// exists; it is dropped once the registry lets go.
 			struct RegistryMesh {
 				std::shared_ptr<void const> owner;
 				uint32_t firstVertex = 0;
@@ -280,12 +297,7 @@ namespace nSCD3D11 {
 				uint32_t indexCount = 0;
 			};
 			std::unordered_map<void const *, RegistryMesh> registryMeshes;
-			Microsoft::WRL::ComPtr<ID3D11Buffer> registryMeshVertices;
-			Microsoft::WRL::ComPtr<ID3D11Buffer> registryMeshIndices;
-			uint32_t registryMeshVertexCapacity = 0;
-			uint32_t registryMeshIndexCapacity = 0;
-			uint32_t registryMeshVertexCursor = 0;
-			uint32_t registryMeshIndexCursor = 0;
+			ShadowArena registryArena;
 			// TerrainShadows' ceiling map, uploaded whenever its generation moves.
 			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainMap;
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainMapView;

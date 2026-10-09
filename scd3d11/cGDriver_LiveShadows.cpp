@@ -47,11 +47,12 @@ namespace nSCD3D11 {
         constexpr float kDefaultRegistryAlphaReference = 0.5f;
         // A registry vertex: world position, then UV (zero for projector casters).
         constexpr UINT kRegistryVertexFloats = 5;
-        // The registry mesh arena starts at this many vertices and indices
-        // (about 5 MB and 4 MB) and never grows past kRegistryArenaMaxBytes each.
-        constexpr uint32_t kRegistryArenaVertices = 1u << 18;
-        constexpr uint32_t kRegistryArenaIndices = 1u << 20;
-        constexpr uint64_t kRegistryArenaMaxBytes = 128ull << 20;
+        // The shadow arenas start at this many vertices and indices - about
+        // 5 MB and 4 MB for registry meshes, 11 MB and 4 MB for per-draw
+        // casters - and never grow past kArenaMaxBytes per buffer.
+        constexpr uint32_t kArenaVertices = 1u << 18;
+        constexpr uint32_t kArenaIndices = 1u << 20;
+        constexpr uint64_t kArenaMaxBytes = 128ull << 20;
         // How far below a per-draw caster its shadow is assumed to fall when the
         // terrain altitude under it is unknown; only sizes redisplay regions.
         constexpr float kUnknownGroundDrop = 32.0f;
@@ -498,6 +499,70 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 quad[index][1] = height;
                 quad[index][2] = corners[index][1];
             }
+            return true;
+        }
+
+        uint64_t gArenaGenerations = 0;
+
+        // Appends one mesh to the arena; false when it does not fit.
+        bool ArenaAppend(ID3D11DeviceContext* context, ShadowArena& arena, UINT stride, void const* vertices,
+                         uint32_t vertexCount, uint32_t const* indices, uint32_t indexCount, uint32_t& firstVertex,
+                         uint32_t& firstIndex) {
+            if (arena.generation == 0 ||
+                static_cast<uint64_t>(arena.vertexCursor) + vertexCount > arena.vertexCapacity ||
+                static_cast<uint64_t>(arena.indexCursor) + indexCount > arena.indexCapacity)
+                return false;
+            D3D11_BOX const vertexBox{arena.vertexCursor * stride, 0, 0, (arena.vertexCursor + vertexCount) * stride, 1, 1};
+            context->UpdateSubresource(arena.vertices.Get(), 0, &vertexBox, vertices, 0, 0);
+            UINT const indexStride = sizeof(uint32_t);
+            D3D11_BOX const indexBox{
+                arena.indexCursor * indexStride, 0, 0, (arena.indexCursor + indexCount) * indexStride, 1, 1
+            };
+            context->UpdateSubresource(arena.indices.Get(), 0, &indexBox, indices, 0, 0);
+            firstVertex = arena.vertexCursor;
+            firstIndex = arena.indexCursor;
+            arena.vertexCursor += vertexCount;
+            arena.indexCursor += indexCount;
+            return true;
+        }
+
+        // Empties the arena under a new generation, growing it to twice what
+        // the current pass needs so the casters that follow find room too.
+        bool ArenaRebuild(ID3D11Device* device, ShadowArena& arena, UINT stride, uint64_t needVertices,
+                          uint64_t needIndices) {
+            arena.vertexCursor = arena.indexCursor = 0;
+            arena.generation = ++gArenaGenerations;
+            uint64_t const vertices = (std::max)({
+                static_cast<uint64_t>(arena.vertexCapacity), needVertices * 2, static_cast<uint64_t>(kArenaVertices)
+            });
+            uint64_t const indices = (std::max)({
+                static_cast<uint64_t>(arena.indexCapacity), needIndices * 2, static_cast<uint64_t>(kArenaIndices)
+            });
+            if (vertices * stride > kArenaMaxBytes || indices * sizeof(uint32_t) > kArenaMaxBytes) {
+                arena.generation = 0;
+                return false;
+            }
+            if (arena.vertices && arena.indices && vertices == arena.vertexCapacity && indices == arena.indexCapacity)
+                return true;
+            arena.vertices.Reset();
+            arena.indices.Reset();
+            arena.vertexCapacity = arena.indexCapacity = 0;
+            D3D11_BUFFER_DESC desc{
+                static_cast<UINT>(vertices * stride), D3D11_USAGE_DEFAULT, D3D11_BIND_VERTEX_BUFFER, 0, 0, 0
+            };
+            HRESULT created = device->CreateBuffer(&desc, nullptr, &arena.vertices);
+            desc.ByteWidth = static_cast<UINT>(indices * sizeof(uint32_t));
+            desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+            if (SUCCEEDED(created)) created = device->CreateBuffer(&desc, nullptr, &arena.indices);
+            if (FAILED(created)) {
+                LogHRESULT(LogCategory::Resource, "shadow caster arena", created);
+                arena.vertices.Reset();
+                arena.indices.Reset();
+                arena.generation = 0;
+                return false;
+            }
+            arena.vertexCapacity = static_cast<uint32_t>(vertices);
+            arena.indexCapacity = static_cast<uint32_t>(indices);
             return true;
         }
 
@@ -1375,20 +1440,47 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             return d3dDevice->CreateBuffer(&desc, nullptr, &buffer);
         };
         ID3D11Buffer* cb = pipeline.constants.Get();
+        // Captures already in the arena are drawn from where they were put;
+        // only new ones are uploaded.
+        UINT const casterStride = sizeof(D3D11Vertex);
+        auto placeCasters = [&]() {
+            for (LiveShadowDraw* draw : casters) {
+                if (draw->arenaGeneration != 0 && draw->arenaGeneration == pipeline.casterArena.generation) continue;
+                if (!ArenaAppend(d3dContext.Get(), pipeline.casterArena, casterStride, draw->vertices.data(),
+                                 static_cast<uint32_t>(draw->vertices.size()), draw->indices.data(),
+                                 static_cast<uint32_t>(draw->indices.size()), draw->arenaFirstVertex,
+                                 draw->arenaFirstIndex))
+                    return false;
+                draw->arenaGeneration = pipeline.casterArena.generation;
+            }
+            return true;
+        };
+        bool castersReady = casters.empty() || placeCasters();
+        if (!castersReady) {
+            uint64_t needVertices = 0, needIndices = 0;
+            for (LiveShadowDraw const* draw : casters) {
+                needVertices += draw->vertices.size();
+                needIndices += draw->indices.size();
+            }
+            castersReady = ArenaRebuild(d3dDevice.Get(), pipeline.casterArena, casterStride, needVertices,
+                                        needIndices) && placeCasters();
+            if (!castersReady) {
+                static bool loggedArena = false;
+                if (!loggedArena) {
+                    loggedArena = true;
+                    Log(LogCategory::Resource, "live shadows: per-draw casters do not fit the caster arena");
+                }
+            }
+        }
+        if (castersReady && !casters.empty()) {
+            UINT offset = 0;
+            ID3D11Buffer* vb = pipeline.casterArena.vertices.Get();
+            d3dContext->IASetVertexBuffers(0, 1, &vb, &casterStride, &offset);
+            d3dContext->IASetIndexBuffer(pipeline.casterArena.indices.Get(), DXGI_FORMAT_R32_UINT, 0);
+        }
         for (LiveShadowDraw const* caster : casters) {
+            if (!castersReady) break;
             LiveShadowDraw const& draw = *caster;
-            UINT const vertexBytes = static_cast<UINT>(draw.vertices.size() * sizeof(D3D11Vertex)), indexBytes =
-                           static_cast<UINT>(draw.indices.size() * sizeof(uint32_t));
-            if (FAILED(ensureBuffer(pipeline.vertices,pipeline.vertexCapacity,vertexBytes,D3D11_BIND_VERTEX_BUFFER)) ||
-                FAILED(ensureBuffer(pipeline.indices,pipeline.indexCapacity,indexBytes,D3D11_BIND_INDEX_BUFFER)))
-                continue;
-            D3D11_MAPPED_SUBRESOURCE mapped{};
-            if (FAILED(d3dContext->Map(pipeline.vertices.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped))) continue;
-            std::memcpy(mapped.pData, draw.vertices.data(), vertexBytes);
-            d3dContext->Unmap(pipeline.vertices.Get(), 0);
-            if (FAILED(d3dContext->Map(pipeline.indices.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped))) continue;
-            std::memcpy(mapped.pData, draw.indices.data(), indexBytes);
-            d3dContext->Unmap(pipeline.indices.Get(), 0);
             ShadowConstants constants{};
             Multiply(lightView, draw.modelView, constants.lightMatrix);
             std::memcpy(constants.textureMatrix, draw.textureMatrix, sizeof(constants.textureMatrix));
@@ -1403,12 +1495,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             d3dContext->PSSetShaderResources(0, 1, &texture);
             ID3D11SamplerState* sampler = draw.sampler.Get();
             d3dContext->PSSetSamplers(0, 1, &sampler);
-            UINT stride = sizeof(D3D11Vertex), offset = 0;
-            ID3D11Buffer* vb = pipeline.vertices.Get();
-            d3dContext->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
-            d3dContext->IASetIndexBuffer(pipeline.indices.Get(), DXGI_FORMAT_R32_UINT, 0);
             d3dContext->IASetPrimitiveTopology(draw.topology);
-            d3dContext->DrawIndexed(static_cast<UINT>(draw.indices.size()), 0, 0);
+            d3dContext->DrawIndexed(static_cast<UINT>(draw.indices.size()), draw.arenaFirstIndex,
+                                    static_cast<INT>(draw.arenaFirstVertex));
         }
 
         // Registry casters: meshes from the persistent arena, ground quads from
@@ -1429,11 +1518,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                         NativeShadowRegistry::Caster const& caster = *owner;
                         uint32_t const vertexCount = static_cast<uint32_t>(caster.positions.size() / 3);
                         uint32_t const indexCount = static_cast<uint32_t>(caster.indices.size());
-                        if (static_cast<uint64_t>(pipeline.registryMeshVertexCursor) + vertexCount >
-                            pipeline.registryMeshVertexCapacity ||
-                            static_cast<uint64_t>(pipeline.registryMeshIndexCursor) + indexCount >
-                            pipeline.registryMeshIndexCapacity)
-                            return false;
+                        if (pipeline.registryArena.generation == 0) return false;
                         std::vector<float> packed(static_cast<size_t>(vertexCount) * kRegistryVertexFloats);
                         for (uint32_t vertex = 0; vertex < vertexCount; ++vertex) {
                             float* const out = packed.data() + static_cast<size_t>(vertex) * kRegistryVertexFloats;
@@ -1442,28 +1527,15 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                             out[3] = caster.meshUVs ? caster.uvs[vertex * 2] : 0.0f;
                             out[4] = caster.meshUVs ? caster.uvs[vertex * 2 + 1] : 0.0f;
                         }
-                        D3D11_BOX const vertexBox{
-                            pipeline.registryMeshVertexCursor * registryStride, 0, 0,
-                            (pipeline.registryMeshVertexCursor + vertexCount) * registryStride, 1, 1
-                        };
-                        d3dContext->UpdateSubresource(pipeline.registryMeshVertices.Get(), 0, &vertexBox,
-                                                      packed.data(), 0, 0);
-                        D3D11_BOX const indexBox{
-                            static_cast<UINT>(pipeline.registryMeshIndexCursor * sizeof(uint32_t)), 0, 0,
-                            static_cast<UINT>((pipeline.registryMeshIndexCursor + indexCount) * sizeof(uint32_t)), 1,
-                            1
-                        };
-                        d3dContext->UpdateSubresource(pipeline.registryMeshIndices.Get(), 0, &indexBox,
-                                                      caster.indices.data(), 0, 0);
                         LiveShadowPipeline::RegistryMesh mesh;
+                        if (!ArenaAppend(d3dContext.Get(), pipeline.registryArena, registryStride, packed.data(),
+                                         vertexCount, caster.indices.data(), indexCount, mesh.firstVertex,
+                                         mesh.firstIndex))
+                            return false;
                         mesh.owner = owner;
-                        mesh.firstVertex = pipeline.registryMeshVertexCursor;
-                        mesh.firstIndex = pipeline.registryMeshIndexCursor;
                         mesh.vertexCount = vertexCount;
                         mesh.indexCount = indexCount;
                         found = pipeline.registryMeshes.emplace(owner.get(), std::move(mesh)).first;
-                        pipeline.registryMeshVertexCursor += vertexCount;
-                        pipeline.registryMeshIndexCursor += indexCount;
                     }
                     draw.meshFirstVertex = static_cast<INT>(found->second.firstVertex);
                     draw.meshFirstIndex = found->second.firstIndex;
@@ -1471,8 +1543,6 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
                 return true;
             };
-            // Empties the arena, growing it to twice this pass's meshes if they
-            // would not leave as much room again for the casters that follow.
             auto rebuildArena = [&]() {
                 uint64_t needVertices = 0, needIndices = 0;
                 for (RegistryDraw const& draw : registryDraws) {
@@ -1481,41 +1551,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     needIndices += draw.caster->caster->indices.size();
                 }
                 pipeline.registryMeshes.clear();
-                pipeline.registryMeshVertexCursor = 0;
-                pipeline.registryMeshIndexCursor = 0;
-                uint64_t const vertices = (std::max)({
-                    static_cast<uint64_t>(pipeline.registryMeshVertexCapacity), needVertices * 2,
-                    static_cast<uint64_t>(kRegistryArenaVertices)
-                });
-                uint64_t const indices = (std::max)({
-                    static_cast<uint64_t>(pipeline.registryMeshIndexCapacity), needIndices * 2,
-                    static_cast<uint64_t>(kRegistryArenaIndices)
-                });
-                if (vertices * registryStride > kRegistryArenaMaxBytes ||
-                    indices * sizeof(uint32_t) > kRegistryArenaMaxBytes)
-                    return false;
-                if (pipeline.registryMeshVertices && pipeline.registryMeshIndices &&
-                    vertices == pipeline.registryMeshVertexCapacity && indices == pipeline.registryMeshIndexCapacity)
-                    return true;
-                pipeline.registryMeshVertices.Reset();
-                pipeline.registryMeshIndices.Reset();
-                pipeline.registryMeshVertexCapacity = pipeline.registryMeshIndexCapacity = 0;
-                D3D11_BUFFER_DESC desc{
-                    static_cast<UINT>(vertices * registryStride), D3D11_USAGE_DEFAULT, D3D11_BIND_VERTEX_BUFFER, 0, 0, 0
-                };
-                HRESULT created = d3dDevice->CreateBuffer(&desc, nullptr, &pipeline.registryMeshVertices);
-                desc.ByteWidth = static_cast<UINT>(indices * sizeof(uint32_t));
-                desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-                if (SUCCEEDED(created)) created = d3dDevice->CreateBuffer(&desc, nullptr, &pipeline.registryMeshIndices);
-                if (FAILED(created)) {
-                    LogHRESULT(LogCategory::Resource, "shadow registry mesh arena", created);
-                    pipeline.registryMeshVertices.Reset();
-                    pipeline.registryMeshIndices.Reset();
-                    return false;
-                }
-                pipeline.registryMeshVertexCapacity = static_cast<uint32_t>(vertices);
-                pipeline.registryMeshIndexCapacity = static_cast<uint32_t>(indices);
-                return true;
+                return ArenaRebuild(d3dDevice.Get(), pipeline.registryArena, registryStride, needVertices,
+                                    needIndices);
             };
             bool meshesReady = false;
             try {
@@ -1596,7 +1633,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                                       : pipeline.clampSampler.Get();
                     d3dContext->PSSetSamplers(0, 1, &sampler);
                     if (mesh) {
-                        bind(pipeline.registryMeshVertices.Get(), pipeline.registryMeshIndices.Get());
+                        bind(pipeline.registryArena.vertices.Get(), pipeline.registryArena.indices.Get());
                         d3dContext->DrawIndexed(draw.meshIndexCount, draw.meshFirstIndex, draw.meshFirstVertex);
                     }
                     if (quad) {
