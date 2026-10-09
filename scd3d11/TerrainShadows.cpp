@@ -29,8 +29,9 @@
 // pointer.
 //
 // SC4 has no terrain revision counter to watch (GetAltitudeCheckSum is a plain
-// sum), so every static pass reads the height field - under 70k floats for a
-// large city - and rebuilds the map only when it or the sun differs.
+// sum), so the height field - under 70k floats for a large city - is re-read
+// on a sun change or every few seconds, and the map rebuilt only when it or
+// the sun differs.
 //
 // SC4's own terrain self-shading: cSC4LightingManager keeps a shadow-height
 // grid (+0x198, ground heights at +0x18C) and ShadowDepth_ (0x007D6950) returns
@@ -77,6 +78,8 @@ namespace nSCD3D11::TerrainShadows {
 		constexpr size_t kMaxRedisplayRegions = 32;
 		// The sun is view-locked and only moves with a rotation.
 		constexpr float kSunTolerance = 1.0e-5f;
+		// How often an unchanged sun re-reads the height field to catch terraforming.
+		constexpr ULONGLONG kTerrainPollMilliseconds = 2000;
 		constexpr size_t kCellWidthSlot = 0x18 / sizeof(void *);
 		constexpr uint32_t kMaxCells = 4096;
 		constexpr ptrdiff_t kTerrainRecords = 0x6C;
@@ -103,6 +106,7 @@ namespace nSCD3D11::TerrainShadows {
 		void const *gTerrain = nullptr;
 		float gSun[3]{};
 		uint64_t gGeneration = 0;
+		ULONGLONG gLastRead = 0;
 		unsigned gBuilds = 0;
 		// -2 before the first lookup, -1 when RenderShadows cannot be read.
 		int32_t gRenderShadowsId = -2;
@@ -346,15 +350,25 @@ namespace nSCD3D11::TerrainShadows {
 
 	TerrainShadowMap::Map const *Update(float const sun[3], bool redisplayChanges, uint64_t &generation) {
 		cISTETerrain *const terrain = CityTerrain();
+		bool const sameSun = gMapValid && std::fabs(sun[0] - gSun[0]) <= kSunTolerance &&
+		                     std::fabs(sun[1] - gSun[1]) <= kSunTolerance &&
+		                     std::fabs(sun[2] - gSun[2]) <= kSunTolerance;
+		// Reading and comparing the height field is the expensive part, so an
+		// unchanged sun over the same terrain re-reads it at most every
+		// kTerrainPollMilliseconds. A terraform shows up on the first pass after
+		// that, and its changed regions are redisplayed like any other change.
+		ULONGLONG const now = GetTickCount64();
+		if (sameSun && terrain != nullptr && terrain == gTerrain && now - gLastRead < kTerrainPollMilliseconds) {
+			generation = gGeneration;
+			return &gMap;
+		}
+		gLastRead = now;
 		if (terrain == nullptr || !ReadHeightField(terrain, gScratch)) {
 			gMapValid = false;
 			gTerrain = nullptr;
 			return nullptr;
 		}
 		bool const sameTerrain = gMapValid && terrain == gTerrain && SameField(gScratch, gField);
-		bool const sameSun = gMapValid && std::fabs(sun[0] - gSun[0]) <= kSunTolerance &&
-		                     std::fabs(sun[1] - gSun[1]) <= kSunTolerance &&
-		                     std::fabs(sun[2] - gSun[2]) <= kSunTolerance;
 		if (sameTerrain && sameSun) {
 			generation = gGeneration;
 			return &gMap;
