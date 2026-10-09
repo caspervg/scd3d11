@@ -1524,8 +1524,14 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 TerrainShadowMap::HeightField const& field = TerrainShadows::Terrain();
                 // Altitude, normal x and z (its y is up and recovered), and the
                 // flip of the cell this vertex is the lowest corner of.
-                std::vector<float> vertices(static_cast<size_t>(field.verticesX) * field.verticesZ * 4);
-                for (uint32_t z = 0; z < field.verticesZ; ++z) {
+                // Runs inside a game hook: an exception must not unwind into SC4.
+                std::vector<float> vertices;
+                try {
+                    vertices.resize(static_cast<size_t>(field.verticesX) * field.verticesZ * 4);
+                } catch (std::bad_alloc const&) {
+                    vertices.clear();
+                }
+                for (uint32_t z = 0; !vertices.empty() && z < field.verticesZ; ++z) {
                     for (uint32_t x = 0; x < field.verticesX; ++x) {
                         size_t const index = static_cast<size_t>(z) * field.verticesX + x;
                         float normal[3]{};
@@ -1561,7 +1567,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     pipeline.terrainAltitudeWidth = pipeline.terrainAltitude ? field.verticesX : 0;
                     pipeline.terrainAltitudeHeight = pipeline.terrainAltitude ? field.verticesZ : 0;
                 }
-                if (pipeline.terrainMap && pipeline.terrainAltitude) {
+                if (pipeline.terrainMap && pipeline.terrainAltitude && !vertices.empty()) {
                     d3dContext->UpdateSubresource(pipeline.terrainMap.Get(), 0, nullptr, map.ceiling.data(),
                                                   map.width * sizeof(float), 0);
                     d3dContext->UpdateSubresource(pipeline.terrainAltitude.Get(), 0, nullptr, vertices.data(),
