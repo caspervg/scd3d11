@@ -228,9 +228,21 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			gDepthBound = true;
 		}
 
+		// The hooks install whether or not ReShade is loaded, so they must not
+		// read SC4 addresses in a host whose image does not reach them.
+		bool InImage(void const *module, uintptr_t virtualAddress, size_t size) {
+			auto const *const dos = static_cast<IMAGE_DOS_HEADER const *>(module);
+			auto const *const nt = reinterpret_cast<IMAGE_NT_HEADERS const *>(
+				static_cast<uint8_t const *>(module) + dos->e_lfanew);
+			return virtualAddress >= kImageBase &&
+			       virtualAddress - kImageBase + size <= nt->OptionalHeader.SizeOfImage;
+		}
+
 		bool PatchDrawSlot(void *replacement, void *expected) {
+			void *const module = GetModuleHandleW(nullptr);
+			if (!InImage(module, kDrawSlotVA, sizeof(void *))) return false;
 			auto *const slot = reinterpret_cast<void **>(
-				reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawSlotVA - kImageBase));
+				reinterpret_cast<uintptr_t>(module) + (kDrawSlotVA - kImageBase));
 			DWORD protection = 0;
 			if (*slot != expected || !VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return false;
 			*slot = replacement;
@@ -242,6 +254,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 #if defined(_MSC_VER) && defined(_M_IX86)
 			auto *const target = static_cast<uint8_t *>(module) + (kDrawPostStaticViewVA - kImageBase);
 			uint8_t const expected[]{0x56, 0x57, 0x8B, 0xF9, 0x8B, 0x87, 0x1C, 0x01, 0x00, 0x00};
+			if (!InImage(module, kDrawPostStaticViewVA, sizeof(expected))) return false;
 			if (std::memcmp(target, expected, sizeof(expected)) != 0) return false;
 			uint8_t replacement[sizeof(expected)]{};
 			std::memset(replacement, 0x90, sizeof(replacement));
