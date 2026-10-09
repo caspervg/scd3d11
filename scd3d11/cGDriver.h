@@ -19,6 +19,7 @@
 #pragma once
 #include <d3d11.h>
 #include <dxgi.h>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -266,6 +267,25 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
 			uint32_t registryVertexCapacity = 0;
 			uint32_t registryIndexCapacity = 0;
+			// Registry caster meshes never change, so each is uploaded once into
+			// an append-only arena and drawn from there on every pass. An entry
+			// keeps its caster alive, so the key cannot be reused while it exists;
+			// it is dropped once the registry lets go, and the arena is rebuilt
+			// when it fills up. Counts are in vertices and indices.
+			struct RegistryMesh {
+				std::shared_ptr<void const> owner;
+				uint32_t firstVertex = 0;
+				uint32_t firstIndex = 0;
+				uint32_t vertexCount = 0;
+				uint32_t indexCount = 0;
+			};
+			std::unordered_map<void const *, RegistryMesh> registryMeshes;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> registryMeshVertices;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> registryMeshIndices;
+			uint32_t registryMeshVertexCapacity = 0;
+			uint32_t registryMeshIndexCapacity = 0;
+			uint32_t registryMeshVertexCursor = 0;
+			uint32_t registryMeshIndexCursor = 0;
 			// TerrainShadows' ceiling map, uploaded whenever its generation moves.
 			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainMap;
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainMapView;
