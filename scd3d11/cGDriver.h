@@ -297,6 +297,7 @@ namespace nSCD3D11 {
 		bool liveShadowTerrainViewValid = false;
 		bool liveShadowTerrainViewTrusted = false;
 		bool liveShadowTerrainViewRejected = false;
+		unsigned liveShadowTerrainViewMismatches = 0;
 		// The world-space sun of the last pass that reported it. It only changes
 		// with the camera's rotation, which rebuilds the view anyway.
 		float liveShadowSunWorld[3]{};

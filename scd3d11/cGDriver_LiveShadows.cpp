@@ -67,6 +67,9 @@ namespace nSCD3D11 {
         // A terrain draw's vertex lies this close to the height field when its
         // model space is world space.
         constexpr float kTerrainVertexTolerance = 0.05f;
+        // Consecutive passes whose terrain model-view differs from the
+        // DrawShadows view before it is no longer used as the view.
+        constexpr unsigned kTerrainViewMismatchLimit = 3;
         // A pixel this close to the drawn terrain surface is terrain.
         constexpr float kTerrainPixelTolerance = 1.0f;
 
@@ -855,10 +858,14 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 for (unsigned index = 0; index < 16; ++index)
                     worst = (std::max)(worst, std::fabs(worldToView[index] - liveShadowTerrainView[index]) /
                                               (1.0f + std::fabs(worldToView[index])));
+                // One odd pass (a thumbnail render, a stale capture) must not
+                // reject it for the session: only consecutive mismatches do.
                 liveShadowTerrainViewTrusted = worst < 1.0e-3f;
-                liveShadowTerrainViewRejected = !liveShadowTerrainViewTrusted;
-                Log(LogCategory::Initialization, "live shadows: terrain model-view %s the DrawShadows view (%.3g)",
-                    liveShadowTerrainViewTrusted ? "matches" : "differs from", worst);
+                liveShadowTerrainViewMismatches = liveShadowTerrainViewTrusted ? 0 : liveShadowTerrainViewMismatches + 1;
+                liveShadowTerrainViewRejected = liveShadowTerrainViewMismatches >= kTerrainViewMismatchLimit;
+                if (liveShadowTerrainViewTrusted || liveShadowTerrainViewRejected)
+                    Log(LogCategory::Initialization, "live shadows: terrain model-view %s the DrawShadows view (%.3g)",
+                        liveShadowTerrainViewTrusted ? "matches" : "differs from", worst);
             } else if (!haveView) {
                 // Before any DrawShadows call - a city without shadow records -
                 // the terrain's own vertex vouches for it: lying on the height
