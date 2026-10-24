@@ -790,13 +790,43 @@ float4 PSMain(PSInput input) : SV_TARGET
 		interleavedFormat = format;
 		RecordEncountered(ObservedCategory::VertexFormat, format);
 		interleavedStride = stride == 0 ? packedStride : static_cast<uint32_t>(stride);
+		interleavedPositionOffset = RZVertexFormatElementOffset(format, kGDElementType_Vertices, 0);
 		interleavedPointer = static_cast<uint8_t const *>(pointer);
 	}
 
-	void cGDriver::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
-		if (first < 0 || count <= 0 || !UploadVertices(static_cast<uint32_t>(first), static_cast<uint32_t>(count))) {
-			return;
+	bool cGDriver::DrawOutsideViewport(
+		uint32_t primitive, uint8_t const *positions, uint32_t stride, uint32_t count) {
+		// Triangle lists, strips, fans, quads and quad strips; lines and points are left alone.
+		if (primitive == 3 || primitive == 4 || primitive == 5 || primitive > 7) return false;
+		if (clipRowsDirty) {
+			MakeClipRows(matrices[PROJECTION], matrices[MODEL_VIEW], clipRows);
+			clipRowsDirty = false;
 		}
+		if (!AllVerticesOutside(clipRows, viewportCullBounds, positions, stride, count)) return false;
+		++frameStats.culledDraws;
+		return true;
+	}
+
+	bool cGDriver::InterleavedDrawOutsideViewport(uint32_t primitive, uint32_t first, uint32_t count) {
+		// The same span check UploadVertices makes before anything reads the source.
+		if (interleavedPointer == nullptr || interleavedStride == 0 || count == 0 ||
+		    !SourceSpanFits(interleavedPointer, static_cast<uint64_t>(first) + count, interleavedStride,
+		                    RZVertexFormatStride(interleavedFormat))) {
+			return false;
+		}
+		return DrawOutsideViewport(
+			primitive, interleavedPointer + static_cast<size_t>(first) * interleavedStride + interleavedPositionOffset,
+			interleavedStride, count);
+	}
+
+	void cGDriver::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
+		++frameStats.draws;
+		if (first < 0 || count <= 0) return;
+		// A culled draw skips the upload and the draw, but live shadows still see it below.
+		bool const culled = viewportCullActive &&
+		                    InterleavedDrawOutsideViewport(primitive, static_cast<uint32_t>(first),
+		                                                   static_cast<uint32_t>(count));
+		if (!culled && !UploadVertices(static_cast<uint32_t>(first), static_cast<uint32_t>(count))) return;
 
 		uint32_t const firstVertex = static_cast<uint32_t>(first);
 		uint32_t const vertexCount = static_cast<uint32_t>(count);
@@ -821,7 +851,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				} catch (std::bad_alloc const &) {
 				}
 			}
-			if (BindGeometryPipeline(primitive)) {
+			if (!culled && BindGeometryPipeline(primitive)) {
 				d3dContext->Draw(static_cast<UINT>(count), 0);
 			}
 			return;
@@ -847,6 +877,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			} catch (std::bad_alloc const &) {
 			}
 		}
+		if (culled) return;
 		if (!built || !UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
 			Log(LogCategory::Unsupported, "unsupported array primitive %u with %d vertices", primitive, count);
 			return;
@@ -857,6 +888,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
+		++frameStats.draws;
 		if (count == 0) return;
 		if (count < 0 || indices == nullptr || (type != 3 && type != 5)) {
 			Log(LogCategory::Unsupported, "invalid indexed draw type %u count %d pointer %p", type, count, indices);
@@ -887,10 +919,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 			Log(LogCategory::Resource, "out of memory converting %d indices", count);
 			return;
 		}
-		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX ||
-		    !UploadVertices(minimumIndex, maximumIndex - minimumIndex + 1)) {
-			return;
-		}
+		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX) return;
+		// Testing the whole index range rather than the referenced vertices only can keep a draw, never
+		// drop one that should be kept, and reads the vertices in order.
+		bool const culled = viewportCullActive &&
+		                    InterleavedDrawOutsideViewport(primitive, minimumIndex, maximumIndex - minimumIndex + 1);
+		if (!culled && !UploadVertices(minimumIndex, maximumIndex - minimumIndex + 1)) return;
 		INT const baseVertex = -static_cast<INT>(minimumIndex);
 		if (MatchesLiveShadowMesh(minimumIndex, maximumIndex - minimumIndex + 1)) {
 			if (NativeShadowMasks::LiveNetworkDrawActive()) {
@@ -918,6 +952,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			} catch (std::bad_alloc const &) {
 			}
 		}
+		if (culled) return;
 
 		if (!convertPrimitive) {
 			DXGI_FORMAT const indexFormat = type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;

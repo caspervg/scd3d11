@@ -88,9 +88,14 @@ namespace nSCD3D11 {
 	                       appliedSamplers{},
 	                       interleavedFormat(UINT_MAX),
 	                       interleavedStride(0),
+	                       interleavedPositionOffset(0),
 	                       interleavedPointer(nullptr),
 	                       activeMatrixMode(0),
 	                       matrices{},
+	                       viewportCullActive(false),
+	                       clipRowsDirty(true),
+	                       clipRows{},
+	                       viewportCullBounds{},
 	                       normalMatrix{},
 	                       normalMatrixDirty(true),
 	                       constantsDirty(true),
@@ -200,6 +205,8 @@ namespace nSCD3D11 {
 		}
 
 		if (ClearsColor(mask) && renderTargetView) {
+			++frameStats.colorClears;
+			if (!viewportCullActive) ++frameStats.fullClears;
 			d3dContext->ClearRenderTargetView(renderTargetView.Get(), clearColor);
 			reshadeEffectsInBackBuffer = false;
 		}
@@ -378,12 +385,14 @@ namespace nSCD3D11 {
 		if (m != nullptr) {
 			memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
 			if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
+			clipRowsDirty = true;
 		}
 	}
 
 	void cGDriver::LoadIdentity(void) {
 		constantsDirty = true;
 		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
+		clipRowsDirty = true;
 		memset(matrices[activeMatrixMode], 0, sizeof(matrices[activeMatrixMode]));
 		matrices[activeMatrixMode][0] = matrices[activeMatrixMode][5] =
 		                                matrices[activeMatrixMode][10] = matrices[activeMatrixMode][15] = 1.0f;

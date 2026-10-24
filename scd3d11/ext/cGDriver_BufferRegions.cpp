@@ -123,6 +123,12 @@ namespace nSCD3D11 {
 			return false;
 		}
 
+		++frameStats.regionReads;
+		if (sourceX != destinationX || sourceY != destinationY) {
+			++frameStats.offsetCopies;
+			frameStats.offsetX = destinationX - sourceX;
+			frameStats.offsetY = destinationY - sourceY;
+		}
 		uint32_t const index = region - 1;
 		ID3D11Resource *source = nullptr;
 		if (bufferRegions[index].type == 0) {
@@ -171,6 +177,12 @@ namespace nSCD3D11 {
 			return false;
 		}
 
+		++frameStats.regionDraws;
+		if (sourceX != destinationX || sourceY != destinationY) {
+			++frameStats.offsetCopies;
+			frameStats.offsetX = destinationX - sourceX;
+			frameStats.offsetY = destinationY - sourceY;
+		}
 		uint32_t const index = region - 1;
 		ID3D11Resource *destination = nullptr;
 		if (bufferRegions[index].type == 0) {

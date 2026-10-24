@@ -80,6 +80,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/TextureUploadUtils.cpp
         scd3d11/VideoModeUtils.cpp
         scd3d11/VertexFormatUtils.cpp
+        scd3d11/ViewportCull.cpp
         scd3d11/ext/cGDriver_BufferRegions.cpp
         scd3d11/ext/cGDriver_Lighting.cpp
         scd3d11/ext/cGDriver_Snapshot.cpp
@@ -166,6 +167,10 @@ if (BUILD_TESTING)
     scd3d11_add_test(VideoModeUtilsTest
             tests/VideoModeUtilsTest.cpp
             scd3d11/VideoModeUtils.cpp)
+
+    scd3d11_add_test(ViewportCullTest
+            tests/ViewportCullTest.cpp
+            scd3d11/ViewportCull.cpp)
 
     scd3d11_add_test(TextureUploadUtilsTest
             tests/TextureUploadUtilsTest.cpp

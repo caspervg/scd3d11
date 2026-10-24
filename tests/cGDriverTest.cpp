@@ -75,6 +75,56 @@ namespace nSCD3D11 {
 			assert(Pixel(1, 1) == 0xff0000ff);
 		}
 
+		// Draws beyond one edge of a small scissored viewport are dropped; everything else still draws.
+		void ViewportCullsOutsideDraws() {
+			for (uint32_t mode: {0u, 1u}) {
+				d.MatrixMode(mode);
+				d.LoadIdentity();
+			}
+			d.MatrixMode(0);
+			d.SetTexture(0, 0);
+			d.ClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+			d.Clear(0x4000);
+			d.frameStats = {};
+			ColorVertex const outside[4]{
+				{{1.5f, -0.5f, 0.0f}, {0, 0, 255, 255}}, {{3.0f, -0.5f, 0.0f}, {0, 0, 255, 255}},
+				{{2.0f, 0.5f, 0.0f}, {0, 0, 255, 255}}, {{1.5f, 0.5f, 0.0f}, {0, 0, 255, 255}},
+			};
+			uint16_t const indices[]{0, 1, 2};
+
+			// Over 90 % of the window: not tested at all.
+			d.SetViewport(0, 0, d.windowWidth, d.windowHeight - 1);
+			assert(!d.viewportCullActive);
+			d.SetViewport(0, 0, d.windowWidth / 4, d.windowHeight / 4);
+			assert(d.viewportCullActive);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, outside);
+			d.DrawArrays(0, 0, 3);
+			d.DrawElements(0, 3, 3, indices);
+			// Quads are converted to triangles and culled the same way.
+			d.DrawArrays(6, 0, 4);
+			assert(d.frameStats.culledDraws == 3);
+			// Points and lines are never culled.
+			d.DrawArrays(3, 0, 3);
+			d.DrawArrays(4, 0, 2);
+			assert(d.frameStats.culledDraws == 3);
+			// A matrix change moves the same vertices into the viewport.
+			float translate[16]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -2.0f, 0, 0, 1};
+			d.LoadMatrix(translate);
+			d.DrawArrays(0, 0, 3);
+			assert(d.frameStats.culledDraws == 3);
+			d.LoadIdentity();
+			DrawFullscreen(255, 0, 0);
+			assert(d.frameStats.culledDraws == 3);
+			assert(Pixel(1, d.windowHeight - 2) == 0xff0000ff);
+
+			d.SetViewport();
+			assert(!d.viewportCullActive);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, outside);
+			d.DrawArrays(0, 0, 3);
+			assert(d.frameStats.culledDraws == 3 && d.frameStats.draws == 8);
+			d.frameStats = {};
+		}
+
 		std::vector<uint8_t> ReadBuffer(ID3D11Buffer *buffer, uint32_t offset, uint32_t size) {
 			D3D11_BUFFER_DESC description{};
 			buffer->GetDesc(&description);
@@ -811,6 +861,7 @@ namespace nSCD3D11 {
 
 		int Run() {
 			DrawsGeometry();
+			ViewportCullsOutsideDraws();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();
 			OversizedInputsFailBeforeReading();

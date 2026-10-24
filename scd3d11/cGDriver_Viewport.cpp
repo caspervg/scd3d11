@@ -524,6 +524,7 @@ namespace nSCD3D11 {
 		// Every Flush counts as a frame for the watchdog, even one that skips Present.
 		NoteRenderFrame();
 		FlushFrame();
+		ReportFrameStats();
 		NoteRenderFrame();
 		NoteRenderPhase("game (between Flush calls)");
 	}
@@ -613,6 +614,7 @@ namespace nSCD3D11 {
 		viewportX = viewportY = 0;
 		viewportWidth = windowWidth;
 		viewportHeight = windowHeight;
+		UpdateViewportCull();
 		if (d3dContext) {
 			D3D11_VIEWPORT viewport{
 				0.0f, 0.0f,
@@ -636,6 +638,13 @@ namespace nSCD3D11 {
 		viewportY = y;
 		viewportWidth = width;
 		viewportHeight = height;
+		UpdateViewportCull();
+		++frameStats.viewports;
+		frameStats.viewport[0] = x;
+		frameStats.viewport[1] = y;
+		frameStats.viewport[2] = width;
+		frameStats.viewport[3] = height;
+		frameStats.viewportPixels += static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
 
 		if (d3dContext) {
 			int32_t const top = D3D11TopLeftY(windowHeight, y, height);
@@ -650,6 +659,101 @@ namespace nSCD3D11 {
 			D3D11_RECT const scissor{x, top, x + width, top + height};
 			d3dContext->RSSetScissorRects(1, &scissor);
 		}
+	}
+
+	void cGDriver::UpdateViewportCull(void) {
+		static bool const disabled = std::strstr(GetCommandLineA(), "-ViewportCull:off") != nullptr;
+		// The scissor rectangle is always the viewport itself, so the viewport is all that can be rasterized.
+		uint64_t const area = static_cast<uint64_t>(viewportWidth) * static_cast<uint64_t>(viewportHeight);
+		uint64_t const window = static_cast<uint64_t>(windowWidth) * static_cast<uint64_t>(windowHeight);
+		viewportCullActive = !disabled && scissorEnabled && windowWidth > 0 && windowHeight > 0 &&
+		                     area * 10 < window * 9 &&
+		                     MakeClipBounds(viewportX, viewportY, viewportWidth, viewportHeight,
+		                                    viewportX, viewportY, viewportWidth, viewportHeight, 1.0f,
+		                                    viewportCullBounds);
+	}
+
+	void cGDriver::ReportFrameStats(void) {
+		static bool const enabled = std::strstr(GetCommandLineA(), "-DrawStats") != nullptr;
+		if (!enabled) {
+			frameStats = FrameStats{};
+			return;
+		}
+		static LARGE_INTEGER const frequency = [] {
+			LARGE_INTEGER value{};
+			QueryPerformanceFrequency(&value);
+			return value;
+		}();
+		struct Summary {
+			LARGE_INTEGER start{};
+			uint32_t frames = 0;
+			uint32_t slowFrames = 0;
+			uint32_t scrollFrames = 0;
+			uint32_t fullFrames = 0;
+			double totalMilliseconds = 0.0;
+			double maxMilliseconds = 0.0;
+			uint64_t draws = 0;
+			uint64_t culledDraws = 0;
+			uint64_t scrollDraws = 0;
+			uint64_t scrollCulled = 0;
+			uint64_t textureCreates = 0;
+			uint64_t textureDeletes = 0;
+		};
+		static Summary summary;
+
+		LARGE_INTEGER now{};
+		QueryPerformanceCounter(&now);
+		double const milliseconds = lastFrameTime.QuadPart == 0 || frequency.QuadPart == 0
+			                            ? 0.0
+			                            : static_cast<double>(now.QuadPart - lastFrameTime.QuadPart) * 1000.0 /
+			                              static_cast<double>(frequency.QuadPart);
+		lastFrameTime = now;
+		FrameStats const &frame = frameStats;
+		// A scroll shifts the backing store with an offset region copy and redraws the exposed strip; a full
+		// redraw clears the whole view first.
+		bool const scroll = frame.offsetCopies != 0;
+		bool const full = !scroll && frame.fullClears != 0;
+		if (milliseconds > 100.0) {
+			Log(LogCategory::Stats,
+			    "slow frame %.1f ms (%s): draws %u, culled %u, clears %u (full %u), region reads %u draws %u, "
+			    "offset copies %u (last %+d,%+d), viewports %u (last %d,%d %dx%d, %llu px total), textures +%u -%u",
+			    milliseconds, scroll ? "scroll" : full ? "full redraw" : "other", frame.draws, frame.culledDraws,
+			    frame.colorClears, frame.fullClears, frame.regionReads, frame.regionDraws, frame.offsetCopies,
+			    frame.offsetX, frame.offsetY, frame.viewports, frame.viewport[0], frame.viewport[1],
+			    frame.viewport[2], frame.viewport[3], static_cast<unsigned long long>(frame.viewportPixels),
+			    frame.textureCreates, frame.textureDeletes);
+		}
+
+		if (summary.start.QuadPart == 0) summary.start = now;
+		++summary.frames;
+		if (milliseconds > 100.0) ++summary.slowFrames;
+		if (scroll) {
+			++summary.scrollFrames;
+			summary.scrollDraws += frame.draws;
+			summary.scrollCulled += frame.culledDraws;
+		}
+		if (full) ++summary.fullFrames;
+		summary.totalMilliseconds += milliseconds;
+		if (milliseconds > summary.maxMilliseconds) summary.maxMilliseconds = milliseconds;
+		summary.draws += frame.draws;
+		summary.culledDraws += frame.culledDraws;
+		summary.textureCreates += frame.textureCreates;
+		summary.textureDeletes += frame.textureDeletes;
+		if (now.QuadPart - summary.start.QuadPart >= frequency.QuadPart) {
+			Log(LogCategory::Stats,
+			    "%u frames, avg %.1f ms, max %.1f ms, %u over 100 ms; draws %llu, culled %llu; "
+			    "%u scroll frames (avg %llu draws, %llu culled), %u full redraws; textures +%llu -%llu",
+			    summary.frames, summary.totalMilliseconds / summary.frames, summary.maxMilliseconds,
+			    summary.slowFrames, static_cast<unsigned long long>(summary.draws),
+			    static_cast<unsigned long long>(summary.culledDraws), summary.scrollFrames,
+			    static_cast<unsigned long long>(summary.scrollFrames ? summary.scrollDraws / summary.scrollFrames : 0),
+			    static_cast<unsigned long long>(summary.scrollFrames ? summary.scrollCulled / summary.scrollFrames : 0),
+			    summary.fullFrames, static_cast<unsigned long long>(summary.textureCreates),
+			    static_cast<unsigned long long>(summary.textureDeletes));
+			summary = Summary{};
+			summary.start = now;
+		}
+		frameStats = FrameStats{};
 	}
 
 	void cGDriver::GetViewport(int32_t dimensions[4]) {

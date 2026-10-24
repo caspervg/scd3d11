@@ -83,6 +83,7 @@ namespace nSCD3D11 {
             return result;
         }
 
+        ++frameStats.textureCreates;
         resource.texture = texture;
         resource.view = view;
         resource.format = format;
@@ -177,7 +178,7 @@ namespace nSCD3D11 {
         }
         for (int32_t i = 0; i < count; ++i) {
             for (uint32_t &bound: boundTextures) if (bound == textureIds[i]) bound = 0;
-            textures.erase(textureIds[i]);
+            frameStats.textureDeletes += static_cast<uint32_t>(textures.erase(textureIds[i]));
         }
     }
 

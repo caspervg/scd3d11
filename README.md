@@ -30,6 +30,8 @@ Added by SCD3D11:
 | `-VSync:off` | vsync on | Present without waiting for vsync |
 | `-FlipModel:off` | flip model | Windowed and borderless: present with the legacy DISCARD swap chain instead of the flip model |
 | `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
+| `-ViewportCull:off` | cull on | Submit every draw of a scroll redraw instead of dropping those that lie entirely outside its small scissored viewport |
+| `-DrawStats` | off | Log a per-second summary of frame times, draws, culled draws, scroll and full redraws and texture churn, plus a line for each frame over 100 ms (`stats` category) |
 | `-GridDebug` | off | Log the texture state of the terrain grid pass once per second (`grid` category) |
 | `-LogLevel:trace` | off | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
 | `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |

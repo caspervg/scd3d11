@@ -28,6 +28,7 @@
 #include "cIGZGDriver.h"
 #include "D3D11Conversions.h"
 #include "sGDMode.h"
+#include "ViewportCull.h"
 #include "ext/cIGZGBufferRegionExtension.h"
 #include "ext/cIGZGDriverLightingExtension.h"
 #include "ext/cIGZGDriverVertexBufferExtension.h"
@@ -409,9 +410,36 @@ namespace nSCD3D11 {
 		ID3D11SamplerState *appliedSamplers[2];
 		uint32_t interleavedFormat;
 		uint32_t interleavedStride;
+		uint32_t interleavedPositionOffset;
 		uint8_t const *interleavedPointer;
 		uint8_t activeMatrixMode;
 		float matrices[2][16];
+		// Viewport cull (ViewportCull.h). Only active while a scissored viewport covers under 90% of the
+		// window, so ordinary draws pay a single branch. The clip rows follow LoadMatrix lazily.
+		bool viewportCullActive;
+		bool clipRowsDirty;
+		ClipRows clipRows;
+		ClipBounds viewportCullBounds;
+		// Cheap per-frame counters, reported with -DrawStats (see ReportFrameStats).
+		struct FrameStats {
+			uint32_t draws = 0;
+			uint32_t culledDraws = 0;
+			uint32_t colorClears = 0;
+			// Colour clears while no partial viewport was set: the start of a full redraw.
+			uint32_t fullClears = 0;
+			uint32_t regionReads = 0;
+			uint32_t regionDraws = 0;
+			// Region reads and draws whose source and destination differ: the scroll shift.
+			uint32_t offsetCopies = 0;
+			int32_t offsetX = 0;
+			int32_t offsetY = 0;
+			uint32_t viewports = 0;
+			int32_t viewport[4]{};
+			uint64_t viewportPixels = 0;
+			uint32_t textureCreates = 0;
+			uint32_t textureDeletes = 0;
+		} frameStats;
+		LARGE_INTEGER lastFrameTime{};
 		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
 		float normalMatrix[16];
 		bool normalMatrixDirty;
@@ -586,6 +614,20 @@ namespace nSCD3D11 {
 		bool BindGeometryPipeline(uint32_t primitive);
 
 		bool UploadExtensionVertices(uint32_t byteSize);
+
+		// Whether [extensionVertexStart, +byteSize) is a drawable part of the current reservation.
+		bool ExtensionReservationHolds(uint32_t byteSize) const;
+
+		void UpdateViewportCull(void);
+
+		// True when a triangle draw lies entirely outside the active partial viewport. Positions are three
+		// floats at the start of each stride and must already be known to be readable.
+		bool DrawOutsideViewport(uint32_t primitive, uint8_t const *positions, uint32_t stride, uint32_t count);
+
+		// DrawOutsideViewport for vertices [first, first + count) of the InterleavedArrays source.
+		bool InterleavedDrawOutsideViewport(uint32_t primitive, uint32_t first, uint32_t count);
+
+		void ReportFrameStats(void);
 
 		bool ApplyRenderStates();
 

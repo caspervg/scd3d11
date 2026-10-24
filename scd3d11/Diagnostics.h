@@ -24,6 +24,8 @@ namespace nSCD3D11
 		Grid,
 		Unsupported,
 		Window,
+		// -DrawStats frame reports.
+		Stats,
 		Count
 	};
 

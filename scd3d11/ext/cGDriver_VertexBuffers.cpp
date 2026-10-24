@@ -70,16 +70,19 @@ namespace nSCD3D11 {
 		if (name == 0) extensionVerticesLocked = false;
 	}
 
+	bool cGDriver::ExtensionReservationHolds(uint32_t byteSize) const {
+		uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+		// Draws read only the current reservation, [start, cursor). Reset() empties it, so nothing
+		// can be drawn again until the next GetVertices.
+		return !extensionVerticesLocked && byteSize != 0 && byteSize % stride == 0 &&
+		       byteSize / stride <= extensionVertexCursor - extensionVertexStart;
+	}
+
 	bool cGDriver::UploadExtensionVertices(uint32_t byteSize) {
 		uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
 		uint32_t const stride = RZVertexFormatStride(format);
 		size_t const offset = static_cast<size_t>(extensionVertexStart) * stride;
-		// Draws read only the current reservation, [start, cursor). Reset() empties it, so nothing
-		// can be drawn again until the next GetVertices.
-		if (extensionVerticesLocked || byteSize == 0 || byteSize % stride != 0 ||
-		    byteSize / stride > extensionVertexCursor - extensionVertexStart) {
-			return false;
-		}
+		if (!ExtensionReservationHolds(byteSize)) return false;
 		uint8_t const *source = extensionVertexData.data() + offset;
 		// The reservation generation stands in for the contents: they can only change under GetVertices.
 		GeometryCacheKey key;
@@ -97,7 +100,18 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
-		if (name != 0 || !UploadExtensionVertices(byteSize)) return;
+		++frameStats.draws;
+		if (name != 0) return;
+		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+		// A culled draw still reaches the live shadow bookkeeping below; only the upload and draw are skipped.
+		bool const culled = viewportCullActive && ExtensionReservationHolds(byteSize) &&
+		                    DrawOutsideViewport(
+			                    primitive, extensionVertexData.data() +
+			                               static_cast<size_t>(extensionVertexStart) * extensionStride +
+			                               RZVertexFormatElementOffset(kGDVertexFormat_V3F_C4UB_2T2F,
+			                                                           kGDElementType_Vertices, 0),
+			                    extensionStride, byteSize / extensionStride);
+		if (!culled && !UploadExtensionVertices(byteSize)) return;
 		NoteLiveShadowTerrainView();
 		// The terrain reservation path never went through MatchesLiveShadowMesh,
 		// so bracketed network draws issued here were silently dropped.
@@ -127,6 +141,7 @@ namespace nSCD3D11 {
 				}
 			}
 		}
+		if (culled) return;
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
@@ -137,19 +152,30 @@ namespace nSCD3D11 {
 
 	void cGDriver::DrawPrimsIndexed(
 		uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices) {
+		++frameStats.draws;
 		uint64_t const indexBytes = static_cast<uint64_t>(count) * sizeof(uint16_t);
 		if (name != 0 || count == 0 || indices == nullptr || indexBytes > UINT32_MAX) {
 			return;
 		}
+		uint16_t minimumIndex = UINT16_MAX;
 		uint16_t maximumIndex = 0;
 		for (uint32_t i = 0; i < count; ++i) {
+			if (indices[i] < minimumIndex) minimumIndex = indices[i];
 			if (indices[i] > maximumIndex) maximumIndex = indices[i];
 		}
-		uint32_t const byteSize =
-			(static_cast<uint32_t>(maximumIndex) + 1) * RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
-		if (!UploadExtensionVertices(byteSize)) return;
+		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
+		uint32_t const byteSize = (static_cast<uint32_t>(maximumIndex) + 1) * extensionStride;
+		// Tests the index range, which holds every referenced vertex; live shadows still see a culled draw.
+		bool const culled = viewportCullActive && ExtensionReservationHolds(byteSize) &&
+		                    DrawOutsideViewport(
+			                    primitive, extensionVertexData.data() +
+			                               (static_cast<size_t>(extensionVertexStart) + minimumIndex) * extensionStride +
+			                               RZVertexFormatElementOffset(kGDVertexFormat_V3F_C4UB_2T2F,
+			                                                           kGDElementType_Vertices, 0),
+			                    extensionStride, static_cast<uint32_t>(maximumIndex - minimumIndex) + 1);
+		if (!culled && !UploadExtensionVertices(byteSize)) return;
 		NoteLiveShadowTerrainView();
-		if (!UploadCachedBuffer(
+		if (!culled && !UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 			IndexCacheKey(DXGI_FORMAT_R16_UINT, indices, count),
 			static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
@@ -180,6 +206,7 @@ namespace nSCD3D11 {
 				}
 			}
 		}
+		if (culled) return;
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
