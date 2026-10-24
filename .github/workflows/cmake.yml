@@ -23,20 +23,39 @@ jobs:
       VERSION_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.0.0-dev' }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         submodules: true
 
+    # Replaces ilammy/msvc-dev-cmd, which still runs on the deprecated Node.js 20.
+    # SimCity 4 is a 32-bit process, so the driver must be built x86.
     - name: Add MSVC to PATH
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        # SimCity 4 is a 32-bit process, so the driver must be built x86.
-        arch: x86
+      shell: pwsh
+      run: |
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if (-not $vs) { throw "Visual Studio with the C++ tools was not found" }
+        $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvarsall.bat"
+        $before = $env:PATH -split ';'
+        $vars = cmd /c "`"$vcvars`" x86 >nul && set"
+        if ($LASTEXITCODE -ne 0) { throw "vcvarsall.bat x86 failed" }
+        foreach ($line in $vars) {
+          if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+          $name, $value = $Matches[1], $Matches[2]
+          if ($name -ieq 'PATH') {
+            # New entries go first in GITHUB_PATH, so add them in reverse to keep their order.
+            $added = @($value -split ';' | Where-Object { $_ -and $before -notcontains $_ })
+            [array]::Reverse($added)
+            $added | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          } else {
+            "$name=$value" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          }
+        }
 
     - name: Configure
       run: >-
         cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
-        -DSCD3D11_VERSION_TAG=${{ env.VERSION_TAG }}
+        "-DSCD3D11_VERSION_TAG=${{ env.VERSION_TAG }}"
 
     - name: Build
       run: cmake --build build
@@ -44,7 +63,7 @@ jobs:
     - name: Test
       run: ctest --test-dir build --output-on-failure
 
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v7
       if: matrix.configuration == 'Release'
       with:
         python-version: "3.12"
@@ -65,7 +84,7 @@ jobs:
         EOF
 
     - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: SCD3D11-${{ matrix.configuration }}
         # SBOMs only exist for Release; the DLL is still required.
@@ -83,9 +102,9 @@ jobs:
       contents: write
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         name: SCD3D11-Release
         path: dist

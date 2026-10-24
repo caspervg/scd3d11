@@ -221,7 +221,15 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		colorKeyed = colorKeyed && colorKey != nullptr;
 		uint32_t key = 0;
 		if (colorKeyed) std::memcpy(&key, colorKey, pixelBytes);
-		bool const usesSourceAlpha = alpha == BlitAlpha::Source || alpha == BlitAlpha::SourceModulated;
+		// SC4 also sends some 32-bit UI icons (the pause button, the panel's hide button) through the keyed
+		// opaque BitBlt with their transparency in the alpha channel rather than in the key colour, which
+		// they never contain. Ignoring that alpha drew their transparent pixels as black and white boxes, so a
+		// keyed blit of a source that carries alpha honours it. Sources without transparency have alpha 255
+		// throughout and look the same either way.
+		bool const keyedSourceWithAlpha =
+			colorKeyed && alpha == BlitAlpha::Opaque && TextureSourceComponents(format) == 4;
+		bool const usesSourceAlpha =
+			alpha == BlitAlpha::Source || alpha == BlitAlpha::SourceModulated || keyedSourceWithAlpha;
 
 		BlitConstants constants{};
 		constants.modulate[0] = constants.modulate[1] = constants.modulate[2] = constants.modulate[3] = 1.0f;
