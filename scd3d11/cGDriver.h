@@ -197,6 +197,8 @@ namespace nSCD3D11 {
 		HRESULT lastPresentResult = S_OK;
 		BOOL lastFullscreenState = FALSE;
 		bool presentationPaused = false;
+		// Borderless: raise the window after the first frame it presents, so the taskbar drops behind it.
+		bool raiseWindowAfterPresent = false;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;

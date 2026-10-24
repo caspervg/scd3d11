@@ -500,6 +500,7 @@ namespace nSCD3D11 {
 		}
 		deviceGeneration = NextD3D11DeviceGeneration();
 		deviceLost = false;
+		raiseWindowAfterPresent = presentationMode == PresentationMode::BorderlessFullscreen;
 
 		currentVideoMode = newModeIndex;
 		char const *modeName = presentationMode == PresentationMode::Windowed ? "windowed" :
@@ -605,6 +606,19 @@ namespace nSCD3D11 {
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::Present", result);
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+		} else if (raiseWindowAfterPresent) {
+			// Windows keeps the taskbar above a monitor-sized window that is not the foreground one, and
+			// the window can lose activation while SC4 is still starting up. Once it shows a real frame,
+			// put it on top and ask for the foreground; the foreground lock refuses that if the user has
+			// since switched to another application.
+			raiseWindowAfterPresent = false;
+			HWND const window = static_cast<HWND>(windowHandle);
+			RECT const monitor = PrimaryMonitorRectangle();
+			BOOL const raised = SetWindowPos(window, HWND_TOP, monitor.left, monitor.top, monitor.right - monitor.left,
+			                                 monitor.bottom - monitor.top, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+			BOOL const foreground = SetForegroundWindow(window);
+			Log(LogCategory::Window, "%p raised after first present (z-order %s, foreground %s)", window,
+			    raised ? "ok" : "failed", foreground ? "granted" : "refused");
 		}
 		if (NoteDeviceLoss(result) || deviceLost) RecoverFromDeviceLoss();
 	}
