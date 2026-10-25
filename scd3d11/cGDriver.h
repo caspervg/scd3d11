@@ -465,6 +465,15 @@ namespace nSCD3D11 {
 		std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11SamplerState> > samplerStates;
 		uint32_t nextTextureId;
 		uint32_t boundTextures[2];
+		// The view each stage's bound texture resolved to, so draws skip the texture map lookup. Every
+		// change to the map or to a texture's view bumps the generation, which invalidates all of them.
+		struct BoundTextureViewCache {
+			uint32_t name = 0;
+			uint32_t generation = 0;
+			ID3D11ShaderResourceView *view = nullptr;
+		};
+		BoundTextureViewCache boundTextureViewCache[2]{};
+		uint32_t textureViewsGeneration = 1;
 		uint8_t activeTextureStage;
 		bool textureStageEnabled[2];
 		TextureStageState textureStages[2];
@@ -614,6 +623,7 @@ namespace nSCD3D11 {
 		bool UploadIndices(std::vector<uint32_t> const &indices);
 
 		bool BindGeometryPipeline(uint32_t primitive);
+		ID3D11ShaderResourceView *BoundTextureView(uint32_t stage);
 
 		bool UploadExtensionVertices(uint32_t byteSize);
 
@@ -621,6 +631,9 @@ namespace nSCD3D11 {
 		bool ExtensionReservationHolds(uint32_t byteSize) const;
 
 		void UpdateViewportCull(void);
+
+		// Enable and Disable. Marks the constants dirty only when the capability actually changes.
+		void SetCapability(uint32_t gdCap, bool enabled);
 
 		// True when a triangle draw lies entirely outside the active partial viewport. Positions are three
 		// floats at the start of each stride and must already be known to be readable.

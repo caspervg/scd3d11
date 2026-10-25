@@ -45,9 +45,24 @@ target_include_directories(scd3d11_common INTERFACE
 target_compile_options(scd3d11_common INTERFACE
         $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W3;/utf-8;/MP>
         $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Wall;-fpermissive>
-        $<$<AND:$<COMPILE_LANG_AND_ID:CXX,MSVC>,$<CONFIG:Release>>:/Gw;/Zc:threadSafeInit->
-        $<$<AND:$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>,$<CONFIG:Release>>:-flto>
+        $<$<AND:$<COMPILE_LANG_AND_ID:CXX,MSVC>,$<CONFIG:Release,RelWithDebInfo>>:/Gw;/Zc:threadSafeInit->
+        $<$<AND:$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>,$<CONFIG:Release,RelWithDebInfo>>:-flto>
 )
+
+# RelWithDebInfo is the profiling build, so it must generate the same code as Release plus a PDB.
+# CMake's MSVC defaults differ in two ways that would skew a profile: /Ob1 inlines only functions
+# marked inline, and /INCREMENTAL (implied by /DEBUG, as is dropping /OPT:REF and /OPT:ICF) pads
+# and keeps every function.
+if (MSVC)
+    foreach (language C CXX)
+        string(REPLACE "/Ob1" "/Ob2" CMAKE_${language}_FLAGS_RELWITHDEBINFO "${CMAKE_${language}_FLAGS_RELWITHDEBINFO}")
+    endforeach ()
+    foreach (kind SHARED EXE)
+        string(REGEX REPLACE "/INCREMENTAL( |$)" "/INCREMENTAL:NO\\1"
+                CMAKE_${kind}_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_${kind}_LINKER_FLAGS_RELWITHDEBINFO}")
+        string(APPEND CMAKE_${kind}_LINKER_FLAGS_RELWITHDEBINFO " /OPT:REF /OPT:ICF")
+    endforeach ()
+endif ()
 
 target_compile_definitions(scd3d11_common INTERFACE
         $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:Debug>>:__FUNCSIG__=__PRETTY_FUNCTION__>

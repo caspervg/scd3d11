@@ -18,3 +18,4 @@ docs/
 .claude
 cmake-build-minsizerel/
 SC4D3D11.log
+cmake-build-relwithdebinfo/

@@ -86,6 +86,7 @@ namespace nSCD3D11 {
         ++frameStats.textureCreates;
         resource.texture = texture;
         resource.view = view;
+        ++textureViewsGeneration;
         resource.format = format;
 		resource.width = width;
 		resource.height = height;
@@ -180,6 +181,7 @@ namespace nSCD3D11 {
             for (uint32_t &bound: boundTextures) if (bound == textureIds[i]) bound = 0;
             frameStats.textureDeletes += static_cast<uint32_t>(textures.erase(textureIds[i]));
         }
+        ++textureViewsGeneration;
     }
 
     bool cGDriver::IsTexture(uint32_t texture) {
@@ -278,11 +280,12 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexEnv(uint32_t target, uint32_t parameter, int32_t value) {
-        constantsDirty = true;
         if (target != 0 || parameter != 0 || value < 0 || value > 5) {
             SetLastError(DriverError::INVALID_VALUE);
             return;
         }
+        if (textureStages[activeTextureStage].environmentMode == value) return;
+        constantsDirty = true;
         textureStages[activeTextureStage].environmentMode = static_cast<uint8_t>(value);
         if (value == 5) Log(LogCategory::Unsupported, "NV combine4 texture environment requested");
     }
@@ -304,16 +307,10 @@ namespace nSCD3D11 {
         }
 
         TextureStageState &stage = textureStages[activeTextureStage];
-        switch (parameter) {
-            case 0: stage.magFilter = static_cast<uint8_t>(value);
-                break;
-            case 1: stage.minFilter = static_cast<uint8_t>(value);
-                break;
-            case 2: stage.wrapU = static_cast<uint8_t>(value);
-                break;
-            case 3: stage.wrapV = static_cast<uint8_t>(value);
-                break;
-        }
+        uint8_t *const fields[4] = {&stage.magFilter, &stage.minFilter, &stage.wrapU, &stage.wrapV};
+        // SC4 sets the same filter and wrap modes before most textured draws; keep the sampler then.
+        if (*fields[parameter] == value) return;
+        *fields[parameter] = static_cast<uint8_t>(value);
         stage.sampler.Reset();
     }
 
@@ -326,6 +323,7 @@ namespace nSCD3D11 {
     }
 
     void cGDriver::TexStageCoord(uint32_t source) {
+        if (textureStages[activeTextureStage].coordinateSource == source) return;
         constantsDirty = true;
         textureStages[activeTextureStage].coordinateSource = source;
         if ((source & 0xfffffff8) != 0 && (source & 0xfffffff8) != 0x10) {
@@ -333,22 +331,27 @@ namespace nSCD3D11 {
         }
     }
 
+    // Called around nearly every textured draw, mostly with the matrix already set. The constants are
+    // rebuilt from all state whenever anything marks them dirty, so only a real change may mark them.
     void cGDriver::TexStageMatrix(float const *matrix, uint32_t rows, uint32_t columns, uint32_t flags) {
-        constantsDirty = true;
-        float *destination = textureStages[activeTextureStage].matrix;
-        memset(destination, 0, sizeof(textureStages[activeTextureStage].matrix));
+        float result[16]{};
         if (matrix == nullptr) {
-            destination[0] = destination[5] = destination[10] = destination[15] = 1.0f;
-            return;
+            result[0] = result[5] = result[10] = result[15] = 1.0f;
+        } else {
+            memcpy(result, matrix, sizeof(result));
+            if ((flags & 3) == 1 && rows == 4 && columns == 2) {
+                result[2] = result[6] = result[14] = 0.0f;
+                result[10] = result[15] = 1.0f;
+                result[3] = result[7] = result[11] = 0.0f;
+            } else if ((flags & 1) != 0 && !(rows <= 3 || (columns <= 3 && (flags & 2) != 0))) {
+                Log(LogCategory::Unsupported, "texture matrix rows %u columns %u flags 0x%X", rows, columns, flags);
+            }
         }
-        memcpy(destination, matrix, sizeof(textureStages[activeTextureStage].matrix));
-        if ((flags & 3) == 1 && rows == 4 && columns == 2) {
-            destination[2] = destination[6] = destination[14] = 0.0f;
-            destination[10] = destination[15] = 1.0f;
-            destination[3] = destination[7] = destination[11] = 0.0f;
-        } else if ((flags & 1) != 0 && !(rows <= 3 || (columns <= 3 && (flags & 2) != 0))) {
-            Log(LogCategory::Unsupported, "texture matrix rows %u columns %u flags 0x%X", rows, columns, flags);
-        }
+        float *destination = textureStages[activeTextureStage].matrix;
+        static_assert(sizeof(result) == sizeof(textureStages[0].matrix), "texture matrices are 4x4");
+        if (memcmp(destination, result, sizeof(result)) == 0) return;
+        memcpy(destination, result, sizeof(result));
+        constantsDirty = true;
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineParamType parameter, eGDTextureStageCombineModeParam value) {
@@ -439,6 +442,7 @@ namespace nSCD3D11 {
         HRESULT const result = CreateTextureResource(iterator->second, internalFormat, width, height, levels);
         if (FAILED(result)) {
             textures.erase(iterator);
+            ++textureViewsGeneration;
             SetLastError(DriverError::CREATE_CONTEXT_FAIL);
             return 0;
         }

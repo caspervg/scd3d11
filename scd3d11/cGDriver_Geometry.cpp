@@ -600,6 +600,17 @@ float4 PSMain(PSInput input) : SV_TARGET
 			dynamicIndexBufferOffset);
 	}
 
+	ID3D11ShaderResourceView *cGDriver::BoundTextureView(uint32_t stage) {
+		BoundTextureViewCache &cache = boundTextureViewCache[stage];
+		if (cache.name != boundTextures[stage] || cache.generation != textureViewsGeneration) {
+			auto const iterator = textures.find(boundTextures[stage]);
+			cache.view = iterator == textures.end() ? nullptr : iterator->second.view.Get();
+			cache.name = boundTextures[stage];
+			cache.generation = textureViewsGeneration;
+		}
+		return cache.view;
+	}
+
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
@@ -613,10 +624,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		uint32_t flagInputs = 0;
 		for (uint32_t stage = 0; stage < 2; ++stage) {
 			if (!textureStageEnabled[stage]) continue;
-			auto iterator = textures.find(boundTextures[stage]);
-			if (iterator == textures.end() || !iterator->second.view || FAILED(EnsureSampler(textureStages[stage])))
-				continue;
-			textureViews[stage] = iterator->second.view.Get();
+			ID3D11ShaderResourceView *const view = BoundTextureView(stage);
+			if (view == nullptr || FAILED(EnsureSampler(textureStages[stage]))) continue;
+			textureViews[stage] = view;
 			samplers[stage] = textureStages[stage].sampler.Get();
 			flagInputs |= 1u << stage;
 		}

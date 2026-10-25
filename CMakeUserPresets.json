@@ -39,6 +39,15 @@
       }
     },
     {
+      "name": "relwithdebinfo-x86",
+      "displayName": "RelWithDebInfo (x86)",
+      "inherits": "x86-base",
+      "binaryDir": "${sourceDir}/cmake-build-relwithdebinfo",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
       "name": "minsizerel-x86",
       "displayName": "MinSizeRel (x86)",
       "inherits": "x86-base",
@@ -58,6 +67,10 @@
       "configurePreset": "release-x86"
     },
     {
+      "name": "relwithdebinfo-x86",
+      "configurePreset": "relwithdebinfo-x86"
+    },
+    {
       "name": "minsizerel-x86",
       "configurePreset": "minsizerel-x86"
     }
@@ -73,6 +86,13 @@
     {
       "name": "release-x86",
       "configurePreset": "release-x86",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "relwithdebinfo-x86",
+      "configurePreset": "relwithdebinfo-x86",
       "output": {
         "outputOnFailure": true
       }

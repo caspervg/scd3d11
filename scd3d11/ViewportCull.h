@@ -44,7 +44,12 @@ namespace nSCD3D11 {
 
 	// True only when every vertex lies beyond the same edge of bounds. Positions are three floats at the
 	// start of each stride. Stops at the first vertex that rules this out; a vertex with w <= 0 (or NaN)
-	// always keeps the draw.
+	// always keeps the draw. Rows without a perspective term (the orthographic camera) take a faster path
+	// that gives the same answer for finite results and keeps the draw for any non-finite one.
 	bool AllVerticesOutside(
+		ClipRows const &rows, ClipBounds const &bounds, uint8_t const *positions, uint32_t stride, uint32_t count);
+
+	// The general per-vertex test, valid for any rows. Exposed so tests can check the fast path against it.
+	bool AllVerticesOutsideProjective(
 		ClipRows const &rows, ClipBounds const &bounds, uint8_t const *positions, uint32_t stride, uint32_t count);
 }

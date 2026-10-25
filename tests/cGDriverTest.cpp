@@ -664,6 +664,92 @@ namespace nSCD3D11 {
 			d.EnableLighting(false);
 		}
 
+		// SC4 repeats most state calls around every draw. Repeating the current value must not mark the
+		// constants for a rebuild, and repeating a sampler parameter must keep the sampler.
+		void UnchangedSettersStayClean() {
+			uint32_t const texture = static_cast<uint32_t>(d.CreateTexture(1, 4, 4, 1, 0));
+			d.SetTexture(texture, 0);
+			d.TexStage(0);
+			d.Enable(kGDCapability_Texture2D);
+			float const scaled[16]{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1};
+			float const texture42[8]{0.5f, 0, 0.25f, 0.5f, 0, 0.5f, 0.75f, 0.25f};
+			d.MatrixMode(0);
+			d.LoadMatrix(scaled);
+			d.AlphaFunc(4, 0.5f);
+			d.Enable(kGDCapability_AlphaTest);
+			d.TexEnv(0, 0, 2);
+			d.TexStageCoord(0);
+			d.TexStageMatrix(texture42, 4, 2, 1);
+			d.TexParameter(0, 2, 2);
+			DrawFull();
+			assert(!d.constantsDirty);
+			ID3D11SamplerState *const sampler = d.textureStages[0].sampler.Get();
+			assert(sampler != nullptr);
+			// Only the cull test consumes the clip rows, and nothing here draws into a partial viewport.
+			d.clipRowsDirty = false;
+
+			d.LoadMatrix(scaled);
+			d.AlphaFunc(4, 0.5f);
+			d.Enable(kGDCapability_AlphaTest);
+			d.Enable(kGDCapability_Texture2D);
+			d.Disable(kGDCapability_Fog);
+			d.TexEnv(0, 0, 2);
+			d.TexStageCoord(0);
+			d.TexStageMatrix(texture42, 4, 2, 1);
+			d.TexParameter(0, 2, 2);
+			assert(!d.constantsDirty && !d.normalMatrixDirty && !d.clipRowsDirty);
+			assert(d.textureStages[0].sampler.Get() == sampler);
+
+			// Each real change still marks them.
+			d.TexStageMatrix(nullptr, 0, 0, 0);
+			assert(d.constantsDirty);
+			DrawFull();
+			d.LoadIdentity();
+			assert(d.constantsDirty && d.normalMatrixDirty && d.clipRowsDirty);
+			DrawFull();
+			d.LoadIdentity();
+			assert(!d.constantsDirty);
+			d.TexParameter(0, 2, 1);
+			assert(d.textureStages[0].sampler.Get() == nullptr);
+
+			d.Disable(kGDCapability_AlphaTest);
+			d.DeleteTextures(1, &texture);
+		}
+
+		// Draws reuse the view each stage's texture resolved to, so deleting or recreating a texture must
+		// be seen by the next draw.
+		void BoundTextureViewsFollowTextureChanges() {
+			d.MatrixMode(0);
+			d.LoadIdentity();
+			d.TexStage(0);
+			d.Enable(kGDCapability_Texture2D);
+			uint32_t const first = static_cast<uint32_t>(d.CreateTexture(1, 4, 4, 1, 0));
+			d.SetTexture(first, 0);
+			DrawFull();
+			ID3D11ShaderResourceView *const firstView = d.textures.at(first).view.Get();
+			assert(d.appliedTextureViews[0] == firstView);
+
+			d.DeleteTextures(1, &first);
+			DrawFull();
+			assert(d.appliedTextureViews[0] == nullptr);
+
+			uint32_t const second = static_cast<uint32_t>(d.CreateTexture(1, 8, 8, 1, 0));
+			d.SetTexture(second, 0);
+			DrawFull();
+			assert(d.appliedTextureViews[0] == d.textures.at(second).view.Get());
+
+			// Re-specifying the bound texture at a new size replaces its view.
+			ID3D11ShaderResourceView *const before = d.textures.at(second).view.Get();
+			uint32_t const pixels[16 * 16]{};
+			d.TexImage2D(0, 0, 1, 16, 16, 0, 0, 0, pixels);
+			DrawFull();
+			ID3D11ShaderResourceView *const after = d.textures.at(second).view.Get();
+			assert(after != nullptr && after != before && d.appliedTextureViews[0] == after);
+
+			d.DeleteTextures(1, &second);
+			d.Disable(kGDCapability_Texture2D);
+		}
+
 		struct DeviceEvents {
 			cGDriver *driver;
 			int destroys = 0;
@@ -872,6 +958,8 @@ namespace nSCD3D11 {
 			NormalMatrixFollowsModelView();
 			MatchesDirect3D7Lighting();
 			ConstantsFollowEverySetter();
+			UnchangedSettersStayClean();
+			BoundTextureViewsFollowTextureChanges();
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();
 			FlipModelWithLegacyFallback();

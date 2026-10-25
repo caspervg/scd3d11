@@ -284,11 +284,12 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::AlphaFunc(GLenum func, GLclampf ref) {
-		constantsDirty = true;
 		if (D3D11Comparison(func) == 0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
 		}
+		if (alphaFunction == func && memcmp(&alphaReference, &ref, sizeof(ref)) == 0) return;
+		constantsDirty = true;
 		alphaFunction = static_cast<uint8_t>(func);
 		alphaReference = ref;
 	}
@@ -380,48 +381,40 @@ namespace nSCD3D11 {
 		}
 	}
 
+	// SC4 reloads the same matrix around many draws. The constants are rebuilt from every piece of state
+	// whenever anything marks them dirty, so a load that changes nothing must not mark them.
 	void cGDriver::LoadMatrix(GLfloat const *m) {
-		constantsDirty = true;
-		if (m != nullptr) {
-			memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
-			if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
-			clipRowsDirty = true;
-		}
-	}
-
-	void cGDriver::LoadIdentity(void) {
+		if (m == nullptr || memcmp(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode])) == 0) return;
+		memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
 		constantsDirty = true;
 		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
 		clipRowsDirty = true;
-		memset(matrices[activeMatrixMode], 0, sizeof(matrices[activeMatrixMode]));
-		matrices[activeMatrixMode][0] = matrices[activeMatrixMode][5] =
-		                                matrices[activeMatrixMode][10] = matrices[activeMatrixMode][15] = 1.0f;
+	}
+
+	void cGDriver::LoadIdentity(void) {
+		float identity[16]{};
+		identity[0] = identity[5] = identity[10] = identity[15] = 1.0f;
+		cGDriver::LoadMatrix(identity);
 	}
 
 	void cGDriver::Enable(GLenum gdCap) {
-		constantsDirty = true;
-		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
-			SetLastError(DriverError::INVALID_ENUM);
-			return;
-		}
-		if (gdCap == kGDCapability_Texture2D) {
-			textureStageEnabled[activeTextureStage] = true;
-		} else {
-			enabledCapabilities[gdCap] = true;
-		}
+		SetCapability(gdCap, true);
 	}
 
 	void cGDriver::Disable(GLenum gdCap) {
-		constantsDirty = true;
+		SetCapability(gdCap, false);
+	}
+
+	void cGDriver::SetCapability(uint32_t gdCap, bool enabled) {
 		if (gdCap >= kGDNumCapabilities || gdCap == kGDCapability_Unused0) {
 			SetLastError(DriverError::INVALID_ENUM);
 			return;
 		}
-		if (gdCap == kGDCapability_Texture2D) {
-			textureStageEnabled[activeTextureStage] = false;
-		} else {
-			enabledCapabilities[gdCap] = false;
-		}
+		bool &state = gdCap == kGDCapability_Texture2D ? textureStageEnabled[activeTextureStage]
+		                                               : enabledCapabilities[gdCap];
+		if (state == enabled) return;
+		state = enabled;
+		constantsDirty = true;
 	}
 
 	bool cGDriver::IsEnabled(GLenum gdCap) {
