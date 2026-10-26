@@ -93,6 +93,9 @@ namespace nSCD3D11::LiveShadowHooks {
 		constexpr uintptr_t kAutomatonVtables[]{0x00A94608, 0x00A94B38, 0x00A95AC0, 0x00A97188, 0x00A991E0};
 		constexpr ptrdiff_t kPlaceInRendererSlot = 0x11C;
 		constexpr ptrdiff_t kOccupantModelsBegin = 0x110;
+		// The automaton's fade: a tween of from, to, duration and elapsed that
+		// PlaceInRenderer reads through TweenStruct::GetCurrent (0x004FA960).
+		constexpr ptrdiff_t kAutomatonFade = 0x1B0;
 		// More models than this on one automaton means the list is not one.
 		constexpr size_t kMaxAutomatonModels = 16;
 		constexpr ptrdiff_t kFrameOccupant = 0xE0;
@@ -152,6 +155,7 @@ namespace nSCD3D11::LiveShadowHooks {
 
 		thread_local uint32_t tNetworkDrawDepth = 0;
 		thread_local uint32_t tAutomatonDrawDepth = 0;
+		thread_local float tAutomatonOpacity = 1.0f;
 		thread_local void *tRelaxedPropOccupant = nullptr;
 
 		// Sorted signatures of the relaxed props' meshes.
@@ -382,9 +386,20 @@ namespace nSCD3D11::LiveShadowHooks {
 			}
 		}
 
+		// TweenStruct::GetCurrent, read rather than called.
+		float AutomatonFade(void const *automaton) {
+			float tween[4]{};
+			if (!SafeCopy(static_cast<uint8_t const *>(automaton) + kAutomatonFade, tween, sizeof(tween)))
+				return 1.0f;
+			float const value = tween[2] <= 0.0f
+				                    ? tween[1]
+				                    : tween[0] + (tween[1] - tween[0]) * (std::clamp)(tween[3] / tween[2], 0.0f, 1.0f);
+			return std::isfinite(value) ? (std::clamp)(value, 0.0f, 1.0f) : 1.0f;
+		}
+
 		// True while this drawable still belongs to a placed automaton: the
 		// occupant is still an automaton and still lists the model.
-		bool IsAutomatonModel(void const *drawable) {
+		bool IsAutomatonModel(void const *drawable, void const *&automaton) {
 			if (drawable == nullptr || gAutomatonModelCount.load(std::memory_order_relaxed) == 0) return false;
 			AutomatonModel entry;
 			{
@@ -401,7 +416,10 @@ namespace nSCD3D11::LiveShadowHooks {
 			    std::end(kAutomatonVtables) &&
 			    AutomatonModels(entry.automaton, models, count)) {
 				auto const end = models.begin() + static_cast<ptrdiff_t>(count);
-				if (std::find(models.begin(), end, entry.model) != end) return true;
+				if (std::find(models.begin(), end, entry.model) != end) {
+					automaton = entry.automaton;
+					return true;
+				}
 			}
 			++gAutomatonModelsRejected;
 			return false;
@@ -455,6 +473,10 @@ namespace nSCD3D11::LiveShadowHooks {
 
 	bool AutomatonDrawActive() {
 		return gInstalled && tAutomatonDrawDepth != 0;
+	}
+
+	float AutomatonOpacity() {
+		return AutomatonDrawActive() ? tAutomatonOpacity : 1.0f;
 	}
 
 	bool MayMatchPropMesh(uint32_t vertexCount) {
@@ -620,8 +642,12 @@ namespace nSCD3D11::LiveShadowHooks {
 
 		uint32_t __fastcall AnimatedDrawHook(void *self, void *, void *drawContext, uint32_t lit) {
 			using Original = uint32_t (__thiscall *)(void *, void *, uint32_t);
-			bool const automaton = IsAutomatonModel(self);
-			if (automaton) ++tAutomatonDrawDepth;
+			void const *owner = nullptr;
+			bool const automaton = IsAutomatonModel(self, owner);
+			if (automaton) {
+				tAutomatonOpacity = AutomatonFade(owner);
+				++tAutomatonDrawDepth;
+			}
 			uint32_t const result = reinterpret_cast<Original>(&AnimatedDrawOriginal)(self, drawContext, lit);
 			if (automaton) {
 				--tAutomatonDrawDepth;

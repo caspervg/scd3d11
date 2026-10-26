@@ -25,6 +25,8 @@ namespace nSCD3D11::LiveShadowHooks {
 	bool NetworkDrawActive();
 	// True while the model of an automaton (car, train, ship...) is being drawn.
 	bool AutomatonDrawActive();
+	// How far that automaton has faded in, from 0 to 1. 1 outside its draw.
+	float AutomatonOpacity();
 	// False when no registered prop mesh has this many vertices: the draw
 	// cannot match, and need not be hashed.
 	bool MayMatchPropMesh(uint32_t vertexCount);

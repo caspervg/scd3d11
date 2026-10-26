@@ -92,6 +92,7 @@ cbuffer ShadowConstants : register(b0) {
 	float4 relight0;     // composite: the rows of the turn from the new sun to SC4's, w = relight on
 	float4 relight1;
 	float4 relight2;
+	float4 fade;         // per-draw casters: x = how much of the caster is there
 };
 Texture2D sourceTexture : register(t0);
 Texture2D<float> sceneDepth : register(t0);
@@ -130,6 +131,13 @@ void CasterPS(CasterOutput input) {
 		 function == 5 ? abs(alpha - reference) > (1.0 / 255.0) :
 		 function == 6 ? alpha >= reference : true);
 	clip(alphaPass ? 1.0 : -1.0);
+	// An automaton fading in or out casts from that share of its texels, which
+	// the composite's filter turns into a lighter shadow.
+	if (fade.x < 1.0) {
+		static const float kOrder[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+		uint2 cell = uint2(input.position.xy) & 3;
+		clip(fade.x - (kOrder[cell.y * 4 + cell.x] + 0.5) / 16.0);
+	}
 }
 
 struct RegistryOutput {
@@ -327,6 +335,7 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
             float terrainShade[4];
             float terrainCell[4];
             float relight[3][4];
+            float fade[4];
         };
         static_assert(sizeof(ShadowConstants) % 16 == 0, "constant buffers are sized in 16-byte registers");
 
@@ -678,6 +687,7 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         draw.alphaTest = enabledCapabilities[kGDCapability_AlphaTest];
         draw.network = networkCaster;
         draw.automaton = LiveShadowHooks::AutomatonDrawActive();
+        draw.opacity = LiveShadowHooks::AutomatonOpacity();
         draw.topology = topology;
         size_t const loggedVertices = draw.vertices.size();
         size_t const loggedIndices = draw.indices.size();
@@ -1688,6 +1698,7 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
             constants.material[1] = draw.alphaReference;
             constants.material[2] = draw.alphaTest ? 1.0f : 0.0f;
             constants.material[3] = draw.texture ? 1.0f : 0.0f;
+            constants.fade[0] = draw.opacity;
             d3dContext->UpdateSubresource(pipeline.constants.Get(), 0, nullptr, &constants, 0, 0);
             d3dContext->VSSetConstantBuffers(0, 1, &cb);
             d3dContext->PSSetConstantBuffers(0, 1, &cb);
