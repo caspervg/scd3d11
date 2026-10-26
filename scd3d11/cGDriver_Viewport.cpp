@@ -797,6 +797,7 @@ namespace nSCD3D11 {
 			sum.shadowSubmitMs += frame.shadowSubmitMs;
 			sum.shadowMeshUploads += frame.shadowMeshUploads;
 			sum.shadowUploadBytes += frame.shadowUploadBytes;
+			sum.shadowProjectionMismatches += frame.shadowProjectionMismatches;
 		}
 		ShadowRegistry::Stats const registry = ShadowRegistry::TakeStats();
 		summary.registry.registrations += registry.registrations;
@@ -851,12 +852,13 @@ namespace nSCD3D11 {
 				    shadow.shadowGpuSamples, shadow.shadowArenaRebuilds);
 				Log(LogCategory::Stats,
 				    "live shadows registry ms: cull %.1f, mesh upload %.1f (%u meshes, %.1f MB), submit %.1f; "
-				    "AddShadow %.1f (%u records, %u off the draw thread), DrawShadows gather %.1f, native %.1f",
+				    "AddShadow %.1f (%u records, %u off the draw thread), DrawShadows gather %.1f, native %.1f; "
+				    "%u projection mismatches",
 				    shadow.shadowCullMs, shadow.shadowUploadMs, shadow.shadowMeshUploads,
 				    static_cast<double>(shadow.shadowUploadBytes) / 1.0e6, shadow.shadowSubmitMs,
 				    summary.registry.registerMs, summary.registry.registrations,
 				    summary.registry.offThreadRegistrations, summary.registry.gatherMs,
-				    summary.registry.nativeDrawMs);
+				    summary.registry.nativeDrawMs, shadow.shadowProjectionMismatches);
 			}
 			summary = Summary{};
 			summary.start = now;

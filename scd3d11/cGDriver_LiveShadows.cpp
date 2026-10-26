@@ -919,7 +919,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // The composite reconstructs view positions through the pass's own
         // projection, which a partial pass fits to its dirty rectangle.
         float projection[16]{};
-        bool const haveProjection = !liveShadowDraws.empty() || liveShadowSceneProjectionValid;
+        bool const projectionFromCapture = !liveShadowDraws.empty();
+        bool const haveProjection = projectionFromCapture || liveShadowSceneProjectionValid;
         std::memcpy(projection, !liveShadowDraws.empty() ? liveShadowDraws.front().projection : liveShadowSceneProjection,
                     sizeof(projection));
 
@@ -1212,12 +1213,27 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             Normalize(sunWorld);
             float worldToClip[16]{};
             Multiply(projection, worldToView, worldToClip);
-            if (pass.culled && std::memcmp(pass.projection, projection, sizeof(projection)) != 0) {
+            // Only the x and y rows matter to the cull; SC4 moves the depth range between draws.
+            auto const differentRows = [&]() {
+                for (unsigned column = 0; column < 4; ++column)
+                    for (unsigned row = 0; row < 2; ++row)
+                        if (pass.projection[column * 4 + row] != projection[column * 4 + row]) return true;
+                return false;
+            };
+            if (pass.culled && differentRows()) {
+                ++frameStats.shadowProjectionMismatches;
                 static bool loggedProjection = false;
                 if (!loggedProjection) {
                     loggedProjection = true;
+                    // Orthographic: x and y scale and offset say which rectangle each covers.
+                    float const* const loaded = matrices[PROJECTION];
                     Log(LogCategory::Initialization,
-                        "shadow registry: DrawShadows ran under another projection than its pass; casters may be missing");
+                        "shadow registry: DrawShadows ran under another projection than its %s pass (%dx%d at %d,%d); "
+                        "gather %.5g %.5g %.5g %.5g, pass (%s) %.5g %.5g %.5g %.5g, loaded now %.5g %.5g %.5g %.5g",
+                        partialPass ? "partial" : "full", viewportWidth, viewportHeight, viewportX, viewportY,
+                        pass.projection[0], pass.projection[5], pass.projection[12], pass.projection[13],
+                        projectionFromCapture ? "first capture" : "last draw", projection[0], projection[5],
+                        projection[12], projection[13], loaded[0], loaded[5], loaded[12], loaded[13]);
                 }
             }
             for (ShadowRegistry::PassCaster const& passCaster : pass.casters) {

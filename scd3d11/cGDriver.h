@@ -481,6 +481,8 @@ namespace nSCD3D11 {
 			double shadowGpuMapMs = 0.0;
 			double shadowGpuCompositeMs = 0.0;
 			uint32_t shadowGpuSamples = 0;
+			// Static passes whose gather culled under another projection than the pass composited with.
+			uint32_t shadowProjectionMismatches = 0;
 		} frameStats;
 		LARGE_INTEGER lastFrameTime{};
 		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
