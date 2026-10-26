@@ -29,14 +29,12 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "You're using a compiler that generates 64-bit code. SCD3D11 must be 32-bit.")
 endif ()
 
-# gzcom-dll, sc4-dll-utilities (with the WIL headers it needs) and mINI, wired up as in
+# gzcom-dll and sc4-dll-utilities (with the WIL headers it needs), wired up as in
 # sc4-dll-template. They are git submodules.
 set(GZCOM_DIR "${PROJECT_SOURCE_DIR}/vendor/gzcom-dll/gzcom-dll")
 set(SC4_DLL_UTILITIES_DIR "${PROJECT_SOURCE_DIR}/vendor/sc4-dll-utilities/sc4-dll-utilities")
 set(WIL_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/vendor/wil/include")
-set(MINI_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/vendor/mINI/src")
-foreach (required "${GZCOM_DIR}/include" "${SC4_DLL_UTILITIES_DIR}/include" "${WIL_INCLUDE_DIR}/wil"
-        "${MINI_INCLUDE_DIR}/mini/ini.h")
+foreach (required "${GZCOM_DIR}/include" "${SC4_DLL_UTILITIES_DIR}/include" "${WIL_INCLUDE_DIR}/wil")
     if (NOT EXISTS "${required}")
         message(FATAL_ERROR "Missing ${required}. Initialize submodules with: git submodule update --init")
     endif ()
@@ -71,7 +69,6 @@ target_include_directories(scd3d11_common INTERFACE
         "${PROJECT_SOURCE_DIR}/scd3d11"
         "${PROJECT_SOURCE_DIR}/scd3d11/ext"
         "${PROJECT_SOURCE_DIR}/vendor/xxhash"
-        "${MINI_INCLUDE_DIR}"
 )
 target_link_libraries(scd3d11_common INTERFACE sc4_dll_utilities)
 
@@ -121,7 +118,6 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Blit.cpp
         scd3d11/cGDriver_ReShade.cpp
         scd3d11/cGDriver_Viewport.cpp
-        scd3d11/cRZRefCount.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
         scd3d11/SCD3D11Service.cpp
@@ -230,8 +226,7 @@ if (BUILD_TESTING)
     scd3d11_add_test(SCD3D11ServiceTest
             tests/SCD3D11ServiceTest.cpp
             scd3d11/SCD3D11Service.cpp
-            scd3d11/Diagnostics.cpp
-            scd3d11/Settings.cpp)
+            scd3d11/Diagnostics.cpp)
 
     # Drives a real cGDriver on a hidden window. Built from source instead of reusing the DLL objects:
     # the test must not see NDEBUG, and cGDriver's layout depends on it.

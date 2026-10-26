@@ -50,7 +50,7 @@ namespace nSCD3D11 {
 
     // Identifies uploaded geometry. The digest alone never decides a match: count and format say how
     // the bytes are interpreted, and generation keys (a reservation generation, not a content hash)
-    // live in a separate key space from content keys. Content digests are XXH3-128; a match is still
+    // live in a separate key space from content keys. Content digests are XXH3-128. A match is still
     // only overwhelmingly likely, not proof, that the contents are equal.
     struct GeometryCacheKey {
         XXH128_hash_t digest{};

@@ -53,8 +53,8 @@ namespace nSCD3D11 {
     }
 
     bool IsSupportedVertexFormat(uint32_t format) {
-        // SC4 passes both the small enum values and pre-packed bitfield formats;
-        // normalize through RZMakeVertexFormat before checking the whitelist.
+        // SC4 passes both the small enum values and pre-packed bitfield formats.
+        // Normalize through RZMakeVertexFormat before checking the whitelist.
         if (format < 0x80000000) {
             format = RZMakeVertexFormat(format);
         }

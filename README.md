@@ -5,10 +5,10 @@ compatibility with modern GPUs, drivers, Windows versions, and high-resolution d
 
 Compared with the game's own renderer, it offers:
 
-* rendering on today's Direct3D 11 drivers instead of the long-deprecated DirectX 7 path;
-* borderless fullscreen, a vsync switch and flip-model presentation;
-* rendering on the high-performance GPU of laptops with both an integrated and a discrete GPU;
-* [ReShade](#reshade) effects that leave the UI untouched and get the city's depth buffer without any setup.
+* rendering on today's Direct3D 11 drivers instead of the long-deprecated DirectX 7 path
+* borderless fullscreen, a vsync switch and flip-model presentation
+* rendering on the high-performance GPU of laptops with both an integrated and a discrete GPU
+* [ReShade](#reshade) effects that leave the UI untouched and get the city's depth buffer without any setup
 
 It began as [SCGL](https://github.com/nsgomez/scgl) by Nelson Gomez, an OpenGL driver for the same interface, and was
 renamed once the backend became Direct3D 11.
@@ -27,11 +27,11 @@ Not affiliated with or endorsed by EA Games.
 
 Download `SCD3D11-<version>.zip` from the [releases page](https://github.com/caspervg/scd3d11/releases) and copy
 `SCD3D11.dll` and `SCD3D11.ini` into a SimCity 4 plugins folder — either `Documents\SimCity 4\Plugins` or the
-`Plugins` folder of whatever user directory you launch with. The INI holds the [settings](#settings); without it the
+`Plugins` folder of whatever user directory you launch with. The INI holds the [settings](#settings). Without it, the
 defaults below apply.
 
 The driver registers GZCOM class `0xBADB6906` — the class ID of the game's own DirectX driver — at a higher version,
-so SC4 selects it automatically. No `-d:` switch is needed; do not launch with `-d:Software`, which bypasses it.
+so SC4 selects it automatically. No `-d:` switch is needed. Do not launch with `-d:Software`, which bypasses it.
 
 If you keep plugins outside `Documents\SimCity 4`, pass `-UserDir:` and **quote it**. SC4 splits an unquoted value at
 the first space, silently loads the wrong plugin folder, and falls back to its built-in DirectX driver.
@@ -46,19 +46,20 @@ Delete `SCD3D11.dll` and `SCD3D11.ini` from the plugins folder. SimCity 4 goes b
 ## Settings
 
 Set these in `SCD3D11.ini` next to `SCD3D11.dll`, as `Name=value` under `[SCD3D11]`. A launch argument of the same
-name overrides the INI for one session: `-Name:value`, or `-Name` alone for `on`. Values are `on` or `off`; names and
-values are case-insensitive. `SC4D3D11.log` lists every setting in effect and where it came from.
+name overrides the INI for one session: `-Name:value`, or `-Name` alone for `on`. Values are `on` or `off` (also
+`enabled`/`disabled`, `true`/`false` and `1`/`0`), in any case. `SC4D3D11.log` lists every setting in effect and where
+it came from.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
 | `Borderless` | off | With `-f`, a monitor-sized borderless window instead of exclusive fullscreen |
 | `VSync` | on | Wait for vsync before presenting |
-| `FlipModel` | on | Windowed and borderless: present with the flip model; off uses the legacy DISCARD swap chain |
+| `FlipModel` | on | Windowed and borderless: present with the flip model. Off uses the legacy DISCARD swap chain |
 | `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one |
 | `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |
 | `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
-| `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
+| `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included). See [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:
 
@@ -66,7 +67,7 @@ Standard SimCity 4 switches that SCD3D11 reacts to:
 |--------|--------|
 | `-w` / `-f` | Windowed / fullscreen |
 | `-CustomResolution:enabled` `-r<width>x<height>x32` | Render at an arbitrary resolution |
-| `-UserDir:"<path>"` | User directory; with `SCD3D11.dll` in its `Plugins` folder, `SC4D3D11.log` is written there |
+| `-UserDir:"<path>"` | User directory. With `SCD3D11.dll` in its `Plugins` folder, `SC4D3D11.log` is written there |
 
 ### Presentation modes
 
@@ -85,17 +86,17 @@ scheduling, power throttling, the parallel render cull and the sim tick budget a
 ## ReShade
 
 Install [ReShade](https://reshade.me) 6.0 or later for `SimCity 4.exe` and pick the **Direct3D 10/11/12** API. The
-regular build is enough; the "full add-on support" build is not needed. SCD3D11 registers itself with ReShade as an
+regular build is enough. The "full add-on support" build is not needed. SCD3D11 registers itself with ReShade as an
 add-on and:
 
-- renders the effects as soon as the city view is drawn, so the UI stays sharp and untouched;
+- renders the effects as soon as the city view is drawn, so the UI stays sharp and untouched
 - supplies the city's depth buffer, so depth effects (ambient occlusion, depth of field, fog) work without setting
   anything up. SC4's camera is orthographic, and the depth is encoded to match whatever
   `RESHADE_DEPTH_LINEARIZATION_FAR_PLANE` is set to. Leave the other `RESHADE_DEPTH_INPUT_*` definitions at `0`.
 
-In the ReShade overlay's Add-ons tab, disable **Generic Depth**; SCD3D11 overrides its choice anyway. Outside the city
+In the ReShade overlay's Add-ons tab, disable **Generic Depth**. SCD3D11 overrides its choice anyway. Outside the city
 view (menus, region view) ReShade behaves as usual, except that effects can stay off in the region view after leaving
-a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for `reshade: add-on registered`; `ReShade=off` turns the
+a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for `reshade: add-on registered`. `ReShade=off` turns the
 integration off.
 
 ## Known issues
@@ -163,10 +164,9 @@ increments whenever the device is recreated, so stale resources can be detected 
 Included in the `vendor` folder:
 
 * [gzcom-dll](https://github.com/nsgomez/gzcom-dll) (LGPLv2.1) — registers the graphics implementation with the game.
-* [sc4-dll-utilities](https://github.com/0xC0000054/sc4-dll-utilities) (LGPLv2.1) — game version detection and the
-  path of `SCD3D11.ini`.
+* [sc4-dll-utilities](https://github.com/0xC0000054/sc4-dll-utilities) (LGPLv2.1) — game version detection and
+  reading `SCD3D11.ini`.
 * [Windows Implementation Library](https://github.com/microsoft/wil) (MIT) — used by sc4-dll-utilities.
-* [mINI](https://github.com/metayeti/mINI) (MIT) — reads `SCD3D11.ini`.
 * [xxHash](https://github.com/Cyan4973/xxHash) (BSD 2-Clause) — fingerprints geometry for the upload cache.
 * [ReShade](https://github.com/crosire/reshade) add-on API headers (BSD 3-Clause) — the [ReShade](#reshade) integration.
 

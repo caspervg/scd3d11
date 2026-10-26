@@ -8,48 +8,29 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
-// The city side of terrain shadows (docs/true3d-shadows-terrain.md).
+// The city side of terrain shadows.
 //
-// SimCity 4 Deluxe 1.1.641. The terrain is reached through gzcom-dll's
-// interfaces, so it is known in a city without a single shadow record.
-// cSTETerrain (vtable
-// 0x00AB3D18) keeps one 0x24-byte record per vertex at +0x6C: the altitude at
-// +0x00, the normal its vertex lighting uses at +0x04 (what DoLighting,
-// 0x00742930, hands GetTerrainVertexColors), and flags at +0x22, where 0x3000
-// means the cell with that lowest corner is split along its other diagonal
-// (IsTriangulationFlipped, 0x00741C20; cliff management and DJEM fixes set
-// them). +0x28/+0x2C are the cell counts and +0x38/+0x3C the vertex counts, one
-// more each. GetAltitudes (+0x3C, 0x00742A00) copies an inclusive rectangle of
-// vertices without bounds checks, (rect, out, row stride, column stride), so
-// the rectangle is always built from the terrain's own counts. There is no
-// interface for the normals and flags in bulk, so they are read from the
-// records, and only kept when every record's altitude matches GetAltitudes.
-// CellWidth (+0x18, 0x0074C5C0) returns a float on the x87 stack although
-// cISTETerrainMap declares uint32_t, so it is called through a float-typed
-// pointer.
+// SimCity 4 Deluxe 1.1.641. cSTETerrain (vtable 0x00AB3D18) keeps a 0x24-byte
+// record per vertex at +0x6C: the altitude at +0x00, the lighting normal at
+// +0x04 and flags at +0x22. Flag 0x3000 means the cell with that lowest corner
+// is split along its other diagonal (IsTriangulationFlipped, 0x00741C20).
+// +0x28/+0x2C are the cell counts and +0x38/+0x3C the vertex counts.
+// GetAltitudes (+0x3C, 0x00742A00) copies an inclusive rectangle without bounds
+// checks, so the rectangle is always built from the terrain's own counts. The
+// normals and flags are read from the records, and only used when every
+// altitude matches GetAltitudes. CellWidth (+0x18, 0x0074C5C0) returns a float
+// although cISTETerrainMap declares uint32_t, so it is called through a
+// float-typed pointer.
 //
-// SC4 has no terrain revision counter to watch (GetAltitudeCheckSum is a plain
-// sum), so the height field - under 70k floats for a large city - is re-read
-// on a sun change or every few seconds, and the map rebuilt only when it or
-// the sun differs.
+// SC4 has no terrain revision counter, so the height field is read again when
+// the sun changes or every few seconds, and the map is only rebuilt when
+// either differs.
 //
-// SC4's own terrain self-shading: cSC4LightingManager keeps a shadow-height
-// grid (+0x198, ground heights at +0x18C) and ShadowDepth_ (0x007D6950) returns
-// how far a point lies below it. GetTerrainLighting, GetTerrainColor,
-// GetModelLight and GetColor3/6 - its only callers - bend the lighting normal
-// away from the sun when that depth is positive (BendShadowedNormal_,
-// 0x007D68B0), which bakes soft, vertex-sized shadows into the terrain's vertex
-// colours and into model lighting. Drawn under these shadows it darkens the
-// same slopes twice, so Install makes ShadowDepth_ return 0.
-//
-// The grids themselves must stay: CalcShadowTerrainRect (0x007D6CC0) marches
-// every BAT shadow down the sun across the ground heights until it meets the
-// ground, and the overlay manager files the shadow under the rectangle it
-// covers. The byte at +0x1D4 that gates the self-shading also gates the
-// terrain-change handler's refresh of those heights; switching it off left
-// them at zero, so on raised terrain every shadow ran down to altitude 0 and
-// covered hundreds of spatial buckets, stalling SDSRemove_ for seconds
-// whenever a zoom or rotation replaced the city's shadows.
+// SC4 also darkens terrain and models below its own shadow-height grid
+// (ShadowDepth_, 0x007D6950). Under these shadows that would darken the same
+// slopes twice, so Install makes ShadowDepth_ return 0. The grids themselves
+// must stay, because BAT shadow placement (CalcShadowTerrainRect, 0x007D6CC0)
+// uses them.
 
 #include "TerrainShadows.h"
 
@@ -75,7 +56,7 @@ namespace nSCD3D11::TerrainShadows {
 		// closely, and a large city stays under 700 texels a side.
 		constexpr float kSpacingCells = 0.5f;
 		// The sun's apparent radius for the penumbra, in radians. The real sun
-		// is 0.27 degrees; 3 degrees stands in for the sky light that softens
+		// is 0.27 degrees. 3 degrees stands in for the sky light that softens
 		// real hill shadows, and is the knob if edges look too hard or too soft.
 		constexpr float kSunRadius = 3.0f * 0.0174532925f;
 		// The sun is view-locked and only moves with a rotation.

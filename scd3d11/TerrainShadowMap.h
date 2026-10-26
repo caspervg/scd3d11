@@ -14,8 +14,7 @@
 #include <cstdint>
 #include <vector>
 
-// Shadows cast by the terrain itself, which SC4 never drew
-// (docs/true3d-shadows-terrain.md).
+// Shadows cast by the terrain itself, which SC4 never drew.
 //
 // SC4's terrain is a height field, so whether the terrain shadows a point
 // depends only on how high the point is: (x, y, z) is in shadow when terrain
@@ -35,14 +34,14 @@
 namespace nSCD3D11::TerrainShadowMap {
 	// The terrain as SC4 draws it. Each cell is two triangles, split along
 	// (0, 0)-(1, 1) unless the cell is flipped, which splits it along
-	// (1, 0)-(0, 1); cliff management and terrain mods such as a DJEM fix flip
+	// (1, 0)-(0, 1). Cliff management and terrain mods such as a DJEM fix flip
 	// cells, so interpolating bilinearly would miss the drawn surface by metres
 	// on steep ground.
 	struct HeightField {
 		uint32_t verticesX = 0;
 		uint32_t verticesZ = 0;
 		float cellWidth = 0.0f;
-		// Row-major, z * verticesX + x; vertex (x, z) lies at world (x, z) * cellWidth.
+		// Row-major, z * verticesX + x. Vertex (x, z) lies at world (x, z) * cellWidth.
 		std::vector<float> altitudes;
 		// Indexed like altitudes: non-zero when the cell whose lowest corner is
 		// that vertex is flipped. Empty means none is.
@@ -89,7 +88,7 @@ namespace nSCD3D11::TerrainShadowMap {
 	// Builds the map for light travelling along sun (world space, any length),
 	// one texel per spacing world units. False for a malformed height field or
 	// a sun that is not below the horizon and off the vertical.
-	// sunRadius is the sun's apparent radius in radians; 0 gives one sharp
+	// sunRadius is the sun's apparent radius in radians. 0 gives one sharp
 	// ceiling.
 	bool Build(HeightField const &terrain, float const sun[3], float spacing, Map &map, float sunRadius = 0.0f);
 

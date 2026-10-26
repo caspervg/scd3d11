@@ -9,7 +9,6 @@
  */
 
 #include "Diagnostics.h"
-#include "Settings.h"
 
 #include <atomic>
 #include <cstdarg>
@@ -96,9 +95,18 @@ namespace nSCD3D11
 		va_end(arguments);
 	}
 
+	namespace {
+		bool gDrawStats = false;
+		bool gTraceLog = false;
+	}
+
+	void SetDiagnostics(bool drawStats, bool traceLog) {
+		gDrawStats = drawStats;
+		gTraceLog = traceLog;
+	}
+
 	void LogTrace(LogCategory category, char const* format, ...) {
-		static bool const enabled = Settings::Value("LogLevel") == "trace";
-		if (!enabled) return;
+		if (!gTraceLog) return;
 		va_list arguments;
 		va_start(arguments, format);
 		LogV(category, format, arguments);
@@ -106,8 +114,7 @@ namespace nSCD3D11
 	}
 
 	bool DrawStatsEnabled() {
-		static bool const enabled = Settings::Flag("DrawStats", false);
-		return enabled;
+		return gDrawStats;
 	}
 
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result) {
@@ -227,7 +234,7 @@ namespace nSCD3D11
 			ULONGLONG stalledFrame = 0;
 			ULONGLONG nextReport = 0;
 			unsigned reports = 0;
-			// SC4 loads plugins on the render thread after its first Flush; that is not a stall. Arm only once
+			// SC4 loads plugins on the render thread after its first Flush. That is not a stall. Arm only once
 			// frames have kept coming for a while (10 half-second ticks).
 			ULONGLONG previousFrame = 0;
 			unsigned framesFlowing = 0;

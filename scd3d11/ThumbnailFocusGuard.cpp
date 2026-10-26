@@ -8,27 +8,23 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
-// Keep the region view thumbnail when SC4 loses focus while saving.
+// Keeps the region view thumbnail when SC4 loses focus while saving.
 //
-// SC4WriteCityRegionViewThumbnail (VA 0x005DDEC0) renders the city four times through the normal
-// 3D view and reads each render back with cIGZGSnapshotExtension::CopyColorBuffer. The Windows
-// build (not the Mac one) wraps this in a focus guard:
-//   - 0x005F85F0 returns GetActiveWindow() == GetForegroundWindow(). Only this function calls it,
-//     from four sites: before rendering, after rendering, and twice in the wait loop below.
-//   - A listener for the app activation message 0x4348B111 sets a "focus was lost" byte at
-//     [listener+9] on every deactivation. A failed focus test before or after rendering also sets it.
-//   - If that byte is set after rendering, SC4 polls focus every 500 ms for about 10 s. When focus
-//     returns it renders again (at most 3 levels deep), otherwise it writes the default, blank
-//     thumbnail over the one it just rendered.
-// SCD3D11 renders into an off-screen texture and CopyColorBuffer reads that texture, so focus and
-// occlusion cannot spoil the capture. Two patches make the post-render check ask about that instead:
+// SC4WriteCityRegionViewThumbnail (0x005DDEC0) renders the city and reads it
+// back with CopyColorBuffer. The Windows build then checks focus with
+// 0x005F85F0 (GetActiveWindow() == GetForegroundWindow()). If focus was lost,
+// it waits up to about 10 s and then writes a blank thumbnail instead. SCD3D11
+// renders to an off-screen texture, so focus cannot spoil the capture. Two
+// patches make the check after rendering ask whether the window is usable:
+//
 //   0x005F85F0  push esi; call [GetForegroundWindow]     ->  jmp CaptureIsUsable
 //   0x005DE976  mov al,[esi+9]; test al,al; jz 005DE9F7  ->  mov al,[esi+8]; test al,al; jnz 005DE9F7
-// [esi+8] is the post-render test result, stored two instructions earlier. A minimized window still
-// counts as unusable (SC4's WM_SIZE handler forwards the 0x0 client area to its window system) and
-// falls back to SC4's own wait-and-retry.
 //
-// Target: SimCity 4 Deluxe 1.1.641 (Windows), image base 0x00400000.
+// [esi+9] is set by any loss of focus, [esi+8] holds the result of the check
+// after rendering. A minimized window still counts as unusable and falls back
+// to SC4's own wait and retry.
+//
+// SimCity 4 Deluxe 1.1.641 only, image base 0x00400000.
 
 #include "ThumbnailFocusGuard.h"
 
@@ -46,8 +42,6 @@
 namespace nSCD3D11::ThumbnailFocusGuard {
 	namespace {
 
-		constexpr uintptr_t kImageBase = 0x00400000;
-
 		constexpr uintptr_t kFocusTestVA = 0x005F85F0;
 		constexpr size_t kFocusTestLength = 7;
 		const uint8_t kFocusTestExpected[kFocusTestLength] = {0x56, 0xFF, 0x15, 0x0C, 0x05, 0xA8, 0x00};
@@ -64,7 +58,6 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 		uint8_t *gFocusTest = nullptr;
 		uint8_t *gRetryCheck = nullptr;
 		uint8_t gFocusTestSaved[kFocusTestLength]{};
-		uintptr_t gModuleOffset = 0;
 		bool gInstalled = false;
 		bool gAttempted = false;
 
@@ -81,7 +74,7 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 
 		// Replaces the focus test. Reached by a jmp, so the return address is SC4's call site.
 		bool __cdecl CaptureIsUsable() {
-			uintptr_t const caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - gModuleOffset;
+			uintptr_t const caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
 			bool const usable = IsUsableWindow();
 			if (caller == kBeforeRenderReturnVA) {
 				gMinimizesBeforeRender = gMinimizes;
@@ -124,11 +117,10 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 			Log(LogCategory::Initialization, "thumbnail focus guard: requires SimCity 4 1.1.641, skipping");
 			return false;
 		}
-		auto const module = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
-		if (module == nullptr) return false;
-		gModuleOffset = reinterpret_cast<uintptr_t>(module) - kImageBase;
-		gFocusTest = module + (kFocusTestVA - kImageBase);
-		gRetryCheck = module + (kRetryCheckVA - kImageBase);
+		// IsGameVersion641 only accepts an executable at its preferred base, so
+		// the game's addresses are used as they are.
+		gFocusTest = reinterpret_cast<uint8_t *>(kFocusTestVA);
+		gRetryCheck = reinterpret_cast<uint8_t *>(kRetryCheckVA);
 
 		if (std::memcmp(gFocusTest, kFocusTestExpected, kFocusTestLength) != 0 ||
 		    std::memcmp(gRetryCheck, kRetryCheckExpected, kRetryCheckLength) != 0) {

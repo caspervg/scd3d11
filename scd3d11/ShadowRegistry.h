@@ -15,7 +15,7 @@
 #include <vector>
 
 // Replaces SC4's projected BAT shadows (buildings, flora, BAT props, poles) with
-// casters in cGDriver's live shadow map, as part of -LiveShadows:on.
+// casters in cGDriver's live shadow map, as part of LiveShadows.
 //
 // cSTEOverlayManager::AddShadow already turns each caster mesh into a world-to-UV
 // projector for SC4's prerendered texture. This module keeps that projector, the
@@ -38,12 +38,12 @@ namespace nSCD3D11::ShadowRegistry {
 		// kVertexFloats per vertex, laid out as the driver's shadow pass reads them.
 		std::vector<float> vertices;
 		// Triangle list into vertices. Empty when the mesh's topology could not
-		// be recovered; the caster then casts from its ground quad alone.
+		// be recovered. The caster then casts from its ground quad alone.
 		std::vector<uint32_t> indices;
 		// cSTEOverlayManager record +0x1C: world position to texture UV,
 		// column-major, constant along the sun direction.
 		float projector[16]{};
-		// u min, v min, u max, v max over the mesh's UVs; DrawShadows clips there.
+		// u min, v min, u max, v max over the mesh's UVs. DrawShadows clips there.
 		float uvBounds[4]{};
 		float low[3]{};
 		float high[3]{};
@@ -126,7 +126,7 @@ namespace nSCD3D11::ShadowRegistry {
 	// The same for a terrain the caller already has.
 	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ);
 
-	// -DrawStats: time spent in the AddShadow and DrawShadows hooks since the last call.
+	// DrawStats: time spent in the AddShadow and DrawShadows hooks since the last call.
 	struct Stats {
 		uint32_t registrations = 0;
 		// AddShadow calls made on another thread than DrawShadows.

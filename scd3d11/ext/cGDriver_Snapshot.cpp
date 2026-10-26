@@ -9,7 +9,6 @@
  */
 
 #include <cRZCOMDllDirector.h>
-#include <cRZCOMDllDirector.h>
 #include <cRZSysServPtr.h>
 
 #include "../cGDriver.h"

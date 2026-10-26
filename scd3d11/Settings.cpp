@@ -13,11 +13,15 @@
 #include "Diagnostics.h"
 
 #include "FileSystem.h"
-#include "mini/ini.h"
+#include "cIGZCmdLine.h"
+#include "cRZBaseString.h"
+#include "IniReader.h"
+#include "StringViewUtil.h"
 
 #include <exception>
-#include <mutex>
-#include <set>
+#include <filesystem>
+#include <optional>
+#include <utility>
 
 #include <windows.h>
 
@@ -31,87 +35,136 @@ namespace nSCD3D11::Settings {
 			return character == ' ' || character == '\t';
 		}
 
-		// The [SCD3D11] section of SCD3D11.ini beside the DLL, read once. Empty
-		// when there is no file or it cannot be read.
-		mINI::INIMap<std::string> const &IniSection() {
-			static mINI::INIMap<std::string> const section = [] {
-				mINI::INIStructure ini;
-				try {
-					std::filesystem::path const path = FileSystem::GetDllIniFilePath();
-					if (mINI::INIFile(path).read(ini)) {
-						Log(LogCategory::Initialization, "settings read from %s", path.string().c_str());
-					}
-				} catch (std::exception const &) {
-					// A missing module path or an unreadable file leaves the defaults.
-				}
-				return ini.has("SCD3D11") ? ini.get("SCD3D11") : mINI::INIMap<std::string>();
-			}();
-			return section;
+		// Where a setting can come from: SC4's command line, then the [SCD3D11]
+		// section of SCD3D11.ini. Either may be missing.
+		struct Sources {
+			cIGZCmdLine *commandLine = nullptr;
+			IniSection const *ini = nullptr;
+		};
+
+		// The [SCD3D11] section of SCD3D11.ini beside the DLL.
+		std::optional<IniSection> ReadIni() {
+			try {
+				std::filesystem::path const path = FileSystem::GetDllIniFilePath();
+				if (!std::filesystem::exists(path)) return std::nullopt;
+				IniReader const reader(path);
+				Log(LogCategory::Initialization, "settings read from %s", path.string().c_str());
+				return reader.get_section_optional("SCD3D11");
+			} catch (std::exception const &error) {
+				Log(LogCategory::Initialization, "SCD3D11.ini ignored: %s", error.what());
+				return std::nullopt;
+			}
 		}
 
-		// Where a setting was found, for the log; null when it was not.
-		char const *Lookup(char const *name, std::string &value) {
-			value.clear();
-			if (FindSwitch(GetCommandLineA(), name, value)) return "command line";
-			mINI::INIMap<std::string> const &section = IniSection();
-			if (!section.has(name)) return nullptr;
-			// mINI keeps an inline comment as part of the value; drop it and the
-			// spaces before it.
-			for (char const character : section.get(name)) {
-				if (character == ';') break;
+		// One source's text for a setting in lower case, or nothing when that
+		// source does not set it. A bare switch reads as "".
+		std::optional<std::string> FromCommandLine(cIGZCmdLine *commandLine, char const *name) {
+			if (commandLine == nullptr) return std::nullopt;
+			// SC4's value lookup only matches -Name:value with something after the
+			// colon, so a bare -Name needs the other lookup.
+			cRZBaseString switchValue;
+			if (!commandLine->IsSwitchPresent(cRZBaseString(name), switchValue, true))
+				return commandLine->IsSwitchPresent(cRZBaseString(name)) ? std::optional<std::string>("") : std::nullopt;
+			std::string value;
+			for (char const character : std::string_view(switchValue.ToChar())) value += Lower(character);
+			return value;
+		}
+
+		std::optional<std::string> FromIni(IniSection const *ini, char const *name) {
+			if (ini == nullptr) return std::nullopt;
+			auto const entry = ini->find(name);
+			if (entry == ini->not_found()) return std::nullopt;
+			// IniReader keeps an inline comment, starting with a semicolon or #,
+			// as part of the value. Drop it and the spaces before it.
+			std::string value;
+			for (char const character : entry->second) {
+				if (character == ';' || character == '#') break;
 				value += Lower(character);
 			}
 			while (!value.empty() && IsSpace(value.back())) value.pop_back();
-			return value.empty() ? nullptr : "SCD3D11.ini";
+			if (value.empty()) return std::nullopt;
+			return value;
 		}
 
-		// Logs each setting that is set anywhere once, so a log shows what a
-		// session ran with.
-		void NoteSetting(char const *name, std::string const &value, char const *source) {
-			static std::mutex mutex;
-			static std::set<std::string> logged;
-			std::lock_guard<std::mutex> const lock(mutex);
-			if (!logged.insert(name).second) return;
-			Log(LogCategory::Initialization, "setting %s = %s (%s)", name, value.empty() ? "on" : value.c_str(), source);
+		// GPU=default or GPU=high-performance.
+		bool ParseAdapter(std::string_view value, bool &defaultAdapter) {
+			defaultAdapter = value == "default";
+			return defaultAdapter || value == "high-performance";
 		}
-	}
 
-	bool FindSwitch(std::string_view commandLine, std::string_view name, std::string &value) {
-		bool found = false;
-		for (size_t index = 0; index + name.size() < commandLine.size(); ++index) {
-			if (commandLine[index] != '-' || (index > 0 && !IsSpace(commandLine[index - 1]))) continue;
-			size_t const end = index + 1 + name.size();
-			bool same = true;
-			for (size_t offset = 0; offset < name.size() && same; ++offset)
-				same = Lower(commandLine[index + 1 + offset]) == Lower(name[offset]);
-			if (!same || (end < commandLine.size() && commandLine[end] != ':' && !IsSpace(commandLine[end]))) continue;
-			found = true;
-			value.clear();
-			if (end < commandLine.size() && commandLine[end] == ':') {
-				for (size_t cursor = end + 1; cursor < commandLine.size() && !IsSpace(commandLine[cursor]); ++cursor)
-					if (commandLine[cursor] != '"') value += Lower(commandLine[cursor]);
+		// LogLevel=trace or LogLevel=info.
+		bool ParseLogLevel(std::string_view value, bool &trace) {
+			trace = value == "trace";
+			return trace || value == "info";
+		}
+
+		// The setting from the first source whose value parse accepts: the
+		// command line, then the INI. A value it rejects is logged and skipped,
+		// so a mistyped switch leaves the INI's setting in force.
+		template <typename T>
+		T Resolve(Sources const &sources, char const *name, bool (*parse)(std::string_view, T &), T fallback) {
+			std::pair<char const *, std::optional<std::string>> const candidates[]{
+				{"command line", FromCommandLine(sources.commandLine, name)},
+				{"SCD3D11.ini", FromIni(sources.ini, name)}
+			};
+			for (auto const &[source, value] : candidates) {
+				if (!value) continue;
+				T result{};
+				// Only a value that took effect is logged as the setting, so the
+				// log shows what the session ran with.
+				if (parse(*value, result)) {
+					Log(LogCategory::Initialization, "setting %s = %s (%s)", name, value->empty() ? "on" : value->c_str(),
+					    source);
+					return result;
+				}
+				Log(LogCategory::Initialization, "setting %s: %s%s%s from the %s is not a valid value, ignored", name,
+				    value->empty() ? "a bare switch" : "'", value->c_str(), value->empty() ? "" : "'", source);
 			}
+			return fallback;
 		}
-		return found;
+
+
+		// Constant-initialised, so readable before Load.
+		Values gValues;
 	}
 
-	bool ParseFlag(std::string_view value, bool fallback) {
-		if (value.empty() || value == "on" || value == "true" || value == "yes" || value == "1") return true;
-		if (value == "off" || value == "false" || value == "no" || value == "0") return false;
-		return fallback;
+	bool ParseFlag(std::string_view value, bool &flag) {
+		if (value.empty()) {
+			flag = true;
+			return true;
+		}
+		return StringViewUtil::TryParse(value, flag);
 	}
 
-	bool Flag(char const *name, bool fallback) {
-		std::string value;
-		char const *const source = Lookup(name, value);
-		if (source == nullptr) return fallback;
-		NoteSetting(name, value, source);
-		return ParseFlag(value, fallback);
+
+	void Load(cIGZCmdLine *commandLine) {
+		// The arguments as SC4 split them, which is what the switches are matched against.
+		if (commandLine != nullptr) {
+			std::string arguments;
+			for (uint32_t index = 0; index < commandLine->argc(); ++index) {
+				char const *const argument = commandLine->argv(static_cast<int32_t>(index));
+				arguments += std::string(index == 0 ? "" : " | ") + (argument != nullptr ? argument : "");
+			}
+			Log(LogCategory::Initialization, "command line as SC4 reads it: %s", arguments.c_str());
+		}
+		std::optional<IniSection> const ini = ReadIni();
+		Sources const sources{commandLine, ini ? &*ini : nullptr};
+		Values values;
+		values.liveShadows = Resolve(sources, "LiveShadows", ParseFlag, values.liveShadows);
+		values.networkShadowMasks = Resolve(sources, "NetworkShadowMasks", ParseFlag, values.networkShadowMasks);
+		values.vsync = Resolve(sources, "VSync", ParseFlag, values.vsync);
+		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
+		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
+		values.defaultAdapter = Resolve(sources, "GPU", ParseAdapter, values.defaultAdapter);
+		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
+		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
+		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
+		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);
+		gValues = values;
+		SetDiagnostics(values.drawStats, values.traceLog);
 	}
 
-	std::string Value(char const *name) {
-		std::string value;
-		if (char const *const source = Lookup(name, value)) NoteSetting(name, value, source);
-		return value;
+	Values const &Get() {
+		return gValues;
 	}
 } // namespace nSCD3D11::Settings

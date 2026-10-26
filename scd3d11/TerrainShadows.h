@@ -14,7 +14,7 @@
 
 #include <cstdint>
 
-// Terrain shadows, part of -LiveShadows:on: the loaded city's height field,
+// Terrain shadows, part of LiveShadows: the loaded city's height field,
 // read through cISC4App -> cISC4City -> cISTETerrain, kept as a
 // TerrainShadowMap for cGDriver's live shadow composite. Everything here runs
 // on the render thread, from the static pass.
@@ -41,7 +41,7 @@ namespace nSCD3D11::TerrainShadows {
 	// The height field the map returned by the last Update was built from.
 	TerrainShadowMap::HeightField const &Terrain();
 
-	// Altitude in the height field the last Update read; false outside the
+	// Altitude in the height field the last Update read. False outside the
 	// city or before a map exists.
 	bool Altitude(float x, float z, float &altitude);
 } // namespace nSCD3D11::TerrainShadows

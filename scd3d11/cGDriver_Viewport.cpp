@@ -29,7 +29,7 @@ namespace nSCD3D11 {
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
 
 		bool BorderlessFullscreenRequested() {
-			return Settings::Flag("Borderless", false);
+			return Settings::Get().borderless;
 		}
 
 		RECT PrimaryMonitorRectangle() {
@@ -92,7 +92,7 @@ namespace nSCD3D11 {
 		swapChainBuffer->GetDesc(&colorDescription);
 		colorDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
 		colorDescription.MiscFlags = 0;
-		// Typeless so ReShade can also get an sRGB view; copies to the UNORM swap chain buffer stay legal.
+		// Typeless so ReShade can also get an sRGB view. Copies to the UNORM swap chain buffer stay legal.
 		colorDescription.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
 		result = d3dDevice->CreateTexture2D(&colorDescription, nullptr, &backBuffer);
@@ -149,7 +149,7 @@ namespace nSCD3D11 {
 		depthStencilDescription.Format = depthStencilFormat;
 		depthStencilDescription.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
 		result = d3dDevice->CreateDepthStencilView(depthStencilTexture.Get(), &depthStencilDescription, &depthStencilView);
-		// Window size changed; force the depth region scratch to be recreated at the new size.
+		// Window size changed. Force the depth region scratch to be recreated at the new size.
 		depthRegionScratch.Reset();
 		depthRegionScratchValid = false;
 		if (FAILED(result)) {
@@ -228,7 +228,7 @@ namespace nSCD3D11 {
 		if (SUCCEEDED(result)) result = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::ResizeBuffers", result);
-			// A removed device cannot back new targets; Flush recovers it instead.
+			// A removed device cannot back new targets. Flush recovers it instead.
 			if (NoteDeviceLoss(result)) return result;
 			// Keep rendering at the old size after a transient resize failure.
 			NoteDeviceLoss(CreateBackBufferTargets(static_cast<uint32_t>(windowWidth), static_cast<uint32_t>(windowHeight)));
@@ -265,7 +265,7 @@ namespace nSCD3D11 {
 		deviceLost = true;
 		if (deviceRecoveryFailures < 5) ++deviceRecoveryFailures;
 		nextDeviceRecovery = now + (250ull << deviceRecoveryFailures);
-		Log(LogCategory::Initialization, "device recovery failed; retrying in %llu ms",
+		Log(LogCategory::Initialization, "device recovery failed, retrying in %llu ms",
 		    static_cast<unsigned long long>(250ull << deviceRecoveryFailures));
 	}
 
@@ -276,7 +276,7 @@ namespace nSCD3D11 {
 		void *const procedure = windowProcedure;
 		bool const show = showDriverWindow;
 		Log(LogCategory::Initialization, "recreating D3D11 device after device loss");
-		// Destroying notifies frame callbacks once for the old generation; recoveringDevice keeps
+		// Destroying notifies frame callbacks once for the old generation. recoveringDevice keeps
 		// anything they call back into from starting another recovery.
 		DestroyD3D11Context(true);
 		SetVideoMode(mode, procedure, show, false);
@@ -411,7 +411,7 @@ namespace nSCD3D11 {
 			HRESULT createResult = createDevice(
 				requestedLevels, static_cast<UINT>(sizeof(requestedLevels) / sizeof(requestedLevels[0])));
 			if (createResult == E_INVALIDARG) {
-				Log(LogCategory::Initialization, "D3D11.1 runtime unavailable; retrying without feature level 11_1");
+				Log(LogCategory::Initialization, "D3D11.1 runtime unavailable, retrying without feature level 11_1");
 				createResult = createDevice(
 					legacyRequestedLevels,
 					static_cast<UINT>(sizeof(legacyRequestedLevels) / sizeof(legacyRequestedLevels[0])));
@@ -422,14 +422,15 @@ namespace nSCD3D11 {
 		HRESULT result = createForAvailableRuntime();
 #ifndef NDEBUG
 		if (result == DXGI_ERROR_SDK_COMPONENT_MISSING) {
-			Log(LogCategory::Initialization, "D3D11 debug layer unavailable; retrying without it");
+			Log(LogCategory::Initialization, "D3D11 debug layer unavailable, retrying without it");
 			creationFlags &= ~D3D11_CREATE_DEVICE_DEBUG;
 			result = createForAvailableRuntime();
 		}
 #endif
 		if (FAILED(result) && flipModel) {
 			// FLIP_DISCARD needs Windows 10.
-			LogHRESULT(LogCategory::SwapChain, "flip model swap chain; falling back to the legacy swap effect", result);
+			LogHRESULT(LogCategory::SwapChain, "flip model swap chain", result);
+			Log(LogCategory::SwapChain, "using the legacy swap effect instead");
 			swapChainDescription.BufferCount = 1;
 			swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 			result = createForAvailableRuntime();
@@ -581,7 +582,7 @@ namespace nSCD3D11 {
 			else SetViewport();
 		}
 
-		static bool const vsyncEnabled = Settings::Flag("VSync", true);
+		bool const vsyncEnabled = Settings::Get().vsync;
 		NoteRenderPhase("Flush: ReShade effects");
 		FinishReShadeFrame();
 		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
@@ -595,7 +596,7 @@ namespace nSCD3D11 {
 		if (result != lastPresentResult) {
 			// Success codes matter too: DXGI_STATUS_OCCLUDED (0x087A0001) means nothing is visible.
 			HWND const window = static_cast<HWND>(windowHandle);
-			Log(LogCategory::SwapChain, "Present returned 0x%08lX (was 0x%08lX; iconic=%d visible=%d foreground=%d)",
+			Log(LogCategory::SwapChain, "Present returned 0x%08lX (was 0x%08lX, iconic=%d visible=%d foreground=%d)",
 			    static_cast<unsigned long>(result), static_cast<unsigned long>(lastPresentResult),
 			    IsIconic(window) ? 1 : 0, IsWindowVisible(window) ? 1 : 0, GetForegroundWindow() == window ? 1 : 0);
 			lastPresentResult = result;
@@ -606,7 +607,7 @@ namespace nSCD3D11 {
 		} else if (raiseWindowAfterPresent) {
 			// Windows keeps the taskbar above a monitor-sized window that is not the foreground one, and
 			// the window can lose activation while SC4 is still starting up. Once it shows a real frame,
-			// put it on top and ask for the foreground; the foreground lock refuses that if the user has
+			// put it on top and ask for the foreground. The foreground lock refuses that if the user has
 			// since switched to another application.
 			raiseWindowAfterPresent = false;
 			HWND const window = static_cast<HWND>(windowHandle);
@@ -673,7 +674,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::UpdateViewportCull(void) {
-		static bool const disabled = !Settings::Flag("ViewportCull", true);
+		bool const disabled = !Settings::Get().viewportCull;
 		// The scissor rectangle is always the viewport itself, so the viewport is all that can be rasterized.
 		uint64_t const area = static_cast<uint64_t>(viewportWidth) * static_cast<uint64_t>(viewportHeight);
 		uint64_t const window = static_cast<uint64_t>(windowWidth) * static_cast<uint64_t>(windowHeight);
@@ -708,7 +709,7 @@ namespace nSCD3D11 {
 			uint64_t scrollCulled = 0;
 			uint64_t textureCreates = 0;
 			uint64_t textureDeletes = 0;
-			// Live shadow fields summed over the second; shadowStaticMaxMs and shadowWorldCasters are maxima.
+			// Live shadow fields summed over the second. shadowStaticMaxMs and shadowWorldCasters are maxima.
 			FrameStats shadows;
 			uint32_t shadowFrames = 0;
 			ShadowRegistry::Stats registry;
@@ -723,7 +724,7 @@ namespace nSCD3D11 {
 			                              static_cast<double>(frequency.QuadPart);
 		lastFrameTime = now;
 		FrameStats const &frame = frameStats;
-		// A scroll shifts the backing store with an offset region copy and redraws the exposed strip; a full
+		// A scroll shifts the backing store with an offset region copy and redraws the exposed strip. A full
 		// redraw clears the whole view first.
 		bool const scroll = frame.offsetCopies != 0;
 		bool const full = !scroll && frame.fullClears != 0;

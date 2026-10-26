@@ -13,22 +13,39 @@
 #include <string>
 #include <string_view>
 
-// SCD3D11's switches. Each is looked up on the command line first (-Name or
+class cIGZCmdLine;
+
+// SCD3D11's settings. Each is looked up on SC4's command line first (-Name or
 // -Name:value) and then in SCD3D11.ini next to the DLL (Name=value under
 // [SCD3D11]), so the INI holds a player's usual settings and a switch
-// overrides them for one session. Names and values are case-insensitive.
+// overrides them for one session.
 namespace nSCD3D11::Settings {
-	// On for on, true, yes, 1 or a bare -Name; off for off, false, no or 0;
-	// fallback when the setting is absent or holds anything else.
-	bool Flag(char const *name, bool fallback);
+	// Every setting, read once by Load. Until then, and in the tests, the
+	// defaults below apply.
+	struct Values {
+		bool liveShadows = false;
+		bool networkShadowMasks = false;
+		bool vsync = true;
+		bool borderless = false;
+		bool flipModel = true;
+		// GPU=default: the adapter Windows picks instead of the high-performance one.
+		bool defaultAdapter = false;
+		bool viewportCull = true;
+		bool reshade = true;
+		bool drawStats = false;
+		// LogLevel=trace.
+		bool traceLog = false;
+	};
 
-	// The setting's value in lower case; empty when it is absent or bare.
-	std::string Value(char const *name);
+	// Reads every setting from SC4's command line (may be null) and the INI.
+	// Called once from the COM director's OnStart, before SC4 starts the
+	// threads that read them, so they need no locking.
+	void Load(cIGZCmdLine *commandLine);
 
-	// Exposed for tests: finds -name in a command line, the last one winning,
-	// and sets value to what follows its colon (empty for a bare switch).
-	bool FindSwitch(std::string_view commandLine, std::string_view name, std::string &value);
+	Values const &Get();
 
-	// Exposed for tests: a value as a flag, or fallback when it is neither.
-	bool ParseFlag(std::string_view value, bool fallback);
+	// Exposed for tests: reads value as a flag the way sc4-dll-utilities does
+	// (on/off, true/false, enabled/disabled, 1/0, any case), with an empty
+	// value - a bare -Name - meaning on. False when it is none of those.
+	bool ParseFlag(std::string_view value, bool &flag);
 } // namespace nSCD3D11::Settings

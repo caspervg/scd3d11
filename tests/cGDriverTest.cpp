@@ -75,7 +75,7 @@ namespace nSCD3D11 {
 			assert(Pixel(1, 1) == 0xff0000ff);
 		}
 
-		// Draws beyond one edge of a small scissored viewport are dropped; everything else still draws.
+		// Draws beyond one edge of a small scissored viewport are dropped. Everything else still draws.
 		void ViewportCullsOutsideDraws() {
 			for (uint32_t mode: {0u, 1u}) {
 				d.MatrixMode(mode);
@@ -650,7 +650,7 @@ namespace nSCD3D11 {
 			CheckConstants("vertex format without normals", [&] { drawNormals = false; });
 			CheckConstants("vertex format with normals", [&] { drawNormals = true; });
 
-			// Identical draws rebuild and upload nothing; losing the bindings does not force an upload either.
+			// Identical draws rebuild and upload nothing. Losing the bindings does not force an upload either.
 			uint8_t const buffer = d.activeTransformBuffer;
 			DrawFull();
 			DrawFull();

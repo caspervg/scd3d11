@@ -481,8 +481,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 				HRESULT result = allocate(newCapacity);
 				if (FAILED(result) && !NoteDeviceLoss(result)) {
 					// Out of memory: drop every other cached segment and retry once, sized for this upload only.
-					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(dynamic segment); evicting and retrying",
-					           result);
+					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer for a dynamic segment", result);
+					Log(LogCategory::Resource, "dropping the other cached segments and retrying");
 					buffer.Reset();
 					for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
 						if (index != activeSegment) ClearCacheSegment(segments, cache, index, true);
@@ -564,7 +564,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 		uint8_t const *source = interleavedPointer + static_cast<size_t>(first) * interleavedStride;
 		// InterleavedArrays hands over a bare pointer into game memory with no allocation, modification
-		// or release boundary, so pointer and size cannot identify contents; only the terrain vertex
+		// or release boundary, so pointer and size cannot identify contents. Only the terrain vertex
 		// buffer, which the driver owns, can use generation keys instead of hashing.
 		GeometryCacheKey const key = VertexCacheKey(interleavedFormat, interleavedStride, source, count);
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
@@ -634,7 +634,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (lit) flagInputs |= 4;
 		if (lit && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) flagInputs |= 128;
 
-		// Setters mark the constants dirty; the only other inputs are bound textures and whether the vertex
+		// Setters mark the constants dirty. The only other inputs are bound textures and whether the vertex
 		// format carries normals, which can change without a setter and are compared here instead.
 		if (constantsDirty || flagInputs != constantsFlagInputs || constantBufferCache.size() != sizeof(DriverConstants)) {
 			DriverConstants constants{};
@@ -783,7 +783,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	bool cGDriver::DrawOutsideViewport(
 		uint32_t primitive, uint8_t const *positions, uint32_t stride, uint32_t count) {
-		// Triangle lists, strips, fans, quads and quad strips; lines and points are left alone.
+		// Triangle lists, strips, fans, quads and quad strips. Lines and points are left alone.
 		if (primitive == 3 || primitive == 4 || primitive == 5 || primitive > 7) return false;
 		if (clipRowsDirty) {
 			MakeClipRows(matrices[PROJECTION], matrices[MODEL_VIEW], clipRows);
@@ -819,9 +819,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		uint32_t const vertexCount = static_cast<uint32_t>(count);
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		if (topology != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
-			// Live shadows previously only watched DrawElements, so any
-			// non-indexed caster (flat network quads are the classic case)
-			// never reached the shadow map.
+			// Non-indexed casters too, such as flat network quads.
 			if (MatchesLiveShadowMesh(firstVertex, vertexCount)) {
 				if (LiveShadowHooks::NetworkDrawActive()) {
 					static bool loggedBracketArrays = false;

@@ -51,7 +51,7 @@ int main() {
 	assert(!nSCD3D11::InvokeD3D11FrameCallback(frame));
 	assert(calls == 1);
 
-	// A callback that unregisters itself still ran this frame; the next frame has none.
+	// A callback that unregisters itself still ran this frame. The next frame has none.
 	assert(SCD3D11RegisterFrameCallback(SelfUnregisteringCallback, &owner));
 	assert(nSCD3D11::InvokeD3D11FrameCallback(frame));
 	assert(calls == 2);

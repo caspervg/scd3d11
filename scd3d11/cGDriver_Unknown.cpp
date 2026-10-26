@@ -50,8 +50,6 @@ namespace nSCD3D11
 			break;
 
 		default:
-			//sprintf_s(buf, "%x", riid);
-			//MessageBoxA(NULL, buf, "Unknown interface ID in GDriver", MB_ICONERROR);
 			Log(LogCategory::Grid, "QueryInterface(0x%08X) -> unsupported", riid);
 			return false;
 		}
@@ -61,11 +59,11 @@ namespace nSCD3D11
 	}
 
 	uint32_t cGDriver::AddRef(void) {
-		return cRZRefCount::AddRef();
+		return cRZBaseUnknown::AddRef();
 	}
 
 	uint32_t cGDriver::Release(void) {
-		return cRZRefCount::Release();
+		return cRZBaseUnknown::Release();
 	}
 
 	bool cGDriver::FinalRelease(void) {

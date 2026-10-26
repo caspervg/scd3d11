@@ -24,7 +24,7 @@
 #include <unordered_map>
 #include <vector>
 #include <wrl/client.h>
-#include <cRZRefCount.h>
+#include <cRZBaseUnknown.h>
 #include "cIGZGDriver.h"
 #include "D3D11Conversions.h"
 #include "sGDMode.h"
@@ -50,7 +50,7 @@ namespace nSCD3D11 {
 		uint64_t generation = 0;
 	};
 
-	// Why live shadows made SC4 redraw the whole static view; bit i of a mask is cause i.
+	// Why live shadows made SC4 redraw the whole static view. Bit i of a mask is cause i.
 	enum LiveShadowRedrawCause : uint32_t {
 		kRedrawUntrackedPartial, // a partial pass the world-space caster set could not follow
 		kRedrawTerrainChanged,   // a partial pass saw a new terrain shadow map
@@ -72,7 +72,7 @@ namespace nSCD3D11 {
 			public cIGZGDriverLightingExtension,
 			public cIGZGDriverVertexBufferExtension,
 			public cIGZGSnapshotExtension,
-			public cRZRefCount {
+			public cRZBaseUnknown {
 		friend struct cGDriverTestAccess;
 
 	private:
@@ -212,7 +212,7 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
 		PresentationMode presentationMode;
-		// Off with -FlipModel:off.
+		// Off with FlipModel=off.
 		bool preferFlipModel;
 		UINT swapChainFlags;
 		// SC4 redraws only dirty rectangles and expects the back buffer to survive Present. DISCARD
@@ -312,7 +312,7 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainAltitudeView;
 			uint32_t terrainAltitudeWidth = 0;
 			uint32_t terrainAltitudeHeight = 0;
-			// -DrawStats GPU timing: shadow map start, composite start, end.
+			// DrawStats GPU timing: shadow map start, composite start, end.
 			struct GpuTimer {
 				Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
 				Microsoft::WRL::ComPtr<ID3D11Query> stamps[3];
@@ -349,7 +349,7 @@ namespace nSCD3D11 {
 		// inside its own rectangle, so once a caster has cast a shadow the
 		// partial path can no longer be trusted.
 		bool liveShadowEverCaptured = false;
-		// The terrain map generation the backing store was last shaded with; a
+		// The terrain map generation the backing store was last shaded with. A
 		// partial pass that sees another one cannot repaint the rest.
 		uint64_t liveShadowTerrainGeneration = 0;
 		// The last orthographic projection a draw used, for passes that have
@@ -364,11 +364,8 @@ namespace nSCD3D11 {
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;
-		// Projection parameters published to ReShade effects as the sc4_* uniforms, so a
-		// screen-space shadow effect does not have to be hand-calibrated per zoom level.
-		// Both values come from the last orthographic projection used by a scene draw. Deriving the
-		// sun direction from render state would be more direct, but SC4 bakes its lighting into vertex
-		// colours and never enables fixed-function lighting for the city view.
+		// Handed to ReShade effects as the sc4_* uniforms, so a screen-space shadow effect works at
+		// every zoom level. Taken from the last projection a city draw used.
 		struct ShadowUniforms {
 			// Multiplier turning linear buffer depth into world units, so effect thresholds are
 			// expressed in metres and stay valid at every zoom level.
@@ -378,7 +375,7 @@ namespace nSCD3D11 {
 			float worldPerScreenHeight = 1.0f;
 			bool valid = false;
 		} shadowUniforms;
-		// Plain (non-depth-stencil-bound) copy of the depth buffer; partial CopySubresourceRegion
+		// Plain (non-depth-stencil-bound) copy of the depth buffer. Partial CopySubresourceRegion
 		// is illegal on D3D11_BIND_DEPTH_STENCIL resources, so depth region blits bounce through this.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthRegionScratch;
 		bool depthRegionScratchValid;
@@ -424,7 +421,7 @@ namespace nSCD3D11 {
 		bool clipRowsDirty;
 		ClipRows clipRows;
 		ClipBounds viewportCullBounds;
-		// Cheap per-frame counters, reported with -DrawStats (see ReportFrameStats).
+		// Cheap per-frame counters, reported with DrawStats (see ReportFrameStats).
 		struct FrameStats {
 			uint32_t draws = 0;
 			uint32_t culledDraws = 0;
@@ -450,7 +447,7 @@ namespace nSCD3D11 {
 			// Backing-store invalidations by DrawHook, and why (one redraw can have several causes).
 			uint32_t shadowForcedRedraws = 0;
 			uint32_t shadowForcedBy[kLiveShadowRedrawCauses]{};
-			// RedisplayWorldRect requests from caster tracking; each becomes a later partial pass.
+			// RedisplayWorldRect requests from caster tracking. Each becomes a later partial pass.
 			uint32_t shadowRedisplays = 0;
 			uint32_t shadowMapRenders = 0;
 			uint32_t shadowCasters = 0;
@@ -463,7 +460,7 @@ namespace nSCD3D11 {
 			uint32_t shadowCaptures = 0;
 			uint32_t shadowHashedDraws = 0;
 			uint64_t shadowHashedVertices = 0;
-			// CPU milliseconds; the hash and capture timers only run with -DrawStats.
+			// CPU milliseconds. The hash and capture timers only run with DrawStats.
 			double shadowStaticMs = 0.0;
 			double shadowStaticMaxMs = 0.0;
 			double shadowDynamicMs = 0.0;
@@ -493,7 +490,7 @@ namespace nSCD3D11 {
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
 		// The constants last uploaded to transformBuffers[activeTransformBuffer]. Losing the binding
-		// (ClearState) keeps them valid; only destroying the buffers clears this.
+		// (ClearState) keeps them valid. Only destroying the buffers clears this.
 		std::vector<uint8_t> constantBufferCache;
 		// Set by every setter feeding the shader constants.
 		bool constantsDirty;
@@ -613,7 +610,7 @@ namespace nSCD3D11 {
 
 		bool RecoverD3D11Device();
 
-		// Records a failed D3D11 result; returns whether it means the device is gone. Recovery then
+		// Records a failed D3D11 result. Returns whether it means the device is gone. Recovery then
 		// waits for the next frame boundary (Flush), with backoff between failed attempts.
 		bool NoteDeviceLoss(HRESULT result);
 
@@ -633,7 +630,7 @@ namespace nSCD3D11 {
 			return fault.result;
 		}
 #else
-		// The tests make D3D11 calls at these boundaries fail; the DLL never does.
+		// The tests make D3D11 calls at these boundaries fail. The DLL never does.
 		static HRESULT TakeInjectedFault(FaultPoint) { return S_OK; }
 #endif
 
@@ -658,7 +655,7 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 			uint32_t &offset);
 
-		// Forgets a segment's cache entries; release also frees its buffer and bookkeeping.
+		// Forgets a segment's cache entries. Release also frees its buffer and bookkeeping.
 		void ClearCacheSegment(GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release);
 
 		bool UploadVertices(uint32_t first, uint32_t count);
@@ -743,7 +740,7 @@ namespace nSCD3D11 {
 		bool TrackLiveShadowWorldCasters(
 			float const *eyeToWorld, float const *worldToView, float const *projection, float const sun[3],
 			bool sunKnown, bool partialPass);
-		// RenderLivePropShadows' body; the wrapper times it for -DrawStats.
+		// RenderLivePropShadows' body. The wrapper times it for DrawStats.
 		void DrawLivePropShadows(bool staticPass);
 
 		void FinishReShadeFrame(void);
@@ -759,7 +756,7 @@ namespace nSCD3D11 {
 		// live: the LiveShadowRedrawCause bits. The caller invalidates SC4's
 		// backing store so the next draw is a clean full redraw.
 		uint32_t ConsumeLiveShadowCleanRedraw(void);
-		// -DrawStats: DrawHook invalidated the backing store for these causes.
+		// DrawStats: DrawHook invalidated the backing store for these causes.
 		void CountForcedStaticRedraw(uint32_t causes);
 
 		cGDriver();

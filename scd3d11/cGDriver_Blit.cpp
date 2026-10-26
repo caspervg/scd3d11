@@ -64,7 +64,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		};
 
 		void UnpackColor(uint32_t value, float rgba[4]) {
-			// 0xAARRGGBB; bare byte values only carry alpha, so 0xFFFFFFFF and 0xFF are both "no change".
+			// 0xAARRGGBB. Bare byte values only carry alpha, so 0xFFFFFFFF and 0xFF are both "no change".
 			if (value <= 0xff) {
 				rgba[0] = rgba[1] = rgba[2] = 1.0f;
 				rgba[3] = static_cast<float>(value) / 255.0f;
@@ -221,11 +221,9 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		colorKeyed = colorKeyed && colorKey != nullptr;
 		uint32_t key = 0;
 		if (colorKeyed) std::memcpy(&key, colorKey, pixelBytes);
-		// SC4 also sends some 32-bit UI icons (the pause button, the panel's hide button) through the keyed
-		// opaque BitBlt with their transparency in the alpha channel rather than in the key colour, which
-		// they never contain. Ignoring that alpha drew their transparent pixels as black and white boxes, so a
-		// keyed blit of a source that carries alpha honours it. Sources without transparency have alpha 255
-		// throughout and look the same either way.
+		// Some 32-bit UI icons (the pause button, the panel's hide button) come through the keyed opaque
+		// BitBlt with their transparency in alpha, not in the key colour, so a keyed source with alpha
+		// honours it. Opaque sources have alpha 255 and are unaffected.
 		bool const keyedSourceWithAlpha =
 			colorKeyed && alpha == BlitAlpha::Opaque && TextureSourceComponents(format) == 4;
 		bool const usesSourceAlpha =
@@ -242,7 +240,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		}
 		constants.sourceAlpha = usesSourceAlpha ? 1.0f : 0.0f;
 
-		// Only the source rectangle is uploaded; the texture itself is grow-only.
+		// Only the source rectangle is uploaded. The texture itself is grow-only.
 		uint32_t const sourcePitch = (pixelStoreRowLength != 0 ? pixelStoreRowLength : width) * pixelBytes;
 		D3D11_BOX const box{0, 0, 0, width, height, 1};
 		if (type == 1 && format == 3) {
@@ -342,7 +340,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		d3dContext->Draw(4, 0);
 
 		if (viewportCount == 1) d3dContext->RSSetViewports(1, &savedViewport);
-		// Every binding above belongs to the geometry pipeline's caches; force it to rebind.
+		// Every binding above belongs to the geometry pipeline's caches. Force it to rebind.
 		InvalidateD3D11StateCache();
 	}
 

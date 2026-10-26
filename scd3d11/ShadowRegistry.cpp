@@ -10,9 +10,8 @@
 
 // Shadow records for the live shadow map.
 //
-// SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
-// -LiveShadows:on. Every site is guarded by its exact bytes or slot
-// value and restored during PreAppShutdown.
+// SimCity 4 Deluxe 1.1.641 only. Every patch checks the bytes or vtable slot it
+// replaces and is undone in PreAppShutdown.
 //
 //   0x00AB3A14  cSTEOverlayManager vtable +0x2C, AddShadow 0x0073C0D0
 //   0x00AB3A24  cSTEOverlayManager vtable +0x3C, RemoveOverlay 0x007388C0
@@ -20,59 +19,39 @@
 //   0x00737870  DrawShadowsRough entry, SUB ESP,0x9C
 //   0x00491894  CreateOccupantShadow, the last point the current mesh is in EDI
 //
-// DrawShadows and DrawShadowsRough are each called once, from DrawOverlays at
-// 0x0073935F and 0x00739373. The hooks sit on the functions rather than those
-// calls because SC4RenderServices owns the calls: it rewrites their rel32,
-// calls the target it found, and uninstalls and reinstalls later, restoring
-// the rel32 it saved - which silently dropped a call-site hook installed in
-// between. It always ends up calling the functions themselves, so both run in
-// either order.
+// The DrawShadows hooks sit on the functions rather than on their calls in
+// DrawOverlays, because SC4RenderServices rewrites those calls and would drop a
+// hook there. The hooks take the ids this registry owns out of the list and let
+// SC4 draw the rest, such as the network decals stored in the same records.
+// Their first argument is the pass's eye-to-world matrix.
 //
-// AddShadow (__thiscall, RET 0x18) returns the record's slot index, never a
-// negative handle. The record is 0xB4 bytes in the slot array at manager +0x98:
-// +0x00 is -1 while the slot is in use, +0x04 the flags (AddShadow ORs in 8),
-// +0x1C the CalcShadowProjection matrix and +0xAC the AddRef'd texture binding,
-// whose first word points at the texture object whose first word is the
-// cGDriver texture name (DrawShadows passes **binding to SetTexture).
+// AddShadow (__thiscall, RET 0x18) returns the record's slot index. A record is
+// 0xB4 bytes in the slot array at manager +0x98: +0x00 is -1 while it is in
+// use, +0x04 holds the flags, +0x1C the CalcShadowProjection matrix and +0xAC
+// the texture binding. The binding's first word points at the texture object,
+// whose first word is the cGDriver texture name.
 //
-// Why the draw is filtered rather than switched off at 0x00739340: AddShadowDecal
-// (+0x24, 0x0073B3B0) also ORs flag 8 into records in the same slot array, so the
-// network FSH decal shadows are drawn by the same DrawShadows call, and its only
-// filter is (flags & 9) == 9. Switching the call off would remove them too. The
-// entry hooks instead drop exactly the ids this registry owns and draw the rest
-// natively. They also run where SC4 knows what a pass needs: the list is
-// the pass's visible overlays, the first argument is the eye-to-world texgen
-// matrix (texgen source 0x10 is eye space, so DrawShadows' texture matrix is
-// projector * eyeToWorld), and ShadowQuality/shadow-toggle gating has happened.
-// Enable state is read from the record's flags there, which follows
-// SetOverlayEnabled and any other path that changes them.
+// AddShadow gets positions and UVs but no indices, so the site at 0x00491894
+// records the mesh CreateOccupantShadow is working on. Its layout matches
+// SC4DrawContext::RenderMesh (0x007D4A80): +0 vertex buffer {+0 format, +6 u16
+// count, +8 data}, +4 index holder whose first word is the u16 index array
+// (null without indices), +8 primitive list {+4 begin, +8 end} of {primitive,
+// start, count}.
 //
-// AddShadow receives positions and UVs but no index buffer. The mesh
-// CreateOccupantShadow is iterating is in EDI from 0x00491841 until 0x004918AF
-// replaces it with the material's texture binding, so the site at 0x00491894
-// records it. Its layout matches SC4DrawContext::RenderMesh (0x007D4A80):
-// +0 vertex buffer {+0 format, +6 u16 count, +8 data}, +4 index holder whose
-// first word is the u16 index array (null for DrawArrays meshes), +8 primitive
-// list {+4 begin, +8 end} of {primitive, start, count}.
+// Props without Is Ground Model reach AddShadow through LiveShadowHooks' site D.
+// One floating above the terrain, such as a building zot, stays unshadowed. One
+// whose UVs the projector reproduces is a prerendered BAT prop and casts
+// through the projector. Any other casts through its own UVs.
 //
-// Props without Is Ground Model (0x8A5E5DB8) are never shadowed by SC4. With
-// -LiveShadows:on, LiveShadowHooks' site D lets their AddShadow run
-// and flags it (ExpectMeshCaster); the record then only exists for its lifetime
-// and dirty rectangle. Such a prop floating above the terrain - the building
-// zots AddBuildingZotProp places, 46-56 m up - stays unshadowed; one whose UVs
-// the projector reproduces is a prerendered BAT prop and casts through the
-// projector; anything else is a True3D unwrap and casts through its own UVs.
-//
-// RedisplayWorldRect reuses what RedisplayStaticOverlay (0x00737D40) does: the
-// manager's terrain (+0x88) RedisplayTerrain (vtable +0x110, 0x00749850) with a
-// rectangle of terrain cells, which queues a partial static pass.
+// RedisplayWorldRect does what RedisplayStaticOverlay (0x00737D40) does: it
+// calls the terrain's RedisplayTerrain (vtable +0x110, 0x00749850) for a
+// rectangle of cells, which queues a partial static pass.
 
 #include "ShadowRegistry.h"
 
 #include "Diagnostics.h"
 #include "GameVersion.h"
 #include "LiveShadowHooks.h"
-#include "Settings.h"
 
 #include <algorithm>
 #include <array>
@@ -90,8 +69,6 @@
 
 namespace nSCD3D11::ShadowRegistry {
 	namespace {
-		constexpr uintptr_t kImageBase = 0x00400000;
-
 		constexpr uintptr_t kAddShadowSlotVA = 0x00AB3A14;
 		constexpr uintptr_t kAddShadowVA = 0x0073C0D0;
 		constexpr uintptr_t kRemoveOverlaySlotVA = 0x00AB3A24;
@@ -102,7 +79,7 @@ namespace nSCD3D11::ShadowRegistry {
 		constexpr uintptr_t kDrawShadowsRoughRejoinVA = 0x00737876;
 		constexpr uintptr_t kMeshStashVA = 0x00491894;
 		constexpr uintptr_t kMeshStashRejoinVA = 0x0049189F;
-		// SC4 renderer; +0x24 returns the lighting manager (DrawShadows 0x00736C49).
+		// SC4 renderer. +0x24 returns the lighting manager (DrawShadows 0x00736C49).
 		constexpr uintptr_t kRendererPointerVA = 0x00B43DD0;
 		constexpr size_t kRendererLightingSlot = 0x24 / sizeof(void *);
 		// Lighting manager vtable 0x00ABB530 +0x34, GetShadowDirection 0x007D6B50.
@@ -135,7 +112,7 @@ namespace nSCD3D11::ShadowRegistry {
 		constexpr uint32_t kWrapFlag = 2;
 
 		// CreateOccupantShadow's body stack pointer B. At the AddShadow call the
-		// six arguments and the return address sit below it; at the stash site
+		// six arguments and the return address sit below it. At the stash site
 		// the six arguments of the position extraction do.
 		constexpr ptrdiff_t kReturnSlotToFrame = 0x1C;
 		constexpr ptrdiff_t kStashToFrame = 0x18;
@@ -150,7 +127,7 @@ namespace nSCD3D11::ShadowRegistry {
 		constexpr float kFloatingPropHeight = 2.0f;
 		// UVs the projector reproduces this closely are a prerendered view (a BAT
 		// prop without the flag), which casts through the projector like any BAT
-		// caster; anything else is a real unwrap and casts through its own UVs.
+		// caster. Anything else is a real unwrap and casts through its own UVs.
 		constexpr double kPrerenderedResidual = 0.01;
 
 		constexpr uint32_t kMaxVertices = 0xFFFF;
@@ -170,7 +147,7 @@ namespace nSCD3D11::ShadowRegistry {
 		};
 
 		// cS3DTransform as built at 0x004915FE-0x0049166A. Flag byte 1 bit 4
-		// means the rotation applies, bit 2 the uniform scale; the matrix is
+		// means the rotation applies, bit 2 the uniform scale. The matrix is
 		// row-major (world = R * local), which the Phase 1 capture confirms.
 		struct Transform {
 			uint8_t flags[2];
@@ -301,7 +278,7 @@ namespace nSCD3D11::ShadowRegistry {
 		                float quad[4][3]) {
 			if (sun[1] > -1.0e-3f) return false;
 			float const height = baseHeight + kGroundLiftWorld;
-			// The box's top and bottom corners land this far along the sun; the
+			// The box's top and bottom corners land this far along the sun. The
 			// footprint spans the box and both landings.
 			float const alongLow = (height - low[1]) / sun[1];
 			float const alongHigh = (height - high[1]) / sun[1];
@@ -346,7 +323,7 @@ namespace nSCD3D11::ShadowRegistry {
 			return false;
 		}
 
-		// Inverse of an affine column-major matrix; false for any other.
+		// Inverse of an affine column-major matrix. False for any other.
 		bool InvertAffine(float const *m, float out[16]) {
 			if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f) return false;
 			float const c0[3]{m[0], m[1], m[2]}, c1[3]{m[4], m[5], m[6]}, c2[3]{m[8], m[9], m[10]};
@@ -726,7 +703,7 @@ namespace nSCD3D11::ShadowRegistry {
 		}
 
 		// Called by the DrawShadows call-site hooks with the pass's overlay ids.
-		// Registry-owned records are moved into the pass; every other id, and
+		// Registry-owned records are moved into the pass. Every other id, and
 		// any record that no longer matches what was registered, is kept for the
 		// native draw. False leaves the caller to draw the original list.
 		bool Gather(void *manager, float const *eyeToWorld, IdList const *ids, std::vector<int32_t> &kept) {
@@ -763,7 +740,7 @@ namespace nSCD3D11::ShadowRegistry {
 			}
 
 			// Rows x and y of projection * world-to-eye, for culling. Only an
-			// orthographic projection with a known sun is used; anything else
+			// orthographic projection with a known sun is used. Anything else
 			// hands every caster over, as before.
 			float worldToClip[16]{};
 			float sunWorld[3]{sun[0], sun[1], sun[2]};
@@ -806,7 +783,7 @@ namespace nSCD3D11::ShadowRegistry {
 				Entry &entry = gCasters[id];
 				// Culled before the record is read, from the entry alone. A record
 				// SC4 reused without RemoveOverlay is then only noticed once it is
-				// in view; none has been seen in practice.
+				// in view. None has been seen in practice.
 				if (cull) {
 					float quad[4][3];
 					bool const hasQuad = GroundQuad(entry.low, entry.high, entry.baseHeight, sunWorld, quad);
@@ -886,7 +863,7 @@ namespace nSCD3D11::ShadowRegistry {
 				for (uint32_t i = 0; i + 2 < count; i += 3)
 					triangles.insert(triangles.end(), {indices[i], indices[i + 1], indices[i + 2]});
 				return count >= 3;
-			case 1: // triangle strip; the shadow pass does not cull, so winding is irrelevant
+			case 1: // triangle strip. The shadow pass does not cull, so winding is irrelevant
 				for (uint32_t i = 0; i + 2 < count; ++i)
 					triangles.insert(triangles.end(), {indices[i], indices[i + 1], indices[i + 2]});
 				return count >= 3;
@@ -943,7 +920,7 @@ namespace nSCD3D11::ShadowRegistry {
 
 		void __fastcall RemoveOverlayHook(void *manager, void *, int32_t id) {
 			gOriginalRemoveOverlay(manager, id);
-			// Negative ids are handles into the manager's +0xAC table; AddShadow
+			// Negative ids are handles into the manager's +0xAC table. AddShadow
 			// never returns one, and a group's members come back through here.
 			if (id < 0) return;
 			std::lock_guard<std::mutex> lock(gMutex);
@@ -1012,7 +989,7 @@ namespace nSCD3D11::ShadowRegistry {
 			             drawContext, ids);
 		}
 
-		// Replays the three displaced instructions; ESP is the original's, so the
+		// Replays the three displaced instructions. ESP is the original's, so the
 		// ESP-relative load is unchanged.
 		__declspec(naked) void MeshStashStub() {
 			__asm {
@@ -1057,10 +1034,6 @@ namespace nSCD3D11::ShadowRegistry {
 			std::memcpy(site.replacement.data(), &replacement, sizeof(replacement));
 		}
 
-		bool Requested() {
-			return Settings::Flag("LiveShadows", false);
-		}
-
 		bool BytesMatch(PatchSite const &site) {
 			return site.address != nullptr && std::memcmp(site.address, site.expected.data(), site.length) == 0;
 		}
@@ -1100,16 +1073,13 @@ namespace nSCD3D11::ShadowRegistry {
 	bool Install() {
 #if defined(_MSC_VER) && defined(_M_IX86)
 		if (gInstalled) return true;
-		if (!Requested()) return false;
 		if (!IsGameVersion641()) {
 			Log(LogCategory::Initialization, "shadow registry: requires SimCity 4 1.1.641, skipping");
 			return false;
 		}
-		uint8_t *const module = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
-		if (module == nullptr) return false;
-		auto const resolve = [module](uintptr_t virtualAddress) {
-			return module + (virtualAddress - kImageBase);
-		};
+		// IsGameVersion641 only accepts an executable at its preferred base, so
+		// the game's addresses are used as they are.
+		auto const resolve = [](uintptr_t virtualAddress) { return reinterpret_cast<uint8_t *>(virtualAddress); };
 
 		gOriginalAddShadow = reinterpret_cast<AddShadowFunction>(resolve(kAddShadowVA));
 		gOriginalRemoveOverlay = reinterpret_cast<RemoveOverlayFunction>(resolve(kRemoveOverlayVA));

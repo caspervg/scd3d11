@@ -37,7 +37,7 @@ extern "C" BOOL __stdcall SCD3D11UnregisterFrameCallback(
 	g_callback = nullptr;
 	g_userData = nullptr;
 	// A callback may unregister itself. In that case the call itself is the only
-	// remaining execution barrier; an external unloader must still wait for its
+	// remaining execution barrier. An external unloader must still wait for its
 	// callback invocation to return before unloading.
 	if (!g_insideCallback) g_callbackIdle.wait(lock, [] { return g_callbacksInFlight == 0; });
 	return TRUE;

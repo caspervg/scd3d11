@@ -135,7 +135,7 @@ namespace nSCD3D11 {
 			if (!backBufferTexture) return false;
 			source = backBufferTexture.Get();
 		} else {
-			// Partial copies touching a depth-stencil-bound resource are illegal; refresh the
+			// Partial copies touching a depth-stencil-bound resource are illegal. Refresh the
 			// plain scratch copy and read from that instead.
 			HRESULT const result = EnsureDepthRegionScratch();
 			if (FAILED(result)) {
@@ -189,7 +189,7 @@ namespace nSCD3D11 {
 			if (!backBufferTexture) return false;
 			destination = backBufferTexture.Get();
 		} else {
-			// Partial copies touching a depth-stencil-bound resource are illegal; patch the
+			// Partial copies touching a depth-stencil-bound resource are illegal. Patch the
 			// plain scratch copy instead, then replace the depth buffer wholesale.
 			HRESULT const result = EnsureDepthRegionScratch();
 			if (FAILED(result)) {

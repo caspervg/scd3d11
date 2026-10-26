@@ -308,7 +308,7 @@ namespace nSCD3D11 {
 
         TextureStageState &stage = textureStages[activeTextureStage];
         uint8_t *const fields[4] = {&stage.magFilter, &stage.minFilter, &stage.wrapU, &stage.wrapV};
-        // SC4 sets the same filter and wrap modes before most textured draws; keep the sampler then.
+        // SC4 sets the same filter and wrap modes before most textured draws. Keep the sampler then.
         if (*fields[parameter] == value) return;
         *fields[parameter] = static_cast<uint8_t>(value);
         stage.sampler.Reset();

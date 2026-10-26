@@ -112,7 +112,6 @@ def main():
         submodule("sc4-dll-utilities", "vendor/sc4-dll-utilities", "0xC0000054/sc4-dll-utilities",
                   "LGPL-2.1-or-later", "SimCity 4 DLL plugin utilities, without Logger.cpp"),
         submodule("wil", "vendor/wil", "microsoft/wil", "MIT", "Windows Implementation Library headers"),
-        submodule("mini", "vendor/mINI", "metayeti/mINI", "MIT", "mINI INI reader (src/mini/ini.h)"),
     ]
 
     cyclonedx = {

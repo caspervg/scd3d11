@@ -32,9 +32,9 @@ cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() {
 cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension() {
 }
 
-/*static_assert(sizeof(sGDMode) == 56U);
-static_assert(offsetof(sGDMode, fullscreen) == 0x20);
-static_assert(offsetof(sGDMode, is3DAccelerated) == 0x22);
+/*static_assert(sizeof(sGDMode) == 56U).
+static_assert(offsetof(sGDMode, fullscreen) == 0x20).
+static_assert(offsetof(sGDMode, is3DAccelerated) == 0x22).
 static_assert(offsetof(sGDMode, _unknownFuncPtr) == 0x34);*/
 
 namespace nSCD3D11 {
@@ -64,7 +64,7 @@ namespace nSCD3D11 {
 	                       deviceRecoveryFailures(0),
 	                       nextDeviceRecovery(0),
 	                       presentationMode(PresentationMode::Windowed),
-	                       preferFlipModel(Settings::Flag("FlipModel", true)),
+	                       preferFlipModel(Settings::Get().flipModel),
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),
@@ -359,7 +359,7 @@ namespace nSCD3D11 {
 		LightModelAmbient(r, g, b, 1.0f);
 	}
 
-	// Material diffuse alpha; below 1 it also replaces the vertex alpha, as in SimGLDX7.
+	// Material diffuse alpha. Below 1 it also replaces the vertex alpha, as in SimGLDX7.
 	void cGDriver::AlphaMultiplier(float a) {
 		constantsDirty = true;
 		lightingEnabled = true;

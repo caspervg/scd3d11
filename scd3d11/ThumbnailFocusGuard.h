@@ -28,7 +28,7 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 	bool Install(void *window);
 	void Uninstall(void);
 
-	// Fed from the driver window procedure; tracks minimizes and deactivations.
+	// Fed from the driver window procedure. Tracks minimizes and deactivations.
 	void NoteWindowMessage(uint32_t message, uintptr_t wParam);
 
 }

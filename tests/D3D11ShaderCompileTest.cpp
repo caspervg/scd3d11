@@ -7,7 +7,7 @@
 #include <string>
 
 // Extracts an embedded HLSL raw string from a driver source and compiles it. By default the
-// variable is kShaderSource with VSMain/PSMain entry points; a target may name another variable
+// variable is kShaderSource with VSMain/PSMain entry points. A target may name another variable
 // and list its entry points as "entry=profile,entry=profile".
 #ifndef SC4D3D11_SHADER_VARIABLE
 #define SC4D3D11_SHADER_VARIABLE "kShaderSource"

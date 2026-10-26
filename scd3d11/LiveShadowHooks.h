@@ -12,9 +12,9 @@
 
 #include <cstdint>
 
-// Game-side half of live shadows, opt-in with -LiveShadows:on. Prebuilt network
+// Game-side half of live shadows, opt-in with LiveShadows. Prebuilt network
 // pieces and True3D props are identified here and captured by cGDriver as
-// indexed casters; SC4's lighting state is read here for the composite.
+// indexed casters. SC4's lighting state is read here for the composite.
 
 namespace nSCD3D11::LiveShadowHooks {
 	bool Install();
@@ -28,7 +28,7 @@ namespace nSCD3D11::LiveShadowHooks {
 	bool MayMatchPropMesh(uint32_t vertexCount);
 	bool MatchPropSignature(uint64_t signature);
 	// Records a relaxed prop's mesh (AddShadow's position and UV streams) for
-	// cGDriver to recognise when the prop is drawn; ShadowRegistry's fallback
+	// cGDriver to recognise when the prop is drawn. ShadowRegistry's fallback
 	// for a prop it cannot keep.
 	void RegisterPropMesh(uint32_t count, void const *positions, void const *uvs);
 

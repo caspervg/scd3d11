@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-# cmake-build-debug is CLion's x64 tree; SimCity 4 is x86, so use the x86 build trees.
+# cmake-build-debug is CLion's x64 tree. SimCity 4 is x86, so use the x86 build trees.
 if ($BuildType -eq 'Debug') { $buildDir = Join-Path $repo 'build\review' }
 else { $buildDir = Join-Path $repo 'build\final-minrelease' }
 $builtDll = Join-Path $buildDir 'SCD3D11.dll'
@@ -32,7 +32,7 @@ if (-not (Test-Path -LiteralPath $vcvars)) { throw "MSVC environment script not 
 # from failing the run just because it has no tests to execute.
 $buildCommand = 'call "{0}" x86 && "{1}" --build "{2}" --config {3} && ctest --test-dir "{2}" -C {3} --no-tests=ignore --output-on-failure' -f $vcvars, $cmake, $buildDir, $BuildType
 # vcvarsall writes harmless warnings to stderr, which -ErrorActionPreference Stop would
-# turn into a terminating error; judge the build by its exit code instead.
+# turn into a terminating error. Judge the build by its exit code instead.
 $previousPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try { & $env:ComSpec /d /s /c $buildCommand } finally { $ErrorActionPreference = $previousPreference }
@@ -61,7 +61,7 @@ foreach ($name in $logs) {
 }
 
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PluginDll).Hash
-# -UserDir selects the plugin/user folder SC4 loads SCD3D11.dll from; without it the game
+# -UserDir selects the plugin/user folder SC4 loads SCD3D11.dll from. Without it the game
 # falls back to the Documents folder and never loads this driver.
 # The value must stay quoted: Start-Process passes the list through verbatim, and an
 # unquoted path with spaces makes SC4 parse only "D:\OneDrive", load the wrong plugin

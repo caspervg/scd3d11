@@ -93,7 +93,7 @@ int main() {
 	assert(!AllVerticesOutside(rows, bounds, reinterpret_cast<uint8_t const *>(interleaved), sizeof(interleaved[0]), 3));
 
 	// The orthographic fast path must agree with the general test. Random orthographic projections and
-	// rotated, translated model-views; vertex sets that are mostly outside one edge, with sizes around the
+	// rotated, translated model-views. Vertex sets that are mostly outside one edge, with sizes around the
 	// four-vertex groups and the sixteen-vertex checkpoints, and some vertices exactly on an edge.
 	uint32_t seed = 12345u;
 	auto const random = [&seed]() {

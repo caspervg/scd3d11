@@ -103,7 +103,7 @@ namespace nSCD3D11 {
 		++frameStats.draws;
 		if (name != 0) return;
 		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
-		// A culled draw still reaches the live shadow bookkeeping below; only the upload and draw are skipped.
+		// A culled draw still reaches the live shadow bookkeeping below. Only the upload and draw are skipped.
 		bool const culled = viewportCullActive && ExtensionReservationHolds(byteSize) &&
 		                    DrawOutsideViewport(
 			                    primitive, extensionVertexData.data() +
@@ -165,7 +165,7 @@ namespace nSCD3D11 {
 		}
 		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
 		uint32_t const byteSize = (static_cast<uint32_t>(maximumIndex) + 1) * extensionStride;
-		// Tests the index range, which holds every referenced vertex; live shadows still see a culled draw.
+		// Tests the index range, which holds every referenced vertex. Live shadows still see a culled draw.
 		bool const culled = viewportCullActive && ExtensionReservationHolds(byteSize) &&
 		                    DrawOutsideViewport(
 			                    primitive, extensionVertexData.data() +
