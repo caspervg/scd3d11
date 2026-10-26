@@ -234,7 +234,7 @@ namespace nSCD3D11
 			ULONGLONG stalledFrame = 0;
 			ULONGLONG nextReport = 0;
 			unsigned reports = 0;
-			// SC4 loads plugins on the render thread after its first Flush; that is not a stall. Arm only once
+			// SC4 loads plugins on the render thread after its first Flush. That is not a stall. Arm only once
 			// frames have kept coming for a while (10 half-second ticks).
 			ULONGLONG previousFrame = 0;
 			unsigned framesFlowing = 0;

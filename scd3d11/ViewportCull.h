@@ -43,7 +43,7 @@ namespace nSCD3D11 {
 		ClipBounds &bounds);
 
 	// True only when every vertex lies beyond the same edge of bounds. Positions are three floats at the
-	// start of each stride. Stops at the first vertex that rules this out; a vertex with w <= 0 (or NaN)
+	// start of each stride. Stops at the first vertex that rules this out. A vertex with w <= 0 (or NaN)
 	// always keeps the draw. Rows without a perspective term (the orthographic camera) take a faster path
 	// that gives the same answer for finite results and keeps the draw for any non-finite one.
 	bool AllVerticesOutside(

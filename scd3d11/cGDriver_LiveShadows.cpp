@@ -1,6 +1,6 @@
 /*
  * Live indexed shadows for True3D props and prebuilt network pieces
- * (LiveShadows). SC4's own shadow paths only see positions and UVs; this
+ * (LiveShadows). SC4's own shadow paths only see positions and UVs. This
  * pass runs where the index buffer and alpha texture still exist.
  *
  * The same shadow map also takes every shadow record SC4's AddShadow made
@@ -49,14 +49,14 @@ namespace nSCD3D11 {
         constexpr uint32_t kArenaIndices = 1u << 20;
         constexpr uint64_t kArenaMaxBytes = 128ull << 20;
         // How far below a per-draw caster its shadow is assumed to fall when the
-        // terrain altitude under it is unknown; only sizes redisplay regions.
+        // terrain altitude under it is unknown. Only sizes redisplay regions.
         constexpr float kUnknownGroundDrop = 32.0f;
         // Two captures are the same caster when their shape matches and their
-        // world boxes agree this closely; the view changes between passes, so
+        // world boxes agree this closely. The view changes between passes, so
         // model-to-world is only reproduced up to rounding.
         constexpr float kSameCasterTolerance = 0.05f;
         // Network models used as textured road surfaces sit just above the
-        // terrain. Their self-shadow only darkens the surface; an elevated deck
+        // terrain. Their self-shadow only darkens the surface. An elevated deck
         // must still cast. Every vertex is checked against the terrain so slopes
         // do not make a ground-hugging piece look elevated.
         constexpr float kGroundNetworkCasterClearance = 0.5f;
@@ -207,15 +207,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 	bool terrainMap = terrainShade.x != 0.0;
 	float3 world = terrainMap ? mul(eyeToWorld, float4(viewPosition, 1.0)).xyz : float3(0.0, 0.0, 0.0);
 	// Beyond the city's edge lies SC4's backdrop, below the terrain and so
-	// under its shadow ceiling; nothing out there casts, and shading it only
+	// under its shadow ceiling. Nothing out there casts, and shading it only
 	// leaves patches where edge strips are redrawn without the composite.
 	float2 cityExtent = (terrainCell.zw - 1.0) * terrainCell.x;
 	if (terrainMap && (any(world.xz < -1.0) || any(world.xz > cityExtent + 1.0))) discard;
-	// A shadow takes away the sun's direct light, which SC4's prerendered art
-	// and vertex lighting give a face in proportion to N.L. So it darkens fully
-	// where N.L is that of flat ground - what SC4's shadow strength is set for -
-	// less on a face turned partly away, and not at all on one turned fully
-	// away, which is already unlit; shading that again only darkens it twice.
+	// SC4 lights a face by how directly it faces the sun, and its shadow
+	// strength is set for flat ground. A face turned partly away gets less
+	// shadow, and a face that is already unlit gets none.
 	float facing = 1.0;
 	if (sun.w != 0.0) {
 		float3 normal = normalize(cross(SurfaceStep(pixel, viewPosition, int2(0, 1)),
@@ -248,7 +246,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 		}
 	}
 	// The terrain up-sun of a point shadows it when the point lies below the
-	// ceiling the map holds for its (x, z); walls and roofs read it the same way.
+	// ceiling the map holds for its (x, z). Walls and roofs read it the same way.
 	// The larger of the two shadows wins, so they never stack.
 	if (terrainMap) {
 		float2 axes = float2(dot(world.xz, terrainAxes.xy), dot(world.xz, terrainAxes.zw));
@@ -258,9 +256,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 	}
 	shade *= facing;
 	clip(shade - 0.001);
-	// Multiplied into the scene: a shadow takes the direct light away and
-	// keeps the ground's own colour, tinted by SC4's shadow colour. Blending
-	// towards that colour instead washes large terrain shadows out in blue.
+	// Multiplied into the scene and tinted by SC4's shadow colour. Blending
+	// towards that colour instead would wash large terrain shadows out in blue.
 	return float4(lerp(float3(1.0, 1.0, 1.0), tone.rgb, shade * projection1.w), 1.0);
 }
 )";
@@ -285,7 +282,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 
         // A registry caster that survived culling, with where its geometry
         // landed in this pass's upload: its mesh, then its ground quad. The
-        // quad always bounds the caster's reach; it is drawn only for
+        // quad always bounds the caster's reach. It is drawn only for
         // projector casters.
         struct RegistryDraw {
             ShadowRegistry::PassCaster const *caster = nullptr;
@@ -381,7 +378,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 out[row] = matrix[row] * direction[0] + matrix[4 + row] * direction[1] + matrix[8 + row] * direction[2];
         }
 
-        // General 4x4 inverse by cofactors; the layout is irrelevant as long as
+        // General 4x4 inverse by cofactors. The layout is irrelevant as long as
         // input and output share it.
         bool Invert(float const* m, float* out) {
             double inverse[16];
@@ -462,7 +459,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                        : 0.0;
         }
 
-        // Adds its scope's wall time to a DrawStats total; costs a branch without DrawStats.
+        // Adds its scope's wall time to a DrawStats total. Costs a branch without DrawStats.
         struct ScopeTimer {
             double* total;
             LARGE_INTEGER start{};
@@ -476,7 +473,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 
         uint64_t gArenaGenerations = 0;
 
-        // Appends one mesh to the arena; false when it does not fit.
+        // Appends one mesh to the arena. False when it does not fit.
         bool ArenaAppend(ID3D11DeviceContext* context, ShadowArena& arena, UINT stride, void const* vertices,
                          uint32_t vertexCount, uint32_t const* indices, uint32_t indexCount, uint32_t& firstVertex,
                          uint32_t& firstIndex) {
@@ -541,9 +538,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
     }
 
     bool cGDriver::MatchesLiveShadowMesh(uint32_t firstVertex, uint32_t vertexCount) {
-        // The game-side prebuilt-network Draw hook brackets only the relevant
-        // occupant renderer, so it is both cheaper and more precise than
-        // hashing those meshes (or heuristically accepting all scene draws).
+        // LiveShadowHooks brackets exactly the prebuilt network draws.
         if (LiveShadowHooks::NetworkDrawActive()) return true;
         if (!LiveShadowHooks::MayMatchPropMesh(vertexCount) || interleavedPointer == nullptr) return false;
         uint8_t const* const source = interleavedPointer + static_cast<size_t>(firstVertex) * interleavedStride;
@@ -599,7 +594,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         std::vector<D3D11Vertex> vertices, std::vector<uint32_t> indices,
         D3D11_PRIMITIVE_TOPOLOGY topology, bool networkCaster) {
         if (vertices.empty() || indices.size() < 3) return;
-        // Untextured geometry still casts a solid silhouette; the caster shader
+        // Untextured geometry still casts a solid silhouette. The caster shader
         // already handles a null view via material.w == 0. Only textured draws
         // need a live sampler.
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> texture;
@@ -653,7 +648,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         if (liveShadowTerrainViewValid || !LiveShadowHooks::Enabled()) return;
         std::memcpy(liveShadowTerrainView, matrices[MODEL_VIEW], sizeof(liveShadowTerrainView));
         // Called right after the reservation was uploaded, which holds at least
-        // one vertex; its format leads with the position.
+        // one vertex. Its format leads with the position.
         std::memcpy(liveShadowTerrainVertex,
                     extensionVertexData.data() + static_cast<size_t>(extensionVertexStart) *
                                                  RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F),
@@ -824,17 +819,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
     }
 
     void cGDriver::DrawLivePropShadows(bool staticPass) {
-        // SC4 updates the static view in place for localized changes, handing the
-        // driver the dirty rectangle as a scissored viewport. A shadow is not a
-        // local effect: casters inside the rectangle throw onto receivers outside
-        // it, and receivers inside it are darkened by casters that were never
-        // redrawn. ShadowRegistry's casters arrive complete for the rectangle and
-        // SC4 dirties a record's rectangle when it changes, and
-        // TrackLiveShadowWorldCasters does the same for per-draw casters. A
-        // partial pass that cannot be followed - or one whose terrain shadows
-        // changed - composites what it honestly has, clipped to the rectangle,
-        // and asks for a clean rebuild. A full-window pass is never treated as
-        // partial, so this cannot drive a redraw loop.
+        // A partial pass redraws one dirty rectangle, but shadows cross its
+        // edges. ShadowRegistry and TrackLiveShadowWorldCasters know every
+        // caster that reaches the rectangle. If they cannot follow a pass, or
+        // the terrain shadows changed, the pass draws what it has and asks for a
+        // full redraw. A full-window pass never asks, so this cannot loop.
         bool const partialPass =
             scissorEnabled && (viewportX > 0 || viewportY > 0 || viewportWidth < windowWidth ||
                                viewportHeight < windowHeight);
@@ -929,10 +918,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         std::memcpy(projection, !liveShadowDraws.empty() ? liveShadowDraws.front().projection : liveShadowSceneProjection,
                     sizeof(projection));
 
-        // A strip at the city's edge often holds no shadow record and no
-        // terrain on the height field, so its view stays unknown; it drew no
-        // caster either, so the world-space set is still right. Dropping the set
-        // there forced a full redraw on every scroll frame along the edge.
+        // A strip at the city's edge often has no shadow record and no terrain
+        // on the height field, so its view is unknown. It drew no caster either,
+        // so the casters we already track are still right.
         bool const emptyPartialPass = partialPass && !haveView && !havePass && liveShadowDraws.empty();
         bool tracked = false;
         if (registry && staticPass && !emptyPartialPass) {
@@ -1126,19 +1114,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             return;
         }
 
-        // SC4PIM-X reproduces the city camera as R_x(pitch) * R_y(view - 22.5)
-        // (plus the OpenGL Z reflection) and the vanilla sun as a view-locked
-        // 45-degree ray. In that basis a one-unit-high point casts one world unit
-        // horizontally on the ground. Therefore, in view space:
-        //
-        //     caster-to-receiver ray = screen-right ground vector - world-up
-        //
-        // Every normal SC4 prop placement is a translation, uniform scale and
-        // rotation around world Y, so column 1 of its model-view matrix is the
-        // camera's transformed world-up vector. Reading it directly avoids the
-        // incorrect cS3D transform reconstruction which collapsed the old ray to
-        // camera-forward (0,0,-1), and it remains valid at every camera pitch.
-        // It is only the fallback: a pass with a view carries GetShadowDirection.
+        // Fallback for a pass without a view (one with a view has
+        // GetShadowDirection). The vanilla sun is a view-locked 45-degree ray,
+        // so in view space the shadow ray is screen-right minus world-up.
+        // Placements only translate, scale and rotate about Y, so column 1 of a
+        // caster's model-view is the camera's world-up.
         float viewUp[3]{};
         unsigned viewUpSamples = 0;
         for (LiveShadowDraw const* caster : casters) {
@@ -1218,7 +1198,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             Normalize(sunWorld);
             float worldToClip[16]{};
             Multiply(projection, worldToView, worldToClip);
-            // Only the x and y rows matter to the cull; SC4 moves the depth range between draws.
+            // Only the x and y rows matter to the cull. SC4 moves the depth range between draws.
             auto const differentRows = [&]() {
                 for (unsigned column = 0; column < 4; ++column)
                     for (unsigned row = 0; row < 2; ++row)
@@ -1247,7 +1227,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 bool const hasQuad = ShadowRegistry::GroundQuad(caster, sunWorld, quad);
                 bool const drawQuad = hasQuad && !caster.meshUVs;
                 if (caster.indices.empty() && !drawQuad) continue;
-                // The gather already culled against this pass's projection; this
+                // The gather already culled against this pass's projection. This
                 // catches a pass whose projection changed after DrawShadows.
                 bool const outside = ShadowRegistry::ReachOutside(caster, hasQuad, quad, worldToClip);
                 if (outside) {
@@ -1326,8 +1306,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     registryCulled, registryMissingTexture, haveView ? "known" : "unknown");
             }
         }
-        // A pass with no caster in reach can still lie in the terrain's shadow;
-        // it skips the shadow map and composites the terrain alone.
+        // A pass with no caster in reach can still lie in the terrain's shadow.
+        // It skips the shadow map and composites the terrain alone.
         bool const haveCasters = !casters.empty() || !registryDraws.empty();
         if (!haveCasters && !terrainShadows) {
             liveShadowDraws.clear();
@@ -1369,7 +1349,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
             }
         }
-        // Ends the stamps up to `upTo`; the last one also closes the disjoint query.
+        // Ends the stamps up to `upTo`. The last one also closes the disjoint query.
         auto gpuStamp = [&](unsigned upTo) {
             if (gpuTimer == nullptr) return;
             while (gpuStamps <= upTo) d3dContext->End(gpuTimer->stamps[gpuStamps++].Get());
@@ -1411,8 +1391,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             return d3dDevice->CreateBuffer(&desc, nullptr, &buffer);
         };
         ID3D11Buffer* cb = pipeline.constants.Get();
-        // Captures already in the arena are drawn from where they were put;
-        // only new ones are uploaded.
+        // Captures already in the arena are drawn from where they were put.
+        // Only new ones are uploaded.
         UINT const casterStride = sizeof(D3D11Vertex);
         auto placeCasters = [&]() {
             for (LiveShadowDraw* draw : casters) {
@@ -1473,10 +1453,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                     static_cast<INT>(draw.arenaFirstVertex));
         }
 
-        // Registry casters: every caster's mesh and ground quad go into one
-        // upload for the pass - SC4 creates and drops shadow records far too
-        // often for a persistent copy to pay - then one draw each, since each
-        // record carries its own projector and texture.
+        // Registry casters. Every caster's mesh and ground quad go into one
+        // upload per pass, because SC4 recreates shadow records too often to
+        // keep them. Each caster is then drawn on its own, with its own
+        // projector and texture.
         if (!registryDraws.empty()) {
             UINT const registryStride = sizeof(float) * kRegistryVertexFloats;
             uint64_t const vertexBytes = static_cast<uint64_t>(registryVertexCount) * registryStride;
@@ -1708,10 +1688,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         composite.projection1[0] = projection[13];
         composite.projection1[1] = projection[14];
         composite.projection1[2] = 1.0f / kShadowMapSize;
-        // SC4's shadow colour and strength (GetShadowParams), as DrawShadows
-        // blends them, once a pass has reported them. Its fixed blue colour is
-        // a daylight shadow tint: fade the custom composite with the lighting
-        // manager's own day/night weight, even when no native overlay was drawn.
+        // SC4's shadow colour and strength (GetShadowParams), faded by the
+        // lighting manager's day/night weight because the blue is a daylight tint.
         float daylight = 1.0f;
         LiveShadowHooks::ShadowDaylight(daylight);
         composite.projection1[3] =
@@ -1729,12 +1707,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         composite.sun[3] = 1.0f / flatLight;
         ID3D11RenderTargetView* target = renderTargetView.Get();
         d3dContext->OMSetRenderTargets(1, &target, nullptr);
-        // The composite is a fullscreen triangle, so the viewport is what bounds
-        // it. Outside a partial pass's dirty rectangle SC4 keeps the pixels it
-        // already has, and darkening them again would re-blend the same shadow
-        // over itself on every update. The pixel shader reads SV_Position and
-        // maps it through this same rectangle, which is what the pass's
-        // projection covers.
+        // The viewport limits the fullscreen triangle. Outside a partial pass's
+        // rectangle, the pixels already have their shadow.
         D3D11_VIEWPORT viewport{0, 0, static_cast<float>(windowWidth), static_cast<float>(windowHeight), 0, 1};
         if (partialPass) {
             viewport.TopLeftX = static_cast<float>(viewportX);

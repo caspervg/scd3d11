@@ -41,7 +41,7 @@ namespace nSCD3D11::TerrainShadows {
 	// The height field the map returned by the last Update was built from.
 	TerrainShadowMap::HeightField const &Terrain();
 
-	// Altitude in the height field the last Update read; false outside the
+	// Altitude in the height field the last Update read. False outside the
 	// city or before a map exists.
 	bool Altitude(float x, float z, float &altitude);
 } // namespace nSCD3D11::TerrainShadows

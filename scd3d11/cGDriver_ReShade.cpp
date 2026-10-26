@@ -10,21 +10,16 @@
 
 // ReShade add-on integration.
 //
-// Installed as dxgi.dll or d3d11.dll next to SimCity 4.exe, ReShade wraps the device and swap chain
-// SCD3D11 creates and renders its effects in Present, over the whole frame including the UI. When
-// ReShade is loaded SCD3D11 registers itself as an add-on instead and
-//  - renders the effects at the end of cSC43DRender::Draw, once the city view is complete and before
-//    any UI is drawn over it;
-//  - binds the scene depth to the DEPTH semantic, already encoded so that ReShade.fxh's perspective
-//    linearization turns it back into SC4's depth, which is linear because the camera is orthographic
-//    (cSC43DRender::UpdateCameraZoomAndRotationParams -> SetOrtho).
-// Only effect runtime events and calls are used. ReShade's regular build (not only the "full add-on
-// support" one) allows those for externally registered add-ons. Requires ReShade 6.0 or later.
-// ReShade=off leaves ReShade's default behaviour untouched.
+// With ReShade installed as dxgi.dll or d3d11.dll, SCD3D11 registers itself as
+// an add-on. ReShade's effects then run at the end of cSC43DRender::Draw,
+// before the UI is drawn, and see SC4's depth buffer through the DEPTH
+// semantic. That depth is linear because the camera is orthographic. Only the
+// effect runtime API is used, which ReShade's normal build allows. Needs
+// ReShade 6.0 or later. ReShade=off leaves ReShade's default behaviour.
 //
-// SC4 keeps its back buffer across Present and redraws only what changed, so effects rendered into it
-// persist until the city view is redrawn. Frames that only redraw UI must not get effects again at
-// Present; FinishReShadeFrame marks those as done.
+// SC4 keeps its back buffer between frames and only redraws what changed, so
+// the effects stay in it until the city view is redrawn. FinishReShadeFrame
+// stops ReShade from applying them again on frames that only redraw the UI.
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
@@ -101,16 +96,12 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		}
 
 		bool __fastcall DrawHook(void *self, void *edx) {
-			// AttemptTranslatedViewUpdate shifts the existing backing-store pixels and
-			// redraws only the newly exposed strips. That dirty region knows the prop's
-			// original footprint, but not LiveShadows' displaced footprint, so baked
-			// shadows otherwise leave trails and get blended repeatedly. Invalidate
-			// translated updates while live shadows are enabled; SC4 then takes its own
-			// established full-redraw path and builds a clean backing store at the new
-			// view. With ShadowRegistry installed the strips are correct as drawn -
-			// every caster that can reach them is known in world space - so translated
-			// updates keep SC4's fast path. A dirty-rectangle update the shadows could
-			// not follow asks for the same clean rebuild.
+			// A scroll (AttemptTranslatedViewUpdate) shifts the backing store and
+			// redraws only the exposed strips. With ShadowRegistry every caster that
+			// reaches them is known, so scrolling keeps that fast path. Without it,
+			// shadows beside the strips would go wrong, so the whole view is redrawn.
+			// Zoom and rotation changes, and partial passes the shadows could not
+			// follow, force a full redraw too.
 			uint32_t forced = gDriver != nullptr ? gDriver->ConsumeLiveShadowCleanRedraw() : 0;
 			if (self != nullptr && LiveShadowHooks::Enabled()) {
 				auto *const bytes = static_cast<uint8_t *>(self);
@@ -157,7 +148,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				}
 			}
 			if (self != nullptr && forced != 0) {
-				// Only a store that was valid is an extra redraw; SC4 may have dropped it already.
+				// Only a store that was valid is an extra redraw. SC4 may have dropped it already.
 				if (gDriver != nullptr && static_cast<uint8_t *>(self)[0x65] != 0) gDriver->CountForcedStaticRedraw(forced);
 				static_cast<uint8_t *>(self)[0x65] = 0; // cSC43DRender::mbBackingStoreValid
 			}
@@ -320,7 +311,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 	}
 
 	void cGDriver::UninstallReShadeAddon(void) {
-		// ponytail: the vtable hook stays for the process lifetime; it is inert without a driver.
+		// The vtable hook stays for the process lifetime. Without a driver it does nothing.
 		if (gDriver == this) gDriver = nullptr;
 	}
 
@@ -424,7 +415,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		// p[5] = 2 / (top - bottom) and p[10] = -2 / (far - near).
 		float const *const p = matrices[PROJECTION];
 
-		// A perspective matrix has a non-zero w row; anything degenerate is not a usable ortho either.
+		// A perspective matrix has a non-zero w row. Anything degenerate is not a usable ortho either.
 		bool const orthographic = p[3] == 0.0f && p[7] == 0.0f && p[11] == 0.0f;
 		if (!orthographic || std::fabs(p[5]) < 1e-12f || std::fabs(p[10]) < 1e-12f) {
 			shadowUniforms.valid = false;
@@ -475,7 +466,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		gSceneDepthView = nullptr;
 		reshadeEffectsInBackBuffer = reshadeEffectsThisFrame = true;
 
-		// The depth pass and the effects touched state SCD3D11 caches; start from a clean slate as Flush does.
+		// The depth pass and the effects touched state SCD3D11 caches. Start from a clean slate as Flush does.
 		d3dContext->ClearState();
 		InvalidateD3D11StateCache();
 		ID3D11RenderTargetView *const renderTarget = renderTargetView.Get();

@@ -56,8 +56,8 @@ namespace nSCD3D11::Settings {
 			}
 		}
 
-		// One source's text for a setting, lower-cased; nullopt when that source
-		// does not set it. A bare switch reads as "".
+		// One source's text for a setting in lower case, or nothing when that
+		// source does not set it. A bare switch reads as "".
 		std::optional<std::string> FromCommandLine(cIGZCmdLine *commandLine, char const *name) {
 			cRZBaseString switchValue;
 			if (commandLine == nullptr || !commandLine->IsSwitchPresent(cRZBaseString(name), switchValue, true))
@@ -71,8 +71,8 @@ namespace nSCD3D11::Settings {
 			if (ini == nullptr) return std::nullopt;
 			auto const entry = ini->find(name);
 			if (entry == ini->not_found()) return std::nullopt;
-			// IniReader keeps an inline comment (; or #) as part of the value;
-			// drop it and the spaces before it.
+			// IniReader keeps an inline comment, starting with a semicolon or #,
+			// as part of the value. Drop it and the spaces before it.
 			std::string value;
 			for (char const character : entry->second) {
 				if (character == ';' || character == '#') break;

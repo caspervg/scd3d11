@@ -16,7 +16,7 @@
 
 namespace nSCD3D11::TerrainShadowMap {
 	namespace {
-		// D3D10's texture size limit; a large city needs about 700 texels at
+		// D3D10's texture size limit. A large city needs about 700 texels at
 		// half-cell spacing.
 		constexpr uint32_t kMaxTexels = 8192;
 
@@ -124,7 +124,7 @@ namespace nSCD3D11::TerrainShadowMap {
 		built.ceiling.resize(static_cast<size_t>(built.width) * built.height);
 		built.umbra.resize(built.ceiling.size());
 
-		// Terrain beyond the city edge is not drawn, so it casts nothing; the
+		// Terrain beyond the city edge is not drawn, so it casts nothing. The
 		// floor there follows the nearest edge so filtering stays smooth.
 		float const tolerance = terrain.cellWidth * 1.0e-3f;
 		float const outerStep = spacing * outerDrop;
@@ -158,7 +158,7 @@ namespace nSCD3D11::TerrainShadowMap {
 		if (map.width == 0 || map.height == 0) return -FLT_MAX;
 		float const a = x * map.along[0] + z * map.along[1];
 		float const b = x * map.across[0] + z * map.across[1];
-		// Texel centres sit at integer coordinates; clamp as the sampler does.
+		// Texel centres sit at integer coordinates. Clamp as the sampler does.
 		float const fa = (std::min)((std::max)((a - map.originAlong) / map.spacing, 0.0f),
 		                            static_cast<float>(map.width - 1));
 		float const fb = (std::min)((std::max)((b - map.originAcross) / map.spacing, 0.0f),

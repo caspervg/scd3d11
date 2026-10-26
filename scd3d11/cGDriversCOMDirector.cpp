@@ -71,7 +71,7 @@ namespace nSCD3D11
 			return true;
 		}
 
-		// The game's own DirectX driver has this class ID too; the higher
+		// The game's own DirectX driver has this class ID too. The higher
 		// version is what makes SC4 pick SCD3D11.
 		void EnumClassObjects(ClassObjectEnumerationCallback pCallback, void* pContext) {
 			pCallback(cGDriver::kSCD3D11GDriverGZCLSID, 1000000, pContext);

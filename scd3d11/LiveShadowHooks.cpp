@@ -10,58 +10,30 @@
 
 // Live shadows for prebuilt network pieces and True3D props.
 //
-// SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
-// LiveShadows. Every site is guarded by its exact bytes and restored during
-// PreAppShutdown.
+// SimCity 4 Deluxe 1.1.641 only. Every patch checks the bytes it replaces and
+// is undone in PreAppShutdown. The game decides which draws cast shadows, and
+// cGDriver captures their triangles for its own shadow map.
 //
-// The game decides which draws are casters; cGDriver captures their indexed,
-// alpha-tested triangles and renders them into its own shadow map.
-//
-// Props. SC4 never shadows a prop without Is Ground Model (0x8A5E5DB8):
-//
-//   C 0x0049134B   5 bytes  the Is Ground Model property test
-//   D 0x0049195E   6 bytes  the cSTEOverlayManager::AddShadow call
-//
-// Site C lets such a prop through CreateOccupantShadow and remembers it; site
-// D lets its AddShadow call run for ShadowRegistry, which keeps the mesh with
-// its own UVs. Without the registry, site D records a signature of the
-// position and UV streams instead and suppresses the call, whose single affine
-// projector draws tall True3D geometry as filled slabs; cGDriver then hashes
-// each draw the same way to recognise the prop.
-//
-// Prebuilt network pieces. Pieces that pass UpdateShadow's
-// HasNetworkFlag(1) && HasNetworkFlag(4) && quality gate get SC4's flat
-// shadow decal from an FSH at {0x7AB50E44, 0x2BC2759A, base + zoom}; the NAM
-// ships thousands. They cast live instead, so the decal would only darken the
-// same ground twice:
-//
-//   A 0x0061E35C  35 bytes  the gate, replaced by a jump to its reject branch
-//                           (XOR BL,BL at 0x0061E383), so no decal is mapped;
-//                           left alone with NetworkShadowMasks on
-//
-// A piece is two entries in the view's sorted
-// drawable list, each drawn through virtual slot +0x30 by DrawStaticView_
-// (0x007C7370):
-//
+//   A 0x0061E35C  35 bytes  network shadow decal gate, sent to its reject branch
+//                           (0x0061E383) unless NetworkShadowMasks is on
+//   C 0x0049134B   5 bytes  Is Ground Model (0x8A5E5DB8) test in CreateOccupantShadow
+//   D 0x0049195E   6 bytes  the cSTEOverlayManager::AddShadow call after it
 //   E 0x0061E860   5 bytes  cSC4NetworkOccupantWithPreBuiltModel::Draw wrapper
 //   F 0x0061E8A0   8 bytes  cSC4NetworkOccupantWithPreBuiltModel::GetModelInstances
-//   G 0x006147D0  11 bytes  the cS3DModelInstance drawable thunk (vtable +0x30)
+//   G 0x006147D0  11 bytes  cS3DModelInstance drawable thunk (vtable +0x30)
 //
-//   * the occupant itself, whose Draw (site E -> 0x0061A850) renders only the
-//     network's flat textured quads. 0x0061E860 is __thiscall(self, 2 args,
-//     RET 0x8). Bridge occupants (class 0x49CC1BCD) route their Draw through
-//     the same wrapper via the thunk at 0x00605320, so one bracket covers
-//     prebuilt and bridge puzzle pieces alike;
-//   * the piece's model, a cS3DModelInstance created in GetModelInstances from
-//     the RKT0 key {0x5AD0E817, 0xBADB57F1} and kept at occupant +0x1C4/+0x1C8,
-//     drawn through the thunk at 0x006147D0 -> 0x00801750 -> RenderModelInstance
-//     -> RenderMesh, which is where cGDriver finally sees the triangles.
+// Props. SC4 never shadows a prop without Is Ground Model. Site C lets such a
+// prop through, and site D lets its AddShadow run so that ShadowRegistry keeps
+// its mesh. Without the registry, site D records a signature of the mesh and
+// skips the call, and cGDriver recognises the prop's draws by that signature.
 //
-// Site F records the two model instances an occupant owns; site G brackets the
-// draw of a recorded instance. Ownership is re-checked against occupant +0x1C4 /
-// +0x1C8 on every hit, so an instance that was freed and whose address was
-// recycled cannot masquerade as a caster: a live occupant holds a reference to
-// its own instance, so a matching slot means the entry is still real.
+// Prebuilt network pieces cast live, so their flat shadow decals (site A) would
+// darken the same ground twice. A piece is drawn in two parts: the occupant
+// itself (site E, which bridges use too) and its model, a cS3DModelInstance
+// kept at occupant +0x1C4/+0x1C8 (sites F and G). Site F records the instances
+// each occupant owns, and site G marks their draws. Ownership is checked again
+// on every draw, because a freed instance's address can be reused by another
+// model.
 
 #include "LiveShadowHooks.h"
 
@@ -106,7 +78,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		constexpr ptrdiff_t kFrameOccupant = 0xE0;
 		constexpr ptrdiff_t kAddShadowArgumentBytes = 0x14;
 
-		// SC4 renderer; +0x24 returns the lighting manager (DrawShadows 0x00736C49).
+		// SC4 renderer. +0x24 returns the lighting manager (DrawShadows 0x00736C49).
 		constexpr uintptr_t kRendererPointerVA = 0x00B43DD0;
 		constexpr size_t kRendererLightingSlot = 0x24 / sizeof(void *);
 		// Lighting manager vtable 0x00ABB530 +0x34, GetShadowDirection 0x007D6B50.
@@ -165,18 +137,16 @@ namespace nSCD3D11::LiveShadowHooks {
 			for (auto &word: gPropCounts) word.store(0, std::memory_order_relaxed);
 		}
 
-		// Model instances owned by prebuilt network pieces, mapped to the
-		// occupant that owns them so a hit can be re-validated. Read once per
-		// cS3DModelInstance draw, written only when a piece loads its models, so
-		// a shared lock is the right shape - and the atomic count keeps the
-		// common "nothing registered" case off the lock entirely.
+		// Model instances owned by prebuilt network pieces, mapped to their
+		// occupant so a match can be checked again. It is read on every model
+		// draw and rarely written, hence the shared lock. The count lets draws
+		// skip the lock while nothing is registered.
 		std::shared_mutex gLiveModelMutex;
 		std::unordered_map<void const *, void const *> gLiveModelInstances;
 		std::atomic<size_t> gLiveModelInstanceCount{0};
-		// Entries are only replaced, never erased, because there is no cheap
-		// notification when an occupant dies. The cap stops a pathological
-		// session from growing the map without bound; the validation below is
-		// what keeps stale entries harmless.
+		// Entries are only replaced, never erased, because SC4 does not tell us
+		// when an occupant is deleted. The cap limits the map's size, and the
+		// check in IsPrebuiltModelInstance makes stale entries harmless.
 		constexpr size_t kMaxLiveModelInstances = 1u << 16;
 
 		unsigned gNetworkDraws = 0;
@@ -284,11 +254,8 @@ namespace nSCD3D11::LiveShadowHooks {
 		}
 
 		// True while this instance is still one of its occupant's prebuilt
-		// models. The second half is what makes the registry safe: nothing tells
-		// us when an instance dies, so a freed address that the allocator handed
-		// to some other model would otherwise stay a caster forever. A live
-		// occupant holds a reference to its own instance, so a slot that still
-		// points here means the entry is real.
+		// models. A freed instance's address can be reused by another model, but
+		// a live occupant's slot only ever points at its own instance.
 		bool IsPrebuiltModelInstance(void const *instance) {
 			if (instance == nullptr) return false;
 			if (gLiveModelInstanceCount.load(std::memory_order_relaxed) == 0) return false;
@@ -320,7 +287,7 @@ namespace nSCD3D11::LiveShadowHooks {
 	}
 
 	// The rejected prop has reached the point where SC4 extracted its position
-	// and UV streams. Record its mesh signature, then suppress AddShadow (2);
+	// and UV streams. Record its mesh signature, then suppress AddShadow (2).
 	// 0 lets any other call through untouched.
 	extern "C" uint32_t __cdecl SCD3D11_LiveShadowRegisterProp(uint32_t *stackArguments) {
 		uint8_t const *const frameBase =
@@ -428,9 +395,9 @@ namespace nSCD3D11::LiveShadowHooks {
 			return result;
 		}
 
-		// Site F. 0x0061E8A0 is __thiscall(self, 5 stack args, RET 0x14); the two
-		// displaced MOVs read arguments off ESP, which is why the trampoline has
-		// to be entered by a call carrying the same arguments.
+		// Site F. 0x0061E8A0 is __thiscall(self, 5 stack args, RET 0x14). The two
+		// displaced MOVs read arguments off ESP, so the trampoline has to be
+		// entered by a call carrying the same arguments.
 		__declspec(naked) void PrebuiltModelsOriginal() {
 			__asm {
 				mov eax, dword ptr [esp + 0x14]

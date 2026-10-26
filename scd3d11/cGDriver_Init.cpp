@@ -184,7 +184,7 @@ namespace nSCD3D11 {
 	}
 
 	// Passing no adapter gets DXGI adapter 0, which on hybrid-GPU laptops is usually the integrated
-	// GPU. Prefer the high-performance GPU instead; GPU=default restores the old behaviour.
+	// GPU. Prefer the high-performance GPU instead. GPU=default restores the old behaviour.
 	Microsoft::WRL::ComPtr<IDXGIAdapter> cGDriver::SelectAdapter(void) {
 		if (Settings::Get().defaultAdapter) return nullptr;
 
@@ -280,7 +280,7 @@ namespace nSCD3D11 {
 		}
 
 		initialized = true;
-		Log(LogCategory::Initialization, "initialized; %d display modes available", videoModeCount);
+		Log(LogCategory::Initialization, "initialized with %d display modes", videoModeCount);
 		SetLastError(DriverError::OK);
 		return true;
 	}

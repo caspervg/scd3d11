@@ -41,7 +41,7 @@ int main() {
 		assert(std::fabs(Altitude(field, -50.0f, 16.0f) - kGround) < 1.0e-4f);
 		assert(std::fabs(Altitude(field, 16.0f, 500.0f) - kGround) < 1.0e-4f);
 		// Cell (0, 0) has its high corner at (1, 1). Split along (0, 0)-(1, 1),
-		// its centre lies on that diagonal, halfway up; flipped, on the other
+		// its centre lies on that diagonal, halfway up. Flipped, it lies on the other
 		// diagonal, whose ends are both low.
 		assert(std::fabs(Altitude(field, 8.0f, 8.0f) - 150.0f) < 1.0e-4f);
 		assert(std::fabs(Altitude(field, 12.0f, 4.0f) - 125.0f) < 1.0e-4f);
@@ -89,7 +89,7 @@ int main() {
 
 	// SC4's own sun: 45 degrees up, 67.5 + 90k degrees around. A spike casts
 	// along the light and not across it. The spike is a single vertex, so the
-	// map row nearest its peak can pass up to half a texel beside it; 60 m
+	// map row nearest its peak can pass up to half a texel beside it. 60 m
 	// downwind is well inside its shadow either way.
 	float const sc4Sun[3]{-0.65328145f, -0.707106769f, 0.270598054f};
 	HeightField const flat = Flat(65);
