@@ -45,13 +45,13 @@ if (Test-Path -LiteralPath $PluginDll) {
 New-Item -ItemType Directory -Path (Split-Path -Parent $PluginDll) -Force | Out-Null
 Copy-Item -LiteralPath $builtDll -Destination $PluginDll -Force
 $pluginRoot = Split-Path -Parent $PluginDll
-$logDir = Split-Path -Parent $pluginRoot
+$logDir = Join-Path (Split-Path -Parent $pluginRoot) 'Logs'
 Get-ChildItem -LiteralPath $pluginRoot -Recurse -Filter '*.dll' | Sort-Object FullName | ForEach-Object {
     $pluginHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
     "$pluginHash  $($_.FullName.Substring($pluginRoot.Length).TrimStart('\'))"
 } | Set-Content -LiteralPath (Join-Path $captureDir 'plugin-dlls.txt')
 
-$logs = @('SC4D3D11.log')
+$logs = @('SCD3D11.log')
 foreach ($name in $logs) {
     $path = Join-Path $logDir $name
     if (Test-Path -LiteralPath $path) {

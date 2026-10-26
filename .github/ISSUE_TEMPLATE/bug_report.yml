@@ -44,7 +44,7 @@ body:
   - type: textarea
     id: log
     attributes:
-      label: SC4D3D11.log
-      description: Attach `SC4D3D11.log` from the folder above the Plugins folder holding `SCD3D11.dll` (normally `Documents\SimCity 4`). It is recreated each session, so attach it before relaunching the game.
+      label: SCD3D11.log
+      description: Attach `SCD3D11.log` from the `Logs` folder next to the Plugins folder holding `SCD3D11.dll` (normally `Documents\SimCity 4\Logs`). It is recreated each session, so attach it before relaunching the game.
     validations:
       required: true

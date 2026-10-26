@@ -85,8 +85,7 @@ try {
     & $cdb '-G' '-logo' $debuggerLog '-cf' $commandsPath $GameExe @launchArguments
 } finally {
     Pop-Location
-    # LogRedirect may move the renderer log into Logs. Preserve either location.
-    foreach ($relative in @('SC4D3D11.log', 'Logs\SC4D3D11.log')) {
+    foreach ($relative in @('Logs\SCD3D11.log')) {
         $sourceLog = Join-Path $UserDir $relative
         if (Test-Path -LiteralPath $sourceLog) {
             Copy-Item -LiteralPath $sourceLog -Destination (Join-Path $capture ($relative.Replace('\', '-')))
