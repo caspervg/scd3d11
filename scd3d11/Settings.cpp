@@ -71,11 +71,11 @@ namespace nSCD3D11::Settings {
 			if (ini == nullptr) return std::nullopt;
 			auto const entry = ini->find(name);
 			if (entry == ini->not_found()) return std::nullopt;
-			// IniReader keeps an inline comment as part of the value; drop it and
-			// the spaces before it.
+			// IniReader keeps an inline comment (; or #) as part of the value;
+			// drop it and the spaces before it.
 			std::string value;
 			for (char const character : entry->second) {
-				if (character == ';') break;
+				if (character == ';' || character == '#') break;
 				value += Lower(character);
 			}
 			while (!value.empty() && IsSpace(value.back())) value.pop_back();
