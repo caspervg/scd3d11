@@ -72,6 +72,7 @@
 #include "Diagnostics.h"
 #include "GameVersion.h"
 #include "LiveShadowHooks.h"
+#include "Settings.h"
 
 #include <algorithm>
 #include <array>
@@ -1057,7 +1058,7 @@ namespace nSCD3D11::ShadowRegistry {
 		}
 
 		bool Requested() {
-			return std::strstr(GetCommandLineA(), "-LiveShadows:on") != nullptr;
+			return Settings::Flag("LiveShadows", false);
 		}
 
 		bool BytesMatch(PatchSite const &site) {

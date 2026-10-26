@@ -20,6 +20,7 @@
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
 #include "GLSupport.h"
+#include "Settings.h"
 #include "ShadowRegistry.h"
 #include "VertexFormatUtils.h"
 
@@ -63,7 +64,7 @@ namespace nSCD3D11 {
 	                       deviceRecoveryFailures(0),
 	                       nextDeviceRecovery(0),
 	                       presentationMode(PresentationMode::Windowed),
-	                       preferFlipModel(std::strstr(GetCommandLineA(), "-FlipModel:off") == nullptr),
+	                       preferFlipModel(Settings::Flag("FlipModel", true)),
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),

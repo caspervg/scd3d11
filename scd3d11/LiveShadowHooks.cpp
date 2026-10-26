@@ -68,6 +68,7 @@
 #include "Diagnostics.h"
 #include "GameVersion.h"
 #include "ShadowRegistry.h"
+#include "Settings.h"
 
 #include <algorithm>
 #include <array>
@@ -563,11 +564,11 @@ namespace nSCD3D11::LiveShadowHooks {
 		}
 
 		bool Requested() {
-			return std::strstr(GetCommandLineA(), "-LiveShadows:on") != nullptr;
+			return Settings::Flag("LiveShadows", false);
 		}
 
 		bool KeepNetworkShadowMasks() {
-			return std::strstr(GetCommandLineA(), "-NetworkShadowMasks:on") != nullptr;
+			return Settings::Flag("NetworkShadowMasks", false);
 		}
 
 		bool BytesMatch(PatchSite const &site) {

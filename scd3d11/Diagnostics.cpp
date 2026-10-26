@@ -9,6 +9,7 @@
  */
 
 #include "Diagnostics.h"
+#include "Settings.h"
 
 #include <atomic>
 #include <cstdarg>
@@ -96,7 +97,7 @@ namespace nSCD3D11
 	}
 
 	void LogTrace(LogCategory category, char const* format, ...) {
-		static bool const enabled = std::strstr(GetCommandLineA(), "-LogLevel:trace") != nullptr;
+		static bool const enabled = Settings::Value("LogLevel") == "trace";
 		if (!enabled) return;
 		va_list arguments;
 		va_start(arguments, format);
@@ -105,7 +106,7 @@ namespace nSCD3D11
 	}
 
 	bool DrawStatsEnabled() {
-		static bool const enabled = std::strstr(GetCommandLineA(), "-DrawStats") != nullptr;
+		static bool const enabled = Settings::Flag("DrawStats", false);
 		return enabled;
 	}
 

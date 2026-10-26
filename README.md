@@ -26,8 +26,9 @@ Not affiliated with or endorsed by EA Games.
 ## Installing
 
 Download `SCD3D11-<version>.zip` from the [releases page](https://github.com/caspervg/scd3d11/releases) and copy
-`SCD3D11.dll` into a SimCity 4 plugins folder — either `Documents\SimCity 4\Plugins` or the `Plugins` folder of
-whatever user directory you launch with.
+`SCD3D11.dll` and `SCD3D11.ini` into a SimCity 4 plugins folder — either `Documents\SimCity 4\Plugins` or the
+`Plugins` folder of whatever user directory you launch with. The INI holds the [settings](#settings); without it the
+defaults below apply.
 
 The driver registers GZCOM class `0xBADB6906` — the class ID of the game's own DirectX driver — at a higher version,
 so SC4 selects it automatically. No `-d:` switch is needed; do not launch with `-d:Software`, which bypasses it.
@@ -40,22 +41,24 @@ To check that it is active, start the game and open `SC4D3D11.log` next to the p
 
 ## Uninstalling
 
-Delete `SCD3D11.dll` from the plugins folder. SimCity 4 goes back to its built-in DirectX driver on the next launch.
+Delete `SCD3D11.dll` and `SCD3D11.ini` from the plugins folder. SimCity 4 goes back to its built-in DirectX driver on the next launch.
 
-## Launch options
+## Settings
 
-Add these to the SimCity 4 launch arguments. Switch names are case-sensitive except `-Borderless`, so type them as shown.
+Set these in `SCD3D11.ini` next to `SCD3D11.dll`, as `Name=value` under `[SCD3D11]`. A launch argument of the same
+name overrides the INI for one session: `-Name:value`, or `-Name` alone for `on`. Values are `on` or `off`; names and
+values are case-insensitive. `SC4D3D11.log` lists every setting in effect and where it came from.
 
-| Switch | Default | Effect |
-|--------|---------|--------|
-| `-Borderless` (or `-FullscreenMode:Borderless`) | off | With `-f`, a monitor-sized borderless window instead of exclusive fullscreen |
-| `-VSync:off` | vsync on | Present without waiting for vsync |
-| `-FlipModel:off` | flip model | Windowed and borderless: present with the legacy DISCARD swap chain instead of the flip model |
-| `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
-| `-ViewportCull:off` | cull on | Submit every draw of a scroll redraw instead of dropping those that lie entirely outside its small scissored viewport |
-| `-LiveShadows:on` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
-| `-NetworkShadowMasks:on` | off | With `-LiveShadows:on`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
-| `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `Borderless` | off | With `-f`, a monitor-sized borderless window instead of exclusive fullscreen |
+| `VSync` | on | Wait for vsync before presenting |
+| `FlipModel` | on | Windowed and borderless: present with the flip model; off uses the legacy DISCARD swap chain |
+| `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one |
+| `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |
+| `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
+| `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
+| `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:
 
@@ -70,7 +73,7 @@ Standard SimCity 4 switches that SCD3D11 reacts to:
 SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` alongside a fullscreen
 launch to get a monitor-sized borderless window instead.
 
-On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Add `-GPU:default`
+On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Set `GPU=default`
 to use the adapter Windows picks instead. `SC4D3D11.log` names the adapter in use on its `adapter:` line.
 
 ### CPU options
@@ -92,13 +95,13 @@ add-on and:
 
 In the ReShade overlay's Add-ons tab, disable **Generic Depth**; SCD3D11 overrides its choice anyway. Outside the city
 view (menus, region view) ReShade behaves as usual, except that effects can stay off in the region view after leaving
-a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for `reshade: add-on registered`; `-ReShade:off` turns the
+a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for `reshade: add-on registered`; `ReShade=off` turns the
 integration off.
 
 ## Known issues
 
 * With ReShade, effects can stay off in the region view after leaving a city.
-* `-LiveShadows:on` costs frame rate in large cities, most of all while scrolling.
+* `LiveShadows` costs frame rate in large cities, most of all while scrolling.
 
 ## Reporting bugs
 
@@ -132,12 +135,12 @@ pointer and likely return addresses when no frame completes for 5 seconds once r
 plugin load is ignored), and `watchdog: frames resumed` afterwards. Debug builds also forward D3D11 debug-layer
 messages and record each newly observed render-state, vertex-format and texture-format combination, tagged `state`.
 
-These launch switches add more detail:
+These settings add more detail:
 
-| Switch | Effect |
-|--------|--------|
-| `-DrawStats` | Log a per-second summary of frame times, draws, culled draws, scroll and full redraws and texture churn, plus a line for each frame over 100 ms (`stats` category) |
-| `-LogLevel:trace` | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
+| Setting | Effect |
+|---------|--------|
+| `DrawStats` | Log a per-second summary of frame times, draws, culled draws, scroll and full redraws and texture churn, plus a line for each frame over 100 ms (`stats` category) |
+| `LogLevel=trace` | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
 
 The scripts in `scripts/` launch, debug and capture the game with these switches.
 
