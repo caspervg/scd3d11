@@ -1,0 +1,49 @@
+name: Bug report
+description: Crash, rendering glitch or other problem with SCD3D11
+labels: [ "bug" ]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you saw instead. Screenshots help with rendering glitches.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: SCD3D11 version
+      placeholder: v0.2.0
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: NVIDIA RTX 4070, driver 581.57
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    id: arguments
+    attributes:
+      label: SimCity 4 launch arguments
+      placeholder: -w -CustomResolution:enabled -r2560x1440x32
+  - type: textarea
+    id: plugins
+    attributes:
+      label: Other DLL plugins and ReShade
+      description: Other `.dll` files in your Plugins folders, and your ReShade version if installed.
+  - type: textarea
+    id: log
+    attributes:
+      label: SC4D3D11.log
+      description: Attach `SC4D3D11.log` from the folder above the Plugins folder holding `SCD3D11.dll` (normally `Documents\SimCity 4`). It is recreated each session, so attach it before relaunching the game.
+    validations:
+      required: true
