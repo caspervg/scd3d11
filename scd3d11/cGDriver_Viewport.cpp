@@ -12,6 +12,7 @@
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
 #include "SCD3D11Service.h"
+#include "ShadowRegistry.h"
 #include "ThumbnailFocusGuard.h"
 
 #include <cstring>
@@ -688,8 +689,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::ReportFrameStats(void) {
-		static bool const enabled = std::strstr(GetCommandLineA(), "-DrawStats") != nullptr;
-		if (!enabled) {
+		if (!DrawStatsEnabled()) {
 			frameStats = FrameStats{};
 			return;
 		}
@@ -712,6 +712,10 @@ namespace nSCD3D11 {
 			uint64_t scrollCulled = 0;
 			uint64_t textureCreates = 0;
 			uint64_t textureDeletes = 0;
+			// Live shadow fields summed over the second; shadowStaticMaxMs and shadowWorldCasters are maxima.
+			FrameStats shadows;
+			uint32_t shadowFrames = 0;
+			ShadowRegistry::Stats registry;
 		};
 		static Summary summary;
 
@@ -727,6 +731,15 @@ namespace nSCD3D11 {
 		// redraw clears the whole view first.
 		bool const scroll = frame.offsetCopies != 0;
 		bool const full = !scroll && frame.fullClears != 0;
+		bool const shadowFrame = frame.shadowFullPasses + frame.shadowPartialPasses + frame.shadowComposites != 0;
+		if (milliseconds > 100.0 && shadowFrame) {
+			Log(LogCategory::Stats,
+			    "slow frame %.1f ms: live shadows %u full + %u partial static passes, forced redraws %u, "
+			    "static %.1f ms (max pass %.1f), dynamic %.1f ms, %u casters + %u registry",
+			    milliseconds, frame.shadowFullPasses, frame.shadowPartialPasses, frame.shadowForcedRedraws,
+			    frame.shadowStaticMs, frame.shadowStaticMaxMs, frame.shadowDynamicMs, frame.shadowCasters,
+			    frame.shadowRegistryCasters);
+		}
 		if (milliseconds > 100.0) {
 			Log(LogCategory::Stats,
 			    "slow frame %.1f ms (%s): draws %u, culled %u, clears %u (full %u), region reads %u draws %u, "
@@ -753,6 +766,53 @@ namespace nSCD3D11 {
 		summary.culledDraws += frame.culledDraws;
 		summary.textureCreates += frame.textureCreates;
 		summary.textureDeletes += frame.textureDeletes;
+		if (shadowFrame) {
+			FrameStats &sum = summary.shadows;
+			++summary.shadowFrames;
+			sum.shadowFullPasses += frame.shadowFullPasses;
+			sum.shadowPartialPasses += frame.shadowPartialPasses;
+			sum.shadowUntrackedPasses += frame.shadowUntrackedPasses;
+			sum.shadowForcedRedraws += frame.shadowForcedRedraws;
+			for (uint32_t cause = 0; cause < kLiveShadowRedrawCauses; ++cause)
+				sum.shadowForcedBy[cause] += frame.shadowForcedBy[cause];
+			sum.shadowRedisplays += frame.shadowRedisplays;
+			sum.shadowMapRenders += frame.shadowMapRenders;
+			sum.shadowCasters += frame.shadowCasters;
+			sum.shadowRegistryCasters += frame.shadowRegistryCasters;
+			sum.shadowPassCasters += frame.shadowPassCasters;
+			sum.shadowWorldCasters = (std::max)(sum.shadowWorldCasters, frame.shadowWorldCasters);
+			sum.shadowArenaRebuilds += frame.shadowArenaRebuilds;
+			sum.shadowComposites += frame.shadowComposites;
+			sum.shadowCompositePixels += frame.shadowCompositePixels;
+			sum.shadowStaticMs += frame.shadowStaticMs;
+			sum.shadowStaticMaxMs = (std::max)(sum.shadowStaticMaxMs, frame.shadowStaticMaxMs);
+			sum.shadowDynamicMs += frame.shadowDynamicMs;
+			sum.shadowTrackMs += frame.shadowTrackMs;
+			sum.shadowTerrainMs += frame.shadowTerrainMs;
+		}
+		if (shadowFrame) {
+			FrameStats &sum = summary.shadows;
+			sum.shadowCullMs += frame.shadowCullMs;
+			sum.shadowUploadMs += frame.shadowUploadMs;
+			sum.shadowSubmitMs += frame.shadowSubmitMs;
+			sum.shadowMeshUploads += frame.shadowMeshUploads;
+			sum.shadowUploadBytes += frame.shadowUploadBytes;
+		}
+		ShadowRegistry::Stats const registry = ShadowRegistry::TakeStats();
+		summary.registry.registrations += registry.registrations;
+		summary.registry.offThreadRegistrations += registry.offThreadRegistrations;
+		summary.registry.registerMs += registry.registerMs;
+		summary.registry.gatherMs += registry.gatherMs;
+		summary.registry.nativeDrawMs += registry.nativeDrawMs;
+		// Captures and hashing happen in every draw, whether or not a shadow pass ran this frame.
+		summary.shadows.shadowCaptures += frame.shadowCaptures;
+		summary.shadows.shadowCaptureMs += frame.shadowCaptureMs;
+		summary.shadows.shadowHashedDraws += frame.shadowHashedDraws;
+		summary.shadows.shadowHashedVertices += frame.shadowHashedVertices;
+		summary.shadows.shadowHashMs += frame.shadowHashMs;
+		summary.shadows.shadowGpuMapMs += frame.shadowGpuMapMs;
+		summary.shadows.shadowGpuCompositeMs += frame.shadowGpuCompositeMs;
+		summary.shadows.shadowGpuSamples += frame.shadowGpuSamples;
 		if (now.QuadPart - summary.start.QuadPart >= frequency.QuadPart) {
 			Log(LogCategory::Stats,
 			    "%u frames, avg %.1f ms, max %.1f ms, %u over 100 ms; draws %llu, culled %llu; "
@@ -764,6 +824,40 @@ namespace nSCD3D11 {
 			    static_cast<unsigned long long>(summary.scrollFrames ? summary.scrollCulled / summary.scrollFrames : 0),
 			    summary.fullFrames, static_cast<unsigned long long>(summary.textureCreates),
 			    static_cast<unsigned long long>(summary.textureDeletes));
+			FrameStats const &shadow = summary.shadows;
+			if (summary.shadowFrames != 0 || shadow.shadowHashedDraws != 0) {
+				double const renders = shadow.shadowMapRenders != 0 ? shadow.shadowMapRenders : 1.0;
+				double const samples = shadow.shadowGpuSamples != 0 ? shadow.shadowGpuSamples : 1.0;
+				Log(LogCategory::Stats,
+				    "live shadows: %u frames; static passes %u full + %u partial (%u untracked); "
+				    "forced full redraws %u (camera %u, untracked partial %u, terrain %u, translated %u); "
+				    "redisplays %u; %u map renders, avg %.0f per-draw + %.0f registry casters (%u gathered, "
+				    "%u tracked); %u composites, %.1f Mpx",
+				    summary.shadowFrames, shadow.shadowFullPasses, shadow.shadowPartialPasses,
+				    shadow.shadowUntrackedPasses, shadow.shadowForcedRedraws,
+				    shadow.shadowForcedBy[kRedrawCamera], shadow.shadowForcedBy[kRedrawUntrackedPartial],
+				    shadow.shadowForcedBy[kRedrawTerrainChanged], shadow.shadowForcedBy[kRedrawTranslated],
+				    shadow.shadowRedisplays, shadow.shadowMapRenders, shadow.shadowCasters / renders,
+				    shadow.shadowRegistryCasters / renders, shadow.shadowPassCasters, shadow.shadowWorldCasters,
+				    shadow.shadowComposites, static_cast<double>(shadow.shadowCompositePixels) / 1.0e6);
+				Log(LogCategory::Stats,
+				    "live shadows CPU ms: static %.1f (max pass %.1f), dynamic %.1f, of which track %.1f, "
+				    "terrain %.1f; capture %.1f (%u draws), hash %.1f (%u draws, %llu vertices); "
+				    "GPU ms per call: map %.2f, composite %.2f (%u samples); arena rebuilds %u",
+				    shadow.shadowStaticMs, shadow.shadowStaticMaxMs, shadow.shadowDynamicMs, shadow.shadowTrackMs,
+				    shadow.shadowTerrainMs, shadow.shadowCaptureMs, shadow.shadowCaptures, shadow.shadowHashMs,
+				    shadow.shadowHashedDraws, static_cast<unsigned long long>(shadow.shadowHashedVertices),
+				    shadow.shadowGpuMapMs / samples, shadow.shadowGpuCompositeMs / samples,
+				    shadow.shadowGpuSamples, shadow.shadowArenaRebuilds);
+				Log(LogCategory::Stats,
+				    "live shadows registry ms: cull %.1f, mesh upload %.1f (%u meshes, %.1f MB), submit %.1f; "
+				    "AddShadow %.1f (%u records, %u off the draw thread), DrawShadows gather %.1f, native %.1f",
+				    shadow.shadowCullMs, shadow.shadowUploadMs, shadow.shadowMeshUploads,
+				    static_cast<double>(shadow.shadowUploadBytes) / 1.0e6, shadow.shadowSubmitMs,
+				    summary.registry.registerMs, summary.registry.registrations,
+				    summary.registry.offThreadRegistrations, summary.registry.gatherMs,
+				    summary.registry.nativeDrawMs);
+			}
 			summary = Summary{};
 			summary.start = now;
 		}

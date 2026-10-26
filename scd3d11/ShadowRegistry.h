@@ -101,6 +101,18 @@ namespace nSCD3D11::ShadowRegistry {
 	// The same for a terrain the caller already has.
 	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ);
 
+	// -DrawStats: time spent in the AddShadow and DrawShadows hooks since the last call.
+	struct Stats {
+		uint32_t registrations = 0;
+		// AddShadow calls made on another thread than DrawShadows.
+		uint32_t offThreadRegistrations = 0;
+		double registerMs = 0.0;
+		double gatherMs = 0.0;
+		// SC4's own DrawShadows for the records the registry left it.
+		double nativeDrawMs = 0.0;
+	};
+	Stats TakeStats();
+
 	// Exposed for tests: SC4's SimGL primitive enumeration to a triangle list.
 	// Points and lines append nothing and return false.
 	bool AppendTriangles(uint32_t primitive, uint32_t const *indices, uint32_t count,

@@ -484,6 +484,32 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             return true;
         }
 
+        double Milliseconds(LARGE_INTEGER const& start) {
+            static LARGE_INTEGER const frequency = [] {
+                LARGE_INTEGER value{};
+                QueryPerformanceFrequency(&value);
+                return value;
+            }();
+            LARGE_INTEGER now{};
+            QueryPerformanceCounter(&now);
+            return frequency.QuadPart != 0
+                       ? static_cast<double>(now.QuadPart - start.QuadPart) * 1000.0 /
+                         static_cast<double>(frequency.QuadPart)
+                       : 0.0;
+        }
+
+        // Adds its scope's wall time to a -DrawStats total; costs a branch without -DrawStats.
+        struct ScopeTimer {
+            double* total;
+            LARGE_INTEGER start{};
+
+            explicit ScopeTimer(double& target) : total(DrawStatsEnabled() ? &target : nullptr) {
+                if (total != nullptr) QueryPerformanceCounter(&start);
+            }
+
+            ~ScopeTimer() { if (total != nullptr) *total += Milliseconds(start); }
+        };
+
         uint64_t gArenaGenerations = 0;
 
         // Appends one mesh to the arena; false when it does not fit.
@@ -559,6 +585,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         uint8_t const* const source = interleavedPointer + static_cast<size_t>(firstVertex) * interleavedStride;
         uint32_t const uvCount = RZVertexFormatNumElements(interleavedFormat, kGDElementType_TexCoord);
         if (vertexCount == 0 || interleavedStride < sizeof(float) * 3 || uvCount == 0) return false;
+        ScopeTimer const timer(frameStats.shadowHashMs);
+        ++frameStats.shadowHashedDraws;
+        frameStats.shadowHashedVertices += vertexCount;
         uint32_t const uvOffset = RZVertexFormatElementOffset(interleavedFormat, kGDElementType_TexCoord, 0);
         uint64_t signature = 0xCBF29CE484222325ull;
         auto hashWord = [&](uint32_t word) { signature = (signature ^ word) * 0x100000001B3ull; };
@@ -577,6 +606,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         uint32_t firstVertex, uint32_t vertexCount, std::vector<uint32_t> const& indices,
         D3D11_PRIMITIVE_TOPOLOGY topology) {
         if (indices.size() < 3) return;
+        ScopeTimer const timer(frameStats.shadowCaptureMs);
         if (interleavedPointer == nullptr) {
             static bool loggedNullSource = false;
             if (!loggedNullSource) {
@@ -642,6 +672,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         size_t const loggedVertices = draw.vertices.size();
         size_t const loggedIndices = draw.indices.size();
         liveShadowDraws.push_back(std::move(draw));
+        ++frameStats.shadowCaptures;
         static bool loggedPropCapture = false;
         static bool loggedNetworkCapture = false;
         bool& loggedCapture = networkCaster ? loggedNetworkCapture : loggedPropCapture;
@@ -666,10 +697,16 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         liveShadowTerrainViewValid = true;
     }
 
-    bool cGDriver::ConsumeLiveShadowCleanRedraw() {
-        bool const pending = liveShadowCleanRedrawPending;
-        liveShadowCleanRedrawPending = false;
+    uint32_t cGDriver::ConsumeLiveShadowCleanRedraw() {
+        uint32_t const pending = liveShadowCleanRedrawPending;
+        liveShadowCleanRedrawPending = 0;
         return pending;
+    }
+
+    void cGDriver::CountForcedStaticRedraw(uint32_t causes) {
+        ++frameStats.shadowForcedRedraws;
+        for (uint32_t cause = 0; cause < kLiveShadowRedrawCauses; ++cause)
+            if ((causes & (1u << cause)) != 0) ++frameStats.shadowForcedBy[cause];
     }
 
     // With the registry, live shadows keep the per-draw casters of every static pass
@@ -803,11 +840,26 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             liveShadowWorldCasters.end());
         for (auto const& box : redisplay)
             ShadowRegistry::RedisplayWorldRect(box[0], box[1], box[2], box[3]);
+        frameStats.shadowRedisplays += static_cast<uint32_t>(redisplay.size());
         return true;
     }
 
     void cGDriver::RenderLivePropShadows(bool staticPass) {
         if (!LiveShadowHooks::Enabled()) return;
+        LARGE_INTEGER start{};
+        QueryPerformanceCounter(&start);
+        DrawLivePropShadows(staticPass);
+        double const milliseconds = Milliseconds(start);
+        if (!staticPass) {
+            frameStats.shadowDynamicMs += milliseconds;
+            return;
+        }
+        frameStats.shadowStaticMs += milliseconds;
+        frameStats.shadowStaticMaxMs = (std::max)(frameStats.shadowStaticMaxMs, milliseconds);
+        frameStats.shadowWorldCasters = static_cast<uint32_t>(liveShadowWorldCasters.size());
+    }
+
+    void cGDriver::DrawLivePropShadows(bool staticPass) {
         // SC4 updates the static view in place for localized changes, handing the
         // driver the dirty rectangle as a scissored viewport. A shadow is not a
         // local effect: casters inside the rectangle throw onto receivers outside
@@ -822,6 +874,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         bool const partialPass =
             scissorEnabled && (viewportX > 0 || viewportY > 0 || viewportWidth < windowWidth ||
                                viewportHeight < windowHeight);
+        if (staticPass) ++(partialPass ? frameStats.shadowPartialPasses : frameStats.shadowFullPasses);
         bool const registry = ShadowRegistry::Enabled();
         // SC4's own DrawShadows calls in this pass gathered the registry casters,
         // along with the view, sun and shadow parameters they were drawn with.
@@ -847,6 +900,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         TerrainShadowMap::Map const* terrainMap = nullptr;
         uint64_t terrainGeneration = 0;
         if (staticPass && liveShadowSunWorldValid && TerrainShadows::ShadowsRendered()) {
+            ScopeTimer const timer(frameStats.shadowTerrainMs);
             try {
                 terrainMap = TerrainShadows::Update(liveShadowSunWorld, terrainGeneration);
             } catch (std::bad_alloc const&) {
@@ -915,6 +969,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             if (haveView && haveProjection) {
                 float sun[3]{liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2]};
                 Normalize(sun);
+                ScopeTimer const timer(frameStats.shadowTrackMs);
                 tracked = TrackLiveShadowWorldCasters(eyeToWorld, worldToView, projection, sun,
                                                       liveShadowSunWorldValid, partialPass);
             }
@@ -926,8 +981,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         bool const castersStale =
             registry ? staticPass && !tracked && (!liveShadowDraws.empty() || !liveShadowWorldCasters.empty())
                      : liveShadowEverCaptured;
+        if (staticPass && partialPass && castersStale) ++frameStats.shadowUntrackedPasses;
         if (partialPass && (castersStale || terrainChanged)) {
-            liveShadowCleanRedrawPending = true;
+            liveShadowCleanRedrawPending |= (castersStale ? 1u << kRedrawUntrackedPartial : 0u) |
+                                            (terrainChanged ? 1u << kRedrawTerrainChanged : 0u);
             static bool loggedPartial = false;
             if (!loggedPartial) {
                 loggedPartial = true;
@@ -1181,6 +1238,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         UINT registryVertexCount = 0, registryIndexCount = 0;
         unsigned registryCulled = 0, registryMissingTexture = 0, registryQuadOnly = 0, registryMeshCasters = 0;
         if (haveView) {
+            ScopeTimer const timer(frameStats.shadowCullMs);
             float sunWorld[3]{liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2]};
             if (!liveShadowSunWorldValid) TransformDirection(eyeToWorld, shadowDirection, sunWorld);
             Normalize(sunWorld);
@@ -1266,12 +1324,61 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             liveShadowDraws.clear();
             return;
         }
+        // -DrawStats GPU timing of this call: shadow map, then composite.
+        LiveShadowPipeline::GpuTimer* gpuTimer = nullptr;
+        unsigned gpuStamps = 0;
+        if (DrawStatsEnabled()) {
+            for (LiveShadowPipeline::GpuTimer& timer : pipeline.gpuTimers) {
+                if (!timer.pending) continue;
+                D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
+                UINT64 stamps[3]{};
+                bool ready = d3dContext->GetData(timer.disjoint.Get(), &disjoint, sizeof(disjoint),
+                                                 D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+                for (unsigned index = 0; ready && index < 3; ++index)
+                    ready = d3dContext->GetData(timer.stamps[index].Get(), &stamps[index], sizeof(UINT64),
+                                                D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+                if (!ready) continue;
+                timer.pending = false;
+                if (disjoint.Disjoint || disjoint.Frequency == 0) continue;
+                double const scale = 1000.0 / static_cast<double>(disjoint.Frequency);
+                frameStats.shadowGpuMapMs += static_cast<double>(stamps[1] - stamps[0]) * scale;
+                frameStats.shadowGpuCompositeMs += static_cast<double>(stamps[2] - stamps[1]) * scale;
+                ++frameStats.shadowGpuSamples;
+            }
+            LiveShadowPipeline::GpuTimer& timer = pipeline.gpuTimers[pipeline.nextGpuTimer];
+            if (!timer.pending) {
+                D3D11_QUERY_DESC query{D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+                bool created = timer.disjoint || SUCCEEDED(d3dDevice->CreateQuery(&query, &timer.disjoint));
+                query.Query = D3D11_QUERY_TIMESTAMP;
+                for (auto& stamp : timer.stamps)
+                    created = created && (stamp || SUCCEEDED(d3dDevice->CreateQuery(&query, &stamp)));
+                if (created) {
+                    gpuTimer = &timer;
+                    pipeline.nextGpuTimer = (pipeline.nextGpuTimer + 1) % std::size(pipeline.gpuTimers);
+                    d3dContext->Begin(gpuTimer->disjoint.Get());
+                    d3dContext->End(gpuTimer->stamps[gpuStamps++].Get());
+                }
+            }
+        }
+        // Ends the stamps up to `upTo`; the last one also closes the disjoint query.
+        auto gpuStamp = [&](unsigned upTo) {
+            if (gpuTimer == nullptr) return;
+            while (gpuStamps <= upTo) d3dContext->End(gpuTimer->stamps[gpuStamps++].Get());
+            if (gpuStamps == 3) {
+                d3dContext->End(gpuTimer->disjoint.Get());
+                gpuTimer->pending = true;
+                gpuTimer = nullptr;
+            }
+        };
         float lightView[16]{};
         float lightDepthRange = 1.0f;
         if (haveCasters) lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView);
         float lightWorld[16]{};
         if (haveCasters && haveView) Multiply(lightView, worldToView, lightWorld);
+        frameStats.shadowPassCasters += static_cast<uint32_t>(pass.casters.size());
         if (haveCasters) {
+            ++frameStats.shadowMapRenders;
+            frameStats.shadowRegistryCasters += static_cast<uint32_t>(registryDraws.size());
             d3dContext->ClearDepthStencilView(pipeline.mapDepth.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
             d3dContext->OMSetRenderTargets(0, nullptr, pipeline.mapDepth.Get());
             D3D11_VIEWPORT mapViewport{
@@ -1316,6 +1423,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 needVertices += draw->vertices.size();
                 needIndices += draw->indices.size();
             }
+            ++frameStats.shadowArenaRebuilds;
             castersReady = ArenaRebuild(d3dDevice.Get(), pipeline.casterArena, casterStride, needVertices,
                                         needIndices) && placeCasters();
             if (!castersReady) {
@@ -1326,6 +1434,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
             }
         }
+        if (castersReady) frameStats.shadowCasters += static_cast<uint32_t>(casters.size());
         if (castersReady && !casters.empty()) {
             UINT offset = 0;
             ID3D11Buffer* vb = pipeline.casterArena.vertices.Get();
@@ -1386,6 +1495,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                          vertexCount, caster.indices.data(), indexCount, mesh.firstVertex,
                                          mesh.firstIndex))
                             return false;
+                        ++frameStats.shadowMeshUploads;
+                        frameStats.shadowUploadBytes += static_cast<uint64_t>(vertexCount) * registryStride +
+                                                        static_cast<uint64_t>(indexCount) * sizeof(uint32_t);
                         mesh.owner = owner;
                         mesh.vertexCount = vertexCount;
                         mesh.indexCount = indexCount;
@@ -1405,14 +1517,18 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     needIndices += draw.caster->caster->indices.size();
                 }
                 pipeline.registryMeshes.clear();
+                ++frameStats.shadowArenaRebuilds;
                 return ArenaRebuild(d3dDevice.Get(), pipeline.registryArena, registryStride, needVertices,
                                     needIndices);
             };
             bool meshesReady = false;
-            try {
-                meshesReady = placeMeshes() || (rebuildArena() && placeMeshes());
-            } catch (std::bad_alloc const&) {
-                meshesReady = false;
+            {
+                ScopeTimer const timer(frameStats.shadowUploadMs);
+                try {
+                    meshesReady = placeMeshes() || (rebuildArena() && placeMeshes());
+                } catch (std::bad_alloc const&) {
+                    meshesReady = false;
+                }
             }
 
             bool quadsReady = true;
@@ -1448,6 +1564,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     d3dContext->Unmap(pipeline.registryVertices.Get(), 0);
                 }
             }
+            ScopeTimer const submitTimer(frameStats.shadowSubmitMs);
             if (meshesReady || quadsReady) {
                 d3dContext->IASetInputLayout(pipeline.registryLayout.Get());
                 d3dContext->VSSetShader(pipeline.registryVS.Get(), nullptr, 0);
@@ -1606,7 +1723,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             terrainBound = pipeline.terrainMapView != nullptr && pipeline.terrainAltitudeView != nullptr &&
                            pipeline.terrainMapGeneration == terrainGeneration;
         }
+        gpuStamp(1);
         if (!haveCasters && !terrainBound) {
+            gpuStamp(2);
             liveShadowDraws.clear();
             return;
         }
@@ -1702,6 +1821,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         };
         d3dContext->PSSetSamplers(0, 3, samplers);
         d3dContext->Draw(3, 0);
+        gpuStamp(2);
+        ++frameStats.shadowComposites;
+        frameStats.shadowCompositePixels += static_cast<uint64_t>(viewport.Width * viewport.Height);
         views[0] = views[1] = views[2] = views[3] = nullptr;
         d3dContext->PSSetShaderResources(0, 4, views);
         liveShadowDraws.clear();

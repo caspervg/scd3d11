@@ -249,6 +249,21 @@ namespace nSCD3D11::ShadowRegistry {
 		unsigned gDrawCalls = 0;
 		unsigned gGathered = 0;
 		unsigned gNotGathered = 0;
+		Stats gStats;
+		DWORD gDrawThread = 0;
+
+		double Milliseconds(LARGE_INTEGER const &start) {
+			static LARGE_INTEGER const frequency = [] {
+				LARGE_INTEGER value{};
+				QueryPerformanceFrequency(&value);
+				return value;
+			}();
+			LARGE_INTEGER now{};
+			QueryPerformanceCounter(&now);
+			return frequency.QuadPart != 0
+				       ? static_cast<double>(now.QuadPart - start.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart)
+				       : 0.0;
+		}
 
 		// Why a DrawShadows call was left entirely to the native draw; each
 		// reason is logged once.
@@ -470,6 +485,9 @@ namespace nSCD3D11::ShadowRegistry {
 				return;
 			}
 			uint32_t const vertexCount = static_cast<uint32_t>(count);
+			bool const timing = DrawStatsEnabled();
+			LARGE_INTEGER start{};
+			if (timing) QueryPerformanceCounter(&start);
 			auto caster = std::make_shared<Caster>();
 			caster->id = static_cast<uint32_t>(id);
 			caster->manager = manager;
@@ -561,6 +579,11 @@ namespace nSCD3D11::ShadowRegistry {
 			}
 			gCasters[caster->id] = std::move(caster);
 			++gRegistered;
+			if (timing) {
+				++gStats.registrations;
+				if (GetCurrentThreadId() != gDrawThread) ++gStats.offThreadRegistrations;
+				gStats.registerMs += Milliseconds(start);
+			}
 			if (indexed) ++gWithIndices;
 			else ++gQuadOnly;
 			static bool loggedFirst = false;
@@ -665,6 +688,13 @@ namespace nSCD3D11::ShadowRegistry {
 
 	} // namespace
 
+	Stats TakeStats() {
+		std::lock_guard<std::mutex> lock(gMutex);
+		Stats const taken = gStats;
+		gStats = Stats{};
+		return taken;
+	}
+
 	bool AppendTriangles(uint32_t primitive, uint32_t const *indices, uint32_t count,
 	                     std::vector<uint32_t> &triangles) {
 		switch (primitive) {
@@ -741,20 +771,32 @@ namespace nSCD3D11::ShadowRegistry {
 			// Only the render thread draws overlays, so one scratch list is enough.
 			static std::vector<int32_t> kept;
 			++gDrawCalls;
+			bool const timing = DrawStatsEnabled();
+			LARGE_INTEGER start{};
+			if (timing) QueryPerformanceCounter(&start);
 			bool gathered = false;
 			try {
 				gathered = Gather(manager, eyeToWorld, ids, kept);
 			} catch (std::bad_alloc const &) {
 			}
+			double const gatherMs = timing ? Milliseconds(start) : 0.0;
+			if (timing) QueryPerformanceCounter(&start);
 			if (!gathered) {
 				original(manager, eyeToWorld, drawContext, ids);
-				return;
+			} else {
+				// DrawShadows reads only begin and end, and returns at once when they
+				// are equal.
+				IdList filtered{};
+				if (!kept.empty()) filtered = IdList{kept.data(), kept.data() + kept.size(), kept.data() + kept.size()};
+				original(manager, eyeToWorld, drawContext, &filtered);
 			}
-			// DrawShadows reads only begin and end, and returns at once when they
-			// are equal.
-			IdList filtered{};
-			if (!kept.empty()) filtered = IdList{kept.data(), kept.data() + kept.size(), kept.data() + kept.size()};
-			original(manager, eyeToWorld, drawContext, &filtered);
+			if (timing) {
+				double const nativeMs = Milliseconds(start);
+				std::lock_guard<std::mutex> lock(gMutex);
+				gDrawThread = GetCurrentThreadId();
+				gStats.gatherMs += gatherMs;
+				gStats.nativeDrawMs += nativeMs;
+			}
 		}
 
 #if defined(_MSC_VER) && defined(_M_IX86)
