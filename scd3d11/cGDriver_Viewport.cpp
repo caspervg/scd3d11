@@ -152,6 +152,7 @@ namespace nSCD3D11 {
 		// Window size changed. Force the depth region scratch to be recreated at the new size.
 		depthRegionScratch.Reset();
 		depthRegionScratchValid = false;
+		liveShadowClean = LiveShadowCleanView{};
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateDepthStencilView", result);
 			depthShaderView.Reset();
@@ -798,6 +799,7 @@ namespace nSCD3D11 {
 			for (uint32_t cause = 0; cause < kLiveShadowRedrawCauses; ++cause)
 				sum.shadowForcedBy[cause] += frame.shadowForcedBy[cause];
 			sum.shadowRedisplays += frame.shadowRedisplays;
+			sum.shadowReshades += frame.shadowReshades;
 			sum.shadowMapRenders += frame.shadowMapRenders;
 			sum.shadowCasters += frame.shadowCasters;
 			sum.shadowRegistryCasters += frame.shadowRegistryCasters;
@@ -854,14 +856,14 @@ namespace nSCD3D11 {
 				Log(LogCategory::Stats,
 				    "live shadows: %u frames; static passes %u full + %u partial (%u untracked); "
 				    "forced full redraws %u (camera %u, untracked partial %u, terrain %u, translated %u, sun %u); "
-				    "redisplays %u; %u map renders, avg %.0f per-draw + %.0f registry casters (%u gathered, "
+				    "redisplays %u; re-shades %u; %u map renders, avg %.0f per-draw + %.0f registry casters (%u gathered, "
 				    "%u tracked); %u composites, %.1f Mpx",
 				    summary.shadowFrames, shadow.shadowFullPasses, shadow.shadowPartialPasses,
 				    shadow.shadowUntrackedPasses, shadow.shadowForcedRedraws,
 				    shadow.shadowForcedBy[kRedrawCamera], shadow.shadowForcedBy[kRedrawUntrackedPartial],
 				    shadow.shadowForcedBy[kRedrawTerrainChanged], shadow.shadowForcedBy[kRedrawTranslated],
 				    shadow.shadowForcedBy[kRedrawSun],
-				    shadow.shadowRedisplays, shadow.shadowMapRenders, shadow.shadowCasters / renders,
+				    shadow.shadowRedisplays, shadow.shadowReshades, shadow.shadowMapRenders, shadow.shadowCasters / renders,
 				    shadow.shadowRegistryCasters / renders, shadow.shadowPassCasters, shadow.shadowWorldCasters,
 				    shadow.shadowComposites, static_cast<double>(shadow.shadowCompositePixels) / 1.0e6);
 				Log(LogCategory::Stats,

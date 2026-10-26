@@ -703,6 +703,8 @@ namespace nSCD3D11::ShadowRegistry {
 			}
 		}
 
+		bool Collect(void const *manager, float const matrix[16], float const *projection, std::vector<int32_t> &kept);
+
 		// Called by the DrawShadows call-site hooks with the pass's overlay ids.
 		// Registry-owned records are moved into the pass. Every other id, and
 		// any record that no longer matches what was registered, is kept for the
@@ -726,19 +728,24 @@ namespace nSCD3D11::ShadowRegistry {
 			}
 
 			float matrix[16]{};
+			if (eyeToWorld == nullptr || !SafeCopy(eyeToWorld, matrix, sizeof(matrix))) {
+				NoteNotGathered("eye-to-world matrix unreadable", manager);
+				return false;
+			}
+			return Collect(manager, matrix, gProjectionKnown ? gProjection : nullptr, kept);
+		}
+
+		// The body of Gather once the ids and the view are known. Records are
+		// culled against projection, when there is one, and the view.
+		bool Collect(void const *manager, float const matrix[16], float const *projection, std::vector<int32_t> &kept) {
 			float sun[3]{};
 			float colour[3]{};
 			float strength = 0.0f;
 			float alphaScale = 0.0f;
-			bool const haveMatrix = eyeToWorld != nullptr && SafeCopy(eyeToWorld, matrix, sizeof(matrix));
 			bool const haveSun = SunPath::Current(sun) || SafeShadowDirection(gRendererPointer, sun);
 			Read(reinterpret_cast<void const *>(gShadowStrength), strength);
 			Read(reinterpret_cast<void const *>(gShadowAlphaScale), alphaScale);
 			SafeCopy(reinterpret_cast<void const *>(gShadowColour), colour, sizeof(colour));
-			if (!haveMatrix) {
-				NoteNotGathered("eye-to-world matrix unreadable", manager);
-				return false;
-			}
 
 			// Rows x and y of projection * world-to-eye, for culling. Only an
 			// orthographic projection with a known sun is used. Anything else
@@ -747,8 +754,8 @@ namespace nSCD3D11::ShadowRegistry {
 			float sunWorld[3]{sun[0], sun[1], sun[2]};
 			float worldToEye[16]{};
 			float const sunLength = std::sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
-			float const *const p = gProjection;
-			bool const cull = haveSun && sunLength > 1.0e-6f && gProjectionKnown && p[3] == 0.0f && p[7] == 0.0f &&
+			float const *const p = projection;
+			bool const cull = haveSun && sunLength > 1.0e-6f && p != nullptr && p[3] == 0.0f && p[7] == 0.0f &&
 			                  p[11] == 0.0f && p[15] == 1.0f && InvertAffine(matrix, worldToEye);
 			if (cull) {
 				for (float &value: sunWorld) value /= sunLength;
@@ -830,7 +837,7 @@ namespace nSCD3D11::ShadowRegistry {
 			gPass.strength = strength;
 			gPass.alphaScale = alphaScale;
 			gPass.culled = cull;
-			if (cull) std::memcpy(gPass.projection, gProjection, sizeof(gPass.projection));
+			if (cull) std::memcpy(gPass.projection, p, sizeof(gPass.projection));
 			gPassValid = true;
 			return true;
 		}
@@ -1232,6 +1239,20 @@ namespace nSCD3D11::ShadowRegistry {
 		};
 		if (rect[2] <= rect[0] || rect[3] <= rect[1]) return false;
 		return SafeRedisplayTerrain(terrain, updateView, rect);
+	}
+
+	bool GatherView(float const eyeToWorld[16], float const projection[16]) {
+		void const *manager = nullptr;
+		std::vector<int32_t> ids;
+		{
+			std::lock_guard<std::mutex> lock(gMutex);
+			manager = gManager;
+			if (manager == nullptr || gCasterCount == 0) return false;
+			ids.reserve(gCasterCount);
+			for (uint32_t id = 0; id <= gHighestId && id < gCasters.size(); ++id)
+				if (gCasters[id].caster) ids.push_back(static_cast<int32_t>(id));
+		}
+		return Collect(manager, eyeToWorld, projection, ids);
 	}
 
 	bool TakePass(Pass &pass) {

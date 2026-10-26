@@ -121,6 +121,12 @@ namespace nSCD3D11::ShadowRegistry {
 	// cannot see. Render thread only.
 	void NoteProjection(float const projection[16]);
 
+	// Gathers every caster that reaches the view of eyeToWorld and projection
+	// into a pass, as DrawShadows would for the whole view, so that the view's
+	// shadows can be redrawn without SC4 redrawing it. False when the registry
+	// holds no city.
+	bool GatherView(float const eyeToWorld[16], float const projection[16]);
+
 	// Moves out the pass gathered since the last call. False when no
 	// DrawShadows call ran in between, i.e. SC4 drew no shadows.
 	bool TakePass(Pass &pass);

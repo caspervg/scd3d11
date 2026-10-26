@@ -157,6 +157,7 @@ namespace nSCD3D11 {
 			bufferRegions[index].texture.Get(), 0,
 			static_cast<UINT>(destinationX), static_cast<UINT>(destinationY), 0,
 			source, 0, &sourceBox);
+		NoteLiveShadowCleanCopy(region, true, destinationX, destinationY, width, height, sourceX, sourceY);
 		return true;
 	}
 
@@ -215,6 +216,7 @@ namespace nSCD3D11 {
 			d3dContext->CopyResource(depthStencilTexture.Get(), depthRegionScratch.Get());
 			depthRegionScratchValid = true;
 		}
+		NoteLiveShadowCleanCopy(region, false, destinationX, destinationY, width, height, sourceX, sourceY);
 		return true;
 	}
 

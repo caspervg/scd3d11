@@ -19,6 +19,7 @@
 #include "Diagnostics.h"
 #include "LiveShadowHooks.h"
 #include "ShadowRegistry.h"
+#include "Settings.h"
 #include "SunPath.h"
 #include "TerrainShadows.h"
 #include "VertexFormatUtils.h"
@@ -712,39 +713,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             draw.shape = shape;
             draw.seenPass = serial;
         };
-        // The box the caster's shadow can reach: its own box pushed down the sun
-        // to the terrain under it.
-        auto placeShadow = [&](LiveShadowDraw& draw) {
-            float ground = draw.worldLow[1] - kUnknownGroundDrop;
-            float altitude = 0.0f;
-            if (TerrainShadows::Altitude((draw.worldLow[0] + draw.worldHigh[0]) * 0.5f,
-                                         (draw.worldLow[2] + draw.worldHigh[2]) * 0.5f, altitude))
-                ground = (std::min)(altitude, draw.worldLow[1]);
-            std::memcpy(draw.shadowLow, draw.worldLow, sizeof(draw.shadowLow));
-            std::memcpy(draw.shadowHigh, draw.worldHigh, sizeof(draw.shadowHigh));
-            draw.shadowLow[1] = ground;
-            if (!sunKnown || sun[1] > -1.0e-3f) {
-                float const reach = draw.worldHigh[1] - ground;
-                for (unsigned axis : {0u, 2u}) {
-                    draw.shadowLow[axis] -= reach;
-                    draw.shadowHigh[axis] += reach;
-                }
-                return;
-            }
-            for (unsigned mask = 0; mask < 8; ++mask) {
-                float const corner[3]{
-                    (mask & 1) ? draw.worldHigh[0] : draw.worldLow[0],
-                    (mask & 2) ? draw.worldHigh[1] : draw.worldLow[1],
-                    (mask & 4) ? draw.worldHigh[2] : draw.worldLow[2]
-                };
-                float const along = (ground - corner[1]) / sun[1];
-                for (unsigned axis : {0u, 2u}) {
-                    float const landed = corner[axis] + sun[axis] * along;
-                    draw.shadowLow[axis] = (std::min)(draw.shadowLow[axis], landed);
-                    draw.shadowHigh[axis] = (std::max)(draw.shadowHigh[axis], landed);
-                }
-            }
-        };
+        auto placeShadow = [&](LiveShadowDraw& draw) { PlaceLiveShadow(draw, sun, sunKnown); };
         for (LiveShadowDraw& draw : liveShadowDraws) placeInWorld(draw);
         if (!partialPass) {
             for (LiveShadowDraw& draw : liveShadowDraws) placeShadow(draw);
@@ -807,6 +776,145 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         return true;
     }
 
+    void cGDriver::PlaceLiveShadow(LiveShadowDraw& draw, float const sun[3], bool sunKnown) {
+        float ground = draw.worldLow[1] - kUnknownGroundDrop;
+        float altitude = 0.0f;
+        if (TerrainShadows::Altitude((draw.worldLow[0] + draw.worldHigh[0]) * 0.5f,
+                                     (draw.worldLow[2] + draw.worldHigh[2]) * 0.5f, altitude))
+            ground = (std::min)(altitude, draw.worldLow[1]);
+        std::memcpy(draw.shadowLow, draw.worldLow, sizeof(draw.shadowLow));
+        std::memcpy(draw.shadowHigh, draw.worldHigh, sizeof(draw.shadowHigh));
+        draw.shadowLow[1] = ground;
+        if (!sunKnown || sun[1] > -1.0e-3f) {
+            float const reach = draw.worldHigh[1] - ground;
+            for (unsigned axis : {0u, 2u}) {
+                draw.shadowLow[axis] -= reach;
+                draw.shadowHigh[axis] += reach;
+            }
+            return;
+        }
+        for (unsigned mask = 0; mask < 8; ++mask) {
+            float const corner[3]{
+                (mask & 1) ? draw.worldHigh[0] : draw.worldLow[0],
+                (mask & 2) ? draw.worldHigh[1] : draw.worldLow[1],
+                (mask & 4) ? draw.worldHigh[2] : draw.worldLow[2]
+            };
+            float const along = (ground - corner[1]) / sun[1];
+            for (unsigned axis : {0u, 2u}) {
+                float const landed = corner[axis] + sun[axis] * along;
+                draw.shadowLow[axis] = (std::min)(draw.shadowLow[axis], landed);
+                draw.shadowHigh[axis] = (std::max)(draw.shadowHigh[axis], landed);
+            }
+        }
+    }
+
+    bool cGDriver::LiveShadowCleanWanted() const {
+        return Settings::Get().sunLatitude.has_value() && LiveShadowHooks::Enabled() && ShadowRegistry::Enabled();
+    }
+
+    HRESULT cGDriver::EnsureLiveShadowClean() {
+        if (liveShadowClean.screen) return S_OK;
+        if (!d3dDevice || !backBufferTexture || windowWidth <= 0 || windowHeight <= 0) return E_POINTER;
+        D3D11_TEXTURE2D_DESC description{};
+        backBufferTexture->GetDesc(&description);
+        description.BindFlags = 0;
+        description.MiscFlags = 0;
+        description.CPUAccessFlags = 0;
+        description.Usage = D3D11_USAGE_DEFAULT;
+        HRESULT const result = d3dDevice->CreateTexture2D(&description, nullptr, &liveShadowClean.screen);
+        if (FAILED(result)) LogHRESULT(LogCategory::Resource, "live shadows: unshadowed view copy", result);
+        return result;
+    }
+
+    // Repeats a colour copy between the back buffer and a buffer region on the
+    // unshadowed copies, so they keep holding what SC4's would hold without
+    // shadows. A whole-window save is SC4 saving its backing store.
+    void cGDriver::NoteLiveShadowCleanCopy(
+        uint32_t region, bool intoRegion, int32_t destinationX, int32_t destinationY, int32_t width, int32_t height,
+        int32_t sourceX, int32_t sourceY) {
+        if (!LiveShadowCleanWanted()) return;
+        uint32_t const index = region - 1;
+        bool const wholeWindow = destinationX == 0 && destinationY == 0 && sourceX == 0 && sourceY == 0 &&
+                                 width == windowWidth && height == windowHeight;
+        if (bufferRegions[index].type != 0) {
+            if (intoRegion && wholeWindow) liveShadowClean.storeDepth = region;
+            return;
+        }
+        if (FAILED(EnsureLiveShadowClean())) return;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D>& mirror = liveShadowClean.regions[index];
+        if (!mirror) {
+            D3D11_TEXTURE2D_DESC description{};
+            liveShadowClean.screen->GetDesc(&description);
+            if (FAILED(d3dDevice->CreateTexture2D(&description, nullptr, &mirror))) return;
+            liveShadowClean.regionValid[index] = false;
+        }
+        D3D11_BOX const box{
+            static_cast<UINT>(sourceX), static_cast<UINT>(sourceY), 0,
+            static_cast<UINT>(sourceX + width), static_cast<UINT>(sourceY + height), 1
+        };
+        if (intoRegion) {
+            d3dContext->CopySubresourceRegion(mirror.Get(), 0, static_cast<UINT>(destinationX),
+                                              static_cast<UINT>(destinationY), 0, liveShadowClean.screen.Get(), 0,
+                                              &box);
+            if (wholeWindow) {
+                liveShadowClean.regionValid[index] = liveShadowClean.screenValid;
+                liveShadowClean.storeColour = region;
+            }
+        } else {
+            d3dContext->CopySubresourceRegion(liveShadowClean.screen.Get(), 0, static_cast<UINT>(destinationX),
+                                              static_cast<UINT>(destinationY), 0, mirror.Get(), 0, &box);
+            if (wholeWindow) liveShadowClean.screenValid = liveShadowClean.regionValid[index];
+        }
+    }
+
+    bool cGDriver::ReshadeLiveShadows() {
+        LiveShadowCleanView& clean = liveShadowClean;
+        uint32_t const colour = clean.storeColour;
+        uint32_t const depth = clean.storeDepth;
+        if (!LiveShadowCleanWanted() || !IsDeviceReady() || !clean.viewValid || !liveShadowWorldCastersValid ||
+            !IsBufferRegion(colour) || !IsBufferRegion(depth) || !clean.regionValid[colour - 1] ||
+            !clean.regions[colour - 1])
+            return false;
+        LARGE_INTEGER start{};
+        QueryPerformanceCounter(&start);
+        if (!ShadowRegistry::GatherView(clean.eyeToWorld, clean.projection)) return false;
+
+        // The stored view without shadows and its depth become the frame, as a
+        // full static pass would leave them.
+        d3dContext->CopyResource(backBufferTexture.Get(), clean.regions[colour - 1].Get());
+        if (!DrawBufferRegion(depth, 0, 0, windowWidth, windowHeight, 0, 0)) return false;
+        float sun[3]{};
+        if (SunPath::Current(sun)) {
+            Normalize(sun);
+            for (LiveShadowDraw& draw : liveShadowWorldCasters) PlaceLiveShadow(draw, sun, true);
+        }
+        std::vector<LiveShadowDraw> pending;
+        pending.swap(liveShadowDraws);
+        bool const scissor = scissorEnabled;
+        float projection[16]{};
+        std::memcpy(projection, liveShadowSceneProjection, sizeof(projection));
+        bool const projectionValid = liveShadowSceneProjectionValid;
+        scissorEnabled = false;
+        std::memcpy(liveShadowSceneProjection, clean.projection, sizeof(liveShadowSceneProjection));
+        liveShadowSceneProjectionValid = true;
+        liveShadowReshading = true;
+        DrawLivePropShadows(true);
+        liveShadowReshading = false;
+        std::memcpy(liveShadowSceneProjection, projection, sizeof(projection));
+        liveShadowSceneProjectionValid = projectionValid;
+        scissorEnabled = scissor;
+        liveShadowDraws.swap(pending);
+        if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+        else SetViewport();
+
+        // Saved where SC4 restores its backing store from. The unshadowed copy
+        // stays as it is.
+        d3dContext->CopyResource(bufferRegions[colour - 1].texture.Get(), backBufferTexture.Get());
+        ++frameStats.shadowReshades;
+        frameStats.shadowStaticMs += Milliseconds(start);
+        return true;
+    }
+
     void cGDriver::RenderLivePropShadows(bool staticPass) {
         if (!LiveShadowHooks::Enabled()) return;
         LARGE_INTEGER start{};
@@ -831,7 +939,21 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         bool const partialPass =
             scissorEnabled && (viewportX > 0 || viewportY > 0 || viewportWidth < windowWidth ||
                                viewportHeight < windowHeight);
-        if (staticPass) ++(partialPass ? frameStats.shadowPartialPasses : frameStats.shadowFullPasses);
+        if (staticPass && !liveShadowReshading) {
+            ++(partialPass ? frameStats.shadowPartialPasses : frameStats.shadowFullPasses);
+            if (LiveShadowCleanWanted() && SUCCEEDED(EnsureLiveShadowClean())) {
+                // The pass's pixels before any shadow lands on them.
+                UINT const top = static_cast<UINT>(partialPass ? D3D11TopLeftY(windowHeight, viewportY, viewportHeight) : 0);
+                D3D11_BOX const box{
+                    static_cast<UINT>(partialPass ? viewportX : 0), top, 0,
+                    static_cast<UINT>(partialPass ? viewportX + viewportWidth : windowWidth),
+                    top + static_cast<UINT>(partialPass ? viewportHeight : windowHeight), 1
+                };
+                d3dContext->CopySubresourceRegion(liveShadowClean.screen.Get(), 0, box.left, box.top, 0,
+                                                  backBufferTexture.Get(), 0, &box);
+                if (!partialPass) liveShadowClean.screenValid = true;
+            }
+        }
         bool const registry = ShadowRegistry::Enabled();
         // An automaton moves, so it casts only in the dynamic pass. One caught
         // in a static pass would stay behind in the backing store.
@@ -928,13 +1050,35 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         bool const haveProjection = projectionFromCapture || liveShadowSceneProjectionValid;
         std::memcpy(projection, !liveShadowDraws.empty() ? liveShadowDraws.front().projection : liveShadowSceneProjection,
                     sizeof(projection));
+        // The view a re-shade needs. A partial pass's projection spans its
+        // rectangle, so it is widened to the window: scaled by the rectangle's
+        // share of it and moved to its place.
+        if (staticPass && !liveShadowReshading && haveView && haveProjection) {
+            std::memcpy(liveShadowClean.eyeToWorld, eyeToWorld, sizeof(eyeToWorld));
+            std::memcpy(liveShadowClean.projection, projection, sizeof(projection));
+            if (partialPass) {
+                float const width = static_cast<float>(windowWidth), height = static_cast<float>(windowHeight);
+                float const scale[2]{static_cast<float>(viewportWidth) / width, static_cast<float>(viewportHeight) / height};
+                float const shift[2]{(2.0f * viewportX + viewportWidth) / width - 1.0f,
+                                     (2.0f * viewportY + viewportHeight) / height - 1.0f};
+                float* const p = liveShadowClean.projection;
+                for (unsigned row = 0; row < 2; ++row) {
+                    for (unsigned column = 0; column < 4; ++column) p[column * 4 + row] *= scale[row];
+                    p[12 + row] += shift[row] * p[15];
+                }
+            }
+            liveShadowClean.viewValid = true;
+        }
 
         // A strip at the city's edge often has no shadow record and no terrain
         // on the height field, so its view is unknown. It drew no caster either,
         // so the casters we already track are still right.
         bool const emptyPartialPass = partialPass && !haveView && !havePass && liveShadowDraws.empty();
         bool tracked = false;
-        if (registry && staticPass && !emptyPartialPass) {
+        // A re-shade draws the casters already tracked, under the new sun.
+        if (liveShadowReshading) {
+            tracked = liveShadowWorldCastersValid;
+        } else if (registry && staticPass && !emptyPartialPass) {
             if (haveView && haveProjection) {
                 float sun[3]{liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2]};
                 Normalize(sun);

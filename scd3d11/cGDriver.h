@@ -360,6 +360,31 @@ namespace nSCD3D11 {
 		// take it from.
 		float liveShadowSceneProjection[16]{};
 		bool liveShadowSceneProjectionValid = false;
+		// SunLatitude: the static view as it was before its shadows, kept in step
+		// with SC4's backing store, so a new sun can be shaded onto it without
+		// SC4 redrawing the city. screen follows the back buffer's static
+		// pixels. regions mirror the colour buffer regions, which is where SC4
+		// keeps its backing store.
+		struct LiveShadowCleanView {
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> screen;
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> regions[MAX_BUFFER_REGIONS];
+			bool screenValid = false;
+			bool regionValid[MAX_BUFFER_REGIONS]{};
+			// The regions of the last whole-window saves: the backing store.
+			uint32_t storeColour = 0;
+			uint32_t storeDepth = 0;
+			// The view of the last static pass, and its projection widened to
+			// the whole window.
+			float eyeToWorld[16]{};
+			float projection[16]{};
+			bool viewValid = false;
+		} liveShadowClean;
+		// Set while ReshadeLiveShadows runs its pass.
+		bool liveShadowReshading = false;
+		bool LiveShadowCleanWanted(void) const;
+		HRESULT EnsureLiveShadowClean(void);
+		void NoteLiveShadowCleanCopy(uint32_t region, bool intoRegion, int32_t destinationX, int32_t destinationY,
+		                             int32_t width, int32_t height, int32_t sourceX, int32_t sourceY);
 		// Colour and strength of the last pass that had SC4's shadow parameters.
 		float liveShadowColour[3]{};
 		float liveShadowStrength = 0.0f;
@@ -452,6 +477,8 @@ namespace nSCD3D11 {
 			uint32_t shadowForcedBy[kLiveShadowRedrawCauses]{};
 			// RedisplayWorldRect requests from caster tracking. Each becomes a later partial pass.
 			uint32_t shadowRedisplays = 0;
+			// Sun steps shaded onto the backing store's unshadowed copy.
+			uint32_t shadowReshades = 0;
 			uint32_t shadowMapRenders = 0;
 			uint32_t shadowCasters = 0;
 			uint32_t shadowRegistryCasters = 0;
@@ -743,6 +770,9 @@ namespace nSCD3D11 {
 		bool TrackLiveShadowWorldCasters(
 			float const *eyeToWorld, float const *worldToView, float const *projection, float const sun[3],
 			bool sunKnown, bool partialPass);
+		// The box a tracked caster's shadow can reach: its own box pushed down
+		// the sun to the terrain under it.
+		void PlaceLiveShadow(LiveShadowDraw &draw, float const sun[3], bool sunKnown);
 		// RenderLivePropShadows' body. The wrapper times it for DrawStats.
 		void DrawLivePropShadows(bool staticPass);
 
@@ -761,6 +791,10 @@ namespace nSCD3D11 {
 		uint32_t ConsumeLiveShadowCleanRedraw(void);
 		// DrawStats: DrawHook invalidated the backing store for these causes.
 		void CountForcedStaticRedraw(uint32_t causes);
+		// SunLatitude moved the sun: shades SC4's backing store again from its
+		// unshadowed copy, as a full static pass would. False when that copy or
+		// the casters are not known, and the view has to be redrawn instead.
+		bool ReshadeLiveShadows(void);
 
 		cGDriver();
 

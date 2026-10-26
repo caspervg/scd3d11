@@ -133,9 +133,12 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				}
 
 				if (translated) forced |= 1u << kRedrawTranslated;
-				// SC4 bakes the shadows into its backing store, so a new sun needs a clean view.
-				if (SunPath::Update()) forced |= 1u << kRedrawSun;
 				if (cameraChanged) forced |= 1u << kRedrawCamera;
+				// SC4 bakes the shadows into its backing store. A new sun is shaded
+				// onto its unshadowed copy, or failing that the view is redrawn.
+				if (SunPath::Update() && forced == 0 &&
+				    !(bytes[0x65] != 0 && gDriver != nullptr && gDriver->ReshadeLiveShadows()))
+					forced |= 1u << kRedrawSun;
 				if (translated || cameraChanged) {
 					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;
 					if (translated && !loggedTranslationInvalidation) {

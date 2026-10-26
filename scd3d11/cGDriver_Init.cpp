@@ -346,6 +346,7 @@ namespace nSCD3D11 {
 		liveShadowDraws.clear();
 		liveShadowWorldCasters.clear();
 		liveShadowWorldCastersValid = false;
+		liveShadowClean = LiveShadowCleanView{};
 		blit = BlitPipeline{};
 		++textureViewsGeneration;
 		if (preserveResources) {
