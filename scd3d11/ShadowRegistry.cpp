@@ -230,12 +230,40 @@ namespace nSCD3D11::ShadowRegistry {
 		thread_local bool tExpectMeshCaster = false;
 
 		std::mutex gMutex;
+		// A registered caster, with copies of what the gather reads for every id
+		// so that culling one does not touch the Caster itself.
 		struct Entry {
-			std::shared_ptr<Caster const> caster;
+			std::shared_ptr<Caster const> caster; // null: no caster at this id
+			void const *binding = nullptr;
+			float low[3]{};
+			float high[3]{};
+			float baseHeight = 0.0f;
 			// The gPassSerial of the pass this caster was last gathered into.
 			uint32_t passSerial = 0;
+			bool suppressOnly = false;
 		};
-		std::unordered_map<uint32_t, Entry> gCasters;
+		// Indexed by overlay id: AddShadow's ids are slots in the manager's
+		// record array, so they are small and dense, and a gather that looks up
+		// thousands of them per pass reads an array rather than chasing hash
+		// nodes. Ids at or above kMaxCasterIds are left to the native draw.
+		constexpr uint32_t kMaxCasterIds = 1u << 20;
+		std::vector<Entry> gCasters;
+		size_t gCasterCount = 0;
+		uint32_t gHighestId = 0;
+
+		// gMutex held. True when there was a caster at id.
+		bool EraseCaster(int32_t id) {
+			if (id < 0 || static_cast<uint32_t>(id) >= gCasters.size() || !gCasters[id].caster) return false;
+			gCasters[id] = Entry{};
+			--gCasterCount;
+			return true;
+		}
+
+		void ClearCasters(bool release) {
+			if (release) std::vector<Entry>().swap(gCasters);
+			else gCasters.clear();
+			gCasterCount = 0;
+		}
 		void const *gManager = nullptr;
 		Pass gPass;
 		bool gPassValid = false;
@@ -266,6 +294,55 @@ namespace nSCD3D11::ShadowRegistry {
 		// the terrain under it is behind it by more than the composite bias
 		// along the 45-degree sun.
 		constexpr float kGroundLiftWorld = 0.2f;
+
+		bool GroundQuad(float const low[3], float const high[3], float baseHeight, float const sun[3],
+		                float quad[4][3]) {
+			if (sun[1] > -1.0e-3f) return false;
+			float const height = baseHeight + kGroundLiftWorld;
+			// The box's top and bottom corners land this far along the sun; the
+			// footprint spans the box and both landings.
+			float const alongLow = (height - low[1]) / sun[1];
+			float const alongHigh = (height - high[1]) / sun[1];
+			float footLow[2]{}, footHigh[2]{};
+			for (unsigned axis = 0; axis < 2; ++axis) {
+				unsigned const world = axis * 2;
+				float const a = sun[world] * alongLow, b = sun[world] * alongHigh;
+				footLow[axis] = low[world] + (std::min)({0.0f, a, b});
+				footHigh[axis] = high[world] + (std::max)({0.0f, a, b});
+			}
+			float const corners[4][2]{
+				{footLow[0], footLow[1]}, {footHigh[0], footLow[1]}, {footHigh[0], footHigh[1]}, {footLow[0], footHigh[1]}
+			};
+			for (unsigned index = 0; index < 4; ++index) {
+				quad[index][0] = corners[index][0];
+				quad[index][1] = height;
+				quad[index][2] = corners[index][1];
+			}
+			return true;
+		}
+
+		bool ReachOutside(float const low[3], float const high[3], bool hasQuad, float const quad[4][3],
+		                  float const *worldToClip) {
+			float reachLow[3]{low[0], low[1], low[2]};
+			float reachHigh[3]{high[0], high[1], high[2]};
+			if (hasQuad) {
+				for (unsigned axis = 0; axis < 3; ++axis) {
+					reachLow[axis] = (std::min)(reachLow[axis], quad[0][axis]);
+					reachHigh[axis] = (std::max)(reachHigh[axis], quad[2][axis]);
+				}
+			}
+			// The matrix is affine, so the box's NDC extent is its centre and
+			// half-size mapped through it.
+			for (unsigned axis = 0; axis < 2; ++axis) {
+				float centre = worldToClip[12 + axis], extent = 0.0f;
+				for (unsigned k = 0; k < 3; ++k) {
+					centre += worldToClip[k * 4 + axis] * (reachLow[k] + reachHigh[k]) * 0.5f;
+					extent += std::fabs(worldToClip[k * 4 + axis]) * (reachHigh[k] - reachLow[k]) * 0.5f;
+				}
+				if (centre + extent < -1.0f || centre - extent > 1.0f) return true;
+			}
+			return false;
+		}
 
 		// Inverse of an affine column-major matrix; false for any other.
 		bool InvertAffine(float const *m, float out[16]) {
@@ -516,10 +593,10 @@ namespace nSCD3D11::ShadowRegistry {
 		              bool meshCaster) {
 			auto erase = [&] {
 				std::lock_guard<std::mutex> lock(gMutex);
-				gCasters.erase(static_cast<uint32_t>(id));
+				EraseCaster(id);
 			};
 			if (binding == nullptr || positions == nullptr || uvs == nullptr || transform == nullptr || count < 3 ||
-			    static_cast<uint32_t>(count) > kMaxVertices) {
+			    static_cast<uint32_t>(count) > kMaxVertices || static_cast<uint32_t>(id) >= kMaxCasterIds) {
 				erase();
 				return;
 			}
@@ -611,15 +688,25 @@ namespace nSCD3D11::ShadowRegistry {
 				// A new overlay manager is a new city: every id belongs to it now.
 				if (gManager != nullptr) {
 					Log(LogCategory::Initialization, "shadow registry: overlay manager changed, %u casters dropped",
-					    static_cast<unsigned>(gCasters.size()));
+					    static_cast<unsigned>(gCasterCount));
 				}
-				gCasters.clear();
+				ClearCasters(false);
 				++gPassSerial;
 				gPass.casters.clear();
 				gManager = manager;
 			}
-			// Not caster->id: the right-hand side, which empties caster, is evaluated first.
-			gCasters[static_cast<uint32_t>(id)] = Entry{std::move(caster)};
+			Entry fresh;
+			fresh.binding = caster->binding;
+			std::memcpy(fresh.low, caster->low, sizeof(fresh.low));
+			std::memcpy(fresh.high, caster->high, sizeof(fresh.high));
+			fresh.baseHeight = caster->baseHeight;
+			fresh.suppressOnly = caster->suppressOnly;
+			fresh.caster = std::move(caster);
+			uint32_t const slot = static_cast<uint32_t>(id);
+			if (slot >= gCasters.size()) gCasters.resize((std::max)(slot + 1, static_cast<uint32_t>(gCasters.size()) * 3 / 2));
+			if (!gCasters[slot].caster) ++gCasterCount;
+			gCasters[slot] = std::move(fresh);
+			gHighestId = (std::max)(gHighestId, slot);
 			++gRegistered;
 			if (timing) {
 				++gStats.registrations;
@@ -697,7 +784,7 @@ namespace nSCD3D11::ShadowRegistry {
 				NoteNotGathered("not the registry's overlay manager", manager);
 				return false;
 			}
-			if (gCasters.empty()) {
+			if (gCasterCount == 0) {
 				NoteNotGathered("registry empty", manager);
 				return false;
 			}
@@ -710,13 +797,19 @@ namespace nSCD3D11::ShadowRegistry {
 			size_t write = 0;
 			for (size_t read = 0; read < kept.size(); ++read) {
 				int32_t const id = kept[read];
-				auto const found = id >= 0 ? gCasters.find(static_cast<uint32_t>(id)) : gCasters.end();
-				if (found == gCasters.end()) {
+				if (id < 0 || static_cast<uint32_t>(id) >= gCasters.size() || !gCasters[id].caster) {
 					kept[write++] = id;
 					continue;
 				}
-				Entry &entry = found->second;
-				Caster const &caster = *entry.caster;
+				Entry &entry = gCasters[id];
+				// Culled before the record is read, from the entry alone. A record
+				// SC4 reused without RemoveOverlay is then only noticed once it is
+				// in view; none has been seen in practice.
+				if (cull) {
+					float quad[4][3];
+					bool const hasQuad = GroundQuad(entry.low, entry.high, entry.baseHeight, sunWorld, quad);
+					if (ReachOutside(entry.low, entry.high, hasQuad, quad, worldToClip)) continue;
+				}
 				// The in-use word, the flags and the binding, in one guarded read.
 				uint8_t header[kRecordBinding + sizeof(void *)];
 				int32_t inUse = 0;
@@ -730,21 +823,16 @@ namespace nSCD3D11::ShadowRegistry {
 					std::memcpy(&flags, header + kRecordFlags, sizeof(flags));
 					std::memcpy(&binding, header + kRecordBinding, sizeof(binding));
 				}
-				if (!readable || inUse != -1 || binding != caster.binding) {
+				if (!readable || inUse != -1 || binding != entry.binding) {
 					// The slot was freed or reused by something that never went
 					// through AddShadow, e.g. a decal. It is not ours any more.
 					++gStaleRecords;
-					gCasters.erase(found);
+					EraseCaster(id);
 					kept[write++] = id;
 					continue;
 				}
 				if ((flags & kShadowDrawFlags) != kShadowDrawFlags) continue; // disabled: native skips it too
-				if (caster.suppressOnly) continue;
-				if (cull) {
-					float quad[4][3];
-					bool const hasQuad = GroundQuad(caster, sunWorld, quad);
-					if (ReachOutside(caster, hasQuad, quad, worldToClip)) continue;
-				}
+				if (entry.suppressOnly) continue;
 				if (!Read(binding, textureObject) || textureObject == nullptr || !Read(textureObject, texture)) {
 					kept[write++] = id;
 					continue;
@@ -770,48 +858,11 @@ namespace nSCD3D11::ShadowRegistry {
 	} // namespace
 
 	bool GroundQuad(Caster const &caster, float const sun[3], float quad[4][3]) {
-		if (sun[1] > -1.0e-3f) return false;
-		float const height = caster.baseHeight + kGroundLiftWorld;
-		// The box's top and bottom corners land this far along the sun; the
-		// footprint spans the box and both landings.
-		float const alongLow = (height - caster.low[1]) / sun[1];
-		float const alongHigh = (height - caster.high[1]) / sun[1];
-		float low[2]{}, high[2]{};
-		for (unsigned axis = 0; axis < 2; ++axis) {
-			unsigned const world = axis * 2;
-			float const a = sun[world] * alongLow, b = sun[world] * alongHigh;
-			low[axis] = caster.low[world] + (std::min)({0.0f, a, b});
-			high[axis] = caster.high[world] + (std::max)({0.0f, a, b});
-		}
-		float const corners[4][2]{{low[0], low[1]}, {high[0], low[1]}, {high[0], high[1]}, {low[0], high[1]}};
-		for (unsigned index = 0; index < 4; ++index) {
-			quad[index][0] = corners[index][0];
-			quad[index][1] = height;
-			quad[index][2] = corners[index][1];
-		}
-		return true;
+		return GroundQuad(caster.low, caster.high, caster.baseHeight, sun, quad);
 	}
 
 	bool ReachOutside(Caster const &caster, bool hasQuad, float const quad[4][3], float const *worldToClip) {
-		float low[3]{caster.low[0], caster.low[1], caster.low[2]};
-		float high[3]{caster.high[0], caster.high[1], caster.high[2]};
-		if (hasQuad) {
-			for (unsigned axis = 0; axis < 3; ++axis) {
-				low[axis] = (std::min)(low[axis], quad[0][axis]);
-				high[axis] = (std::max)(high[axis], quad[2][axis]);
-			}
-		}
-		// The matrix is affine, so the box's NDC extent is its centre and
-		// half-size mapped through it.
-		for (unsigned axis = 0; axis < 2; ++axis) {
-			float centre = worldToClip[12 + axis], extent = 0.0f;
-			for (unsigned k = 0; k < 3; ++k) {
-				centre += worldToClip[k * 4 + axis] * (low[k] + high[k]) * 0.5f;
-				extent += std::fabs(worldToClip[k * 4 + axis]) * (high[k] - low[k]) * 0.5f;
-			}
-			if (centre + extent < -1.0f || centre - extent > 1.0f) return true;
-		}
-		return false;
+		return ReachOutside(caster.low, caster.high, hasQuad, quad, worldToClip);
 	}
 
 	void NoteProjection(float const projection[16]) {
@@ -877,7 +928,7 @@ namespace nSCD3D11::ShadowRegistry {
 					         static_cast<uint8_t const *>(_AddressOfReturnAddress()), meshCaster);
 				} catch (std::bad_alloc const &) {
 					std::lock_guard<std::mutex> lock(gMutex);
-					gCasters.erase(static_cast<uint32_t>(id));
+					EraseCaster(id);
 				}
 			} else if (meshCaster && count > 0) {
 				// CalcShadowProjection rejected the fit, so there is no record to
@@ -894,7 +945,7 @@ namespace nSCD3D11::ShadowRegistry {
 			// never returns one, and a group's members come back through here.
 			if (id < 0) return;
 			std::lock_guard<std::mutex> lock(gMutex);
-			if (manager == gManager && gCasters.erase(static_cast<uint32_t>(id)) != 0) ++gRemoved;
+			if (manager == gManager && EraseCaster(id)) ++gRemoved;
 		}
 
 		void DrawFiltered(DrawShadowsFunction original, void *manager, float const *eyeToWorld, void *drawContext,
@@ -1110,7 +1161,7 @@ namespace nSCD3D11::ShadowRegistry {
 		}
 		{
 			std::lock_guard<std::mutex> lock(gMutex);
-			gCasters.clear();
+			ClearCasters(true);
 			gManager = nullptr;
 			gPass = Pass{};
 			gPassValid = false;
@@ -1146,8 +1197,8 @@ namespace nSCD3D11::ShadowRegistry {
 		size_t remaining = 0;
 		{
 			std::lock_guard<std::mutex> lock(gMutex);
-			remaining = gCasters.size();
-			gCasters.clear();
+			remaining = gCasterCount;
+			ClearCasters(true);
 			gManager = nullptr;
 			gPass = Pass{};
 			gPassValid = false;
@@ -1159,9 +1210,9 @@ namespace nSCD3D11::ShadowRegistry {
 		    gMeshCasters, gPrerenderedProps, gFloatingProps, gMeshFallbacks);
 		Log(LogCategory::Initialization,
 		    "shadow registry uninstalled: %u registered (%u indexed, %u ground quad only), %u removed, "
-		    "%u stale, %u passes, %u live at exit; DrawShadows calls %u (%u gathered, %u left native)",
+		    "%u stale, %u passes, %u live at exit, highest id %u; DrawShadows calls %u (%u gathered, %u left native)",
 		    gRegistered, gWithIndices, gQuadOnly, gRemoved, gStaleRecords, gPasses,
-		    static_cast<unsigned>(remaining), gDrawCalls, gGathered, gNotGathered);
+		    static_cast<unsigned>(remaining), gHighestId, gDrawCalls, gGathered, gNotGathered);
 	}
 
 	bool Enabled() {
