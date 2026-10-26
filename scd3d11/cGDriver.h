@@ -288,6 +288,10 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> compositeDepth;
 			Microsoft::WRL::ComPtr<ID3D11BlendState> shadowBlend;
 			Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+			// The frame as the per-frame pass found it, so its composite can read
+			// the static shadow each pixel already has from its alpha.
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> scene;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> sceneView;
 			// Per-draw casters persist across passes with the registry, so they
 			// are uploaded once too.
 			ShadowArena casterArena;

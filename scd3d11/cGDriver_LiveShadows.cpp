@@ -95,6 +95,7 @@ Texture2D<float> sceneDepth : register(t0);
 Texture2D<float> shadowMap : register(t1);
 Texture2D<float2> terrainCeiling : register(t2); // ceiling, umbra
 Texture2D<float4> terrainVertices : register(t3); // altitude, normal x, normal z, cell flipped
+Texture2D<float4> sceneColour : register(t4); // composite of the per-frame pass: the frame so far
 SamplerState sourceSampler : register(s0);
 SamplerState shadowSampler : register(s1);
 SamplerState terrainSampler : register(s2);
@@ -259,10 +260,22 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 		shade = max(shade, saturate((ceiling.x - world.y - terrainShade.y) / penumbra));
 	}
 	shade *= facing;
-	clip(shade - 0.001);
+	// A static pass writes every pixel it reaches, so that the alpha it leaves
+	// always says how much shadow the pixel has.
+	if (material.y != 0.0) clip(shade - 0.001);
 	// Multiplied into the scene and tinted by SC4's shadow colour. Blending
 	// towards that colour instead would wash large terrain shadows out in blue.
-	return float4(lerp(float3(1.0, 1.0, 1.0), tone.rgb, shade * projection1.w), 1.0);
+	// The alpha becomes 1 - the amount, which travels with the backing store.
+	float amount = shade * projection1.w;
+	float3 colour = lerp(float3(1.0, 1.0, 1.0), tone.rgb, amount);
+	// The per-frame pass (material.y) only adds what the static shadow
+	// already there lacks, so the two never stack.
+	if (material.y != 0.0) {
+		float settled = 1.0 - sceneColour.Load(int3(pixel, 0)).a;
+		colour = lerp(float3(1.0, 1.0, 1.0), tone.rgb, max(amount, settled)) /
+		         lerp(float3(1.0, 1.0, 1.0), tone.rgb, settled);
+	}
+	return float4(colour, 1.0 - amount);
 }
 )";
 
@@ -1245,8 +1258,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ZERO;
             blend.RenderTarget[0].DestBlend = D3D11_BLEND_SRC_COLOR;
             blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-            blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
-            blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+            blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+            blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
             blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
             blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
             if (SUCCEEDED(result)) result = d3dDevice->CreateBlendState(&blend, &pipeline.shadowBlend);
@@ -1870,6 +1883,27 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             flatLight = (std::max)(-sunWorld[1], 0.05f);
         }
         composite.sun[3] = 1.0f / flatLight;
+        // The per-frame pass reads the frame it shades, so it works on a copy.
+        bool const readScene = !staticPass && backBufferTexture && [&]() {
+            D3D11_TEXTURE2D_DESC wanted{};
+            backBufferTexture->GetDesc(&wanted);
+            if (pipeline.scene) {
+                D3D11_TEXTURE2D_DESC have{};
+                pipeline.scene->GetDesc(&have);
+                if (have.Width == wanted.Width && have.Height == wanted.Height && have.Format == wanted.Format)
+                    return true;
+                pipeline.scene.Reset();
+                pipeline.sceneView.Reset();
+            }
+            wanted.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            wanted.MiscFlags = 0;
+            wanted.CPUAccessFlags = 0;
+            wanted.Usage = D3D11_USAGE_DEFAULT;
+            return SUCCEEDED(d3dDevice->CreateTexture2D(&wanted, nullptr, &pipeline.scene)) &&
+                   SUCCEEDED(d3dDevice->CreateShaderResourceView(pipeline.scene.Get(), nullptr, &pipeline.sceneView));
+        }();
+        if (readScene) d3dContext->CopyResource(pipeline.scene.Get(), backBufferTexture.Get());
+        composite.material[1] = readScene ? 1.0f : 0.0f;
         ID3D11RenderTargetView* target = renderTargetView.Get();
         d3dContext->OMSetRenderTargets(1, &target, nullptr);
         // The viewport limits the fullscreen triangle. Outside a partial pass's
@@ -1896,11 +1930,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         d3dContext->PSSetShader(pipeline.compositePS.Get(), nullptr, 0);
         d3dContext->VSSetConstantBuffers(0, 1, &cb);
         d3dContext->PSSetConstantBuffers(0, 1, &cb);
-        ID3D11ShaderResourceView* views[4]{
+        ID3D11ShaderResourceView* views[5]{
             depthShaderView.Get(), pipeline.mapView.Get(), terrainBound ? pipeline.terrainMapView.Get() : nullptr,
-            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr
+            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr, readScene ? pipeline.sceneView.Get() : nullptr
         };
-        d3dContext->PSSetShaderResources(0, 4, views);
+        d3dContext->PSSetShaderResources(0, 5, views);
         ID3D11SamplerState* samplers[3]{
             pipeline.mapSampler.Get(), pipeline.mapSampler.Get(), pipeline.clampSampler.Get()
         };
@@ -1909,8 +1943,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         gpuStamp(2);
         ++frameStats.shadowComposites;
         frameStats.shadowCompositePixels += static_cast<uint64_t>(viewport.Width * viewport.Height);
-        views[0] = views[1] = views[2] = views[3] = nullptr;
-        d3dContext->PSSetShaderResources(0, 4, views);
+        views[0] = views[1] = views[2] = views[3] = views[4] = nullptr;
+        d3dContext->PSSetShaderResources(0, 5, views);
         liveShadowDraws.clear();
         d3dContext->ClearState();
         InvalidateD3D11StateCache();
