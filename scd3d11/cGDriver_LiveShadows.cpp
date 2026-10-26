@@ -955,8 +955,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         std::memcpy(projection, !liveShadowDraws.empty() ? liveShadowDraws.front().projection : liveShadowSceneProjection,
                     sizeof(projection));
 
+        // A strip at the city's edge often holds no shadow record and no
+        // terrain on the height field, so its view stays unknown; it drew no
+        // caster either, so the world-space set is still right. Dropping the set
+        // there forced a full redraw on every scroll frame along the edge.
+        bool const emptyPartialPass = partialPass && !haveView && !havePass && liveShadowDraws.empty();
         bool tracked = false;
-        if (registry && staticPass) {
+        if (registry && staticPass && !emptyPartialPass) {
             if (haveView && haveProjection) {
                 float sun[3]{liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2]};
                 Normalize(sun);
@@ -970,7 +975,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // inside its own rectangle, so once one has cast it cannot be trusted.
         // With it, only a static pass the world-space set could not follow is.
         bool const castersStale =
-            registry ? staticPass && !tracked && (!liveShadowDraws.empty() || !liveShadowWorldCasters.empty())
+            registry ? staticPass && !tracked && !emptyPartialPass &&
+                       (!liveShadowDraws.empty() || !liveShadowWorldCasters.empty())
                      : liveShadowEverCaptured;
         if (staticPass && partialPass && castersStale) ++frameStats.shadowUntrackedPasses;
         if (partialPass && (castersStale || terrainChanged)) {
