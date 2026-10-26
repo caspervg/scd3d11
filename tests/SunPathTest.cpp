@@ -40,6 +40,14 @@ int main() {
 	float const lowest = std::sin(nSCD3D11::SunPath::kMinElevation * 3.14159265f / 180.0f);
 	assert(std::fabs(-direction[1] - lowest) < 1.0e-4f);
 
+	// The midsummer full moon at midnight, 51 degrees north: low in the south.
+	nSCD3D11::SunPath::MoonDirection(51.0f, 0.0f, direction, elevation);
+	assert(elevation > 15.0f && elevation < 16.0f);
+	assert(direction[2] < -0.9f && std::fabs(direction[0]) < 0.02f);
+	// At noon it is far below the horizon.
+	nSCD3D11::SunPath::MoonDirection(51.0f, 12.0f, direction, elevation);
+	assert(elevation < -60.0f);
+
 	// Noon on the tropic is overhead, held at the highest.
 	Direction(23.44f, 12.0f, direction, elevation);
 	assert(elevation > 89.0f);

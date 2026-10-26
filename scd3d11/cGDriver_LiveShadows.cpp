@@ -39,6 +39,8 @@ namespace nSCD3D11 {
         // The black the casters composite with until SC4's own shadow
         // parameters have been read.
         constexpr float kFallbackShadowOpacity = 0.38f;
+        // How strong shadows stay at full night, against the day's.
+        constexpr float kNightShadowWeight = 0.5f;
         // Used when SC4 reports no alpha-test scale: DrawShadows then blends the
         // texture alpha without a test, and the shadow map needs some cut. Also
         // the cut for True3D props cast through their own UVs.
@@ -1991,13 +1993,16 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         composite.projection1[1] = projection[14];
         composite.projection1[2] = 1.0f / kShadowMapSize;
         // SC4's shadow colour and strength (GetShadowParams), faded by the
-        // lighting manager's day/night weight because the blue is a daylight tint,
-        // and by SunLatitude's sunset.
+        // lighting manager's day/night weight because the blue is a daylight tint.
+        // SC4 fades its shadows out entirely at night, which leaves the city
+        // flat, so night keeps a fainter shadow: the moon's with SunLatitude,
+        // SC4's own sun otherwise.
         float daylight = 1.0f;
         LiveShadowHooks::ShadowDaylight(daylight);
-        daylight *= SunPath::Strength();
+        float const night = kNightShadowWeight * (1.0f - daylight);
+        float const weight = (SunPath::Moonlit() ? night : (std::max)(daylight, night)) * SunPath::Strength();
         composite.projection1[3] =
-            (liveShadowToneValid ? liveShadowStrength : kFallbackShadowOpacity) * daylight;
+            (liveShadowToneValid ? liveShadowStrength : kFallbackShadowOpacity) * weight;
         if (liveShadowToneValid) std::memcpy(composite.tone, liveShadowColour, sizeof(liveShadowColour));
         std::memcpy(composite.sun, shadowDirection, sizeof(shadowDirection));
         // N.L of flat ground: the sun's elevation. The camera estimate assumes

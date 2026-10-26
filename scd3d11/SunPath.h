@@ -26,6 +26,10 @@ namespace nSCD3D11::SunPath {
 	// kMaxElevation.
 	void Direction(float latitude, float hour, float direction[3], float &elevation);
 
+	// The same for a full moon that night: it stands opposite the sun, so in
+	// midsummer it crosses low in the sky.
+	void MoonDirection(float latitude, float hour, float direction[3], float &elevation);
+
 	// Low suns make long shadows, which cost fill and redraw area. A high one
 	// leaves the terrain shadows without a direction.
 	constexpr float kMinElevation = 15.0f;
@@ -39,7 +43,10 @@ namespace nSCD3D11::SunPath {
 	// SC4's day and night cycle is turned off.
 	bool Current(float direction[3]);
 
-	// How strong shadows are for the sun's real elevation: 1 by day, falling to
-	// 0 as it sets.
+	// True when the sun has set and the moon casts instead.
+	bool Moonlit();
+
+	// How strong shadows are for the real elevation of the sun, or of the moon
+	// when it casts: 1 when well up, falling to 0 at the horizon.
 	float Strength();
 } // namespace nSCD3D11::SunPath

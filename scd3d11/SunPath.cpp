@@ -47,35 +47,47 @@ namespace nSCD3D11::SunPath {
 		}
 
 		bool gValid = false;
+		bool gMoonlit = false;
 		uint32_t gStep = 0;
 		float gDirection[3]{};
 		float gElevation = 0.0f;
+
+		// Midsummer: the sun stands over the tropic of the latitude's hemisphere.
+		float SunDeclination(float latitude) {
+			return (latitude < 0.0f ? -23.44f : 23.44f) * kDegrees;
+		}
+
+		// Where light from a body at this declination and hour angle travels.
+		void Position(float latitude, float declination, float hourAngle, float direction[3], float &elevation) {
+			float const phi = latitude * kDegrees;
+			// The body's position in east, north and up.
+			float const east = -std::cos(declination) * std::sin(hourAngle);
+			float const north = std::cos(phi) * std::sin(declination) -
+			                    std::sin(phi) * std::cos(declination) * std::cos(hourAngle);
+			float const up = std::sin(phi) * std::sin(declination) +
+			                 std::cos(phi) * std::cos(declination) * std::cos(hourAngle);
+			elevation = std::asin((std::clamp)(up, -1.0f, 1.0f)) / kDegrees;
+
+			// Keep the azimuth and clamp the height. A sun straight overhead
+			// has no azimuth, so it leans south.
+			float horizontal = std::sqrt(east * east + north * north);
+			float x = horizontal > 1.0e-6f ? east / horizontal : 0.0f;
+			float z = horizontal > 1.0e-6f ? -north / horizontal : 1.0f;
+			float const clamped = (std::clamp)(elevation, kMinElevation, kMaxElevation) * kDegrees;
+			horizontal = std::cos(clamped);
+			// Light travels away from the body.
+			direction[0] = -x * horizontal;
+			direction[1] = -std::sin(clamped);
+			direction[2] = -z * horizontal;
+		}
 	}
 
 	void Direction(float latitude, float hour, float direction[3], float &elevation) {
-		// Midsummer: the sun stands over the tropic of the latitude's hemisphere.
-		float const declination = (latitude < 0.0f ? -23.44f : 23.44f) * kDegrees;
-		float const hourAngle = (hour - 12.0f) * 15.0f * kDegrees;
-		float const phi = latitude * kDegrees;
-		// The sun's position in east, north and up.
-		float const east = -std::cos(declination) * std::sin(hourAngle);
-		float const north = std::cos(phi) * std::sin(declination) -
-		                    std::sin(phi) * std::cos(declination) * std::cos(hourAngle);
-		float const up = std::sin(phi) * std::sin(declination) +
-		                 std::cos(phi) * std::cos(declination) * std::cos(hourAngle);
-		elevation = std::asin((std::clamp)(up, -1.0f, 1.0f)) / kDegrees;
+		Position(latitude, SunDeclination(latitude), (hour - 12.0f) * 15.0f * kDegrees, direction, elevation);
+	}
 
-		// Keep the azimuth and clamp the height. A sun straight overhead
-		// has no azimuth, so it leans south.
-		float horizontal = std::sqrt(east * east + north * north);
-		float x = horizontal > 1.0e-6f ? east / horizontal : 0.0f;
-		float z = horizontal > 1.0e-6f ? -north / horizontal : 1.0f;
-		float const clamped = (std::clamp)(elevation, kMinElevation, kMaxElevation) * kDegrees;
-		horizontal = std::cos(clamped);
-		// Light travels away from the sun.
-		direction[0] = -x * horizontal;
-		direction[1] = -std::sin(clamped);
-		direction[2] = -z * horizontal;
+	void MoonDirection(float latitude, float hour, float direction[3], float &elevation) {
+		Position(latitude, -SunDeclination(latitude), (hour - 24.0f) * 15.0f * kDegrees, direction, elevation);
 	}
 
 	bool Update() {
@@ -106,6 +118,20 @@ namespace nSCD3D11::SunPath {
 		// The middle of the step, so the sun is never more than half a step off.
 		float const hour = static_cast<float>(seconds / kStepSeconds * kStepSeconds + kStepSeconds / 2) / 3600.0f;
 		Direction(*latitude, hour, gDirection, gElevation);
+		// After sunset the moon casts, once it stands higher than the sun.
+		float moon[3]{};
+		float moonElevation = 0.0f;
+		MoonDirection(*latitude, hour, moon, moonElevation);
+		bool const moonlit = gElevation < 0.0f && moonElevation > gElevation;
+		if (moonlit) {
+			std::memcpy(gDirection, moon, sizeof(moon));
+			gElevation = moonElevation;
+		}
+		if (moonlit != gMoonlit) {
+			Log(LogCategory::Initialization, "sun path: %s at %02u:%02u visual time",
+			    moonlit ? "the moon casts" : "the sun casts", seconds / 3600, seconds / 60 % 60);
+		}
+		gMoonlit = moonlit;
 		if (!gValid) {
 			Log(LogCategory::Initialization,
 			    "sun path: latitude %.1f, %02u:%02u visual time, elevation %.1f, direction %.3f/%.3f/%.3f",
@@ -121,6 +147,10 @@ namespace nSCD3D11::SunPath {
 		if (!gValid) return false;
 		std::memcpy(direction, gDirection, sizeof(gDirection));
 		return true;
+	}
+
+	bool Moonlit() {
+		return gValid && gMoonlit;
 	}
 
 	float Strength() {
