@@ -303,7 +303,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			Log(LogCategory::Initialization,
 			    "live shadows: static pass hooked before SC4 backing-store save");
 		}
-		if (!Settings::Flag("ReShade", true)) return;
+		if (!Settings::Get().reshade) return;
 
 		HMODULE module = nullptr;
 		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,

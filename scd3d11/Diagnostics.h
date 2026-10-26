@@ -33,7 +33,8 @@ namespace nSCD3D11
 	// Only written when SimCity 4 is started with -LogLevel:trace.
 	void LogTrace(LogCategory category, char const* format, ...);
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result);
-	// SimCity 4 was started with -DrawStats.
+	// The DrawStats and LogLevel=trace settings, handed over by Settings::Load.
+	void SetDiagnostics(bool drawStats, bool traceLog);
 	bool DrawStatsEnabled();
 
 	enum class ObservedCategory

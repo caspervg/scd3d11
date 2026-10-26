@@ -16,8 +16,6 @@
 #include "mini/ini.h"
 
 #include <exception>
-#include <mutex>
-#include <set>
 
 #include <windows.h>
 
@@ -65,15 +63,17 @@ namespace nSCD3D11::Settings {
 			return value.empty() ? nullptr : "SCD3D11.ini";
 		}
 
-		// Logs each setting that is set anywhere once, so a log shows what a
-		// session ran with.
+		// Logs each setting that is set anywhere, so a log shows what a session
+		// ran with.
 		void NoteSetting(char const *name, std::string const &value, char const *source) {
-			static std::mutex mutex;
-			static std::set<std::string> logged;
-			std::lock_guard<std::mutex> const lock(mutex);
-			if (!logged.insert(name).second) return;
 			Log(LogCategory::Initialization, "setting %s = %s (%s)", name, value.empty() ? "on" : value.c_str(), source);
 		}
+
+		bool Flag(char const *name, bool fallback);
+		std::string Value(char const *name);
+
+		// Constant-initialised, so readable before Load.
+		Values gValues;
 	}
 
 	bool FindSwitch(std::string_view commandLine, std::string_view name, std::string &value) {
@@ -101,17 +101,39 @@ namespace nSCD3D11::Settings {
 		return fallback;
 	}
 
-	bool Flag(char const *name, bool fallback) {
-		std::string value;
-		char const *const source = Lookup(name, value);
-		if (source == nullptr) return fallback;
-		NoteSetting(name, value, source);
-		return ParseFlag(value, fallback);
+	namespace {
+		bool Flag(char const *name, bool fallback) {
+			std::string value;
+			char const *const source = Lookup(name, value);
+			if (source == nullptr) return fallback;
+			NoteSetting(name, value, source);
+			return ParseFlag(value, fallback);
+		}
+
+		std::string Value(char const *name) {
+			std::string value;
+			if (char const *const source = Lookup(name, value)) NoteSetting(name, value, source);
+			return value;
+		}
 	}
 
-	std::string Value(char const *name) {
-		std::string value;
-		if (char const *const source = Lookup(name, value)) NoteSetting(name, value, source);
-		return value;
+	void Load() {
+		Values values;
+		values.liveShadows = Flag("LiveShadows", values.liveShadows);
+		values.networkShadowMasks = Flag("NetworkShadowMasks", values.networkShadowMasks);
+		values.vsync = Flag("VSync", values.vsync);
+		values.borderless = Flag("Borderless", values.borderless);
+		values.flipModel = Flag("FlipModel", values.flipModel);
+		values.defaultAdapter = Value("GPU") == "default";
+		values.viewportCull = Flag("ViewportCull", values.viewportCull);
+		values.reshade = Flag("ReShade", values.reshade);
+		values.drawStats = Flag("DrawStats", values.drawStats);
+		values.traceLog = Value("LogLevel") == "trace";
+		gValues = values;
+		SetDiagnostics(values.drawStats, values.traceLog);
+	}
+
+	Values const &Get() {
+		return gValues;
 	}
 } // namespace nSCD3D11::Settings

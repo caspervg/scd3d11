@@ -72,7 +72,6 @@
 #include "Diagnostics.h"
 #include "GameVersion.h"
 #include "LiveShadowHooks.h"
-#include "Settings.h"
 
 #include <algorithm>
 #include <array>
@@ -1057,10 +1056,6 @@ namespace nSCD3D11::ShadowRegistry {
 			std::memcpy(site.replacement.data(), &replacement, sizeof(replacement));
 		}
 
-		bool Requested() {
-			return Settings::Flag("LiveShadows", false);
-		}
-
 		bool BytesMatch(PatchSite const &site) {
 			return site.address != nullptr && std::memcmp(site.address, site.expected.data(), site.length) == 0;
 		}
@@ -1100,7 +1095,6 @@ namespace nSCD3D11::ShadowRegistry {
 	bool Install() {
 #if defined(_MSC_VER) && defined(_M_IX86)
 		if (gInstalled) return true;
-		if (!Requested()) return false;
 		if (!IsGameVersion641()) {
 			Log(LogCategory::Initialization, "shadow registry: requires SimCity 4 1.1.641, skipping");
 			return false;

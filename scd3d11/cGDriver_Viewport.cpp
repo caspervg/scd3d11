@@ -29,7 +29,7 @@ namespace nSCD3D11 {
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
 
 		bool BorderlessFullscreenRequested() {
-			return Settings::Flag("Borderless", false);
+			return Settings::Get().borderless;
 		}
 
 		RECT PrimaryMonitorRectangle() {
@@ -581,7 +581,7 @@ namespace nSCD3D11 {
 			else SetViewport();
 		}
 
-		static bool const vsyncEnabled = Settings::Flag("VSync", true);
+		bool const vsyncEnabled = Settings::Get().vsync;
 		NoteRenderPhase("Flush: ReShade effects");
 		FinishReShadeFrame();
 		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
@@ -673,7 +673,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::UpdateViewportCull(void) {
-		static bool const disabled = !Settings::Flag("ViewportCull", true);
+		bool const disabled = !Settings::Get().viewportCull;
 		// The scissor rectangle is always the viewport itself, so the viewport is all that can be rasterized.
 		uint64_t const area = static_cast<uint64_t>(viewportWidth) * static_cast<uint64_t>(viewportHeight);
 		uint64_t const window = static_cast<uint64_t>(windowWidth) * static_cast<uint64_t>(windowHeight);

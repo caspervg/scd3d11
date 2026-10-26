@@ -20,6 +20,7 @@
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
 #include "LiveShadowHooks.h"
+#include "Settings.h"
 #include "ShadowRegistry.h"
 #include "TerrainShadows.h"
 #include "ThumbnailFocusGuard.h"
@@ -54,6 +55,7 @@ namespace nSCD3D11
 		}
 
 		bool OnStart(cIGZCOM* pCOM) {
+			Settings::Load();
 			LiveShadowHooks::Install();
 			if (LiveShadowHooks::Enabled()) ShadowRegistry::Install();
 			TerrainShadows::Install();

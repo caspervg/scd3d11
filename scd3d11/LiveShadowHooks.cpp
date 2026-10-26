@@ -564,11 +564,11 @@ namespace nSCD3D11::LiveShadowHooks {
 		}
 
 		bool Requested() {
-			return Settings::Flag("LiveShadows", false);
+			return Settings::Get().liveShadows;
 		}
 
 		bool KeepNetworkShadowMasks() {
-			return Settings::Flag("NetworkShadowMasks", false);
+			return Settings::Get().networkShadowMasks;
 		}
 
 		bool BytesMatch(PatchSite const &site) {

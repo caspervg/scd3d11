@@ -229,8 +229,7 @@ if (BUILD_TESTING)
     scd3d11_add_test(SCD3D11ServiceTest
             tests/SCD3D11ServiceTest.cpp
             scd3d11/SCD3D11Service.cpp
-            scd3d11/Diagnostics.cpp
-            scd3d11/Settings.cpp)
+            scd3d11/Diagnostics.cpp)
 
     # Drives a real cGDriver on a hidden window. Built from source instead of reusing the DLL objects:
     # the test must not see NDEBUG, and cGDriver's layout depends on it.
