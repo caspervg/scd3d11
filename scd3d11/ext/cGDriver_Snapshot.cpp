@@ -18,6 +18,7 @@
 
 static const uint32_t GZIID_cIGZGraphicSystem = 0x73283c;
 static const uint32_t RZSRVID_GraphicSystem = 0xc416025c;
+static const ULONGLONG kSnapshotTimeoutMilliseconds = 2000;
 
 class cIGZGraphicSystem : public cIGZUnknown {
 public:
@@ -88,8 +89,20 @@ namespace nSCD3D11 {
 		};
 		d3dContext->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, backBufferTexture.Get(), 0, &sourceBox);
 
+		// Wait for the copy with a time limit instead of blocking inside Map. A GPU that stalls here then
+		// costs a missing thumbnail, which SC4 replaces with its default one, instead of a hung save.
+		d3dContext->Flush();
 		D3D11_MAPPED_SUBRESOURCE mapping{};
-		result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapping);
+		ULONGLONG const deadline = GetTickCount64() + kSnapshotTimeoutMilliseconds;
+		while ((result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapping)) ==
+		       DXGI_ERROR_WAS_STILL_DRAWING) {
+			if (GetTickCount64() >= deadline) {
+				Log(LogCategory::Resource, "snapshot: GPU copy not finished after %llu ms, skipping it",
+				    static_cast<unsigned long long>(kSnapshotTimeoutMilliseconds));
+				return fail();
+			}
+			Sleep(1);
+		}
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(snapshot)", result);
 			NoteDeviceLoss(result);
