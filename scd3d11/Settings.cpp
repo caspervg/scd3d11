@@ -21,6 +21,7 @@
 #include <exception>
 #include <filesystem>
 #include <optional>
+#include <utility>
 
 #include <windows.h>
 
@@ -55,26 +56,31 @@ namespace nSCD3D11::Settings {
 			}
 		}
 
-		// Where a setting was found, for the log; null when it was not.
-		char const *Lookup(Sources const &sources, char const *name, std::string &value) {
-			value.clear();
+		// One source's text for a setting, lower-cased; nullopt when that source
+		// does not set it. A bare switch reads as "".
+		std::optional<std::string> FromCommandLine(cIGZCmdLine *commandLine, char const *name) {
 			cRZBaseString switchValue;
-			if (sources.commandLine != nullptr &&
-			    sources.commandLine->IsSwitchPresent(cRZBaseString(name), switchValue, true)) {
-				for (char const character : std::string_view(switchValue.ToChar())) value += Lower(character);
-				return "command line";
-			}
-			if (sources.ini == nullptr) return nullptr;
-			auto const entry = sources.ini->find(name);
-			if (entry == sources.ini->not_found()) return nullptr;
+			if (commandLine == nullptr || !commandLine->IsSwitchPresent(cRZBaseString(name), switchValue, true))
+				return std::nullopt;
+			std::string value;
+			for (char const character : std::string_view(switchValue.ToChar())) value += Lower(character);
+			return value;
+		}
+
+		std::optional<std::string> FromIni(IniSection const *ini, char const *name) {
+			if (ini == nullptr) return std::nullopt;
+			auto const entry = ini->find(name);
+			if (entry == ini->not_found()) return std::nullopt;
 			// IniReader keeps an inline comment as part of the value; drop it and
 			// the spaces before it.
+			std::string value;
 			for (char const character : entry->second) {
 				if (character == ';') break;
 				value += Lower(character);
 			}
 			while (!value.empty() && IsSpace(value.back())) value.pop_back();
-			return value.empty() ? nullptr : "SCD3D11.ini";
+			if (value.empty()) return std::nullopt;
+			return value;
 		}
 
 		// Logs each setting that is set anywhere, so a log shows what a session
@@ -83,7 +89,28 @@ namespace nSCD3D11::Settings {
 			Log(LogCategory::Initialization, "setting %s = %s (%s)", name, value.empty() ? "on" : value.c_str(), source);
 		}
 
-		bool Flag(Sources const &sources, char const *name, bool fallback);
+		// The setting from the first source whose value parse accepts: the
+		// command line, then the INI. A value it rejects is logged and skipped,
+		// so a mistyped switch leaves the INI's setting in force.
+		template <typename T>
+		T Resolve(Sources const &sources, char const *name, bool (*parse)(std::string_view, T &), T fallback) {
+			std::pair<char const *, std::optional<std::string>> const candidates[]{
+				{"command line", FromCommandLine(sources.commandLine, name)},
+				{"SCD3D11.ini", FromIni(sources.ini, name)}
+			};
+			for (auto const &[source, value] : candidates) {
+				if (!value) continue;
+				T result{};
+				if (parse(*value, result)) {
+					NoteSetting(name, *value, source);
+					return result;
+				}
+				Log(LogCategory::Initialization, "setting %s: '%s' from the %s is not a valid value, ignored", name,
+				    value->c_str(), source);
+			}
+			return fallback;
+		}
+
 		std::string Value(Sources const &sources, char const *name);
 
 		// Constant-initialised, so readable before Load.
@@ -99,19 +126,16 @@ namespace nSCD3D11::Settings {
 	}
 
 	namespace {
-		bool Flag(Sources const &sources, char const *name, bool fallback) {
-			std::string value;
-			char const *const source = Lookup(sources, name, value);
-			if (source == nullptr) return fallback;
-			NoteSetting(name, value, source);
-			bool flag = fallback;
-			return ParseFlag(value, flag) ? flag : fallback;
-		}
-
 		std::string Value(Sources const &sources, char const *name) {
-			std::string value;
-			if (char const *const source = Lookup(sources, name, value)) NoteSetting(name, value, source);
-			return value;
+			if (std::optional<std::string> const value = FromCommandLine(sources.commandLine, name)) {
+				NoteSetting(name, *value, "command line");
+				return *value;
+			}
+			if (std::optional<std::string> const value = FromIni(sources.ini, name)) {
+				NoteSetting(name, *value, "SCD3D11.ini");
+				return *value;
+			}
+			return {};
 		}
 	}
 
@@ -119,15 +143,15 @@ namespace nSCD3D11::Settings {
 		std::optional<IniSection> const ini = ReadIni();
 		Sources const sources{commandLine, ini ? &*ini : nullptr};
 		Values values;
-		values.liveShadows = Flag(sources, "LiveShadows", values.liveShadows);
-		values.networkShadowMasks = Flag(sources, "NetworkShadowMasks", values.networkShadowMasks);
-		values.vsync = Flag(sources, "VSync", values.vsync);
-		values.borderless = Flag(sources, "Borderless", values.borderless);
-		values.flipModel = Flag(sources, "FlipModel", values.flipModel);
+		values.liveShadows = Resolve(sources, "LiveShadows", ParseFlag, values.liveShadows);
+		values.networkShadowMasks = Resolve(sources, "NetworkShadowMasks", ParseFlag, values.networkShadowMasks);
+		values.vsync = Resolve(sources, "VSync", ParseFlag, values.vsync);
+		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
+		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
 		values.defaultAdapter = Value(sources, "GPU") == "default";
-		values.viewportCull = Flag(sources, "ViewportCull", values.viewportCull);
-		values.reshade = Flag(sources, "ReShade", values.reshade);
-		values.drawStats = Flag(sources, "DrawStats", values.drawStats);
+		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
+		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
+		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
 		values.traceLog = Value(sources, "LogLevel") == "trace";
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
