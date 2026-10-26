@@ -2008,20 +2008,29 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         bool const readScene = !staticPass && backBufferTexture && [&]() {
             D3D11_TEXTURE2D_DESC wanted{};
             backBufferTexture->GetDesc(&wanted);
-            if (pipeline.scene) {
+            if (pipeline.scene && pipeline.sceneView) {
                 D3D11_TEXTURE2D_DESC have{};
                 pipeline.scene->GetDesc(&have);
                 if (have.Width == wanted.Width && have.Height == wanted.Height && have.Format == wanted.Format)
                     return true;
-                pipeline.scene.Reset();
-                pipeline.sceneView.Reset();
             }
+            pipeline.scene.Reset();
+            pipeline.sceneView.Reset();
             wanted.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             wanted.MiscFlags = 0;
             wanted.CPUAccessFlags = 0;
             wanted.Usage = D3D11_USAGE_DEFAULT;
-            return SUCCEEDED(d3dDevice->CreateTexture2D(&wanted, nullptr, &pipeline.scene)) &&
-                   SUCCEEDED(d3dDevice->CreateShaderResourceView(pipeline.scene.Get(), nullptr, &pipeline.sceneView));
+            // The back buffer is typeless, so its view names the format.
+            D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+            view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            view.Texture2D.MipLevels = 1;
+            if (SUCCEEDED(d3dDevice->CreateTexture2D(&wanted, nullptr, &pipeline.scene)) &&
+                SUCCEEDED(d3dDevice->CreateShaderResourceView(pipeline.scene.Get(), &view, &pipeline.sceneView)))
+                return true;
+            pipeline.scene.Reset();
+            pipeline.sceneView.Reset();
+            return false;
         }();
         if (readScene) d3dContext->CopyResource(pipeline.scene.Get(), backBufferTexture.Get());
         composite.material[1] = readScene ? 1.0f : 0.0f;
