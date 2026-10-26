@@ -44,6 +44,8 @@ namespace nSCD3D11::Settings {
 
 	Values const &Get();
 
-	// Exposed for tests: a value as a flag, or fallback when it is neither.
-	bool ParseFlag(std::string_view value, bool fallback);
+	// Exposed for tests: reads value as a flag the way sc4-dll-utilities does
+	// (on/off, true/false, enabled/disabled, 1/0, any case), with an empty
+	// value - a bare -Name - meaning on. False when it is none of those.
+	bool ParseFlag(std::string_view value, bool &flag);
 } // namespace nSCD3D11::Settings

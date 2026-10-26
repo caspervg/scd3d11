@@ -46,8 +46,9 @@ Delete `SCD3D11.dll` and `SCD3D11.ini` from the plugins folder. SimCity 4 goes b
 ## Settings
 
 Set these in `SCD3D11.ini` next to `SCD3D11.dll`, as `Name=value` under `[SCD3D11]`. A launch argument of the same
-name overrides the INI for one session: `-Name:value`, or `-Name` alone for `on`. Values are `on` or `off`; names and
-values are case-insensitive. `SC4D3D11.log` lists every setting in effect and where it came from.
+name overrides the INI for one session: `-Name:value`, or `-Name` alone for `on`. Values are `on` or `off` (also
+`enabled`/`disabled`, `true`/`false` and `1`/`0`), in any case. `SC4D3D11.log` lists every setting in effect and where
+it came from.
 
 | Setting | Default | Effect |
 |---------|---------|--------|

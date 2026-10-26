@@ -16,6 +16,7 @@
 #include "cIGZCmdLine.h"
 #include "cRZBaseString.h"
 #include "IniReader.h"
+#include "StringViewUtil.h"
 
 #include <exception>
 #include <filesystem>
@@ -89,10 +90,12 @@ namespace nSCD3D11::Settings {
 		Values gValues;
 	}
 
-	bool ParseFlag(std::string_view value, bool fallback) {
-		if (value.empty() || value == "on" || value == "true" || value == "yes" || value == "1") return true;
-		if (value == "off" || value == "false" || value == "no" || value == "0") return false;
-		return fallback;
+	bool ParseFlag(std::string_view value, bool &flag) {
+		if (value.empty()) {
+			flag = true;
+			return true;
+		}
+		return StringViewUtil::TryParse(value, flag);
 	}
 
 	namespace {
@@ -101,7 +104,8 @@ namespace nSCD3D11::Settings {
 			char const *const source = Lookup(sources, name, value);
 			if (source == nullptr) return fallback;
 			NoteSetting(name, value, source);
-			return ParseFlag(value, fallback);
+			bool flag = fallback;
+			return ParseFlag(value, flag) ? flag : fallback;
 		}
 
 		std::string Value(Sources const &sources, char const *name) {
