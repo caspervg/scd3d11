@@ -21,7 +21,7 @@
 //   E 0x0061E860   5 bytes  cSC4NetworkOccupantWithPreBuiltModel::Draw wrapper
 //   F 0x0061E8A0   8 bytes  cSC4NetworkOccupantWithPreBuiltModel::GetModelInstances
 //   G 0x006147D0  11 bytes  cS3DModelInstance drawable thunk (vtable +0x30)
-//   H vtables 0x00A94608, 0x00A94B38, 0x00A95AC0, 0x00A97188, 0x00A991E0
+//   H 25 automaton vtables (kAutomatonVtables)
 //     +0x11C   4 bytes each  automaton PlaceInRenderer (0x00507F70)
 //   I 0x007FB5E0  11 bytes  cS3DModelInstanceAnimated drawable thunk (vtable 0x00ABD048)
 //
@@ -38,10 +38,11 @@
 // on every draw, because a freed instance's address can be reused by another
 // model.
 //
-// Automata. PlaceInRenderer(bool) puts an occupant's models into the renderer
-// or takes them out. Many occupant classes share it, so it is patched only in
-// the five automaton vtables, the ones with the "State: %d" debug text
-// (0x0050F0A0). The models are the list at occupant +0x110/+0x114, all
+// Automata. PlaceInRenderer(bool) puts an automaton's models into the renderer
+// or takes them out. Every class that uses it is an automaton (cSC4Vehicle,
+// cSC4Bus, cSC4Train, cSC4Watercraft, cSC4Aircraft, cSC4Pedestrian and the
+// rest, by the Mac build's type info), and it is patched in each of their 25
+// vtables. The models are the list at occupant +0x110/+0x114, all
 // cS3DModelInstanceAnimated. Slot 0 of each returns the drawable the renderer
 // stores, which is what that class's draw thunk (site I) is called with. Their
 // draws are bracketed like the prebuilt models and cast in the dynamic pass
@@ -90,7 +91,12 @@ namespace nSCD3D11::LiveShadowHooks {
 		constexpr uintptr_t kAddShadowSiteVA = 0x0049195E;
 		constexpr uintptr_t kAddShadowRejoinVA = 0x00491964;
 		constexpr uintptr_t kPlaceInRendererVA = 0x00507F70;
-		constexpr uintptr_t kAutomatonVtables[]{0x00A94608, 0x00A94B38, 0x00A95AC0, 0x00A97188, 0x00A991E0};
+		constexpr uintptr_t kAutomatonVtables[]{
+			0x00A94608, 0x00A94B38, 0x00A94FB0, 0x00A95AC0, 0x00A97188, 0x00A974D8, 0x00A97910,
+			0x00A981E0, 0x00A986F8, 0x00A98B60, 0x00A991E0, 0x00A99588, 0x00A999E0, 0x00A9A0C0,
+			0x00A9A718, 0x00A9AB50, 0x00A9AFC8, 0x00A9B488, 0x00A9B9B8, 0x00A9C068, 0x00A9C490,
+			0x00A9C938, 0x00A9CD68, 0x00A9D488, 0x00A9DBB8
+		};
 		constexpr ptrdiff_t kPlaceInRendererSlot = 0x11C;
 		constexpr ptrdiff_t kOccupantModelsBegin = 0x110;
 		// The automaton's fade: a tween of from, to, duration and elapsed that
