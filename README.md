@@ -118,6 +118,10 @@ Included in the `vendor` folder:
 * [gzcom-dll](https://github.com/nsgomez/gzcom-dll) (LGPLv2.1) — registers the graphics implementation with the game.
 * [Scion](https://github.com/nsgomez/scion) (LGPLv2.1) — compatibility with game components.
 * [xxHash](https://github.com/Cyan4973/xxHash) (BSD 2-Clause) — fingerprints geometry for the upload cache.
+* [ReShade](https://github.com/crosire/reshade) add-on API headers (BSD 3-Clause) — the [ReShade](#reshade) integration.
+
+Their license notices are reproduced in [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt), which ships with every
+release.
 
 ## License
 

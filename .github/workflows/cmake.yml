@@ -114,7 +114,7 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: |
         archive="SCD3D11-${GITHUB_REF_NAME}.zip"
-        zip -j "$archive" dist/SCD3D11.dll dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json README.md LICENSE
+        zip -j "$archive" dist/SCD3D11.dll dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json README.md LICENSE THIRD_PARTY_NOTICES.txt
         prerelease=""
         if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
         gh release create "$GITHUB_REF_NAME" "$archive" dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json \
