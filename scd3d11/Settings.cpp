@@ -59,9 +59,12 @@ namespace nSCD3D11::Settings {
 		// One source's text for a setting in lower case, or nothing when that
 		// source does not set it. A bare switch reads as "".
 		std::optional<std::string> FromCommandLine(cIGZCmdLine *commandLine, char const *name) {
+			if (commandLine == nullptr) return std::nullopt;
+			// SC4's value lookup only matches -Name:value with something after the
+			// colon, so a bare -Name needs the other lookup.
 			cRZBaseString switchValue;
-			if (commandLine == nullptr || !commandLine->IsSwitchPresent(cRZBaseString(name), switchValue, true))
-				return std::nullopt;
+			if (!commandLine->IsSwitchPresent(cRZBaseString(name), switchValue, true))
+				return commandLine->IsSwitchPresent(cRZBaseString(name)) ? std::optional<std::string>("") : std::nullopt;
 			std::string value;
 			for (char const character : std::string_view(switchValue.ToChar())) value += Lower(character);
 			return value;
@@ -135,6 +138,15 @@ namespace nSCD3D11::Settings {
 
 
 	void Load(cIGZCmdLine *commandLine) {
+		// The arguments as SC4 split them, which is what the switches are matched against.
+		if (commandLine != nullptr) {
+			std::string arguments;
+			for (uint32_t index = 0; index < commandLine->argc(); ++index) {
+				char const *const argument = commandLine->argv(static_cast<int32_t>(index));
+				arguments += std::string(index == 0 ? "" : " | ") + (argument != nullptr ? argument : "");
+			}
+			Log(LogCategory::Initialization, "command line as SC4 reads it: %s", arguments.c_str());
+		}
 		std::optional<IniSection> const ini = ReadIni();
 		Sources const sources{commandLine, ini ? &*ini : nullptr};
 		Values values;
