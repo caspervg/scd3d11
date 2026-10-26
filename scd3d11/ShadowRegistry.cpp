@@ -230,11 +230,17 @@ namespace nSCD3D11::ShadowRegistry {
 		thread_local bool tExpectMeshCaster = false;
 
 		std::mutex gMutex;
-		std::unordered_map<uint32_t, std::shared_ptr<Caster const>> gCasters;
+		struct Entry {
+			std::shared_ptr<Caster const> caster;
+			// The gPassSerial of the pass this caster was last gathered into.
+			uint32_t passSerial = 0;
+		};
+		std::unordered_map<uint32_t, Entry> gCasters;
 		void const *gManager = nullptr;
 		Pass gPass;
 		bool gPassValid = false;
-		std::unordered_set<uint32_t> gPassIds;
+		// Bumped whenever gPass starts over, so a caster joins each pass once.
+		uint32_t gPassSerial = 1;
 
 		unsigned gRegistered = 0;
 		unsigned gMeshCasters = 0;
@@ -573,11 +579,12 @@ namespace nSCD3D11::ShadowRegistry {
 					    static_cast<unsigned>(gCasters.size()));
 				}
 				gCasters.clear();
-				gPassIds.clear();
+				++gPassSerial;
 				gPass.casters.clear();
 				gManager = manager;
 			}
-			gCasters[caster->id] = std::move(caster);
+			// Not caster->id: the right-hand side, which empties caster, is evaluated first.
+			gCasters[static_cast<uint32_t>(id)] = Entry{std::move(caster)};
 			++gRegistered;
 			if (timing) {
 				++gStats.registrations;
@@ -640,6 +647,11 @@ namespace nSCD3D11::ShadowRegistry {
 				NoteNotGathered("registry empty", manager);
 				return false;
 			}
+			uint8_t const *records = nullptr;
+			if (!Read(static_cast<uint8_t const *>(manager) + kManagerRecords, records) || records == nullptr) {
+				NoteNotGathered("record table unreadable", manager);
+				return false;
+			}
 			++gGathered;
 			size_t write = 0;
 			for (size_t read = 0; read < kept.size(); ++read) {
@@ -649,15 +661,22 @@ namespace nSCD3D11::ShadowRegistry {
 					kept[write++] = id;
 					continue;
 				}
-				Caster const &caster = *found->second;
-				uint8_t const *const record = RecordAddress(manager, id);
+				Entry &entry = found->second;
+				Caster const &caster = *entry.caster;
+				// The in-use word, the flags and the binding, in one guarded read.
+				uint8_t header[kRecordBinding + sizeof(void *)];
 				int32_t inUse = 0;
 				uint32_t flags = 0;
 				void const *binding = nullptr;
 				void const *textureObject = nullptr;
 				uint32_t texture = 0;
-				if (record == nullptr || !Read(record, inUse) || !Read(record + kRecordFlags, flags) ||
-				    !Read(record + kRecordBinding, binding) || inUse != -1 || binding != caster.binding) {
+				bool const readable = SafeCopy(records + static_cast<size_t>(id) * kRecordSize, header, sizeof(header));
+				if (readable) {
+					std::memcpy(&inUse, header, sizeof(inUse));
+					std::memcpy(&flags, header + kRecordFlags, sizeof(flags));
+					std::memcpy(&binding, header + kRecordBinding, sizeof(binding));
+				}
+				if (!readable || inUse != -1 || binding != caster.binding) {
 					// The slot was freed or reused by something that never went
 					// through AddShadow, e.g. a decal. It is not ours any more.
 					++gStaleRecords;
@@ -671,8 +690,9 @@ namespace nSCD3D11::ShadowRegistry {
 					kept[write++] = id;
 					continue;
 				}
-				if (gPassIds.insert(caster.id).second) {
-					gPass.casters.push_back(PassCaster{found->second, texture, (flags & kWrapFlag) != 0});
+				if (entry.passSerial != gPassSerial) {
+					entry.passSerial = gPassSerial;
+					gPass.casters.push_back(PassCaster{entry.caster, texture, (flags & kWrapFlag) != 0});
 				}
 			}
 			kept.resize(write);
@@ -983,7 +1003,7 @@ namespace nSCD3D11::ShadowRegistry {
 			gManager = nullptr;
 			gPass = Pass{};
 			gPassValid = false;
-			gPassIds.clear();
+			++gPassSerial;
 		}
 		// AddShadow goes last: nothing is registered before the draw filter and
 		// the removal hook that keep the registry honest are in place.
@@ -1020,7 +1040,7 @@ namespace nSCD3D11::ShadowRegistry {
 			gManager = nullptr;
 			gPass = Pass{};
 			gPassValid = false;
-			gPassIds.clear();
+			++gPassSerial;
 		}
 		Log(LogCategory::Initialization,
 		    "shadow registry uninstalled: relaxed props: %u True3D kept with their UVs, %u prerendered through the "
@@ -1073,7 +1093,7 @@ namespace nSCD3D11::ShadowRegistry {
 		pass = std::move(gPass);
 		gPass = Pass{};
 		gPassValid = false;
-		gPassIds.clear();
+		++gPassSerial;
 		++gPasses;
 		return true;
 	}
