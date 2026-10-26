@@ -206,6 +206,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 	float3 viewPosition = ViewPosition(pixel, depth);
 	bool terrainMap = terrainShade.x != 0.0;
 	float3 world = terrainMap ? mul(eyeToWorld, float4(viewPosition, 1.0)).xyz : float3(0.0, 0.0, 0.0);
+	// Beyond the city's edge lies SC4's backdrop, below the terrain and so
+	// under its shadow ceiling; nothing out there casts, and shading it only
+	// leaves patches where edge strips are redrawn without the composite.
+	float2 cityExtent = (terrainCell.zw - 1.0) * terrainCell.x;
+	if (terrainMap && (any(world.xz < -1.0) || any(world.xz > cityExtent + 1.0))) discard;
 	// A shadow takes away the sun's direct light, which SC4's prerendered art
 	// and vertex lighting give a face in proportion to N.L. So it darkens fully
 	// where N.L is that of flat ground - what SC4's shadow strength is set for -
