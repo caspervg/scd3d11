@@ -467,10 +467,21 @@ namespace nSCD3D11 {
 		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
 			char name[sizeof(adapterDescription.Description)]{};
 			WideCharToMultiByte(CP_UTF8, 0, adapterDescription.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
-			Log(LogCategory::Initialization, "adapter: %s (vendor 0x%04X, device 0x%04X, %u MB dedicated, %s)",
+			// The user-mode driver version, packed as four 16-bit parts, from most to least significant.
+			LARGE_INTEGER driverVersion{};
+			if (FAILED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driverVersion))) driverVersion.QuadPart = 0;
+			Log(LogCategory::Initialization,
+			    "adapter: %s (vendor 0x%04X, device 0x%04X, driver %u.%u.%u.%u, %u MB dedicated, %s)",
 			    name, adapterDescription.VendorId, adapterDescription.DeviceId,
+			    HIWORD(driverVersion.HighPart), LOWORD(driverVersion.HighPart),
+			    HIWORD(driverVersion.LowPart), LOWORD(driverVersion.LowPart),
 			    static_cast<unsigned>(adapterDescription.DedicatedVideoMemory / (1024 * 1024)),
 			    preferredAdapter ? "high-performance preference" : "system default");
+			if (adapterDescription.VendorId == 0x1AF4) {
+				Log(LogCategory::Initialization,
+				    "adapter: this is the VirtIO GPU driver of a virtual machine. Its 3D support is still experimental, "
+				    "so keep the VM's guest tools up to date if the game crashes or freezes");
+			}
 		}
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
