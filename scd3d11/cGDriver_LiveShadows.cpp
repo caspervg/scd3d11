@@ -572,7 +572,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // occupant renderer, so it is both cheaper and more precise than
         // hashing those meshes (or heuristically accepting all scene draws).
         if (LiveShadowHooks::NetworkDrawActive()) return true;
-        if (!LiveShadowHooks::HasPropMeshes() || interleavedPointer == nullptr) return false;
+        if (!LiveShadowHooks::MayMatchPropMesh(vertexCount) || interleavedPointer == nullptr) return false;
         uint8_t const* const source = interleavedPointer + static_cast<size_t>(firstVertex) * interleavedStride;
         uint32_t const uvCount = RZVertexFormatNumElements(interleavedFormat, kGDElementType_TexCoord);
         if (vertexCount == 0 || interleavedStride < sizeof(float) * 3 || uvCount == 0) return false;

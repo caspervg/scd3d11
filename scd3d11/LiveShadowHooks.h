@@ -23,7 +23,9 @@ namespace nSCD3D11::LiveShadowHooks {
 	bool Enabled();
 	// True while a prebuilt network piece or its model is being drawn.
 	bool NetworkDrawActive();
-	bool HasPropMeshes();
+	// False when no registered prop mesh has this many vertices: the draw
+	// cannot match, and need not be hashed.
+	bool MayMatchPropMesh(uint32_t vertexCount);
 	bool MatchPropSignature(uint64_t signature);
 	// Records a relaxed prop's mesh (AddShadow's position and UV streams) for
 	// cGDriver to recognise when the prop is drawn; ShadowRegistry's fallback

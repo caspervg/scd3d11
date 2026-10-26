@@ -156,9 +156,14 @@ namespace nSCD3D11::LiveShadowHooks {
 		// Sorted signatures of the relaxed props' meshes.
 		std::mutex gPropMutex;
 		std::vector<uint64_t> gPropMeshes;
-		// Whether gPropMeshes has anything, readable without the lock:
-		// HasPropMeshes runs on every draw the game makes.
-		std::atomic<bool> gHavePropMeshes{false};
+		// The vertex counts in gPropMeshes, folded modulo 4096 into a bit set
+		// readable without the lock: MayMatchPropMesh runs on every draw the
+		// game makes, and only draws of a registered size are worth hashing.
+		std::atomic<uint32_t> gPropCounts[128]{};
+
+		void ClearPropCounts() {
+			for (auto &word: gPropCounts) word.store(0, std::memory_order_relaxed);
+		}
 
 		// Model instances owned by prebuilt network pieces, mapped to the
 		// occupant that owns them so a hit can be re-validated. Read once per
@@ -248,7 +253,7 @@ namespace nSCD3D11::LiveShadowHooks {
 			auto const found = std::lower_bound(gPropMeshes.begin(), gPropMeshes.end(), signature);
 			if (found != gPropMeshes.end() && *found == signature) return;
 			gPropMeshes.insert(found, signature);
-			gHavePropMeshes.store(true, std::memory_order_relaxed);
+			gPropCounts[(count >> 5) & 127].fetch_or(1u << (count & 31), std::memory_order_relaxed);
 			++gPropMeshesRegistered;
 			Log(LogCategory::Initialization, "live shadows: registered prop mesh sig=%08X%08X verts=%u",
 			    static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature), count);
@@ -350,8 +355,9 @@ namespace nSCD3D11::LiveShadowHooks {
 		return gInstalled && tNetworkDrawDepth != 0;
 	}
 
-	bool HasPropMeshes() {
-		return gInstalled && gHavePropMeshes.load(std::memory_order_relaxed);
+	bool MayMatchPropMesh(uint32_t vertexCount) {
+		return gInstalled &&
+		       (gPropCounts[(vertexCount >> 5) & 127].load(std::memory_order_relaxed) & (1u << (vertexCount & 31))) != 0;
 	}
 
 	bool MatchPropSignature(uint64_t signature) {
@@ -675,7 +681,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		{
 			std::lock_guard<std::mutex> lock(gPropMutex);
 			gPropMeshes.clear();
-			gHavePropMeshes.store(false, std::memory_order_relaxed);
+			ClearPropCounts();
 		}
 		{
 			std::unique_lock<std::shared_mutex> lock(gLiveModelMutex);
@@ -714,7 +720,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		{
 			std::lock_guard<std::mutex> lock(gPropMutex);
 			gPropMeshes.clear();
-			gHavePropMeshes.store(false, std::memory_order_relaxed);
+			ClearPropCounts();
 		}
 		{
 			std::unique_lock<std::shared_mutex> lock(gLiveModelMutex);
