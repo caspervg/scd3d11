@@ -121,7 +121,6 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Blit.cpp
         scd3d11/cGDriver_ReShade.cpp
         scd3d11/cGDriver_Viewport.cpp
-        scd3d11/cRZRefCount.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
         scd3d11/SCD3D11Service.cpp

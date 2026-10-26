@@ -61,11 +61,11 @@ namespace nSCD3D11
 	}
 
 	uint32_t cGDriver::AddRef(void) {
-		return cRZRefCount::AddRef();
+		return cRZBaseUnknown::AddRef();
 	}
 
 	uint32_t cGDriver::Release(void) {
-		return cRZRefCount::Release();
+		return cRZBaseUnknown::Release();
 	}
 
 	bool cGDriver::FinalRelease(void) {

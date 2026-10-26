@@ -24,7 +24,7 @@
 #include <unordered_map>
 #include <vector>
 #include <wrl/client.h>
-#include <cRZRefCount.h>
+#include <cRZBaseUnknown.h>
 #include "cIGZGDriver.h"
 #include "D3D11Conversions.h"
 #include "sGDMode.h"
@@ -72,7 +72,7 @@ namespace nSCD3D11 {
 			public cIGZGDriverLightingExtension,
 			public cIGZGDriverVertexBufferExtension,
 			public cIGZGSnapshotExtension,
-			public cRZRefCount {
+			public cRZBaseUnknown {
 		friend struct cGDriverTestAccess;
 
 	private:
