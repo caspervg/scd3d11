@@ -33,8 +33,9 @@ namespace nSCD3D11
 			return names[static_cast<unsigned int>(category)];
 		}
 
-		// The log goes next to the user Plugins folder, i.e. the parent of the folder holding SCD3D11.dll.
-		// Falls back to the working directory if the module path is unavailable.
+		// The log goes to the Logs folder of the user directory, next to the Plugins folder holding
+		// SCD3D11.dll, where other plugins keep their logs too. Falls back to the working directory if
+		// the module path is unavailable.
 		void WriteLogLine(char const* message) {
 			static std::filesystem::path const logPath = [] {
 				HMODULE module = nullptr;
@@ -42,9 +43,12 @@ namespace nSCD3D11
 				if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 				                        reinterpret_cast<LPCWSTR>(&WriteLogLine), &module) ||
 				    GetModuleFileNameW(module, path, MAX_PATH) == 0) {
-					return std::filesystem::path(L"SC4D3D11.log");
+					return std::filesystem::path(L"SCD3D11.log");
 				}
-				return std::filesystem::path(path).parent_path().parent_path() / L"SC4D3D11.log";
+				std::filesystem::path const logs = std::filesystem::path(path).parent_path().parent_path() / L"Logs";
+				std::error_code ignored;
+				std::filesystem::create_directories(logs, ignored);
+				return logs / L"SCD3D11.log";
 			}();
 
 			// _wfopen_s does not share the file, so a concurrent writer (the watchdog) would lose its line.
