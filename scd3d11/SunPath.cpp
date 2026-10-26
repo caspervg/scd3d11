@@ -83,7 +83,17 @@ namespace nSCD3D11::SunPath {
 		cISC4AppPtr app;
 		cISC4City *const city = latitude && app ? app->GetCity() : nullptr;
 		cISC424HourClock *const clock = city != nullptr ? city->Get24HourClock() : nullptr;
-		if (clock == nullptr) {
+		// With day and night turned off, SC4's own sun suits its always lit
+		// or always dark city best: it is the one the models' lighting and
+		// shadow textures were made for. Visual time mode 0 follows the clock.
+		bool const cycle = clock != nullptr && clock->GetVisualTimeMode() == 0;
+		static int lastLogged = -1;
+		if (clock != nullptr && lastLogged != (cycle ? 1 : 0)) {
+			lastLogged = cycle ? 1 : 0;
+			Log(LogCategory::Initialization, cycle ? "sun path: following SC4's day and night"
+			                                       : "sun path: day and night are off, SC4's own sun is used");
+		}
+		if (!cycle) {
 			bool const changed = gValid;
 			gValid = false;
 			return changed;

@@ -60,7 +60,7 @@ where it came from.
 | `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |
 | `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props, network pieces and moving cars, trains and ships shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
-| `SunLatitude` | off | With `LiveShadows`, the sun moves through SC4's day as it would at this latitude on midsummer day, for example `SunLatitude=51` (negative for the south). The sun moves a step about every 4 seconds while the clock runs, and only the shadows are redrawn |
+| `SunLatitude` | off | With `LiveShadows` and SC4's day and night cycle on, the sun moves through the day as it would at this latitude on midsummer day, for example `SunLatitude=51` (negative for the south). The sun moves a step about every 4 seconds while the clock runs, and only the shadows are redrawn |
 | `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included). See [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:

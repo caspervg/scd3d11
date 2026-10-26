@@ -985,8 +985,10 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         // full static pass would leave them.
         d3dContext->CopyResource(backBufferTexture.Get(), clean.regions[colour - 1].Get());
         if (!DrawBufferRegion(depth, 0, 0, windowWidth, windowHeight, 0, 0)) return false;
+        // The casters' reach under the sun this pass uses, which is SC4's own
+        // again when SunLatitude has stepped aside.
         float sun[3]{};
-        if (SunPath::Current(sun)) {
+        if (LiveShadowHooks::SunDirection(sun)) {
             Normalize(sun);
             for (LiveShadowDraw& draw : liveShadowWorldCasters) PlaceLiveShadow(draw, sun, true);
         }

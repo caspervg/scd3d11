@@ -35,7 +35,8 @@ namespace nSCD3D11::SunPath {
 	// city view has to be redrawn. Render thread only, once per frame.
 	bool Update();
 
-	// The current direction, or false when SunLatitude is off or no city runs.
+	// The current direction, or false when SunLatitude is off, no city runs or
+	// SC4's day and night cycle is turned off.
 	bool Current(float direction[3]);
 
 	// How strong shadows are for the sun's real elevation: 1 by day, falling to
