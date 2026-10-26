@@ -55,11 +55,11 @@ namespace nSCD3D11
 		}
 
 		bool OnStart(cIGZCOM* pCOM) {
-			Settings::Load();
+			cIGZFrameWork* const pFramework = RZGetFrameWork();
+			Settings::Load(pFramework != nullptr ? pFramework->CommandLine() : nullptr);
 			LiveShadowHooks::Install();
 			if (LiveShadowHooks::Enabled()) ShadowRegistry::Install();
 			TerrainShadows::Install();
-			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePreAppInit) {
 					pFramework->AddHook(this);

@@ -13,6 +13,8 @@
 #include "Diagnostics.h"
 
 #include "FileSystem.h"
+#include "cIGZCmdLine.h"
+#include "cRZBaseString.h"
 #include "mini/ini.h"
 
 #include <exception>
@@ -48,9 +50,13 @@ namespace nSCD3D11::Settings {
 		}
 
 		// Where a setting was found, for the log; null when it was not.
-		char const *Lookup(char const *name, std::string &value) {
+		char const *Lookup(cIGZCmdLine *commandLine, char const *name, std::string &value) {
 			value.clear();
-			if (FindSwitch(GetCommandLineA(), name, value)) return "command line";
+			cRZBaseString switchValue;
+			if (commandLine != nullptr && commandLine->IsSwitchPresent(cRZBaseString(name), switchValue, true)) {
+				for (char const character : std::string_view(switchValue.ToChar())) value += Lower(character);
+				return "command line";
+			}
 			mINI::INIMap<std::string> const &section = IniSection();
 			if (!section.has(name)) return nullptr;
 			// mINI keeps an inline comment as part of the value; drop it and the
@@ -69,30 +75,11 @@ namespace nSCD3D11::Settings {
 			Log(LogCategory::Initialization, "setting %s = %s (%s)", name, value.empty() ? "on" : value.c_str(), source);
 		}
 
-		bool Flag(char const *name, bool fallback);
-		std::string Value(char const *name);
+		bool Flag(cIGZCmdLine *commandLine, char const *name, bool fallback);
+		std::string Value(cIGZCmdLine *commandLine, char const *name);
 
 		// Constant-initialised, so readable before Load.
 		Values gValues;
-	}
-
-	bool FindSwitch(std::string_view commandLine, std::string_view name, std::string &value) {
-		bool found = false;
-		for (size_t index = 0; index + name.size() < commandLine.size(); ++index) {
-			if (commandLine[index] != '-' || (index > 0 && !IsSpace(commandLine[index - 1]))) continue;
-			size_t const end = index + 1 + name.size();
-			bool same = true;
-			for (size_t offset = 0; offset < name.size() && same; ++offset)
-				same = Lower(commandLine[index + 1 + offset]) == Lower(name[offset]);
-			if (!same || (end < commandLine.size() && commandLine[end] != ':' && !IsSpace(commandLine[end]))) continue;
-			found = true;
-			value.clear();
-			if (end < commandLine.size() && commandLine[end] == ':') {
-				for (size_t cursor = end + 1; cursor < commandLine.size() && !IsSpace(commandLine[cursor]); ++cursor)
-					if (commandLine[cursor] != '"') value += Lower(commandLine[cursor]);
-			}
-		}
-		return found;
 	}
 
 	bool ParseFlag(std::string_view value, bool fallback) {
@@ -102,33 +89,33 @@ namespace nSCD3D11::Settings {
 	}
 
 	namespace {
-		bool Flag(char const *name, bool fallback) {
+		bool Flag(cIGZCmdLine *commandLine, char const *name, bool fallback) {
 			std::string value;
-			char const *const source = Lookup(name, value);
+			char const *const source = Lookup(commandLine, name, value);
 			if (source == nullptr) return fallback;
 			NoteSetting(name, value, source);
 			return ParseFlag(value, fallback);
 		}
 
-		std::string Value(char const *name) {
+		std::string Value(cIGZCmdLine *commandLine, char const *name) {
 			std::string value;
-			if (char const *const source = Lookup(name, value)) NoteSetting(name, value, source);
+			if (char const *const source = Lookup(commandLine, name, value)) NoteSetting(name, value, source);
 			return value;
 		}
 	}
 
-	void Load() {
+	void Load(cIGZCmdLine *commandLine) {
 		Values values;
-		values.liveShadows = Flag("LiveShadows", values.liveShadows);
-		values.networkShadowMasks = Flag("NetworkShadowMasks", values.networkShadowMasks);
-		values.vsync = Flag("VSync", values.vsync);
-		values.borderless = Flag("Borderless", values.borderless);
-		values.flipModel = Flag("FlipModel", values.flipModel);
-		values.defaultAdapter = Value("GPU") == "default";
-		values.viewportCull = Flag("ViewportCull", values.viewportCull);
-		values.reshade = Flag("ReShade", values.reshade);
-		values.drawStats = Flag("DrawStats", values.drawStats);
-		values.traceLog = Value("LogLevel") == "trace";
+		values.liveShadows = Flag(commandLine, "LiveShadows", values.liveShadows);
+		values.networkShadowMasks = Flag(commandLine, "NetworkShadowMasks", values.networkShadowMasks);
+		values.vsync = Flag(commandLine, "VSync", values.vsync);
+		values.borderless = Flag(commandLine, "Borderless", values.borderless);
+		values.flipModel = Flag(commandLine, "FlipModel", values.flipModel);
+		values.defaultAdapter = Value(commandLine, "GPU") == "default";
+		values.viewportCull = Flag(commandLine, "ViewportCull", values.viewportCull);
+		values.reshade = Flag(commandLine, "ReShade", values.reshade);
+		values.drawStats = Flag(commandLine, "DrawStats", values.drawStats);
+		values.traceLog = Value(commandLine, "LogLevel") == "trace";
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

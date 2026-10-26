@@ -13,10 +13,12 @@
 #include <string>
 #include <string_view>
 
-// SCD3D11's switches. Each is looked up on the command line first (-Name or
+class cIGZCmdLine;
+
+// SCD3D11's settings. Each is looked up on SC4's command line first (-Name or
 // -Name:value) and then in SCD3D11.ini next to the DLL (Name=value under
 // [SCD3D11]), so the INI holds a player's usual settings and a switch
-// overrides them for one session. Names and values are case-insensitive.
+// overrides them for one session.
 namespace nSCD3D11::Settings {
 	// Every setting, read once by Load. Until then, and in the tests, the
 	// defaults below apply.
@@ -35,15 +37,12 @@ namespace nSCD3D11::Settings {
 		bool traceLog = false;
 	};
 
-	// Reads every setting. Called once from the COM director's OnStart, before
-	// SC4 starts the threads that read them, so they need no locking.
-	void Load();
+	// Reads every setting from SC4's command line (may be null) and the INI.
+	// Called once from the COM director's OnStart, before SC4 starts the
+	// threads that read them, so they need no locking.
+	void Load(cIGZCmdLine *commandLine);
 
 	Values const &Get();
-
-	// Exposed for tests: finds -name in a command line, the last one winning,
-	// and sets value to what follows its colon (empty for a bare switch).
-	bool FindSwitch(std::string_view commandLine, std::string_view name, std::string &value);
 
 	// Exposed for tests: a value as a flag, or fallback when it is neither.
 	bool ParseFlag(std::string_view value, bool fallback);
