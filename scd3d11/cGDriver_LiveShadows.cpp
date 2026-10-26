@@ -1024,6 +1024,12 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
         else SetViewport();
 
+        // A pass that drew nothing would leave the view unshadowed. The backing
+        // store keeps its old shadows then, and SC4 redraws the view instead.
+        if (frameStats.shadowComposites == before.shadowComposites) {
+            if (logStep) Log(LogCategory::Initialization, "sun step: redrawn instead (the shadow pass drew nothing)");
+            return false;
+        }
         // Saved where SC4 restores its backing store from. The unshadowed copy
         // stays as it is.
         d3dContext->CopyResource(bufferRegions[colour - 1].texture.Get(), backBufferTexture.Get());
@@ -1183,6 +1189,10 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         // share of it and moved to its place.
         if (staticPass && !liveShadowReshading && haveView && haveProjection) {
             std::memcpy(liveShadowClean.eyeToWorld, eyeToWorld, sizeof(eyeToWorld));
+            // Affine by construction. A view taken from the terrain comes out of
+            // a general inverse, and the registry's culling wants the last row exact.
+            liveShadowClean.eyeToWorld[3] = liveShadowClean.eyeToWorld[7] = liveShadowClean.eyeToWorld[11] = 0.0f;
+            liveShadowClean.eyeToWorld[15] = 1.0f;
             std::memcpy(liveShadowClean.projection, projection, sizeof(projection));
             if (partialPass) {
                 float const width = static_cast<float>(windowWidth), height = static_cast<float>(windowHeight);

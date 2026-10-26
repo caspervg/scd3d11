@@ -851,7 +851,7 @@ namespace nSCD3D11::ShadowRegistry {
 				}
 			}
 			kept.resize(write);
-			std::memcpy(gPass.eyeToWorld, matrix, sizeof(matrix));
+			std::memcpy(gPass.eyeToWorld, matrix, sizeof(gPass.eyeToWorld));
 			if (haveSun) std::memcpy(gPass.sunDirection, sun, sizeof(sun));
 			gPass.sunValid = haveSun;
 			std::memcpy(gPass.colour, colour, sizeof(colour));
@@ -1274,6 +1274,7 @@ namespace nSCD3D11::ShadowRegistry {
 				if (gCasters[id].caster) ids.push_back(static_cast<int32_t>(id));
 		}
 		CollectCounts counts;
+		size_t const idCount = ids.size();
 		gCollectCounts = &counts;
 		bool const collected = Collect(manager, eyeToWorld, projection, ids);
 		gCollectCounts = nullptr;
@@ -1282,7 +1283,7 @@ namespace nSCD3D11::ShadowRegistry {
 			Log(LogCategory::Initialization,
 			    "shadow registry: view gather %s, %u of %u ids looked at: %u culled, %u disabled, %u suppressed, "
 			    "%u without texture, %u already in the pass, %u added",
-			    collected ? "ran" : "refused", counts.candidates, static_cast<unsigned>(ids.size()), counts.culled,
+			    collected ? "ran" : "refused", counts.candidates, static_cast<unsigned>(idCount), counts.culled,
 			    counts.disabled, counts.suppressed, counts.noTexture, counts.repeated, counts.added);
 		}
 		return collected;
