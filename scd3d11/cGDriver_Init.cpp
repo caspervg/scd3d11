@@ -397,7 +397,9 @@ namespace nSCD3D11 {
 #endif
 		d3dDevice.Reset();
 
-		if (windowHandle != nullptr) {
+		// Device recovery keeps the window. SC4 holds on to its handle, so a new window would leave the game
+		// talking to a destroyed one.
+		if (windowHandle != nullptr && !preserveResources) {
 			Log(LogCategory::Window, "%p destroying driver window", windowHandle);
 			DestroyWindow(static_cast<HWND>(windowHandle));
 			windowHandle = nullptr;
