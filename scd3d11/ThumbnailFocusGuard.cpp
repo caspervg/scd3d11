@@ -46,8 +46,6 @@
 namespace nSCD3D11::ThumbnailFocusGuard {
 	namespace {
 
-		constexpr uintptr_t kImageBase = 0x00400000;
-
 		constexpr uintptr_t kFocusTestVA = 0x005F85F0;
 		constexpr size_t kFocusTestLength = 7;
 		const uint8_t kFocusTestExpected[kFocusTestLength] = {0x56, 0xFF, 0x15, 0x0C, 0x05, 0xA8, 0x00};
@@ -64,7 +62,6 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 		uint8_t *gFocusTest = nullptr;
 		uint8_t *gRetryCheck = nullptr;
 		uint8_t gFocusTestSaved[kFocusTestLength]{};
-		uintptr_t gModuleOffset = 0;
 		bool gInstalled = false;
 		bool gAttempted = false;
 
@@ -81,7 +78,7 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 
 		// Replaces the focus test. Reached by a jmp, so the return address is SC4's call site.
 		bool __cdecl CaptureIsUsable() {
-			uintptr_t const caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - gModuleOffset;
+			uintptr_t const caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
 			bool const usable = IsUsableWindow();
 			if (caller == kBeforeRenderReturnVA) {
 				gMinimizesBeforeRender = gMinimizes;
@@ -124,11 +121,10 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 			Log(LogCategory::Initialization, "thumbnail focus guard: requires SimCity 4 1.1.641, skipping");
 			return false;
 		}
-		auto const module = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
-		if (module == nullptr) return false;
-		gModuleOffset = reinterpret_cast<uintptr_t>(module) - kImageBase;
-		gFocusTest = module + (kFocusTestVA - kImageBase);
-		gRetryCheck = module + (kRetryCheckVA - kImageBase);
+		// IsGameVersion641 only accepts an executable at its preferred base, so
+		// the game's addresses are used as they are.
+		gFocusTest = reinterpret_cast<uint8_t *>(kFocusTestVA);
+		gRetryCheck = reinterpret_cast<uint8_t *>(kRetryCheckVA);
 
 		if (std::memcmp(gFocusTest, kFocusTestExpected, kFocusTestLength) != 0 ||
 		    std::memcmp(gRetryCheck, kRetryCheckExpected, kRetryCheckLength) != 0) {

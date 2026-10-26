@@ -87,8 +87,6 @@
 namespace nSCD3D11::LiveShadowHooks {
 	namespace {
 
-		constexpr uintptr_t kImageBase = 0x00400000;
-
 		constexpr uintptr_t kNetworkGateVA = 0x0061E35C;
 		constexpr uintptr_t kNetworkGateRejectVA = 0x0061E383;
 		constexpr uintptr_t kPrebuiltDrawVA = 0x0061E860;
@@ -616,11 +614,9 @@ namespace nSCD3D11::LiveShadowHooks {
 			return false;
 		}
 
-		uint8_t *const module = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
-		if (module == nullptr) return false;
-		auto const resolve = [module](uintptr_t virtualAddress) {
-			return module + (virtualAddress - kImageBase);
-		};
+		// IsGameVersion641 only accepts an executable at its preferred base, so
+		// the game's addresses are used as they are.
+		auto const resolve = [](uintptr_t virtualAddress) { return reinterpret_cast<uint8_t *>(virtualAddress); };
 
 		gPrebuiltDrawRejoin = reinterpret_cast<uintptr_t>(resolve(kPrebuiltDrawRejoinVA));
 		gPrebuiltModelsRejoin = reinterpret_cast<uintptr_t>(resolve(kPrebuiltModelsRejoinVA));

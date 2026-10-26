@@ -89,8 +89,6 @@
 
 namespace nSCD3D11::ShadowRegistry {
 	namespace {
-		constexpr uintptr_t kImageBase = 0x00400000;
-
 		constexpr uintptr_t kAddShadowSlotVA = 0x00AB3A14;
 		constexpr uintptr_t kAddShadowVA = 0x0073C0D0;
 		constexpr uintptr_t kRemoveOverlaySlotVA = 0x00AB3A24;
@@ -1099,11 +1097,9 @@ namespace nSCD3D11::ShadowRegistry {
 			Log(LogCategory::Initialization, "shadow registry: requires SimCity 4 1.1.641, skipping");
 			return false;
 		}
-		uint8_t *const module = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
-		if (module == nullptr) return false;
-		auto const resolve = [module](uintptr_t virtualAddress) {
-			return module + (virtualAddress - kImageBase);
-		};
+		// IsGameVersion641 only accepts an executable at its preferred base, so
+		// the game's addresses are used as they are.
+		auto const resolve = [](uintptr_t virtualAddress) { return reinterpret_cast<uint8_t *>(virtualAddress); };
 
 		gOriginalAddShadow = reinterpret_cast<AddShadowFunction>(resolve(kAddShadowVA));
 		gOriginalRemoveOverlay = reinterpret_cast<RemoveOverlayFunction>(resolve(kRemoveOverlayVA));
