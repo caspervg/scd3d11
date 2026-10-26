@@ -332,36 +332,50 @@ namespace nSCD3D11 {
 		int const windowX = windowed ? CW_USEDEFAULT : monitorRectangle.left;
 		int const windowY = windowed ? CW_USEDEFAULT : monitorRectangle.top;
 
-		HWND const window = CreateWindowExA(
-			extendedStyle,
-			kWindowClassName,
-			"SimCity 4 (Direct3D 11)",
-			style,
-			windowX,
-			windowY,
-			windowRectangle.right - windowRectangle.left,
-			windowRectangle.bottom - windowRectangle.top,
-			nullptr,
-			nullptr,
-			GetModuleHandleA(nullptr),
-			this);
-		if (window == nullptr) {
-			Log(LogCategory::Initialization, "CreateWindowExA failed (Win32 error %lu)", ::GetLastError());
-			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
-			return;
+		uint32_t bufferWidth = mode.width;
+		uint32_t bufferHeight = mode.height;
+		HWND window = recoveringDevice ? static_cast<HWND>(windowHandle) : nullptr;
+		if (window != nullptr) {
+			Log(LogCategory::Window, "%p keeping the driver window for the new device", window);
+			// The player may have resized a game window since the mode was set. Match its size now so the
+			// first frame does not have to resize the new swap chain.
+			RECT client{};
+			if (windowed && GetClientRect(window, &client) && client.right > 0 && client.bottom > 0) {
+				bufferWidth = static_cast<uint32_t>(client.right);
+				bufferHeight = static_cast<uint32_t>(client.bottom);
+			}
+		} else {
+			window = CreateWindowExA(
+				extendedStyle,
+				kWindowClassName,
+				"SimCity 4 (Direct3D 11)",
+				style,
+				windowX,
+				windowY,
+				windowRectangle.right - windowRectangle.left,
+				windowRectangle.bottom - windowRectangle.top,
+				nullptr,
+				nullptr,
+				GetModuleHandleA(nullptr),
+				this);
+			if (window == nullptr) {
+				Log(LogCategory::Initialization, "CreateWindowExA failed (Win32 error %lu)", ::GetLastError());
+				SetLastError(DriverError::CREATE_CONTEXT_FAIL);
+				return;
+			}
+			windowHandle = window;
+			Log(LogCategory::Window, "%p driver window created (%d,%d %ldx%ld, style 0x%08lX)", window, windowX,
+			    windowY, windowRectangle.right - windowRectangle.left, windowRectangle.bottom - windowRectangle.top,
+			    static_cast<unsigned long>(style));
 		}
-		windowHandle = window;
-		Log(LogCategory::Window, "%p driver window created (%d,%d %ldx%ld, style 0x%08lX)", window, windowX, windowY,
-		    windowRectangle.right - windowRectangle.left, windowRectangle.bottom - windowRectangle.top,
-		    static_cast<unsigned long>(style));
 		ThumbnailFocusGuard::Install(window);
 		lastPresentResult = S_OK;
 		lastFullscreenState = FALSE;
 		presentationPaused = false;
 
 		DXGI_SWAP_CHAIN_DESC swapChainDescription{};
-		swapChainDescription.BufferDesc.Width = static_cast<UINT>(mode.width);
-		swapChainDescription.BufferDesc.Height = static_cast<UINT>(mode.height);
+		swapChainDescription.BufferDesc.Width = static_cast<UINT>(bufferWidth);
+		swapChainDescription.BufferDesc.Height = static_cast<UINT>(bufferHeight);
 		swapChainDescription.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		swapChainDescription.SampleDesc.Count = 1;
 		swapChainDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -453,10 +467,21 @@ namespace nSCD3D11 {
 		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
 			char name[sizeof(adapterDescription.Description)]{};
 			WideCharToMultiByte(CP_UTF8, 0, adapterDescription.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
-			Log(LogCategory::Initialization, "adapter: %s (vendor 0x%04X, device 0x%04X, %u MB dedicated, %s)",
+			// The user-mode driver version, packed as four 16-bit parts, from most to least significant.
+			LARGE_INTEGER driverVersion{};
+			if (FAILED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driverVersion))) driverVersion.QuadPart = 0;
+			Log(LogCategory::Initialization,
+			    "adapter: %s (vendor 0x%04X, device 0x%04X, driver %u.%u.%u.%u, %u MB dedicated, %s)",
 			    name, adapterDescription.VendorId, adapterDescription.DeviceId,
+			    HIWORD(driverVersion.HighPart), LOWORD(driverVersion.HighPart),
+			    HIWORD(driverVersion.LowPart), LOWORD(driverVersion.LowPart),
 			    static_cast<unsigned>(adapterDescription.DedicatedVideoMemory / (1024 * 1024)),
 			    preferredAdapter ? "high-performance preference" : "system default");
+			if (adapterDescription.VendorId == 0x1AF4) {
+				Log(LogCategory::Initialization,
+				    "adapter: this is the VirtIO GPU driver of a virtual machine. Its 3D support is still experimental, "
+				    "so keep the VM's guest tools up to date if the game crashes or freezes");
+			}
 		}
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
@@ -485,7 +510,7 @@ namespace nSCD3D11 {
 			return;
 		}
 
-		result = CreateBackBufferTargets(static_cast<uint32_t>(mode.width), static_cast<uint32_t>(mode.height));
+		result = CreateBackBufferTargets(bufferWidth, bufferHeight);
 		if (FAILED(result)) {
 			DestroyD3D11Context(recoveringDevice);
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
@@ -505,7 +530,7 @@ namespace nSCD3D11 {
 		                       presentationMode == PresentationMode::BorderlessFullscreen ? "borderless fullscreen" :
 		                       "exclusive fullscreen";
 		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, %s at %dx%d, %s swap chain", featureLevel, modeName,
-		    mode.width, mode.height,
+		    bufferWidth, bufferHeight,
 		    swapChainDescription.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ? "flip model" : "legacy");
 		if (showWindow) {
 			ShowWindow(window, SW_SHOWNORMAL);

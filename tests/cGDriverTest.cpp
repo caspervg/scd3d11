@@ -771,6 +771,7 @@ namespace nSCD3D11 {
 			assert(SCD3D11RegisterFrameCallback(DeviceEventCallback, &events));
 			ComPtr<ID3D11Device> const oldDevice = d.d3dDevice; // held, so its address cannot be reused
 			uint32_t const oldGeneration = d.deviceGeneration;
+			void *const oldWindow = d.windowHandle;
 			d.injectedFaults[point] = {DXGI_ERROR_DEVICE_REMOVED, 1};
 			trigger();
 			assert(d.injectedFaults[point].remaining == 0);
@@ -785,6 +786,8 @@ namespace nSCD3D11 {
 			assert(!d.deviceLost && d.IsDeviceReady());
 			assert(events.destroys == 1 && events.destroyedGeneration == oldGeneration);
 			assert(d.deviceGeneration != oldGeneration && d.d3dDevice != oldDevice);
+			// SC4 holds the window handle, so recovery must not replace the window.
+			assert(d.windowHandle == oldWindow);
 			assert(SCD3D11UnregisterFrameCallback(DeviceEventCallback, &events));
 			DrawFullscreen(0, 255, 255);
 			assert(Pixel(1, 1) == 0x00ffffff);
@@ -929,6 +932,11 @@ namespace nSCD3D11 {
 			DrawFullscreen(0, 128, 255);
 			d.Flush();
 			assert(!d.deviceLost && Pixel(d.windowWidth - 1, d.windowHeight - 1) == 0x0080ffff);
+
+			// Device recovery keeps the window, so put it back for the next check.
+			SetWindowPos(window, nullptr, 0, 0, frame.right - frame.left, frame.bottom - frame.top,
+			             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+			d.Flush();
 		}
 
 		void FlipModelWithLegacyFallback() {
