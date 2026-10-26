@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -30,6 +31,9 @@ namespace nSCD3D11::Settings {
 		bool flipModel = true;
 		// GPU=default: the adapter Windows picks instead of the high-performance one.
 		bool defaultAdapter = false;
+		// SunLatitude: live shadows follow a sun at this latitude in degrees
+		// through SC4's day and year. Empty keeps SC4's fixed sun.
+		std::optional<float> sunLatitude;
 		bool viewportCull = true;
 		bool reshade = true;
 		bool drawStats = false;
@@ -48,4 +52,7 @@ namespace nSCD3D11::Settings {
 	// (on/off, true/false, enabled/disabled, 1/0, any case), with an empty
 	// value - a bare -Name - meaning on. False when it is none of those.
 	bool ParseFlag(std::string_view value, bool &flag);
+
+	// Exposed for tests: SunLatitude, a number from -90 to 90 or off.
+	bool ParseLatitude(std::string_view value, std::optional<float> &latitude);
 } // namespace nSCD3D11::Settings

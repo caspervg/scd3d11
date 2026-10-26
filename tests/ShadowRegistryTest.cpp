@@ -5,6 +5,10 @@
 
 using nSCD3D11::ShadowRegistry::AppendTriangles;
 
+class cRZCOMDllDirector;
+// SunPath reaches SC4 through the COM director, which the tests never start.
+cRZCOMDllDirector *RZGetCOMDllDirector() { return nullptr; }
+
 int main() {
 	uint32_t const indices[]{10, 11, 12, 13, 14, 15};
 	std::vector<uint32_t> triangles;
@@ -54,6 +58,27 @@ int main() {
 	assert(quad[2][0] > 1.79f && quad[2][0] < 1.81f); // 1 + (1 - 0.2 lift)
 	float const sunUp[3]{0.0f, 1.0f, 0.0f};
 	assert(!nSCD3D11::ShadowRegistry::GroundQuad(caster, sunUp, quad));
+
+	// A projector along that same sun: u = x + y, v = z. Under it the quad
+	// reads the texture where it lies.
+	caster.projector[0] = 1.0f;
+	caster.projector[4] = 1.0f;
+	caster.projector[9] = 1.0f;
+	caster.projector[15] = 1.0f;
+	float offsets[4][2]{};
+	nSCD3D11::ShadowRegistry::QuadProjectorOffsets(caster, sun, quad, offsets);
+	for (auto const &offset : offsets) assert(offset[0] == 0.0f && offset[1] == 0.0f);
+	// A sun travelling +z at about 63 degrees: half as long a shadow, turned a
+	// quarter. A point 0.5 down its shadow from the centre reads SC4's
+	// shadow 1 along +x from it.
+	float const turned[3]{0.0f, -0.89442719f, 0.44721360f};
+	float warpedQuad[4][3]{};
+	assert(nSCD3D11::ShadowRegistry::GroundQuad(caster, turned, warpedQuad));
+	warpedQuad[0][0] = 0.5f;
+	warpedQuad[0][2] = 1.0f;
+	nSCD3D11::ShadowRegistry::QuadProjectorOffsets(caster, turned, warpedQuad, offsets);
+	float const readX = warpedQuad[0][0] + offsets[0][0], readZ = warpedQuad[0][2] + offsets[0][1];
+	assert(readX > 1.49f && readX < 1.51f && readZ > 0.49f && readZ < 0.51f);
 
 	// Reach is culled only once box and quad both miss the NDC square. With
 	// world x -> NDC x - 2.5, the box [0, 1] misses but the quad to 1.8 does not.

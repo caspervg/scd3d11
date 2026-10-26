@@ -52,6 +52,7 @@
 #include "Diagnostics.h"
 #include "GameVersion.h"
 #include "LiveShadowHooks.h"
+#include "SunPath.h"
 
 #include <algorithm>
 #include <array>
@@ -730,7 +731,7 @@ namespace nSCD3D11::ShadowRegistry {
 			float strength = 0.0f;
 			float alphaScale = 0.0f;
 			bool const haveMatrix = eyeToWorld != nullptr && SafeCopy(eyeToWorld, matrix, sizeof(matrix));
-			bool const haveSun = SafeShadowDirection(gRendererPointer, sun);
+			bool const haveSun = SunPath::Current(sun) || SafeShadowDirection(gRendererPointer, sun);
 			Read(reinterpret_cast<void const *>(gShadowStrength), strength);
 			Read(reinterpret_cast<void const *>(gShadowAlphaScale), alphaScale);
 			SafeCopy(reinterpret_cast<void const *>(gShadowColour), colour, sizeof(colour));
@@ -838,6 +839,35 @@ namespace nSCD3D11::ShadowRegistry {
 
 	bool GroundQuad(Caster const &caster, float const sun[3], float quad[4][3]) {
 		return GroundQuad(caster.low, caster.high, caster.baseHeight, sun, quad);
+	}
+
+	void QuadProjectorOffsets(Caster const &caster, float const sun[3], float const quad[4][3], float offsets[4][2]) {
+		std::memset(offsets, 0, sizeof(float) * 8);
+		// The projector is constant along SC4's own sun, so that sun is the
+		// cross product of its u and v rows.
+		float const *const p = caster.projector;
+		float native[3]{p[4] * p[9] - p[8] * p[5], p[8] * p[1] - p[0] * p[9], p[0] * p[5] - p[4] * p[1]};
+		if (native[1] > 0.0f) for (float &value: native) value = -value;
+		if (native[1] > -1.0e-6f || sun[1] > -1.0e-6f) return;
+		// How far the shadow of a point one unit up lands from its foot, for
+		// each sun.
+		float const ours[2]{sun[0] / -sun[1], sun[2] / -sun[1]};
+		float const theirs[2]{native[0] / -native[1], native[2] / -native[1]};
+		float const ourLength = std::sqrt(ours[0] * ours[0] + ours[1] * ours[1]);
+		float const theirLength = std::sqrt(theirs[0] * theirs[0] + theirs[1] * theirs[1]);
+		if (ourLength < 1.0e-4f || theirLength < 1.0e-4f) return;
+		float const u[2]{ours[0] / ourLength, ours[1] / ourLength};
+		float const uNative[2]{theirs[0] / theirLength, theirs[1] / theirLength};
+		float const centre[2]{(caster.low[0] + caster.high[0]) * 0.5f, (caster.low[2] + caster.high[2]) * 0.5f};
+		for (unsigned corner = 0; corner < 4; ++corner) {
+			float const d[2]{quad[corner][0] - centre[0], quad[corner][2] - centre[1]};
+			// Along our shadow it is stretched to SC4's length, across it kept.
+			float const along = (d[0] * u[0] + d[1] * u[1]) * theirLength / ourLength;
+			float const across = d[1] * u[0] - d[0] * u[1];
+			float const warped[2]{along * uNative[0] - across * uNative[1], along * uNative[1] + across * uNative[0]};
+			offsets[corner][0] = warped[0] - d[0];
+			offsets[corner][1] = warped[1] - d[1];
+		}
 	}
 
 	bool ReachOutside(Caster const &caster, bool hasQuad, float const quad[4][3], float const *worldToClip) {

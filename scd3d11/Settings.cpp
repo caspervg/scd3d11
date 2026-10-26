@@ -18,6 +18,8 @@
 #include "IniReader.h"
 #include "StringViewUtil.h"
 
+#include <charconv>
+#include <cmath>
 #include <exception>
 #include <filesystem>
 #include <optional>
@@ -136,6 +138,20 @@ namespace nSCD3D11::Settings {
 		return StringViewUtil::TryParse(value, flag);
 	}
 
+	bool ParseLatitude(std::string_view value, std::optional<float> &latitude) {
+		// A number first, so that 0 is the equator rather than off.
+		float degrees = 0.0f;
+		auto const [end, error] = std::from_chars(value.data(), value.data() + value.size(), degrees);
+		if (error == std::errc{} && end == value.data() + value.size()) {
+			if (!std::isfinite(degrees) || std::fabs(degrees) > 90.0f) return false;
+			latitude = degrees;
+			return true;
+		}
+		bool on = true;
+		if (value.empty() || !ParseFlag(value, on) || on) return false;
+		latitude.reset();
+		return true;
+	}
 
 	void Load(cIGZCmdLine *commandLine) {
 		// The arguments as SC4 split them, which is what the switches are matched against.
@@ -156,6 +172,7 @@ namespace nSCD3D11::Settings {
 		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
 		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
 		values.defaultAdapter = Resolve(sources, "GPU", ParseAdapter, values.defaultAdapter);
+		values.sunLatitude = Resolve(sources, "SunLatitude", ParseLatitude, values.sunLatitude);
 		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);

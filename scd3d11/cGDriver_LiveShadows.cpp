@@ -19,6 +19,7 @@
 #include "Diagnostics.h"
 #include "LiveShadowHooks.h"
 #include "ShadowRegistry.h"
+#include "SunPath.h"
 #include "TerrainShadows.h"
 #include "VertexFormatUtils.h"
 
@@ -131,10 +132,12 @@ struct RegistryOutput {
 	float2 uv : TEXCOORD1;
 };
 
+// For a projector caster the UV holds an x and z offset for the projector,
+// zero but on ground quads under a sun other than SC4's.
 RegistryOutput RegistryVS(float3 position : POSITION, float2 uv : TEXCOORD0) {
 	RegistryOutput output;
 	output.position = mul(lightMatrix, float4(position, 1.0));
-	output.world = position;
+	output.world = position + float3(uv.x, 0.0, uv.y);
 	output.uv = uv;
 	return output;
 }
@@ -1478,6 +1481,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     if (uploaded) {
                         auto* vertexOut = static_cast<float*>(vertexMap.pData);
                         auto* indexOut = static_cast<uint32_t*>(indexMap.pData);
+                        // Under SunLatitude's sun the quads read SC4's texture through
+                        // offsets carried in their UVs (see QuadProjectorOffsets).
+                        float sunPathDirection[3]{};
+                        bool const warpQuads = SunPath::Current(sunPathDirection);
                         for (RegistryDraw const& draw : registryDraws) {
                             ShadowRegistry::Caster const& caster = *draw.caster->caster;
                             // A caster without triangles casts from its quad alone.
@@ -1487,9 +1494,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                             std::memcpy(indexOut, caster.indices.data(), caster.indices.size() * sizeof(uint32_t));
                             indexOut += caster.indices.size();
                             if (!draw.drawQuad) continue;
-                            for (auto const& corner : draw.quad) {
-                                std::memcpy(vertexOut, corner, sizeof(corner));
-                                vertexOut[3] = vertexOut[4] = 0.0f;
+                            float offsets[4][2]{};
+                            if (warpQuads)
+                                ShadowRegistry::QuadProjectorOffsets(caster, liveShadowSunWorld, draw.quad, offsets);
+                            for (unsigned corner = 0; corner < 4; ++corner) {
+                                std::memcpy(vertexOut, draw.quad[corner], sizeof(draw.quad[corner]));
+                                vertexOut[3] = offsets[corner][0];
+                                vertexOut[4] = offsets[corner][1];
                                 vertexOut += kRegistryVertexFloats;
                             }
                             uint32_t const first = static_cast<uint32_t>(meshFloats / kRegistryVertexFloats);
@@ -1689,9 +1700,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         composite.projection1[1] = projection[14];
         composite.projection1[2] = 1.0f / kShadowMapSize;
         // SC4's shadow colour and strength (GetShadowParams), faded by the
-        // lighting manager's day/night weight because the blue is a daylight tint.
+        // lighting manager's day/night weight because the blue is a daylight tint,
+        // and by SunLatitude's sunset.
         float daylight = 1.0f;
         LiveShadowHooks::ShadowDaylight(daylight);
+        daylight *= SunPath::Strength();
         composite.projection1[3] =
             (liveShadowToneValid ? liveShadowStrength : kFallbackShadowOpacity) * daylight;
         if (liveShadowToneValid) std::memcpy(composite.tone, liveShadowColour, sizeof(liveShadowColour));

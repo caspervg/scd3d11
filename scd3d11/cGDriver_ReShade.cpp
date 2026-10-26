@@ -26,6 +26,7 @@
 #include "LiveShadowHooks.h"
 #include "Settings.h"
 #include "ShadowRegistry.h"
+#include "SunPath.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -132,6 +133,8 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				}
 
 				if (translated) forced |= 1u << kRedrawTranslated;
+				// SC4 bakes the shadows into its backing store, so a new sun needs a clean view.
+				if (SunPath::Update()) forced |= 1u << kRedrawSun;
 				if (cameraChanged) forced |= 1u << kRedrawCamera;
 				if (translated || cameraChanged) {
 					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;

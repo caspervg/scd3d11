@@ -41,6 +41,7 @@
 #include "GameVersion.h"
 #include "ShadowRegistry.h"
 #include "Settings.h"
+#include "SunPath.h"
 
 #include <algorithm>
 #include <array>
@@ -334,6 +335,7 @@ namespace nSCD3D11::LiveShadowHooks {
 	}
 
 	bool SunDirection(float direction[3]) {
+		if (gInstalled && SunPath::Current(direction)) return true;
 		float sun[3]{};
 		void *const lighting = gInstalled ? SafeLighting(gRendererPointer) : nullptr;
 		if (lighting == nullptr || !SafeShadowDirection(lighting, sun) || !std::isfinite(sun[0]) ||

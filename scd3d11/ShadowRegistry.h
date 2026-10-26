@@ -103,6 +103,13 @@ namespace nSCD3D11::ShadowRegistry {
 	// projected shadow exactly. False when the sun is at or above the horizon.
 	bool GroundQuad(Caster const &caster, float const sun[3], float quad[4][3]);
 
+	// What to add to each ground quad corner's x and z before the projector
+	// reads it, when sun is not SC4's. SC4's texture holds the shadow along its
+	// own sun, so the quad is mapped onto that shadow: stretched along the sun
+	// to SC4's shadow length and turned to its direction, about the caster's
+	// centre. All zero when sun is SC4's.
+	void QuadProjectorOffsets(Caster const &caster, float const sun[3], float const quad[4][3], float offsets[4][2]);
+
 	// True when the world box holding the caster and its quad (if hasQuad)
 	// lies outside the NDC square of worldToClip, an affine column-major
 	// matrix: then nothing the caster shades is in that view.

@@ -853,13 +853,14 @@ namespace nSCD3D11 {
 				double const samples = shadow.shadowGpuSamples != 0 ? shadow.shadowGpuSamples : 1.0;
 				Log(LogCategory::Stats,
 				    "live shadows: %u frames; static passes %u full + %u partial (%u untracked); "
-				    "forced full redraws %u (camera %u, untracked partial %u, terrain %u, translated %u); "
+				    "forced full redraws %u (camera %u, untracked partial %u, terrain %u, translated %u, sun %u); "
 				    "redisplays %u; %u map renders, avg %.0f per-draw + %.0f registry casters (%u gathered, "
 				    "%u tracked); %u composites, %.1f Mpx",
 				    summary.shadowFrames, shadow.shadowFullPasses, shadow.shadowPartialPasses,
 				    shadow.shadowUntrackedPasses, shadow.shadowForcedRedraws,
 				    shadow.shadowForcedBy[kRedrawCamera], shadow.shadowForcedBy[kRedrawUntrackedPartial],
 				    shadow.shadowForcedBy[kRedrawTerrainChanged], shadow.shadowForcedBy[kRedrawTranslated],
+				    shadow.shadowForcedBy[kRedrawSun],
 				    shadow.shadowRedisplays, shadow.shadowMapRenders, shadow.shadowCasters / renders,
 				    shadow.shadowRegistryCasters / renders, shadow.shadowPassCasters, shadow.shadowWorldCasters,
 				    shadow.shadowComposites, static_cast<double>(shadow.shadowCompositePixels) / 1.0e6);

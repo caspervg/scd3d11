@@ -122,6 +122,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/Diagnostics.cpp
         scd3d11/SCD3D11Service.cpp
         scd3d11/Settings.cpp
+        scd3d11/SunPath.cpp
         scd3d11/TextureUploadUtils.cpp
         scd3d11/VideoModeUtils.cpp
         scd3d11/VertexFormatUtils.cpp
@@ -202,11 +203,18 @@ if (BUILD_TESTING)
             scd3d11/ShadowRegistry.cpp
             scd3d11/LiveShadowHooks.cpp
             scd3d11/Diagnostics.cpp
-            scd3d11/Settings.cpp)
+            scd3d11/Settings.cpp
+            scd3d11/SunPath.cpp)
     target_link_libraries(ShadowRegistryTest PRIVATE version)
 
     scd3d11_add_test(SettingsTest
             tests/SettingsTest.cpp
+            scd3d11/Settings.cpp
+            scd3d11/Diagnostics.cpp)
+
+    scd3d11_add_test(SunPathTest
+            tests/SunPathTest.cpp
+            scd3d11/SunPath.cpp
             scd3d11/Settings.cpp
             scd3d11/Diagnostics.cpp)
 
