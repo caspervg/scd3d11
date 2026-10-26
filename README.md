@@ -3,6 +3,13 @@
 SCD3D11 replaces SimCity 4's native DirectX 7 hardware renderer with a Direct3D 11 implementation, to improve
 compatibility with modern GPUs, drivers, Windows versions, and high-resolution displays.
 
+Compared with the game's own renderer, it offers:
+
+* rendering on today's Direct3D 11 drivers instead of the long-deprecated DirectX 7 path;
+* borderless fullscreen, a vsync switch and flip-model presentation;
+* rendering on the high-performance GPU of laptops with both an integrated and a discrete GPU;
+* [ReShade](#reshade) effects that leave the UI untouched and get the city's depth buffer without any setup.
+
 It began as [SCGL](https://github.com/nsgomez/scgl) by Nelson Gomez, an OpenGL driver for the same interface, and was
 renamed once the backend became Direct3D 11.
 
@@ -18,14 +25,26 @@ Not affiliated with or endorsed by EA Games.
 
 ## Installing
 
-Copy `SCD3D11.dll` into a SimCity 4 plugins folder — either `Documents\SimCity 4\Plugins` or the `Plugins` folder of
+Download `SCD3D11-<version>.zip` from the [releases page](https://github.com/caspervg/scd3d11/releases) and copy
+`SCD3D11.dll` into a SimCity 4 plugins folder — either `Documents\SimCity 4\Plugins` or the `Plugins` folder of
 whatever user directory you launch with.
 
-## Command-line switches
+The driver registers GZCOM class `0xBADB6906` — the class ID of the game's own DirectX driver — at a higher version,
+so SC4 selects it automatically. No `-d:` switch is needed; do not launch with `-d:Software`, which bypasses it.
+
+If you keep plugins outside `Documents\SimCity 4`, pass `-UserDir:` and **quote it**. SC4 splits an unquoted value at
+the first space, silently loads the wrong plugin folder, and falls back to its built-in DirectX driver.
+
+To check that it is active, start the game and open `SC4D3D11.log` next to the plugins folder (normally
+`Documents\SimCity 4\SC4D3D11.log`). Its `adapter:` line names the GPU in use.
+
+## Uninstalling
+
+Delete `SCD3D11.dll` from the plugins folder. SimCity 4 goes back to its built-in DirectX driver on the next launch.
+
+## Launch options
 
 Add these to the SimCity 4 launch arguments. Switch names are case-sensitive except `-Borderless`, so type them as shown.
-
-Added by SCD3D11:
 
 | Switch | Default | Effect |
 |--------|---------|--------|
@@ -34,13 +53,10 @@ Added by SCD3D11:
 | `-FlipModel:off` | flip model | Windowed and borderless: present with the legacy DISCARD swap chain instead of the flip model |
 | `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
 | `-ViewportCull:off` | cull on | Submit every draw of a scroll redraw instead of dropping those that lie entirely outside its small scissored viewport |
-| `-DrawStats` | off | Log a per-second summary of frame times, draws, culled draws, scroll and full redraws and texture churn, plus a line for each frame over 100 ms (`stats` category) |
-| `-GridDebug` | off | Log the texture state of the terrain grid pass once per second (`grid` category) |
-| `-LogLevel:trace` | off | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
 | `-NativeShadowMasks:all` | off | Live shadows of True3D props and network pieces: `all` casts both, `props` or `network` only one. Off by default because of the rendering cost. `replace` also turns on the experimental shadow registry and terrain shadows, which can cast blocks of shadow beside dense parks. `-NativeShadowExperiment` stays off unless requested |
 | `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
 
-Standard SimCity 4 switches that SCD3D11 reacts to or that the scripts in `scripts/` use:
+Standard SimCity 4 switches that SCD3D11 reacts to:
 
 | Switch | Effect |
 |--------|--------|
@@ -48,42 +64,19 @@ Standard SimCity 4 switches that SCD3D11 reacts to or that the scripts in `scrip
 | `-CustomResolution:enabled` `-r<width>x<height>x32` | Render at an arbitrary resolution |
 | `-UserDir:"<path>"` | User directory; with `SCD3D11.dll` in its `Plugins` folder, `SC4D3D11.log` is written there |
 
-## Building
+### Presentation modes
 
-CMake is the only build. Install [Visual Studio 2022](https://visualstudio.microsoft.com/#vs-section) or later with
-the desktop C++ components, then from an **x86** Developer Command Prompt:
+SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` alongside a fullscreen
+launch to get a monitor-sized borderless window instead.
 
-```
-cmake -S . -B build\debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build\debug
-ctest --test-dir build\debug --output-on-failure
-```
+On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Add `-GPU:default`
+to use the adapter Windows picks instead. `SC4D3D11.log` names the adapter in use on its `adapter:` line.
 
-## Presentation modes
+### CPU options
 
-SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` alongside a fullscreen launch to get a monitor-sized borderless window instead.
-
-On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Add `-GPU:default` to use the adapter Windows picks instead. `SC4D3D11.log` names the adapter in use on its `adapter:` line.
-
-## CPU options
-
-SCD3D11 no longer touches CPU scheduling, the render cull or the simulation tick. Process priority, P-core/E-core
+SCD3D11 does not touch CPU scheduling, the render cull or the simulation tick. Process priority, P-core/E-core
 scheduling, power throttling, the parallel render cull and the sim tick budget are handled by the separate
 [SC4 CPU Options](https://github.com/0xC0000054/sc4-cpu-options) plugin.
-
-## Frame callback API
-
-Other plugins can observe the live D3D11 device, context, swap chain and back-buffer RTV through the exports in
-[`scd3d11/SCD3D11Service.h`](scd3d11/SCD3D11Service.h):
-
-```c
-BOOL __stdcall SCD3D11RegisterFrameCallback(SCD3D11FrameCallback callback, void* userData);
-BOOL __stdcall SCD3D11UnregisterFrameCallback(SCD3D11FrameCallback callback, void* userData);
-```
-
-The callback receives an `SCD3D11FrameContext` for either `SCD3D11_EVENT_RENDER` (once per presented frame, with the
-immediate context borrowed for the duration of the call) or `SCD3D11_EVENT_BEFORE_DEVICE_DESTROY`. `deviceGeneration`
-increments whenever the device is recreated, so stale resources can be detected and dropped.
 
 ## ReShade
 
@@ -98,21 +91,63 @@ add-on and:
 
 In the ReShade overlay's Add-ons tab, disable **Generic Depth**; SCD3D11 overrides its choice anyway. Outside the city
 view (menus, region view) ReShade behaves as usual, except that effects can stay off in the region view after leaving
-a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for
-`reshade: add-on registered`; `-ReShade:off` turns the integration off.
+a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for `reshade: add-on registered`; `-ReShade:off` turns the
+integration off.
 
-## Diagnostics
+## Reporting bugs
+
+[Open an issue](https://github.com/caspervg/scd3d11/issues/new/choose) and attach `SC4D3D11.log` from the session that
+went wrong. The log is recreated each time the game starts, so copy it before relaunching.
+
+## Development
+
+### Building
+
+CMake is the only build. Install [Visual Studio 2022](https://visualstudio.microsoft.com/#vs-section) or later with
+the desktop C++ components, then from an **x86** Developer Command Prompt:
+
+```
+cmake -S . -B build\debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build\debug
+ctest --test-dir build\debug --output-on-failure
+```
+
+### Diagnostics
 
 The driver writes `SC4D3D11.log` to the parent of the plugins folder holding `SCD3D11.dll` (normally
-`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`. The log is
-recreated each session.
+`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`.
+The log is recreated each session.
 
 `window` records focus, activation, size, visibility and system-command messages on the game window (Alt+Tab and the
 Windows key included), and `swapchain` records changes in the Present result, paused presentation and the exclusive
 fullscreen state. A watchdog logs `watchdog: no frame for N ms` with the render thread's current phase, instruction
 pointer and likely return addresses when no frame completes for 5 seconds once rendering is under way (the startup
-plugin load is ignored), and `watchdog: frames resumed` afterwards. Debug builds also forward D3D11 debug-layer messages and record each newly observed
-render-state, vertex-format and texture-format combination, tagged `state`.
+plugin load is ignored), and `watchdog: frames resumed` afterwards. Debug builds also forward D3D11 debug-layer
+messages and record each newly observed render-state, vertex-format and texture-format combination, tagged `state`.
+
+These launch switches add more detail:
+
+| Switch | Effect |
+|--------|--------|
+| `-DrawStats` | Log a per-second summary of frame times, draws, culled draws, scroll and full redraws and texture churn, plus a line for each frame over 100 ms (`stats` category) |
+| `-GridDebug` | Log the texture state of the terrain grid pass once per second (`grid` category) |
+| `-LogLevel:trace` | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
+
+The scripts in `scripts/` launch, debug and capture the game with these switches.
+
+### Frame callback API
+
+Other plugins can observe the live D3D11 device, context, swap chain and back-buffer RTV through the exports in
+[`scd3d11/SCD3D11Service.h`](scd3d11/SCD3D11Service.h):
+
+```c
+BOOL __stdcall SCD3D11RegisterFrameCallback(SCD3D11FrameCallback callback, void* userData);
+BOOL __stdcall SCD3D11UnregisterFrameCallback(SCD3D11FrameCallback callback, void* userData);
+```
+
+The callback receives an `SCD3D11FrameContext` for either `SCD3D11_EVENT_RENDER` (once per presented frame, with the
+immediate context borrowed for the duration of the call) or `SCD3D11_EVENT_BEFORE_DEVICE_DESTROY`. `deviceGeneration`
+increments whenever the device is recreated, so stale resources can be detected and dropped.
 
 ## Third-party components
 
