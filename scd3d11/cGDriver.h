@@ -253,6 +253,8 @@ namespace nSCD3D11 {
 			// opposed to a signature-matched prop draw. Ground-hugging network
 			// pieces are dropped before they cast.
 			bool network = false;
+			// Captured inside a bracketed automaton draw.
+			bool automaton = false;
 			D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 			// With the registry these are kept across passes in world space: the
 			// model-to-world transform the capture's pass implied, the world box

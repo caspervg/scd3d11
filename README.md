@@ -57,7 +57,7 @@ where it came from.
 | `FlipModel` | on | Windowed and borderless: present with the flip model. Off uses the legacy DISCARD swap chain |
 | `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one |
 | `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |
-| `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
+| `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props, network pieces and moving cars, trains and ships shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
 | `SunLatitude` | off | With `LiveShadows`, the sun moves through SC4's day as it would at this latitude on midsummer day, for example `SunLatitude=51` (negative for the south). Each step of the sun redraws the city view, about every 4 seconds while the clock runs |
 | `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included). See [ReShade](#reshade) |

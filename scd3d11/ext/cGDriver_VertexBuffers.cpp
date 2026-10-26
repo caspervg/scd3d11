@@ -115,7 +115,7 @@ namespace nSCD3D11 {
 		NoteLiveShadowTerrainView();
 		// The terrain reservation path never went through MatchesLiveShadowMesh,
 		// so bracketed network draws issued here were silently dropped.
-		if (LiveShadowHooks::NetworkDrawActive()) {
+		if (LiveShadowHooks::NetworkDrawActive() || LiveShadowHooks::AutomatonDrawActive()) {
 			static bool loggedBracketPrims = false;
 			if (!loggedBracketPrims) {
 				loggedBracketPrims = true;
@@ -135,7 +135,8 @@ namespace nSCD3D11 {
 					std::vector<uint32_t> liveIndices(count);
 					if (ConvertVertices(format, stride, source, count, vertices)) {
 						for (uint32_t index = 0; index < count; ++index) liveIndices[index] = index;
-						AppendLiveShadowDraw(std::move(vertices), std::move(liveIndices), topology, true);
+						AppendLiveShadowDraw(std::move(vertices), std::move(liveIndices), topology,
+						                     LiveShadowHooks::NetworkDrawActive());
 					}
 				} catch (std::bad_alloc const &) {
 				}
@@ -182,7 +183,7 @@ namespace nSCD3D11 {
 			dynamicIndexBuffer, dynamicIndexBufferOffset)) {
 			return;
 		}
-		if (LiveShadowHooks::NetworkDrawActive()) {
+		if (LiveShadowHooks::NetworkDrawActive() || LiveShadowHooks::AutomatonDrawActive()) {
 			static bool loggedBracketPrimsIndexed = false;
 			if (!loggedBracketPrimsIndexed) {
 				loggedBracketPrimsIndexed = true;
@@ -200,7 +201,8 @@ namespace nSCD3D11 {
 					std::vector<D3D11Vertex> vertices;
 					if (ConvertVertices(format, stride, source, vertexCount, vertices)) {
 						std::vector<uint32_t> liveIndices(indices, indices + count);
-						AppendLiveShadowDraw(std::move(vertices), std::move(liveIndices), topology, true);
+						AppendLiveShadowDraw(std::move(vertices), std::move(liveIndices), topology,
+						                     LiveShadowHooks::NetworkDrawActive());
 					}
 				} catch (std::bad_alloc const &) {
 				}

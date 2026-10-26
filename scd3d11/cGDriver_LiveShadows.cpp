@@ -541,8 +541,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
     }
 
     bool cGDriver::MatchesLiveShadowMesh(uint32_t firstVertex, uint32_t vertexCount) {
-        // LiveShadowHooks brackets exactly the prebuilt network draws.
-        if (LiveShadowHooks::NetworkDrawActive()) return true;
+        // LiveShadowHooks brackets exactly the prebuilt network and automaton draws.
+        if (LiveShadowHooks::NetworkDrawActive() || LiveShadowHooks::AutomatonDrawActive()) return true;
         if (!LiveShadowHooks::MayMatchPropMesh(vertexCount) || interleavedPointer == nullptr) return false;
         uint8_t const* const source = interleavedPointer + static_cast<size_t>(firstVertex) * interleavedStride;
         uint32_t const uvCount = RZVertexFormatNumElements(interleavedFormat, kGDElementType_TexCoord);
@@ -630,6 +630,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         draw.alphaReference = alphaReference;
         draw.alphaTest = enabledCapabilities[kGDCapability_AlphaTest];
         draw.network = networkCaster;
+        draw.automaton = LiveShadowHooks::AutomatonDrawActive();
         draw.topology = topology;
         size_t const loggedVertices = draw.vertices.size();
         size_t const loggedIndices = draw.indices.size();
@@ -832,6 +833,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                viewportHeight < windowHeight);
         if (staticPass) ++(partialPass ? frameStats.shadowPartialPasses : frameStats.shadowFullPasses);
         bool const registry = ShadowRegistry::Enabled();
+        // An automaton moves, so it casts only in the dynamic pass. One caught
+        // in a static pass would stay behind in the backing store.
+        if (staticPass) {
+            liveShadowDraws.erase(std::remove_if(liveShadowDraws.begin(), liveShadowDraws.end(),
+                                                 [](LiveShadowDraw const& draw) { return draw.automaton; }),
+                                  liveShadowDraws.end());
+        }
         // SC4's own DrawShadows calls in this pass gathered the registry casters,
         // along with the view, sun and shadow parameters they were drawn with.
         // Without them the tone and sun are asked for directly, so a rotation

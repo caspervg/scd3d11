@@ -21,6 +21,9 @@
 //   E 0x0061E860   5 bytes  cSC4NetworkOccupantWithPreBuiltModel::Draw wrapper
 //   F 0x0061E8A0   8 bytes  cSC4NetworkOccupantWithPreBuiltModel::GetModelInstances
 //   G 0x006147D0  11 bytes  cS3DModelInstance drawable thunk (vtable +0x30)
+//   H vtables 0x00A94608, 0x00A94B38, 0x00A95AC0, 0x00A97188, 0x00A991E0
+//     +0x11C   4 bytes each  automaton PlaceInRenderer (0x00507F70)
+//   I 0x007FB5E0  11 bytes  cS3DModelInstanceAnimated drawable thunk (vtable 0x00ABD048)
 //
 // Props. SC4 never shadows a prop without Is Ground Model. Site C lets such a
 // prop through, and site D lets its AddShadow run so that ShadowRegistry keeps
@@ -34,6 +37,15 @@
 // each occupant owns, and site G marks their draws. Ownership is checked again
 // on every draw, because a freed instance's address can be reused by another
 // model.
+//
+// Automata. PlaceInRenderer(bool) puts an occupant's models into the renderer
+// or takes them out. Many occupant classes share it, so it is patched only in
+// the five automaton vtables, the ones with the "State: %d" debug text
+// (0x0050F0A0). The models are the list at occupant +0x110/+0x114, all
+// cS3DModelInstanceAnimated. Slot 0 of each returns the drawable the renderer
+// stores, which is what that class's draw thunk (site I) is called with. Their
+// draws are bracketed like the prebuilt models and cast in the dynamic pass
+// every frame.
 
 #include "LiveShadowHooks.h"
 
@@ -68,6 +80,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		constexpr uintptr_t kPrebuiltModelsRejoinVA = 0x0061E8A8;
 		constexpr uintptr_t kModelInstanceDrawThunkVA = 0x006147D0;
 		constexpr uintptr_t kModelInstanceDrawVA = 0x00801750;
+		constexpr uintptr_t kAnimatedDrawThunkVA = 0x007FB5E0;
 		// The two cS3DModelInstance interface pointers a prebuilt piece owns.
 		constexpr ptrdiff_t kPrebuiltModelSlots[]{0x1C4, 0x1C8};
 		constexpr uintptr_t kRenderPropertiesPointerVA = 0x00B43CC4;
@@ -76,6 +89,12 @@ namespace nSCD3D11::LiveShadowHooks {
 		constexpr uintptr_t kGetBoolPropertyVA = 0x005FD390;
 		constexpr uintptr_t kAddShadowSiteVA = 0x0049195E;
 		constexpr uintptr_t kAddShadowRejoinVA = 0x00491964;
+		constexpr uintptr_t kPlaceInRendererVA = 0x00507F70;
+		constexpr uintptr_t kAutomatonVtables[]{0x00A94608, 0x00A94B38, 0x00A95AC0, 0x00A97188, 0x00A991E0};
+		constexpr ptrdiff_t kPlaceInRendererSlot = 0x11C;
+		constexpr ptrdiff_t kOccupantModelsBegin = 0x110;
+		// More models than this on one automaton means the list is not one.
+		constexpr size_t kMaxAutomatonModels = 16;
 		constexpr ptrdiff_t kFrameOccupant = 0xE0;
 		constexpr ptrdiff_t kAddShadowArgumentBytes = 0x14;
 
@@ -107,8 +126,10 @@ namespace nSCD3D11::LiveShadowHooks {
 		PatchSite gPrebuiltDraw;
 		PatchSite gPrebuiltModels;
 		PatchSite gModelInstanceDraw;
+		PatchSite gAnimatedDraw;
 		PatchSite gPropGroundModel;
 		PatchSite gAddShadowSite;
+		PatchSite gPlaceInRenderer[std::size(kAutomatonVtables)];
 
 		bool gInstalled = false;
 
@@ -124,6 +145,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		uintptr_t gShadowColour = 0;
 
 		thread_local uint32_t tNetworkDrawDepth = 0;
+		thread_local uint32_t tAutomatonDrawDepth = 0;
 		thread_local void *tRelaxedPropOccupant = nullptr;
 
 		// Sorted signatures of the relaxed props' meshes.
@@ -150,7 +172,21 @@ namespace nSCD3D11::LiveShadowHooks {
 		// check in IsPrebuiltModelInstance makes stale entries harmless.
 		constexpr size_t kMaxLiveModelInstances = 1u << 16;
 
+		// Drawables of placed automata, mapped to the automaton and the model
+		// that handed them out, so a match can be checked again. Placement runs
+		// on the simulation thread, drawing on the render thread.
+		struct AutomatonModel {
+			void const *automaton = nullptr;
+			void const *model = nullptr;
+		};
+		std::shared_mutex gAutomatonMutex;
+		std::unordered_map<void const *, AutomatonModel> gAutomatonModels;
+		std::atomic<size_t> gAutomatonModelCount{0};
+
 		unsigned gNetworkDraws = 0;
+		unsigned gAutomatonModelsRegistered = 0;
+		unsigned gAutomatonDraws = 0;
+		unsigned gAutomatonModelsRejected = 0;
 		unsigned gLiveModelsRegistered = 0;
 		unsigned gLiveModelDraws = 0;
 		unsigned gLiveModelsRejected = 0;
@@ -183,6 +219,16 @@ namespace nSCD3D11::LiveShadowHooks {
 			}
 		}
 
+		// Slot 0 of an automaton's model: the drawable it puts in the renderer.
+		void const *SafeModelDrawable(void *model) {
+			__try {
+				using GetDrawable = void *(__thiscall *)(void *);
+				return reinterpret_cast<GetDrawable>((*reinterpret_cast<void ***>(model))[0])(model);
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return nullptr;
+			}
+		}
+
 		bool SafeShadowDirection(void *lighting, float direction[3]) {
 			__try {
 				using GetDirection = float *(__thiscall *)(void *, float *);
@@ -196,6 +242,7 @@ namespace nSCD3D11::LiveShadowHooks {
 #else
 		bool SafeCopy(void const *, void *, size_t) { return false; }
 		void *SafeLighting(uintptr_t) { return nullptr; }
+		void const *SafeModelDrawable(void *) { return nullptr; }
 		bool SafeShadowDirection(void *, float *) { return false; }
 #endif
 
@@ -277,6 +324,70 @@ namespace nSCD3D11::LiveShadowHooks {
 			return false;
 		}
 
+		// ------------------------------------------------------------------
+		// Automata
+		// ------------------------------------------------------------------
+
+		// The models in an automaton's list, or false when it cannot be read.
+		bool AutomatonModels(void const *automaton, std::array<void *, kMaxAutomatonModels> &models, size_t &count) {
+			uintptr_t range[2]{};
+			if (!SafeCopy(static_cast<uint8_t const *>(automaton) + kOccupantModelsBegin, range, sizeof(range)) ||
+			    range[1] < range[0] || (range[1] - range[0]) % sizeof(void *) != 0)
+				return false;
+			count = (range[1] - range[0]) / sizeof(void *);
+			return count <= kMaxAutomatonModels &&
+			       SafeCopy(reinterpret_cast<void const *>(range[0]), models.data(), count * sizeof(void *));
+		}
+
+		// Records or forgets the drawables an automaton puts in the renderer.
+		void TrackAutomaton(void const *automaton, bool placed) {
+			std::array<void *, kMaxAutomatonModels> models{};
+			size_t count = 0;
+			if (automaton == nullptr || !AutomatonModels(automaton, models, count)) return;
+			for (size_t index = 0; index < count; ++index) {
+				if (models[index] == nullptr) continue;
+				void const *const drawable = SafeModelDrawable(models[index]);
+				if (drawable == nullptr) continue;
+				std::unique_lock<std::shared_mutex> lock(gAutomatonMutex);
+				if (!placed) {
+					gAutomatonModels.erase(drawable);
+				} else {
+					if (gAutomatonModels.size() >= kMaxLiveModelInstances) {
+						gAutomatonModels.clear();
+						Log(LogCategory::Initialization, "live shadows: automaton registry hit its cap, cleared");
+					}
+					if (gAutomatonModels.insert_or_assign(drawable, AutomatonModel{automaton, models[index]}).second)
+						++gAutomatonModelsRegistered;
+				}
+				gAutomatonModelCount.store(gAutomatonModels.size(), std::memory_order_relaxed);
+			}
+		}
+
+		// True while this drawable still belongs to a placed automaton: the
+		// occupant is still an automaton and still lists the model.
+		bool IsAutomatonModel(void const *drawable) {
+			if (drawable == nullptr || gAutomatonModelCount.load(std::memory_order_relaxed) == 0) return false;
+			AutomatonModel entry;
+			{
+				std::shared_lock<std::shared_mutex> lock(gAutomatonMutex);
+				auto const found = gAutomatonModels.find(drawable);
+				if (found == gAutomatonModels.end()) return false;
+				entry = found->second;
+			}
+			uintptr_t vtable = 0;
+			std::array<void *, kMaxAutomatonModels> models{};
+			size_t count = 0;
+			if (SafeCopy(entry.automaton, &vtable, sizeof(vtable)) &&
+			    std::find(std::begin(kAutomatonVtables), std::end(kAutomatonVtables), vtable) !=
+			    std::end(kAutomatonVtables) &&
+			    AutomatonModels(entry.automaton, models, count)) {
+				auto const end = models.begin() + static_cast<ptrdiff_t>(count);
+				if (std::find(models.begin(), end, entry.model) != end) return true;
+			}
+			++gAutomatonModelsRejected;
+			return false;
+		}
+
 	} // namespace
 
 	// ----------------------------------------------------------------------
@@ -321,6 +432,10 @@ namespace nSCD3D11::LiveShadowHooks {
 
 	bool NetworkDrawActive() {
 		return gInstalled && tNetworkDrawDepth != 0;
+	}
+
+	bool AutomatonDrawActive() {
+		return gInstalled && tAutomatonDrawDepth != 0;
 	}
 
 	bool MayMatchPropMesh(uint32_t vertexCount) {
@@ -450,6 +565,44 @@ namespace nSCD3D11::LiveShadowHooks {
 			return result;
 		}
 
+		// Site I. The same thunk for cS3DModelInstanceAnimated, whose drawable
+		// sits 0x24 into its virtual base rather than 0x40.
+		__declspec(naked) void AnimatedDrawOriginal() {
+			__asm {
+				sub ecx, dword ptr [ecx - 4]
+				sub ecx, 0x24
+				jmp dword ptr [gModelInstanceDrawTarget]
+			}
+		}
+
+		uint32_t __fastcall AnimatedDrawHook(void *self, void *, void *drawContext, uint32_t lit) {
+			using Original = uint32_t (__thiscall *)(void *, void *, uint32_t);
+			bool const automaton = IsAutomatonModel(self);
+			if (automaton) ++tAutomatonDrawDepth;
+			uint32_t const result = reinterpret_cast<Original>(&AnimatedDrawOriginal)(self, drawContext, lit);
+			if (automaton) {
+				--tAutomatonDrawDepth;
+				++gAutomatonDraws;
+				static bool loggedFirst = false;
+				if (!loggedFirst) {
+					loggedFirst = true;
+					Log(LogCategory::Initialization, "live shadows: first automaton model bracketed (drawable %p)",
+					    self);
+				}
+			}
+			return result;
+		}
+
+		// Site H, __thiscall(self, bool place), RET 4. Called through the
+		// automaton vtables only, so self is always an automaton.
+		uint8_t __fastcall PlaceInRendererHook(void *self, void *, uint8_t place) {
+			using Original = uint8_t (__thiscall *)(void *, uint8_t);
+			if (!place) TrackAutomaton(self, false);
+			uint8_t const result = reinterpret_cast<Original>(kPlaceInRendererVA)(self, place);
+			if (place) TrackAutomaton(self, true);
+			return result;
+		}
+
 		__declspec(naked) void PropGroundModelStub() {
 			__asm {
 				push eax
@@ -528,6 +681,17 @@ namespace nSCD3D11::LiveShadowHooks {
 			int32_t const displacement = static_cast<int32_t>(reinterpret_cast<uintptr_t>(destination) -
 			                                                 (reinterpret_cast<uintptr_t>(target) + 5));
 			std::memcpy(site.replacement.data() + 1, &displacement, sizeof(displacement));
+		}
+
+		// A vtable slot: it holds the original function's address.
+		void ConfigurePointerSite(PatchSite &site, uintptr_t virtualAddress, uintptr_t expected, void *destination) {
+			site = PatchSite{};
+			site.virtualAddress = virtualAddress;
+			site.length = sizeof(uint32_t);
+			uint32_t const original = static_cast<uint32_t>(expected);
+			uint32_t const replacement = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(destination));
+			std::memcpy(site.expected.data(), &original, sizeof(original));
+			std::memcpy(site.replacement.data(), &replacement, sizeof(replacement));
 		}
 
 		bool Requested() {
@@ -612,12 +776,20 @@ namespace nSCD3D11::LiveShadowHooks {
 		ConfigureJumpSite(gModelInstanceDraw, kModelInstanceDrawThunkVA,
 		                  {0x2B, 0x49, 0xFC, 0x83, 0xE9, 0x40, 0xE9, 0x75, 0xCF, 0x1E, 0x00},
 		                  resolve(kModelInstanceDrawThunkVA), &ModelInstanceDrawHook);
+		ConfigureJumpSite(gAnimatedDraw, kAnimatedDrawThunkVA,
+		                  {0x2B, 0x49, 0xFC, 0x83, 0xE9, 0x24, 0xE9, 0x65, 0x61, 0x00, 0x00},
+		                  resolve(kAnimatedDrawThunkVA), &AnimatedDrawHook);
 		ConfigureJumpSite(gPropGroundModel, kPropGroundModelVA, {0x8D, 0x4C, 0x24, 0x13, 0x51},
 		                  resolve(kPropGroundModelVA), &PropGroundModelStub);
 		ConfigureJumpSite(gAddShadowSite, kAddShadowSiteVA, {0x8B, 0xCD, 0x57, 0xFF, 0x52, 0x2C},
 		                  resolve(kAddShadowSiteVA), &AddShadowLivePropStub);
 		std::vector<PatchSite *> sites{&gPrebuiltDraw, &gPrebuiltModels, &gModelInstanceDraw, &gPropGroundModel,
-		                               &gAddShadowSite};
+		                               &gAddShadowSite, &gAnimatedDraw};
+		for (size_t index = 0; index < std::size(kAutomatonVtables); ++index) {
+			ConfigurePointerSite(gPlaceInRenderer[index], kAutomatonVtables[index] + kPlaceInRendererSlot,
+			                     kPlaceInRendererVA, &PlaceInRendererHook);
+			sites.push_back(&gPlaceInRenderer[index]);
+		}
 		if (!KeepNetworkShadowMasks()) sites.push_back(&gNetworkGate);
 		for (PatchSite *site: sites) site->address = resolve(site->virtualAddress);
 		for (PatchSite const *site: sites) {
@@ -638,7 +810,13 @@ namespace nSCD3D11::LiveShadowHooks {
 			gLiveModelInstances.clear();
 			gLiveModelInstanceCount.store(0, std::memory_order_relaxed);
 		}
+		{
+			std::unique_lock<std::shared_mutex> lock(gAutomatonMutex);
+			gAutomatonModels.clear();
+			gAutomatonModelCount.store(0, std::memory_order_relaxed);
+		}
 		tNetworkDrawDepth = 0;
+		tAutomatonDrawDepth = 0;
 		for (PatchSite *site: sites) {
 			if (!WriteSite(*site)) {
 				Log(LogCategory::Initialization, "live shadows: failed to write site 0x%08lX, restoring",
@@ -649,7 +827,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		}
 
 		gInstalled = true;
-		Log(LogCategory::Initialization, "live shadows installed: prebuilt network pieces and True3D props, %s",
+		Log(LogCategory::Initialization, "live shadows installed: prebuilt network pieces, True3D props and automata, %s",
 		    KeepNetworkShadowMasks() ? "network shadow masks kept" : "network shadow masks removed");
 		return true;
 #else
@@ -659,6 +837,8 @@ namespace nSCD3D11::LiveShadowHooks {
 
 	void Uninstall() {
 		if (!gInstalled) return;
+		for (PatchSite &site: gPlaceInRenderer) RestoreSite(site);
+		RestoreSite(gAnimatedDraw);
 		RestoreSite(gAddShadowSite);
 		RestoreSite(gPropGroundModel);
 		RestoreSite(gModelInstanceDraw);
@@ -667,6 +847,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		RestoreSite(gNetworkGate);
 		gInstalled = false;
 		tNetworkDrawDepth = 0;
+		tAutomatonDrawDepth = 0;
 		{
 			std::lock_guard<std::mutex> lock(gPropMutex);
 			gPropMeshes.clear();
@@ -677,6 +858,14 @@ namespace nSCD3D11::LiveShadowHooks {
 			gLiveModelInstances.clear();
 			gLiveModelInstanceCount.store(0, std::memory_order_relaxed);
 		}
+		{
+			std::unique_lock<std::shared_mutex> lock(gAutomatonMutex);
+			gAutomatonModels.clear();
+			gAutomatonModelCount.store(0, std::memory_order_relaxed);
+		}
+		Log(LogCategory::Initialization,
+		    "automata: %u models registered, %u bracketed draws, %u stale entries rejected",
+		    gAutomatonModelsRegistered, gAutomatonDraws, gAutomatonModelsRejected);
 		Log(LogCategory::Initialization,
 		    "live shadows uninstalled: %u network draws, %u prop meshes, %u native prop calls suppressed",
 		    gNetworkDraws, gPropMeshesRegistered, gPropCallsSuppressed);
