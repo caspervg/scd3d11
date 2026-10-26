@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 #include "SCD3D11Service.h"
+#include "Settings.h"
 #include "ThumbnailFocusGuard.h"
 #include "VideoModeUtils.h"
 
@@ -185,7 +186,7 @@ namespace nSCD3D11 {
 	// Passing no adapter gets DXGI adapter 0, which on hybrid-GPU laptops is usually the integrated
 	// GPU. Prefer the high-performance GPU instead; -GPU:default restores the old behaviour.
 	Microsoft::WRL::ComPtr<IDXGIAdapter> cGDriver::SelectAdapter(void) {
-		if (std::strstr(GetCommandLineA(), "-GPU:default") != nullptr) return nullptr;
+		if (Settings::Value("GPU") == "default") return nullptr;
 
 		Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
 		Microsoft::WRL::ComPtr<IDXGIFactory6> factory6;

@@ -29,6 +29,7 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 #include "LiveShadowHooks.h"
+#include "Settings.h"
 #include "ShadowRegistry.h"
 
 #include <cmath>
@@ -302,7 +303,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			Log(LogCategory::Initialization,
 			    "live shadows: static pass hooked before SC4 backing-store save");
 		}
-		if (std::strstr(GetCommandLineA(), "-ReShade:off") != nullptr) return;
+		if (!Settings::Flag("ReShade", true)) return;
 
 		HMODULE module = nullptr;
 		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,

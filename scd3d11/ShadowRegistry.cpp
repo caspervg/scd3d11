@@ -70,7 +70,9 @@
 #include "ShadowRegistry.h"
 
 #include "Diagnostics.h"
+#include "GameVersion.h"
 #include "LiveShadowHooks.h"
+#include "Settings.h"
 
 #include <algorithm>
 #include <array>
@@ -1055,25 +1057,8 @@ namespace nSCD3D11::ShadowRegistry {
 			std::memcpy(site.replacement.data(), &replacement, sizeof(replacement));
 		}
 
-		bool IsSupportedGameVersion() {
-			wchar_t path[MAX_PATH]{};
-			if (GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) return false;
-			DWORD ignored = 0;
-			DWORD const size = GetFileVersionInfoSizeW(path, &ignored);
-			if (size == 0) return false;
-			std::vector<uint8_t> data(size);
-			if (!GetFileVersionInfoW(path, 0, size, data.data())) return false;
-			VS_FIXEDFILEINFO *version = nullptr;
-			UINT versionSize = 0;
-			if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void **>(&version), &versionSize) ||
-			    version == nullptr || versionSize < sizeof(VS_FIXEDFILEINFO))
-				return false;
-			return HIWORD(version->dwFileVersionMS) == 1 && LOWORD(version->dwFileVersionMS) == 1 &&
-			       HIWORD(version->dwFileVersionLS) == 641;
-		}
-
 		bool Requested() {
-			return std::strstr(GetCommandLineA(), "-LiveShadows:on") != nullptr;
+			return Settings::Flag("LiveShadows", false);
 		}
 
 		bool BytesMatch(PatchSite const &site) {
@@ -1116,7 +1101,7 @@ namespace nSCD3D11::ShadowRegistry {
 #if defined(_MSC_VER) && defined(_M_IX86)
 		if (gInstalled) return true;
 		if (!Requested()) return false;
-		if (!IsSupportedGameVersion()) {
+		if (!IsGameVersion641()) {
 			Log(LogCategory::Initialization, "shadow registry: requires SimCity 4 1.1.641, skipping");
 			return false;
 		}
