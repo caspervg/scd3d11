@@ -8,10 +8,10 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
-// Shadow records for the live shadow map (docs/true3d-shadows-replace-all.md).
+// Shadow records for the live shadow map.
 //
 // SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
-// -NativeShadowMasks:replace. Every site is guarded by its exact bytes or slot
+// -LiveShadows:on. Every site is guarded by its exact bytes or slot
 // value and restored during PreAppShutdown.
 //
 //   0x00AB3A14  cSTEOverlayManager vtable +0x2C, AddShadow 0x0073C0D0
@@ -56,7 +56,7 @@
 // list {+4 begin, +8 end} of {primitive, start, count}.
 //
 // Props without Is Ground Model (0x8A5E5DB8) are never shadowed by SC4. With
-// -NativeShadowMasks:replace, NativeShadowMasks' site D lets their AddShadow run
+// -LiveShadows:on, LiveShadowHooks' site D lets their AddShadow run
 // and flags it (ExpectMeshCaster); the record then only exists for its lifetime
 // and dirty rectangle. Such a prop floating above the terrain - the building
 // zots AddBuildingZotProp places, 46-56 m up - stays unshadowed; one whose UVs
@@ -67,10 +67,10 @@
 // manager's terrain (+0x88) RedisplayTerrain (vtable +0x110, 0x00749850) with a
 // rectangle of terrain cells, which queues a partial static pass.
 
-#include "NativeShadowRegistry.h"
+#include "ShadowRegistry.h"
 
 #include "Diagnostics.h"
-#include "NativeShadowMasks.h"
+#include "LiveShadowHooks.h"
 
 #include <algorithm>
 #include <array>
@@ -86,7 +86,7 @@
 #include <intrin.h>
 #include <windows.h>
 
-namespace nSCD3D11::NativeShadowRegistry {
+namespace nSCD3D11::ShadowRegistry {
 	namespace {
 		constexpr uintptr_t kImageBase = 0x00400000;
 
@@ -105,9 +105,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 		constexpr size_t kRendererLightingSlot = 0x24 / sizeof(void *);
 		// Lighting manager vtable 0x00ABB530 +0x34, GetShadowDirection 0x007D6B50.
 		constexpr size_t kLightingShadowDirectionSlot = 0x34 / sizeof(void *);
-		// SetTimeOfDay (0x007D9DF0) writes max((lighting red - 0.8) / 0.2, 0)
-		// here and sends it as the daylight transition parameter.
-		constexpr ptrdiff_t kLightingDaylight = 0xBC;
 		// GetShadowParams (0x007D6B70) only copies these globals out.
 		constexpr uintptr_t kShadowStrengthVA = 0x00B0DC78;
 		constexpr uintptr_t kShadowAlphaScaleVA = 0x00B4E330;
@@ -228,16 +225,50 @@ namespace nSCD3D11::NativeShadowRegistry {
 		// index recovery, never correctness.
 		void const *gStashedMesh = nullptr;
 		uint8_t const *gStashedFrame = nullptr;
-		// Set by NativeShadowMasks' site D stub for a relaxed prop, consumed by
+		// Set by LiveShadowHooks' site D stub for a relaxed prop, consumed by
 		// the AddShadow call that follows on the same thread.
 		thread_local bool tExpectMeshCaster = false;
 
 		std::mutex gMutex;
-		std::unordered_map<uint32_t, std::shared_ptr<Caster const>> gCasters;
+		// A registered caster, with copies of what the gather reads for every id
+		// so that culling one does not touch the Caster itself.
+		struct Entry {
+			std::shared_ptr<Caster const> caster; // null: no caster at this id
+			void const *binding = nullptr;
+			float low[3]{};
+			float high[3]{};
+			float baseHeight = 0.0f;
+			// The gPassSerial of the pass this caster was last gathered into.
+			uint32_t passSerial = 0;
+			bool suppressOnly = false;
+		};
+		// Indexed by overlay id: AddShadow's ids are slots in the manager's
+		// record array, so they are small and dense, and a gather that looks up
+		// thousands of them per pass reads an array rather than chasing hash
+		// nodes. Ids at or above kMaxCasterIds are left to the native draw.
+		constexpr uint32_t kMaxCasterIds = 1u << 20;
+		std::vector<Entry> gCasters;
+		size_t gCasterCount = 0;
+		uint32_t gHighestId = 0;
+
+		// gMutex held. True when there was a caster at id.
+		bool EraseCaster(int32_t id) {
+			if (id < 0 || static_cast<uint32_t>(id) >= gCasters.size() || !gCasters[id].caster) return false;
+			gCasters[id] = Entry{};
+			--gCasterCount;
+			return true;
+		}
+
+		void ClearCasters(bool release) {
+			if (release) std::vector<Entry>().swap(gCasters);
+			else gCasters.clear();
+			gCasterCount = 0;
+		}
 		void const *gManager = nullptr;
 		Pass gPass;
 		bool gPassValid = false;
-		std::unordered_set<uint32_t> gPassIds;
+		// Bumped whenever gPass starts over, so a caster joins each pass once.
+		uint32_t gPassSerial = 1;
 
 		unsigned gRegistered = 0;
 		unsigned gMeshCasters = 0;
@@ -249,10 +280,106 @@ namespace nSCD3D11::NativeShadowRegistry {
 		unsigned gRemoved = 0;
 		unsigned gStaleRecords = 0;
 		unsigned gPasses = 0;
-		unsigned gProjectorChecks = 0;
 		unsigned gDrawCalls = 0;
 		unsigned gGathered = 0;
 		unsigned gNotGathered = 0;
+		Stats gStats;
+		DWORD gDrawThread = 0;
+
+		// The driver's current projection (NoteProjection), render thread only.
+		float gProjection[16]{};
+		bool gProjectionKnown = false;
+
+		// A ground quad sits this far above the occupant's placement height, so
+		// the terrain under it is behind it by more than the composite bias
+		// along the 45-degree sun.
+		constexpr float kGroundLiftWorld = 0.2f;
+
+		bool GroundQuad(float const low[3], float const high[3], float baseHeight, float const sun[3],
+		                float quad[4][3]) {
+			if (sun[1] > -1.0e-3f) return false;
+			float const height = baseHeight + kGroundLiftWorld;
+			// The box's top and bottom corners land this far along the sun; the
+			// footprint spans the box and both landings.
+			float const alongLow = (height - low[1]) / sun[1];
+			float const alongHigh = (height - high[1]) / sun[1];
+			float footLow[2]{}, footHigh[2]{};
+			for (unsigned axis = 0; axis < 2; ++axis) {
+				unsigned const world = axis * 2;
+				float const a = sun[world] * alongLow, b = sun[world] * alongHigh;
+				footLow[axis] = low[world] + (std::min)({0.0f, a, b});
+				footHigh[axis] = high[world] + (std::max)({0.0f, a, b});
+			}
+			float const corners[4][2]{
+				{footLow[0], footLow[1]}, {footHigh[0], footLow[1]}, {footHigh[0], footHigh[1]}, {footLow[0], footHigh[1]}
+			};
+			for (unsigned index = 0; index < 4; ++index) {
+				quad[index][0] = corners[index][0];
+				quad[index][1] = height;
+				quad[index][2] = corners[index][1];
+			}
+			return true;
+		}
+
+		bool ReachOutside(float const low[3], float const high[3], bool hasQuad, float const quad[4][3],
+		                  float const *worldToClip) {
+			float reachLow[3]{low[0], low[1], low[2]};
+			float reachHigh[3]{high[0], high[1], high[2]};
+			if (hasQuad) {
+				for (unsigned axis = 0; axis < 3; ++axis) {
+					reachLow[axis] = (std::min)(reachLow[axis], quad[0][axis]);
+					reachHigh[axis] = (std::max)(reachHigh[axis], quad[2][axis]);
+				}
+			}
+			// The matrix is affine, so the box's NDC extent is its centre and
+			// half-size mapped through it.
+			for (unsigned axis = 0; axis < 2; ++axis) {
+				float centre = worldToClip[12 + axis], extent = 0.0f;
+				for (unsigned k = 0; k < 3; ++k) {
+					centre += worldToClip[k * 4 + axis] * (reachLow[k] + reachHigh[k]) * 0.5f;
+					extent += std::fabs(worldToClip[k * 4 + axis]) * (reachHigh[k] - reachLow[k]) * 0.5f;
+				}
+				if (centre + extent < -1.0f || centre - extent > 1.0f) return true;
+			}
+			return false;
+		}
+
+		// Inverse of an affine column-major matrix; false for any other.
+		bool InvertAffine(float const *m, float out[16]) {
+			if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f) return false;
+			float const c0[3]{m[0], m[1], m[2]}, c1[3]{m[4], m[5], m[6]}, c2[3]{m[8], m[9], m[10]};
+			auto cross = [](float const *a, float const *b, float *result) {
+				result[0] = a[1] * b[2] - a[2] * b[1];
+				result[1] = a[2] * b[0] - a[0] * b[2];
+				result[2] = a[0] * b[1] - a[1] * b[0];
+			};
+			float rows[3][3];
+			cross(c1, c2, rows[0]);
+			cross(c2, c0, rows[1]);
+			cross(c0, c1, rows[2]);
+			float const determinant = c0[0] * rows[0][0] + c0[1] * rows[0][1] + c0[2] * rows[0][2];
+			if (!std::isfinite(determinant) || std::fabs(determinant) < 1.0e-12f) return false;
+			for (unsigned row = 0; row < 3; ++row) {
+				for (unsigned column = 0; column < 3; ++column) out[column * 4 + row] = rows[row][column] / determinant;
+				out[12 + row] = -(out[row] * m[12] + out[4 + row] * m[13] + out[8 + row] * m[14]);
+				out[row * 4 + 3] = 0.0f;
+			}
+			out[15] = 1.0f;
+			return true;
+		}
+
+		double Milliseconds(LARGE_INTEGER const &start) {
+			static LARGE_INTEGER const frequency = [] {
+				LARGE_INTEGER value{};
+				QueryPerformanceFrequency(&value);
+				return value;
+			}();
+			LARGE_INTEGER now{};
+			QueryPerformanceCounter(&now);
+			return frequency.QuadPart != 0
+				       ? static_cast<double>(now.QuadPart - start.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart)
+				       : 0.0;
+		}
 
 		// Why a DrawShadows call was left entirely to the native draw; each
 		// reason is logged once.
@@ -263,11 +390,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 				Log(LogCategory::Initialization, "shadow registry: DrawShadows call left native (%s, manager %p, registry %p)",
 				    reason, manager, gManager);
 			}
-		}
-
-		bool DiagnosticsEnabled() {
-			static bool const enabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
-			return enabled;
 		}
 
 		// ------------------------------------------------------------------
@@ -297,22 +419,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 				reinterpret_cast<GetDirection>(
 					(*reinterpret_cast<void ***>(lighting))[kLightingShadowDirectionSlot])(lighting, direction);
 				return true;
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				return false;
-			}
-		}
-
-		bool SafeShadowDaylight(uintptr_t rendererPointer, float &daylight) {
-			__try {
-				void *const renderer = *reinterpret_cast<void **>(rendererPointer);
-				if (renderer == nullptr) return false;
-				using GetLighting = void *(__thiscall *)(void *);
-				void *const lighting =
-					reinterpret_cast<GetLighting>((*reinterpret_cast<void ***>(renderer))[kRendererLightingSlot])(
-						renderer);
-				if (lighting == nullptr) return false;
-				return SafeCopy(static_cast<uint8_t const *>(lighting) + kLightingDaylight,
-				                &daylight, sizeof(daylight));
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				return false;
 			}
@@ -360,7 +466,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 #else
 		bool SafeCopy(void const *, void *, size_t) { return false; }
 		bool SafeShadowDirection(uintptr_t, float *) { return false; }
-		bool SafeShadowDaylight(uintptr_t, float &) { return false; }
 		struct TerrainGrid {
 			float cellWidth;
 			uint32_t cellsX;
@@ -474,7 +579,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 		double ProjectorResidual(Caster const &caster, float const *uvs, uint32_t count) {
 			double squared = 0.0;
 			for (uint32_t vertex = 0; vertex < count; ++vertex) {
-				float const *const world = caster.positions.data() + vertex * 3;
+				float const *const world = caster.vertices.data() + vertex * kVertexFloats;
 				float const *const m = caster.projector;
 				double const du = m[0] * world[0] + m[4] * world[1] + m[8] * world[2] + m[12] - uvs[vertex * 2 + 0];
 				double const dv = m[1] * world[0] + m[5] * world[1] + m[9] * world[2] + m[13] - uvs[vertex * 2 + 1];
@@ -483,49 +588,22 @@ namespace nSCD3D11::NativeShadowRegistry {
 			return count == 0 ? 0.0 : std::sqrt(squared / count);
 		}
 
-		// -LiveShadowDiag checks 2 and 3 of the design: the projector reproduces
-		// the mesh's UVs from world positions, and the transformed mesh sits
-		// where AddShadow's bounding box says the model is.
-		void LogProjectorCheck(Caster const &caster, float const *uvs, uint32_t count, void const *box) {
-			if (!DiagnosticsEnabled() || gProjectorChecks >= 8) return;
-			++gProjectorChecks;
-			double squared = 0.0;
-			double worst = 0.0;
-			for (uint32_t vertex = 0; vertex < count; ++vertex) {
-				float const *const world = caster.positions.data() + vertex * 3;
-				float const *const m = caster.projector;
-				float const u = m[0] * world[0] + m[4] * world[1] + m[8] * world[2] + m[12];
-				float const v = m[1] * world[0] + m[5] * world[1] + m[9] * world[2] + m[13];
-				double const du = u - uvs[vertex * 2 + 0];
-				double const dv = v - uvs[vertex * 2 + 1];
-				squared += du * du + dv * dv;
-				worst = (std::max)(worst, std::sqrt(du * du + dv * dv));
-			}
-			float boxValues[6]{};
-			bool const haveBox = SafeCopy(box, boxValues, sizeof(boxValues));
-			Log(LogCategory::Initialization,
-			    "shadow registry check: id=%u verts=%u indices=%u uv=[%.3g,%.3g..%.3g,%.3g] residual rms=%.4g max=%.4g "
-			    "world=[%.1f,%.1f,%.1f..%.1f,%.1f,%.1f] box=%s[%.1f,%.1f,%.1f..%.1f,%.1f,%.1f] base=%.2f",
-			    caster.id, count, static_cast<unsigned>(caster.indices.size()), caster.uvBounds[0],
-			    caster.uvBounds[1], caster.uvBounds[2], caster.uvBounds[3], std::sqrt(squared / count), worst,
-			    caster.low[0], caster.low[1], caster.low[2], caster.high[0], caster.high[1], caster.high[2],
-			    haveBox ? "" : "?", boxValues[0], boxValues[1], boxValues[2], boxValues[3], boxValues[4],
-			    boxValues[5], caster.baseHeight);
-		}
-
 		void Register(void *manager, int32_t id, void const *binding, int32_t count, void const *positions,
 		              void const *uvs, void const *box, void const *transform, uint8_t const *returnSlot,
 		              bool meshCaster) {
 			auto erase = [&] {
 				std::lock_guard<std::mutex> lock(gMutex);
-				gCasters.erase(static_cast<uint32_t>(id));
+				EraseCaster(id);
 			};
 			if (binding == nullptr || positions == nullptr || uvs == nullptr || transform == nullptr || count < 3 ||
-			    static_cast<uint32_t>(count) > kMaxVertices) {
+			    static_cast<uint32_t>(count) > kMaxVertices || static_cast<uint32_t>(id) >= kMaxCasterIds) {
 				erase();
 				return;
 			}
 			uint32_t const vertexCount = static_cast<uint32_t>(count);
+			bool const timing = DrawStatsEnabled();
+			LARGE_INTEGER start{};
+			if (timing) QueryPerformanceCounter(&start);
 			auto caster = std::make_shared<Caster>();
 			caster->id = static_cast<uint32_t>(id);
 			caster->manager = manager;
@@ -544,7 +622,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 				return;
 			}
 
-			caster->positions.resize(local.size());
+			caster->vertices.resize(static_cast<size_t>(vertexCount) * kVertexFloats);
 			for (unsigned axis = 0; axis < 3; ++axis) {
 				caster->low[axis] = FLT_MAX;
 				caster->high[axis] = -FLT_MAX;
@@ -552,7 +630,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 			caster->uvBounds[0] = caster->uvBounds[1] = FLT_MAX;
 			caster->uvBounds[2] = caster->uvBounds[3] = -FLT_MAX;
 			for (uint32_t vertex = 0; vertex < vertexCount; ++vertex) {
-				float *const world = caster->positions.data() + vertex * 3;
+				float *const world = caster->vertices.data() + vertex * kVertexFloats;
 				ToWorld(xf, local.data() + vertex * 3, world);
 				for (unsigned axis = 0; axis < 3; ++axis) {
 					caster->low[axis] = (std::min)(caster->low[axis], world[axis]);
@@ -584,13 +662,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 				}
 				double const residual = ProjectorResidual(*caster, uvValues.data(), vertexCount);
 				bool const floating = caster->low[1] - ground > kFloatingPropHeight;
-				if (DiagnosticsEnabled() && gMeshCasters + gFloatingProps + gPrerenderedProps < 24) {
-					Log(LogCategory::Initialization,
-					    "shadow registry: relaxed prop id=%d verts=%u lowest %.2f above terrain, residual %.4f -> %s",
-					    id, vertexCount, caster->low[1] - ground, residual,
-					    floating ? "floating, no shadow" : residual < kPrerenderedResidual ? "projector"
-						    : indexed ? "own UVs" : "per-draw");
-				}
 				if (floating) {
 					caster->suppressOnly = true;
 					++gFloatingProps;
@@ -598,33 +669,50 @@ namespace nSCD3D11::NativeShadowRegistry {
 					++gPrerenderedProps;
 				} else if (indexed) {
 					caster->meshUVs = true;
-					caster->uvs = std::move(uvValues);
+					for (uint32_t vertex = 0; vertex < vertexCount; ++vertex)
+						std::memcpy(caster->vertices.data() + vertex * kVertexFloats + 3, uvValues.data() + vertex * 2,
+						            sizeof(float) * 2);
 					++gMeshCasters;
 				} else {
 					// Without triangles the UVs cannot be drawn. The prop casts
 					// through the per-draw path instead, and its record - whose
 					// projector would stamp a slab - is only kept out of DrawShadows.
 					caster->suppressOnly = true;
-					NativeShadowMasks::RegisterLivePropMesh(vertexCount, positions, uvs);
+					LiveShadowHooks::RegisterPropMesh(vertexCount, positions, uvs);
 					++gMeshFallbacks;
 				}
 			}
-			if (!caster->meshUVs) LogProjectorCheck(*caster, uvValues.data(), vertexCount, box);
 
 			std::lock_guard<std::mutex> lock(gMutex);
 			if (gManager != manager) {
 				// A new overlay manager is a new city: every id belongs to it now.
 				if (gManager != nullptr) {
 					Log(LogCategory::Initialization, "shadow registry: overlay manager changed, %u casters dropped",
-					    static_cast<unsigned>(gCasters.size()));
+					    static_cast<unsigned>(gCasterCount));
 				}
-				gCasters.clear();
-				gPassIds.clear();
+				ClearCasters(false);
+				++gPassSerial;
 				gPass.casters.clear();
 				gManager = manager;
 			}
-			gCasters[caster->id] = std::move(caster);
+			Entry fresh;
+			fresh.binding = caster->binding;
+			std::memcpy(fresh.low, caster->low, sizeof(fresh.low));
+			std::memcpy(fresh.high, caster->high, sizeof(fresh.high));
+			fresh.baseHeight = caster->baseHeight;
+			fresh.suppressOnly = caster->suppressOnly;
+			fresh.caster = std::move(caster);
+			uint32_t const slot = static_cast<uint32_t>(id);
+			if (slot >= gCasters.size()) gCasters.resize((std::max)(slot + 1, static_cast<uint32_t>(gCasters.size()) * 3 / 2));
+			if (!gCasters[slot].caster) ++gCasterCount;
+			gCasters[slot] = std::move(fresh);
+			gHighestId = (std::max)(gHighestId, slot);
 			++gRegistered;
+			if (timing) {
+				++gStats.registrations;
+				if (GetCurrentThreadId() != gDrawThread) ++gStats.offThreadRegistrations;
+				gStats.registerMs += Milliseconds(start);
+			}
 			if (indexed) ++gWithIndices;
 			else ++gQuadOnly;
 			static bool loggedFirst = false;
@@ -672,48 +760,86 @@ namespace nSCD3D11::NativeShadowRegistry {
 				return false;
 			}
 
+			// Rows x and y of projection * world-to-eye, for culling. Only an
+			// orthographic projection with a known sun is used; anything else
+			// hands every caster over, as before.
+			float worldToClip[16]{};
+			float sunWorld[3]{sun[0], sun[1], sun[2]};
+			float worldToEye[16]{};
+			float const sunLength = std::sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+			float const *const p = gProjection;
+			bool const cull = haveSun && sunLength > 1.0e-6f && gProjectionKnown && p[3] == 0.0f && p[7] == 0.0f &&
+			                  p[11] == 0.0f && p[15] == 1.0f && InvertAffine(matrix, worldToEye);
+			if (cull) {
+				for (float &value: sunWorld) value /= sunLength;
+				for (unsigned column = 0; column < 4; ++column)
+					for (unsigned row = 0; row < 2; ++row)
+						worldToClip[column * 4 + row] = p[row] * worldToEye[column * 4] + p[4 + row] * worldToEye[column * 4 + 1] +
+						                                p[8 + row] * worldToEye[column * 4 + 2] +
+						                                p[12 + row] * worldToEye[column * 4 + 3];
+			}
+
 			std::lock_guard<std::mutex> lock(gMutex);
 			if (manager != gManager) {
 				NoteNotGathered("not the registry's overlay manager", manager);
 				return false;
 			}
-			if (gCasters.empty()) {
+			if (gCasterCount == 0) {
 				NoteNotGathered("registry empty", manager);
+				return false;
+			}
+			uint8_t const *records = nullptr;
+			if (!Read(static_cast<uint8_t const *>(manager) + kManagerRecords, records) || records == nullptr) {
+				NoteNotGathered("record table unreadable", manager);
 				return false;
 			}
 			++gGathered;
 			size_t write = 0;
 			for (size_t read = 0; read < kept.size(); ++read) {
 				int32_t const id = kept[read];
-				auto const found = id >= 0 ? gCasters.find(static_cast<uint32_t>(id)) : gCasters.end();
-				if (found == gCasters.end()) {
+				if (id < 0 || static_cast<uint32_t>(id) >= gCasters.size() || !gCasters[id].caster) {
 					kept[write++] = id;
 					continue;
 				}
-				Caster const &caster = *found->second;
-				uint8_t const *const record = RecordAddress(manager, id);
+				Entry &entry = gCasters[id];
+				// Culled before the record is read, from the entry alone. A record
+				// SC4 reused without RemoveOverlay is then only noticed once it is
+				// in view; none has been seen in practice.
+				if (cull) {
+					float quad[4][3];
+					bool const hasQuad = GroundQuad(entry.low, entry.high, entry.baseHeight, sunWorld, quad);
+					if (ReachOutside(entry.low, entry.high, hasQuad, quad, worldToClip)) continue;
+				}
+				// The in-use word, the flags and the binding, in one guarded read.
+				uint8_t header[kRecordBinding + sizeof(void *)];
 				int32_t inUse = 0;
 				uint32_t flags = 0;
 				void const *binding = nullptr;
 				void const *textureObject = nullptr;
 				uint32_t texture = 0;
-				if (record == nullptr || !Read(record, inUse) || !Read(record + kRecordFlags, flags) ||
-				    !Read(record + kRecordBinding, binding) || inUse != -1 || binding != caster.binding) {
+				bool const readable = SafeCopy(records + static_cast<size_t>(id) * kRecordSize, header, sizeof(header));
+				if (readable) {
+					std::memcpy(&inUse, header, sizeof(inUse));
+					std::memcpy(&flags, header + kRecordFlags, sizeof(flags));
+					std::memcpy(&binding, header + kRecordBinding, sizeof(binding));
+				}
+				if (!readable || inUse != -1 || binding != entry.binding) {
 					// The slot was freed or reused by something that never went
 					// through AddShadow, e.g. a decal. It is not ours any more.
 					++gStaleRecords;
-					gCasters.erase(found);
+					EraseCaster(id);
 					kept[write++] = id;
 					continue;
 				}
 				if ((flags & kShadowDrawFlags) != kShadowDrawFlags) continue; // disabled: native skips it too
-				if (caster.suppressOnly) continue;
+				if (entry.suppressOnly) continue;
 				if (!Read(binding, textureObject) || textureObject == nullptr || !Read(textureObject, texture)) {
 					kept[write++] = id;
 					continue;
 				}
-				if (gPassIds.insert(caster.id).second) {
-					gPass.casters.push_back(PassCaster{found->second, texture, (flags & kWrapFlag) != 0});
+				if (entry.passSerial != gPassSerial) {
+					entry.passSerial = gPassSerial;
+					gPass.casters.push_back(PassCaster{entry.caster, texture, (flags & kWrapFlag) != 0});
 				}
 			}
 			kept.resize(write);
@@ -723,11 +849,33 @@ namespace nSCD3D11::NativeShadowRegistry {
 			std::memcpy(gPass.colour, colour, sizeof(colour));
 			gPass.strength = strength;
 			gPass.alphaScale = alphaScale;
+			gPass.culled = cull;
+			if (cull) std::memcpy(gPass.projection, gProjection, sizeof(gPass.projection));
 			gPassValid = true;
 			return true;
 		}
 
 	} // namespace
+
+	bool GroundQuad(Caster const &caster, float const sun[3], float quad[4][3]) {
+		return GroundQuad(caster.low, caster.high, caster.baseHeight, sun, quad);
+	}
+
+	bool ReachOutside(Caster const &caster, bool hasQuad, float const quad[4][3], float const *worldToClip) {
+		return ReachOutside(caster.low, caster.high, hasQuad, quad, worldToClip);
+	}
+
+	void NoteProjection(float const projection[16]) {
+		std::memcpy(gProjection, projection, sizeof(gProjection));
+		gProjectionKnown = true;
+	}
+
+	Stats TakeStats() {
+		std::lock_guard<std::mutex> lock(gMutex);
+		Stats const taken = gStats;
+		gStats = Stats{};
+		return taken;
+	}
 
 	bool AppendTriangles(uint32_t primitive, uint32_t const *indices, uint32_t count,
 	                     std::vector<uint32_t> &triangles) {
@@ -780,12 +928,12 @@ namespace nSCD3D11::NativeShadowRegistry {
 					         static_cast<uint8_t const *>(_AddressOfReturnAddress()), meshCaster);
 				} catch (std::bad_alloc const &) {
 					std::lock_guard<std::mutex> lock(gMutex);
-					gCasters.erase(static_cast<uint32_t>(id));
+					EraseCaster(id);
 				}
 			} else if (meshCaster && count > 0) {
 				// CalcShadowProjection rejected the fit, so there is no record to
 				// keep: the prop casts through the per-draw path as before.
-				NativeShadowMasks::RegisterLivePropMesh(static_cast<uint32_t>(count), positions, uvs);
+				LiveShadowHooks::RegisterPropMesh(static_cast<uint32_t>(count), positions, uvs);
 				++gMeshFallbacks;
 			}
 			return id;
@@ -797,7 +945,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 			// never returns one, and a group's members come back through here.
 			if (id < 0) return;
 			std::lock_guard<std::mutex> lock(gMutex);
-			if (manager == gManager && gCasters.erase(static_cast<uint32_t>(id)) != 0) ++gRemoved;
+			if (manager == gManager && EraseCaster(id)) ++gRemoved;
 		}
 
 		void DrawFiltered(DrawShadowsFunction original, void *manager, float const *eyeToWorld, void *drawContext,
@@ -805,20 +953,32 @@ namespace nSCD3D11::NativeShadowRegistry {
 			// Only the render thread draws overlays, so one scratch list is enough.
 			static std::vector<int32_t> kept;
 			++gDrawCalls;
+			bool const timing = DrawStatsEnabled();
+			LARGE_INTEGER start{};
+			if (timing) QueryPerformanceCounter(&start);
 			bool gathered = false;
 			try {
 				gathered = Gather(manager, eyeToWorld, ids, kept);
 			} catch (std::bad_alloc const &) {
 			}
+			double const gatherMs = timing ? Milliseconds(start) : 0.0;
+			if (timing) QueryPerformanceCounter(&start);
 			if (!gathered) {
 				original(manager, eyeToWorld, drawContext, ids);
-				return;
+			} else {
+				// DrawShadows reads only begin and end, and returns at once when they
+				// are equal.
+				IdList filtered{};
+				if (!kept.empty()) filtered = IdList{kept.data(), kept.data() + kept.size(), kept.data() + kept.size()};
+				original(manager, eyeToWorld, drawContext, &filtered);
 			}
-			// DrawShadows reads only begin and end, and returns at once when they
-			// are equal.
-			IdList filtered{};
-			if (!kept.empty()) filtered = IdList{kept.data(), kept.data() + kept.size(), kept.data() + kept.size()};
-			original(manager, eyeToWorld, drawContext, &filtered);
+			if (timing) {
+				double const nativeMs = Milliseconds(start);
+				std::lock_guard<std::mutex> lock(gMutex);
+				gDrawThread = GetCurrentThreadId();
+				gStats.gatherMs += gatherMs;
+				gStats.nativeDrawMs += nativeMs;
+			}
 		}
 
 #if defined(_MSC_VER) && defined(_M_IX86)
@@ -913,11 +1073,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 		}
 
 		bool Requested() {
-			char const *argument = std::strstr(GetCommandLineA(), "-NativeShadowMasks:");
-			if (argument == nullptr) return false;
-			argument += sizeof("-NativeShadowMasks:") - 1;
-			return _strnicmp(argument, "replace", 7) == 0 &&
-			       (argument[7] == '\0' || argument[7] == ' ' || argument[7] == '\t');
+			return std::strstr(GetCommandLineA(), "-LiveShadows:on") != nullptr;
 		}
 
 		bool BytesMatch(PatchSite const &site) {
@@ -1005,11 +1161,11 @@ namespace nSCD3D11::NativeShadowRegistry {
 		}
 		{
 			std::lock_guard<std::mutex> lock(gMutex);
-			gCasters.clear();
+			ClearCasters(true);
 			gManager = nullptr;
 			gPass = Pass{};
 			gPassValid = false;
-			gPassIds.clear();
+			++gPassSerial;
 		}
 		// AddShadow goes last: nothing is registered before the draw filter and
 		// the removal hook that keep the registry honest are in place.
@@ -1041,12 +1197,12 @@ namespace nSCD3D11::NativeShadowRegistry {
 		size_t remaining = 0;
 		{
 			std::lock_guard<std::mutex> lock(gMutex);
-			remaining = gCasters.size();
-			gCasters.clear();
+			remaining = gCasterCount;
+			ClearCasters(true);
 			gManager = nullptr;
 			gPass = Pass{};
 			gPassValid = false;
-			gPassIds.clear();
+			++gPassSerial;
 		}
 		Log(LogCategory::Initialization,
 		    "shadow registry uninstalled: relaxed props: %u True3D kept with their UVs, %u prerendered through the "
@@ -1054,9 +1210,9 @@ namespace nSCD3D11::NativeShadowRegistry {
 		    gMeshCasters, gPrerenderedProps, gFloatingProps, gMeshFallbacks);
 		Log(LogCategory::Initialization,
 		    "shadow registry uninstalled: %u registered (%u indexed, %u ground quad only), %u removed, "
-		    "%u stale, %u passes, %u live at exit; DrawShadows calls %u (%u gathered, %u left native)",
+		    "%u stale, %u passes, %u live at exit, highest id %u; DrawShadows calls %u (%u gathered, %u left native)",
 		    gRegistered, gWithIndices, gQuadOnly, gRemoved, gStaleRecords, gPasses,
-		    static_cast<unsigned>(remaining), gDrawCalls, gGathered, gNotGathered);
+		    static_cast<unsigned>(remaining), gHighestId, gDrawCalls, gGathered, gNotGathered);
 	}
 
 	bool Enabled() {
@@ -1072,10 +1228,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 		bool updateView = false;
 		return gInstalled && CityTerrain(terrain, updateView) &&
 		       RedisplayTerrainRect(terrain, updateView, minX, minZ, maxX, maxZ);
-	}
-
-	bool OverlayTerrain(void *&terrain, bool &updateView) {
-		return gInstalled && CityTerrain(terrain, updateView);
 	}
 
 	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ) {
@@ -1097,55 +1249,14 @@ namespace nSCD3D11::NativeShadowRegistry {
 		return SafeRedisplayTerrain(terrain, updateView, rect);
 	}
 
-	bool TerrainAltitude(float x, float z, float &altitude) {
-		void *terrain = nullptr;
-		bool updateView = false;
-		return gInstalled && CityTerrain(terrain, updateView) && SafeTerrainAltitude(terrain, x, z, altitude) &&
-		       std::isfinite(altitude);
-	}
-
-	bool SunDirection(float direction[3]) {
-		float sun[3]{};
-		if (!gInstalled || !SafeShadowDirection(gRendererPointer, sun) || !std::isfinite(sun[0]) ||
-		    !std::isfinite(sun[1]) || !std::isfinite(sun[2]))
-			return false;
-		std::memcpy(direction, sun, sizeof(sun));
-		return true;
-	}
-
-	bool ShadowParams(float colour[3], float &strength) {
-		float tone[3]{};
-		float value = 0.0f;
-		if (!gInstalled || !SafeCopy(reinterpret_cast<void const *>(gShadowColour), tone, sizeof(tone)) ||
-		    !Read(reinterpret_cast<void const *>(gShadowStrength), value))
-			return false;
-		std::memcpy(colour, tone, sizeof(tone));
-		strength = value;
-		return true;
-	}
-
-	bool ShadowDaylight(float &daylight) {
-		// The replacement hooks are optional, but the live per-draw caster path
-		// needs the same transition. Resolve the supported game's renderer here.
-		static bool const supported = IsSupportedGameVersion();
-		if (!supported) return false;
-		auto const *module = reinterpret_cast<uint8_t const *>(GetModuleHandleW(nullptr));
-		if (module == nullptr) return false;
-		float value = 0.0f;
-		if (!SafeShadowDaylight(reinterpret_cast<uintptr_t>(module + (kRendererPointerVA - kImageBase)), value) ||
-		    !std::isfinite(value)) return false;
-		daylight = (std::clamp)(value, 0.0f, 1.0f);
-		return true;
-	}
-
 	bool TakePass(Pass &pass) {
 		std::lock_guard<std::mutex> lock(gMutex);
 		if (!gPassValid) return false;
 		pass = std::move(gPass);
 		gPass = Pass{};
 		gPassValid = false;
-		gPassIds.clear();
+		++gPassSerial;
 		++gPasses;
 		return true;
 	}
-} // namespace nSCD3D11::NativeShadowRegistry
+} // namespace nSCD3D11::ShadowRegistry

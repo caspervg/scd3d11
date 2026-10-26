@@ -19,13 +19,6 @@ namespace nSCD3D11::TerrainShadowMap {
 		// D3D10's texture size limit; a large city needs about 700 texels at
 		// half-cell spacing.
 		constexpr uint32_t kMaxTexels = 8192;
-		// Changes smaller than this cannot move a shadow edge visibly.
-		constexpr float kChangeTolerance = 0.01f;
-		// Receivers sit on or above the terrain, so a ceiling that stays this
-		// far below it shades nothing either way.
-		constexpr float kReceiverSlack = 1.0f;
-		// ChangedRegions groups texels into square tiles of this many.
-		constexpr uint32_t kTile = 16;
 
 		bool Valid(HeightField const &terrain) {
 			size_t const vertices = static_cast<size_t>(terrain.verticesX) * terrain.verticesZ;
@@ -90,7 +83,7 @@ namespace nSCD3D11::TerrainShadowMap {
 		for (unsigned axis = 0; axis < 3; ++axis) normal[axis] = value[axis] / length;
 	}
 
-	bool Build(HeightField const &terrain, float const sun[3], float spacing, Map &map) {
+	bool Build(HeightField const &terrain, float const sun[3], float spacing, Map &map, float sunRadius) {
 		if (!Valid(terrain) || !(spacing > 0.0f)) return false;
 		double const horizontal = std::sqrt(static_cast<double>(sun[0]) * sun[0] + static_cast<double>(sun[2]) * sun[2]);
 		if (!(sun[1] < 0.0f) || !(horizontal > 1.0e-6)) return false;
@@ -101,7 +94,11 @@ namespace nSCD3D11::TerrainShadowMap {
 		built.across[0] = -built.along[1];
 		built.across[1] = built.along[0];
 		built.spacing = spacing;
-		float const drop = static_cast<float>(-sun[1] / horizontal);
+		// The two limbs of the sun, as height lost per unit travelled downwind.
+		double const elevation = std::atan(-sun[1] / horizontal);
+		double const kHalfPi = 1.5707963267948966;
+		float const outerDrop = static_cast<float>(std::tan((std::max)(elevation - sunRadius, 0.01)));
+		float const innerDrop = static_cast<float>(std::tan((std::min)(elevation + sunRadius, kHalfPi - 0.01)));
 		float const extentX = static_cast<float>(terrain.verticesX - 1) * terrain.cellWidth;
 		float const extentZ = static_cast<float>(terrain.verticesZ - 1) * terrain.cellWidth;
 
@@ -125,25 +122,32 @@ namespace nSCD3D11::TerrainShadowMap {
 		built.originAlong = low[0];
 		built.originAcross = low[1];
 		built.ceiling.resize(static_cast<size_t>(built.width) * built.height);
+		built.umbra.resize(built.ceiling.size());
 
 		// Terrain beyond the city edge is not drawn, so it casts nothing; the
 		// floor there follows the nearest edge so filtering stays smooth.
 		float const tolerance = terrain.cellWidth * 1.0e-3f;
-		float const step = spacing * drop;
+		float const outerStep = spacing * outerDrop;
+		float const innerStep = spacing * innerDrop;
 		for (uint32_t row = 0; row < built.height; ++row) {
 			float const b = built.originAcross + static_cast<float>(row) * spacing;
-			float *const out = built.ceiling.data() + static_cast<size_t>(row) * built.width;
-			float upstream = -FLT_MAX;
+			size_t const rowStart = static_cast<size_t>(row) * built.width;
+			float outer = -FLT_MAX, inner = -FLT_MAX;
 			for (uint32_t column = 0; column < built.width; ++column) {
 				float const a = built.originAlong + static_cast<float>(column) * spacing;
 				float x = 0.0f, z = 0.0f;
 				ToWorld(built, a, b, x, z);
 				float const ground = Altitude(terrain, x, z);
-				out[column] = (std::max)(upstream, ground - kFloorDepth);
+				built.ceiling[rowStart + column] = (std::max)(outer, ground - kFloorDepth);
+				built.umbra[rowStart + column] = (std::max)(inner, ground - kFloorDepth);
 				bool const inside = x >= -tolerance && x <= extentX + tolerance && z >= -tolerance &&
 				                    z <= extentZ + tolerance;
-				if (inside) upstream = (std::max)(upstream, ground);
-				if (upstream > -FLT_MAX) upstream -= step;
+				if (inside) {
+					outer = (std::max)(outer, ground);
+					inner = (std::max)(inner, ground);
+				}
+				if (outer > -FLT_MAX) outer -= outerStep;
+				if (inner > -FLT_MAX) inner -= innerStep;
 			}
 		}
 		map = std::move(built);
@@ -173,68 +177,4 @@ namespace nSCD3D11::TerrainShadowMap {
 		return lower + (upper - lower) * tb;
 	}
 
-	bool SameLayout(Map const &a, Map const &b) {
-		return a.width == b.width && a.height == b.height && a.spacing == b.spacing &&
-		       a.originAlong == b.originAlong && a.originAcross == b.originAcross && a.along[0] == b.along[0] &&
-		       a.along[1] == b.along[1] && a.across[0] == b.across[0] && a.across[1] == b.across[1] &&
-		       a.ceiling.size() == b.ceiling.size();
-	}
-
-	void ChangedRegions(Map const &before, Map const &after, HeightField const &terrain, size_t maxRegions,
-	                    std::vector<Region> &regions) {
-		regions.clear();
-		if (!SameLayout(before, after) || !Valid(terrain) || after.ceiling.empty()) return;
-		float const extentX = static_cast<float>(terrain.verticesX - 1) * terrain.cellWidth;
-		float const extentZ = static_cast<float>(terrain.verticesZ - 1) * terrain.cellWidth;
-		uint32_t const tilesAlong = (after.width + kTile - 1) / kTile;
-		uint32_t const tilesAcross = (after.height + kTile - 1) / kTile;
-		std::vector<uint8_t> changed(static_cast<size_t>(tilesAlong) * tilesAcross, 0);
-		for (uint32_t row = 0; row < after.height; ++row) {
-			float const b = after.originAcross + static_cast<float>(row) * after.spacing;
-			for (uint32_t column = 0; column < after.width; ++column) {
-				size_t const index = static_cast<size_t>(row) * after.width + column;
-				float const was = before.ceiling[index];
-				float const now = after.ceiling[index];
-				if (std::fabs(was - now) <= kChangeTolerance) continue;
-				size_t const tile = static_cast<size_t>(row / kTile) * tilesAlong + column / kTile;
-				if (changed[tile] != 0) continue;
-				float x = 0.0f, z = 0.0f;
-				ToWorld(after, after.originAlong + static_cast<float>(column) * after.spacing, b, x, z);
-				if (x < 0.0f || x > extentX || z < 0.0f || z > extentZ) continue;
-				if ((std::max)(was, now) < Altitude(terrain, x, z) - kReceiverSlack) continue;
-				changed[tile] = 1;
-			}
-		}
-
-		Region all{FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX};
-		for (uint32_t tileRow = 0; tileRow < tilesAcross; ++tileRow) {
-			for (uint32_t tileColumn = 0; tileColumn < tilesAlong; ++tileColumn) {
-				if (changed[static_cast<size_t>(tileRow) * tilesAlong + tileColumn] == 0) continue;
-				// Half a texel beyond the outermost centres: filtering reaches that far.
-				float const a0 = after.originAlong + (static_cast<float>(tileColumn * kTile) - 0.5f) * after.spacing;
-				float const b0 = after.originAcross + (static_cast<float>(tileRow * kTile) - 0.5f) * after.spacing;
-				float const a1 = a0 + static_cast<float>(kTile) * after.spacing;
-				float const b1 = b0 + static_cast<float>(kTile) * after.spacing;
-				Region region{FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX};
-				for (unsigned corner = 0; corner < 4; ++corner) {
-					float x = 0.0f, z = 0.0f;
-					ToWorld(after, (corner & 1) ? a1 : a0, (corner & 2) ? b1 : b0, x, z);
-					region.minX = (std::min)(region.minX, x);
-					region.minZ = (std::min)(region.minZ, z);
-					region.maxX = (std::max)(region.maxX, x);
-					region.maxZ = (std::max)(region.maxZ, z);
-				}
-				region.minX = (std::max)(region.minX, 0.0f);
-				region.minZ = (std::max)(region.minZ, 0.0f);
-				region.maxX = (std::min)(region.maxX, extentX);
-				region.maxZ = (std::min)(region.maxZ, extentZ);
-				all.minX = (std::min)(all.minX, region.minX);
-				all.minZ = (std::min)(all.minZ, region.minZ);
-				all.maxX = (std::max)(all.maxX, region.maxX);
-				all.maxZ = (std::max)(all.maxZ, region.maxZ);
-				regions.push_back(region);
-			}
-		}
-		if (regions.size() > maxRegions) regions.assign(1, all);
-	}
 } // namespace nSCD3D11::TerrainShadowMap

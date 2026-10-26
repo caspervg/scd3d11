@@ -19,10 +19,8 @@
 #include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
-#include "NativeShadowDiagnostics.h"
-#include "NativeShadowExperiment.h"
-#include "NativeShadowMasks.h"
-#include "NativeShadowRegistry.h"
+#include "LiveShadowHooks.h"
+#include "ShadowRegistry.h"
 #include "TerrainShadows.h"
 #include "ThumbnailFocusGuard.h"
 
@@ -48,21 +46,17 @@ namespace nSCD3D11
 		}
 
 		bool PreAppShutdown() {
-			NativeShadowExperiment::Uninstall();
 			TerrainShadows::Uninstall();
-			NativeShadowRegistry::Uninstall();
-			NativeShadowMasks::Uninstall();
-			NativeShadowDiagnostics::Uninstall();
+			ShadowRegistry::Uninstall();
+			LiveShadowHooks::Uninstall();
 			ThumbnailFocusGuard::Uninstall();
 			return true;
 		}
 
 		bool OnStart(cIGZCOM* pCOM) {
-			NativeShadowMasks::Install();
-			NativeShadowRegistry::Install();
+			LiveShadowHooks::Install();
+			if (LiveShadowHooks::Enabled()) ShadowRegistry::Install();
 			TerrainShadows::Install();
-			NativeShadowDiagnostics::Install();
-			NativeShadowExperiment::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePreAppInit) {

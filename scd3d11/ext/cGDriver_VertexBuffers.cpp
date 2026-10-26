@@ -18,7 +18,7 @@
 
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
-#include "../NativeShadowMasks.h"
+#include "../LiveShadowHooks.h"
 #include "../VertexFormatUtils.h"
 
 #include <limits>
@@ -115,7 +115,7 @@ namespace nSCD3D11 {
 		NoteLiveShadowTerrainView();
 		// The terrain reservation path never went through MatchesLiveShadowMesh,
 		// so bracketed network draws issued here were silently dropped.
-		if (NativeShadowMasks::LiveNetworkDrawActive()) {
+		if (LiveShadowHooks::NetworkDrawActive()) {
 			static bool loggedBracketPrims = false;
 			if (!loggedBracketPrims) {
 				loggedBracketPrims = true;
@@ -182,7 +182,7 @@ namespace nSCD3D11 {
 			dynamicIndexBuffer, dynamicIndexBufferOffset)) {
 			return;
 		}
-		if (NativeShadowMasks::LiveNetworkDrawActive()) {
+		if (LiveShadowHooks::NetworkDrawActive()) {
 			static bool loggedBracketPrimsIndexed = false;
 			if (!loggedBracketPrimsIndexed) {
 				loggedBracketPrimsIndexed = true;

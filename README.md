@@ -53,7 +53,8 @@ Add these to the SimCity 4 launch arguments. Switch names are case-sensitive exc
 | `-FlipModel:off` | flip model | Windowed and borderless: present with the legacy DISCARD swap chain instead of the flip model |
 | `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
 | `-ViewportCull:off` | cull on | Submit every draw of a scroll redraw instead of dropping those that lie entirely outside its small scissored viewport |
-| `-NativeShadowMasks:all` | off | Live shadows of True3D props and network pieces: `all` casts both, `props` or `network` only one. Off by default because of the rendering cost. `replace` also turns on the experimental shadow registry and terrain shadows, which can cast blocks of shadow beside dense parks. `-NativeShadowExperiment` stays off unless requested |
+| `-LiveShadows:on` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
+| `-NetworkShadowMasks:on` | off | With `-LiveShadows:on`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
 | `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:
@@ -97,8 +98,7 @@ integration off.
 ## Known issues
 
 * With ReShade, effects can stay off in the region view after leaving a city.
-* `-NativeShadowMasks:all` costs frame rate in large cities.
-* `-NativeShadowMasks:replace` is experimental and can cast blocks of shadow beside dense parks.
+* `-LiveShadows:on` costs frame rate in large cities, most of all while scrolling.
 
 ## Reporting bugs
 
@@ -136,7 +136,6 @@ These launch switches add more detail:
 | Switch | Effect |
 |--------|--------|
 | `-DrawStats` | Log a per-second summary of frame times, draws, culled draws, scroll and full redraws and texture churn, plus a line for each frame over 100 ms (`stats` category) |
-| `-GridDebug` | Log the texture state of the terrain grid pass once per second (`grid` category) |
 | `-LogLevel:trace` | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
 
 The scripts in `scripts/` launch, debug and capture the game with these switches.

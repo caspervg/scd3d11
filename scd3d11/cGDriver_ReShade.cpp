@@ -28,8 +28,8 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
-#include "NativeShadowMasks.h"
-#include "NativeShadowRegistry.h"
+#include "LiveShadowHooks.h"
+#include "ShadowRegistry.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -103,23 +103,19 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			// AttemptTranslatedViewUpdate shifts the existing backing-store pixels and
 			// redraws only the newly exposed strips. That dirty region knows the prop's
 			// original footprint, but not LiveShadows' displaced footprint, so baked
-			// shadows otherwise leave trails and get blended repeatedly. Invalidate only
-			// translated updates while native network or prop shadows are enabled; SC4
-			// then takes its own established full-redraw path and builds a clean backing
-			// store at the new view. With -NativeShadowMasks:replace the strips are
-			// correct as drawn - every caster that can reach them is known in world
-			// space - so translated updates keep SC4's fast path.
-			// A dirty-rectangle update that ran last draw cannot have produced
-			// correct shadows, whether or not the view also moved, so it asks for
-			// the same clean rebuild a translation does. The registry can request
-			// it without NativeShadowMasks installed, so it is consumed every draw.
-			bool const partialShadowPass = gDriver != nullptr && gDriver->ConsumeLiveShadowCleanRedraw();
-			if (self != nullptr && partialShadowPass) static_cast<uint8_t *>(self)[0x65] = 0;
-			if (self != nullptr && NativeShadowMasks::RequiresCleanTranslatedRedraw()) {
+			// shadows otherwise leave trails and get blended repeatedly. Invalidate
+			// translated updates while live shadows are enabled; SC4 then takes its own
+			// established full-redraw path and builds a clean backing store at the new
+			// view. With ShadowRegistry installed the strips are correct as drawn -
+			// every caster that can reach them is known in world space - so translated
+			// updates keep SC4's fast path. A dirty-rectangle update the shadows could
+			// not follow asks for the same clean rebuild.
+			uint32_t forced = gDriver != nullptr ? gDriver->ConsumeLiveShadowCleanRedraw() : 0;
+			if (self != nullptr && LiveShadowHooks::Enabled()) {
 				auto *const bytes = static_cast<uint8_t *>(self);
 				uint32_t const horizontal = *reinterpret_cast<uint32_t const *>(bytes + 0xE0);
 				uint32_t const vertical = *reinterpret_cast<uint32_t const *>(bytes + 0xE4);
-				bool translated = (horizontal != 0 || vertical != 0) && !NativeShadowRegistry::Enabled();
+				bool const translated = (horizontal != 0 || vertical != 0) && !ShadowRegistry::Enabled();
 
 				// cSC43DRender+0x8c owns cSC4CameraControl. Its current zoom and
 				// rotation are the integers at +0x108/+0x10c, written by
@@ -143,20 +139,26 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 					haveCameraState = true;
 				}
 
+				if (translated) forced |= 1u << kRedrawTranslated;
+				if (cameraChanged) forced |= 1u << kRedrawCamera;
 				if (translated || cameraChanged) {
-					bytes[0x65] = 0; // cSC43DRender::mbBackingStoreValid
 					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;
 					if (translated && !loggedTranslationInvalidation) {
 						loggedTranslationInvalidation = true;
 						Log(LogCategory::Initialization,
-						    "native shadows: translated backing-store updates force a clean static redraw");
+						    "live shadows: translated backing-store updates force a clean static redraw");
 					}
 					if (cameraChanged && !loggedCameraInvalidation) {
 						loggedCameraInvalidation = true;
 						Log(LogCategory::Initialization,
-						    "native shadows: zoom/rotation changes force a clean static redraw");
+						    "live shadows: zoom/rotation changes force a clean static redraw");
 					}
 				}
+			}
+			if (self != nullptr && forced != 0) {
+				// Only a store that was valid is an extra redraw; SC4 may have dropped it already.
+				if (gDriver != nullptr && static_cast<uint8_t *>(self)[0x65] != 0) gDriver->CountForcedStaticRedraw(forced);
+				static_cast<uint8_t *>(self)[0x65] = 0; // cSC43DRender::mbBackingStoreValid
 			}
 			bool const drawn = gOriginalDraw(self, edx);
 			if (drawn && gDriver != nullptr) gDriver->RenderSceneEffects();

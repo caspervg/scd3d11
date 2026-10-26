@@ -104,6 +104,11 @@ namespace nSCD3D11
 		va_end(arguments);
 	}
 
+	bool DrawStatsEnabled() {
+		static bool const enabled = std::strstr(GetCommandLineA(), "-DrawStats") != nullptr;
+		return enabled;
+	}
+
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result) {
 		Log(category, "%s failed (HRESULT 0x%08lX)", operation, static_cast<unsigned long>(result));
 	}

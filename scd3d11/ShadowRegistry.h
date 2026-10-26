@@ -15,27 +15,29 @@
 #include <vector>
 
 // Replaces SC4's projected BAT shadows (buildings, flora, BAT props, poles) with
-// casters in cGDriver's live shadow map. Opt-in with -NativeShadowMasks:replace,
-// which also turns on every live path NativeShadowMasks:all enables.
+// casters in cGDriver's live shadow map, as part of -LiveShadows:on.
 //
 // cSTEOverlayManager::AddShadow already turns each caster mesh into a world-to-UV
 // projector for SC4's prerendered texture. This module keeps that projector, the
 // texture and the mesh for every shadow record the game creates, takes those
 // records out of the list DrawShadows draws, and hands the driver the ones each
 // static pass would have drawn. True3D props SC4 would not shadow (no Is Ground
-// Model) come through the same call once NativeShadowMasks lets it run, and cast
+// Model) come through the same call once LiveShadowHooks lets it run, and cast
 // with their own UVs. Because SC4 tracks every record's lifetime and dirties its
 // rectangle when it changes, none of these casters needs a full redraw to stay
-// correct. See docs/true3d-shadows-replace-all.md.
+// correct.
 
-namespace nSCD3D11::NativeShadowRegistry {
+namespace nSCD3D11::ShadowRegistry {
+	// Floats per Caster vertex: world position, then the mesh UV (zero unless meshUVs).
+	constexpr uint32_t kVertexFloats = 5;
+
 	struct Caster {
 		uint32_t id = 0;
 		void const *manager = nullptr;
 		void const *binding = nullptr;
-		// World-space positions, three floats per vertex.
-		std::vector<float> positions;
-		// Triangle list into positions. Empty when the mesh's topology could not
+		// kVertexFloats per vertex, laid out as the driver's shadow pass reads them.
+		std::vector<float> vertices;
+		// Triangle list into vertices. Empty when the mesh's topology could not
 		// be recovered; the caster then casts from its ground quad alone.
 		std::vector<uint32_t> indices;
 		// cSTEOverlayManager record +0x1C: world position to texture UV,
@@ -48,10 +50,9 @@ namespace nSCD3D11::NativeShadowRegistry {
 		// The occupant's placement height, which is where its ground quad sits.
 		float baseHeight = 0.0f;
 		// A True3D prop SC4 itself would not shadow: it casts with its own UVs
-		// (two floats per vertex) rather than through the projector, which only
-		// fits a prerendered view.
+		// (in vertices) rather than through the projector, which only fits a
+		// prerendered view.
 		bool meshUVs = false;
-		std::vector<float> uvs;
 		// Taken out of DrawShadows but not cast: a relaxed prop the registry
 		// could not keep, which casts through the per-draw path instead.
 		bool suppressOnly = false;
@@ -68,6 +69,10 @@ namespace nSCD3D11::NativeShadowRegistry {
 
 	// Everything the DrawShadows call sites handed over since the last TakePass.
 	struct Pass {
+		// The projection the casters were culled against (see NoteProjection),
+		// when culled is set.
+		float projection[16]{};
+		bool culled = false;
 		// DrawShadows' first argument: eye space to world, the texgen transform
 		// SC4 composes with each record's projector.
 		float eyeToWorld[16]{};
@@ -87,8 +92,27 @@ namespace nSCD3D11::NativeShadowRegistry {
 	bool Enabled();
 
 	// Marks the next AddShadow on this thread as a relaxed True3D prop
-	// (NativeShadowMasks site D), to be kept with its own UVs.
+	// (LiveShadowHooks site D), to be kept with its own UVs.
 	void ExpectMeshCaster();
+
+	// The ground quad a caster adds for silhouettes its mesh does not cover
+	// from the sun (tree cards, thin LOD shells): the caster's box pushed down
+	// the sun (the world direction light travels, normalized) onto the plane
+	// at its placement height. Every point of it shares its UV with the
+	// terrain point below along the sun, so on flat ground it reproduces SC4's
+	// projected shadow exactly. False when the sun is at or above the horizon.
+	bool GroundQuad(Caster const &caster, float const sun[3], float quad[4][3]);
+
+	// True when the world box holding the caster and its quad (if hasQuad)
+	// lies outside the NDC square of worldToClip, an affine column-major
+	// matrix: then nothing the caster shades is in that view.
+	bool ReachOutside(Caster const &caster, bool hasQuad, float const quad[4][3], float const *worldToClip);
+
+	// The driver's projection matrix whenever it changes. A static pass's
+	// DrawShadows runs under that pass's projection, so the gather culls the
+	// pass's casters against it rather than handing over thousands the pass
+	// cannot see. Render thread only.
+	void NoteProjection(float const projection[16]);
 
 	// Moves out the pass gathered since the last call. False when no
 	// DrawShadows call ran in between, i.e. SC4 drew no shadows.
@@ -99,32 +123,23 @@ namespace nSCD3D11::NativeShadowRegistry {
 	// removed. The redraw happens as a partial static pass on a later frame.
 	bool RedisplayWorldRect(float minX, float minZ, float maxX, float maxZ);
 
-	// The same for a terrain the caller already has: a city's before any
-	// shadow record has shown the registry its overlay manager.
+	// The same for a terrain the caller already has.
 	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ);
 
-	// The terrain and view-update flag RedisplayWorldRect uses: those of the
-	// overlay manager the last shadow record came from, which a city without
-	// records has not replaced yet.
-	bool OverlayTerrain(void *&terrain, bool &updateView);
-
-	// Terrain altitude at a world position; false when there is no city.
-	bool TerrainAltitude(float x, float z, float &altitude);
-
-	// GetShadowDirection: the world-space direction the light travels. Unlike
-	// Pass::sunDirection it is available in a pass without shadow records.
-	bool SunDirection(float direction[3]);
-
-	// GetShadowParams' colour and strength, read directly for the same reason.
-	bool ShadowParams(float colour[3], float &strength);
-
-	// The daylight blend computed by cSC4LightingManager::SetTimeOfDay from
-	// SC4's lighting curve. Available in all live-shadow modes, including when
-	// the registry's replacement hooks are not installed.
-	bool ShadowDaylight(float &daylight);
+	// -DrawStats: time spent in the AddShadow and DrawShadows hooks since the last call.
+	struct Stats {
+		uint32_t registrations = 0;
+		// AddShadow calls made on another thread than DrawShadows.
+		uint32_t offThreadRegistrations = 0;
+		double registerMs = 0.0;
+		double gatherMs = 0.0;
+		// SC4's own DrawShadows for the records the registry left it.
+		double nativeDrawMs = 0.0;
+	};
+	Stats TakeStats();
 
 	// Exposed for tests: SC4's SimGL primitive enumeration to a triangle list.
 	// Points and lines append nothing and return false.
 	bool AppendTriangles(uint32_t primitive, uint32_t const *indices, uint32_t count,
 	                     std::vector<uint32_t> &triangles);
-} // namespace nSCD3D11::NativeShadowRegistry
+} // namespace nSCD3D11::ShadowRegistry

@@ -50,6 +50,15 @@ namespace nSCD3D11 {
 		uint64_t generation = 0;
 	};
 
+	// Why live shadows made SC4 redraw the whole static view; bit i of a mask is cause i.
+	enum LiveShadowRedrawCause : uint32_t {
+		kRedrawUntrackedPartial, // a partial pass the world-space caster set could not follow
+		kRedrawTerrainChanged,   // a partial pass saw a new terrain shadow map
+		kRedrawCamera,           // zoom or rotation changed
+		kRedrawTranslated,       // a scroll without ShadowRegistry
+		kLiveShadowRedrawCauses
+	};
+
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
 	constexpr size_t MAX_TEXTURE_UNITS = 2;
 	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 8;
@@ -240,13 +249,14 @@ namespace nSCD3D11 {
 			float alphaReference = 0.0f;
 			bool alphaTest = false;
 			// True when captured inside the bracketed prebuilt-network Draw, as
-			// opposed to a signature-matched prop draw. Used only for diagnostics.
+			// opposed to a signature-matched prop draw. Ground-hugging network
+			// pieces are dropped before they cast.
 			bool network = false;
 			D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			// -NativeShadowMasks:replace keeps these across passes in world space:
-			// the model-to-world transform the capture's pass implied, the world
-			// box of the geometry, the box its shadow can reach, a coarse identity
-			// and the pass that last drew it.
+			// With the registry these are kept across passes in world space: the
+			// model-to-world transform the capture's pass implied, the world box
+			// of the geometry, the box its shadow can reach, a coarse identity and
+			// the pass that last drew it.
 			float modelToWorld[16]{};
 			float worldLow[3]{};
 			float worldHigh[3]{};
@@ -275,11 +285,11 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> compositeDepth;
 			Microsoft::WRL::ComPtr<ID3D11BlendState> shadowBlend;
 			Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
-			// Per-draw casters persist across passes with
-			// -NativeShadowMasks:replace, so they are uploaded once too.
+			// Per-draw casters persist across passes with the registry, so they
+			// are uploaded once too.
 			ShadowArena casterArena;
-			// NativeShadowRegistry casters: world positions only, alpha-tested
-			// through SC4's own projector and prerendered texture.
+			// ShadowRegistry casters: world positions only, alpha-tested through
+			// SC4's own projector and prerendered texture.
 			Microsoft::WRL::ComPtr<ID3D11VertexShader> registryVS;
 			Microsoft::WRL::ComPtr<ID3D11PixelShader> registryPS;
 			Microsoft::WRL::ComPtr<ID3D11InputLayout> registryLayout;
@@ -287,20 +297,8 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> registryIndices;
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> clampSampler;
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
-			uint32_t registryVertexCapacity = 0;
+				uint32_t registryVertexCapacity = 0;
 			uint32_t registryIndexCapacity = 0;
-			// Where each registry caster's mesh sits in registryArena. An entry
-			// keeps its caster alive, so the key cannot be reused while it
-			// exists; it is dropped once the registry lets go.
-			struct RegistryMesh {
-				std::shared_ptr<void const> owner;
-				uint32_t firstVertex = 0;
-				uint32_t firstIndex = 0;
-				uint32_t vertexCount = 0;
-				uint32_t indexCount = 0;
-			};
-			std::unordered_map<void const *, RegistryMesh> registryMeshes;
-			ShadowArena registryArena;
 			// TerrainShadows' ceiling map, uploaded whenever its generation moves.
 			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainMap;
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainMapView;
@@ -314,45 +312,49 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainAltitudeView;
 			uint32_t terrainAltitudeWidth = 0;
 			uint32_t terrainAltitudeHeight = 0;
+			// -DrawStats GPU timing: shadow map start, composite start, end.
+			struct GpuTimer {
+				Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
+				Microsoft::WRL::ComPtr<ID3D11Query> stamps[3];
+				bool pending = false;
+			} gpuTimers[8];
+			uint32_t nextGpuTimer = 0;
 		} liveShadows;
 		std::vector<LiveShadowDraw> liveShadowDraws;
-		// -NativeShadowMasks:replace: every per-draw caster seen since the last
-		// full static pass, in world space, so a partial pass also knows the
-		// ones it did not redraw. Valid once a full pass with a known view built it.
+		// With the registry: every per-draw caster seen since the last full
+		// static pass, in world space, so a partial pass also knows the ones it
+		// did not redraw. Valid once a full pass with a known view built it.
 		std::vector<LiveShadowDraw> liveShadowWorldCasters;
 		bool liveShadowWorldCastersValid = false;
 		uint64_t liveShadowPassSerial = 0;
 		// The model-view of the first terrain draw of a static pass. Terrain
-		// vertices are world coordinates, so it is the pass's view, and unlike
-		// DrawShadows' matrix it exists even where there is no overlay to draw.
-		// Only trusted once it has matched DrawShadows' view in some pass, or
-		// for a pass whose first terrain vertex lies on the city's height field.
+		// vertices are world coordinates, so it is the pass's view once its
+		// first vertex is seen to lie on the city's height field.
 		float liveShadowTerrainView[16]{};
 		float liveShadowTerrainVertex[3]{};
 		bool liveShadowTerrainViewValid = false;
-		bool liveShadowTerrainViewTrusted = false;
-		bool liveShadowTerrainViewRejected = false;
-		unsigned liveShadowTerrainViewMismatches = 0;
-		// The world-space sun of the last pass that reported it. It only changes
-		// with the camera's rotation, which rebuilds the view anyway.
+		// SC4's sun, in world space as of the last static pass and in view
+		// space as of the last pass with a view. It only changes with the
+		// camera's rotation, which rebuilds the view anyway.
 		float liveShadowSunWorld[3]{};
 		bool liveShadowSunWorldValid = false;
+		float liveShadowSunView[3]{};
+		bool liveShadowSunViewValid = false;
 		void NoteLiveShadowTerrainView(void);
-		// Diagnostic counters for MatchesLiveShadowMesh: calls vs positive
-		// matches. Reported in the -LiveShadowDiag frame summary.
-		uint64_t liveShadowMatchCalls = 0;
-		uint64_t liveShadowMatchHits = 0;
 		// Set when a scissored (partial) static pass ran while shadows were live,
 		// so the next cSC43DRender::Draw can rebuild the backing store cleanly.
-		bool liveShadowCleanRedrawPending = false;
-		// A partial pass only ever sees the casters drawn inside its own
-		// rectangle, so once a per-draw caster has cast a shadow the partial path
-		// can no longer be trusted. Registry casters do not count: every pass
-		// gets all of the ones SC4 would have drawn there.
+		// A LiveShadowRedrawCause bit mask.
+		uint32_t liveShadowCleanRedrawPending = 0;
+		// Without the registry a partial pass only ever sees the casters drawn
+		// inside its own rectangle, so once a caster has cast a shadow the
+		// partial path can no longer be trusted.
 		bool liveShadowEverCaptured = false;
-		unsigned liveShadowPartialPasses = 0;
+		// The terrain map generation the backing store was last shaded with; a
+		// partial pass that sees another one cannot repaint the rest.
+		uint64_t liveShadowTerrainGeneration = 0;
 		// The last orthographic projection a draw used, for passes that have
-		// only registry casters and so no captured draw to take it from.
+		// only registry casters or terrain shadows and so no captured draw to
+		// take it from.
 		float liveShadowSceneProjection[16]{};
 		bool liveShadowSceneProjectionValid = false;
 		// Colour and strength of the last pass that had SC4's shadow parameters.
@@ -440,6 +442,47 @@ namespace nSCD3D11 {
 			uint64_t viewportPixels = 0;
 			uint32_t textureCreates = 0;
 			uint32_t textureDeletes = 0;
+			// Live shadows. Static passes run at DrawPostStaticView, full window or one dirty rectangle.
+			uint32_t shadowFullPasses = 0;
+			uint32_t shadowPartialPasses = 0;
+			// Partial passes the world-space caster set could not follow.
+			uint32_t shadowUntrackedPasses = 0;
+			// Backing-store invalidations by DrawHook, and why (one redraw can have several causes).
+			uint32_t shadowForcedRedraws = 0;
+			uint32_t shadowForcedBy[kLiveShadowRedrawCauses]{};
+			// RedisplayWorldRect requests from caster tracking; each becomes a later partial pass.
+			uint32_t shadowRedisplays = 0;
+			uint32_t shadowMapRenders = 0;
+			uint32_t shadowCasters = 0;
+			uint32_t shadowRegistryCasters = 0;
+			uint32_t shadowPassCasters = 0;
+			uint32_t shadowWorldCasters = 0;
+			uint32_t shadowArenaRebuilds = 0;
+			uint32_t shadowComposites = 0;
+			uint64_t shadowCompositePixels = 0;
+			uint32_t shadowCaptures = 0;
+			uint32_t shadowHashedDraws = 0;
+			uint64_t shadowHashedVertices = 0;
+			// CPU milliseconds; the hash and capture timers only run with -DrawStats.
+			double shadowStaticMs = 0.0;
+			double shadowStaticMaxMs = 0.0;
+			double shadowDynamicMs = 0.0;
+			double shadowTrackMs = 0.0;
+			double shadowTerrainMs = 0.0;
+			double shadowCaptureMs = 0.0;
+			double shadowHashMs = 0.0;
+			// The registry part of a static pass: culling SC4's pass list, uploading new meshes, drawing.
+			double shadowCullMs = 0.0;
+			double shadowUploadMs = 0.0;
+			double shadowSubmitMs = 0.0;
+			uint32_t shadowMeshUploads = 0;
+			uint64_t shadowUploadBytes = 0;
+			// GPU milliseconds, from timestamp queries read back a few frames late.
+			double shadowGpuMapMs = 0.0;
+			double shadowGpuCompositeMs = 0.0;
+			uint32_t shadowGpuSamples = 0;
+			// Static passes whose gather culled under another projection than the pass composited with.
+			uint32_t shadowProjectionMismatches = 0;
 		} frameStats;
 		LARGE_INTEGER lastFrameTime{};
 		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
@@ -700,6 +743,8 @@ namespace nSCD3D11 {
 		bool TrackLiveShadowWorldCasters(
 			float const *eyeToWorld, float const *worldToView, float const *projection, float const sun[3],
 			bool sunKnown, bool partialPass);
+		// RenderLivePropShadows' body; the wrapper times it for -DrawStats.
+		void DrawLivePropShadows(bool staticPass);
 
 		void FinishReShadeFrame(void);
 
@@ -710,10 +755,12 @@ namespace nSCD3D11 {
 		// becomes part of the backing store, and again at scene end for any dynamic
 		// casters.
 		void RenderLivePropShadows(bool staticPass);
-		// True once, for each partial static pass that ran while shadows were
-		// live. The caller invalidates SC4's backing store so the next draw is a
-		// clean full redraw.
-		bool ConsumeLiveShadowCleanRedraw(void);
+		// Non-zero once, for each partial static pass that ran while shadows were
+		// live: the LiveShadowRedrawCause bits. The caller invalidates SC4's
+		// backing store so the next draw is a clean full redraw.
+		uint32_t ConsumeLiveShadowCleanRedraw(void);
+		// -DrawStats: DrawHook invalidated the backing store for these causes.
+		void CountForcedStaticRedraw(uint32_t causes);
 
 		cGDriver();
 
