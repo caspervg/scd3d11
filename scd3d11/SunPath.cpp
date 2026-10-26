@@ -29,18 +29,18 @@ namespace nSCD3D11::SunPath {
 		constexpr float kDegrees = 3.14159265f / 180.0f;
 		// The sun moves one step per this much visual time. SC4's clock runs
 		// 135 times faster than real time, so 10 minutes is about 4.4 seconds,
-		// and each step costs a full redraw of the city view.
+		// and each step shades the city view again.
 		constexpr uint32_t kStepSeconds = 10 * 60;
 		// Shadows fade out over the last degrees before sunset.
 		constexpr float kFadeElevation = 6.0f;
 
-		// cISC424HourClock::GetVisualTimePercentage (0x00445450 in 1.1.641) takes
-		// a pointer to its result and returns it, not a float as gzcom-dll
-		// declares, so it is called through its vtable slot.
+		// cISC424HourClock::GetVisualTimePercentage (0x00445450 in 1.1.641) fills
+		// in a float it is given a pointer to, rather than returning one as
+		// gzcom-dll declares, so it is called through its vtable slot.
 		constexpr size_t kVisualTimeSlot = 9;
 
 		float VisualTimeFraction(cISC424HourClock *clock) {
-			using Get = float *(__thiscall *)(cISC424HourClock *, float *);
+			using Get = void(__thiscall *)(cISC424HourClock *, float *);
 			float fraction = 0.0f;
 			reinterpret_cast<Get>((*reinterpret_cast<void ***>(clock))[kVisualTimeSlot])(clock, &fraction);
 			return std::isfinite(fraction) ? (std::clamp)(fraction, 0.0f, 1.0f) : 0.0f;
