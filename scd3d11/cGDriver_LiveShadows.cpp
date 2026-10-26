@@ -455,20 +455,16 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         bool GroundQuad(ShadowRegistry::Caster const& caster, float const sun[3], float quad[4][3]) {
             if (sun[1] > -1.0e-3f) return false;
             float const height = caster.baseHeight + kGroundLiftWorld;
-            float low[2]{FLT_MAX, FLT_MAX}, high[2]{-FLT_MAX, -FLT_MAX};
-            for (unsigned mask = 0; mask < 8; ++mask) {
-                float const corner[3]{
-                    (mask & 1) ? caster.high[0] : caster.low[0],
-                    (mask & 2) ? caster.high[1] : caster.low[1],
-                    (mask & 4) ? caster.high[2] : caster.low[2]
-                };
-                float const along = (height - corner[1]) / sun[1];
-                float const x = corner[0] + sun[0] * along;
-                float const z = corner[2] + sun[2] * along;
-                low[0] = (std::min)(low[0], (std::min)(x, corner[0]));
-                low[1] = (std::min)(low[1], (std::min)(z, corner[2]));
-                high[0] = (std::max)(high[0], (std::max)(x, corner[0]));
-                high[1] = (std::max)(high[1], (std::max)(z, corner[2]));
+            // The box's top and bottom corners land this far along the sun; the
+            // footprint spans the box and both landings.
+            float const alongLow = (height - caster.low[1]) / sun[1];
+            float const alongHigh = (height - caster.high[1]) / sun[1];
+            float low[2]{}, high[2]{};
+            for (unsigned axis = 0; axis < 2; ++axis) {
+                unsigned const world = axis * 2;
+                float const a = sun[world] * alongLow, b = sun[world] * alongHigh;
+                low[axis] = caster.low[world] + (std::min)({0.0f, a, b});
+                high[axis] = caster.high[world] + (std::max)({0.0f, a, b});
             }
             float const corners[4][2]{{low[0], low[1]}, {high[0], low[1]}, {high[0], high[1]}, {low[0], high[1]}};
             for (unsigned index = 0; index < 4; ++index) {
@@ -1229,7 +1225,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // Registry casters that can shade this pass's viewport. The projection
         // is the pass's own, so its NDC square is exactly the rectangle being
         // drawn, full window or dirty rectangle alike.
-        std::vector<RegistryDraw> registryDraws;
+        // Kept across passes: a pass can reach thousands of casters, and a fresh
+        // vector each time is a large allocation per pass.
+        static std::vector<RegistryDraw> registryDraws;
+        registryDraws.clear();
         UINT registryVertexCount = 0, registryIndexCount = 0;
         unsigned registryCulled = 0, registryMissingTexture = 0, registryQuadOnly = 0, registryMeshCasters = 0;
         if (haveView) {
@@ -1237,14 +1236,46 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             float sunWorld[3]{liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2]};
             if (!liveShadowSunWorldValid) TransformDirection(eyeToWorld, shadowDirection, sunWorld);
             Normalize(sunWorld);
-            registryDraws.reserve(pass.casters.size());
+            float worldToClip[16]{};
+            Multiply(projection, worldToView, worldToClip);
             for (ShadowRegistry::PassCaster const& passCaster : pass.casters) {
                 ShadowRegistry::Caster const& caster = *passCaster.caster;
+                float quad[4][3];
+                bool const hasQuad = GroundQuad(caster, sunWorld, quad);
+                bool const drawQuad = hasQuad && !caster.meshUVs;
+                if (caster.indices.empty() && !drawQuad) continue;
+                // SC4 hands a strip pass thousands of casters, nearly all far
+                // from it. Reject those first through the world box holding the
+                // caster and its quad: the projection is affine, so the box's
+                // NDC extent is its centre and half-size mapped through it.
+                float low[3]{caster.low[0], caster.low[1], caster.low[2]};
+                float high[3]{caster.high[0], caster.high[1], caster.high[2]};
+                if (hasQuad) {
+                    low[0] = (std::min)(low[0], quad[0][0]);
+                    low[1] = (std::min)(low[1], quad[0][1]);
+                    low[2] = (std::min)(low[2], quad[0][2]);
+                    high[0] = (std::max)(high[0], quad[2][0]);
+                    high[1] = (std::max)(high[1], quad[2][1]);
+                    high[2] = (std::max)(high[2], quad[2][2]);
+                }
+                bool outside = false;
+                for (unsigned axis = 0; axis < 2 && !outside; ++axis) {
+                    float centre = worldToClip[12 + axis], extent = 0.0f;
+                    for (unsigned k = 0; k < 3; ++k) {
+                        centre += worldToClip[k * 4 + axis] * (low[k] + high[k]) * 0.5f;
+                        extent += std::fabs(worldToClip[k * 4 + axis]) * (high[k] - low[k]) * 0.5f;
+                    }
+                    outside = centre + extent < -1.0f || centre - extent > 1.0f;
+                }
+                if (outside) {
+                    ++registryCulled;
+                    continue;
+                }
                 RegistryDraw draw;
                 draw.caster = &passCaster;
-                draw.hasQuad = GroundQuad(caster, sunWorld, draw.quad);
-                draw.drawQuad = draw.hasQuad && !caster.meshUVs;
-                if (caster.indices.empty() && !draw.drawQuad) continue;
+                std::memcpy(draw.quad, quad, sizeof(quad));
+                draw.hasQuad = hasQuad;
+                draw.drawQuad = drawQuad;
                 // The screen footprint of the caster together with its ground
                 // shadow bounds everything it can shade, walls included: a
                 // shadow on a wall lies between the caster and the ground.
