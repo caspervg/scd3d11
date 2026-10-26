@@ -1032,9 +1032,10 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         frameStats.shadowStaticMs += milliseconds;
         if (logStep) {
             Log(LogCategory::Initialization,
-                "sun step: re-shaded regions %u/%u, %u registry + %u tracked casters, %u map renders, %u composites, "
-                "%.1f ms",
+                "sun step: re-shaded regions %u/%u, %u of %u gathered registry + %u tracked casters, %u map renders, "
+                "%u composites, %.1f ms",
                 colour, depth, frameStats.shadowRegistryCasters - before.shadowRegistryCasters,
+                frameStats.shadowPassCasters - before.shadowPassCasters,
                 static_cast<unsigned>(liveShadowWorldCasters.size()),
                 frameStats.shadowMapRenders - before.shadowMapRenders,
                 frameStats.shadowComposites - before.shadowComposites, milliseconds);

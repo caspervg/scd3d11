@@ -703,6 +703,12 @@ namespace nSCD3D11::ShadowRegistry {
 			}
 		}
 
+		// Why GatherView left records out, for its log.
+		struct CollectCounts {
+			unsigned candidates = 0, culled = 0, disabled = 0, suppressed = 0, noTexture = 0, repeated = 0, added = 0;
+		};
+		CollectCounts *gCollectCounts = nullptr;
+
 		bool Collect(void const *manager, float const matrix[16], float const *projection, std::vector<int32_t> &kept);
 
 		// Called by the DrawShadows call-site hooks with the pass's overlay ids.
@@ -789,13 +795,18 @@ namespace nSCD3D11::ShadowRegistry {
 					continue;
 				}
 				Entry &entry = gCasters[id];
+				CollectCounts *const counts = gCollectCounts;
+				if (counts) ++counts->candidates;
 				// Culled before the record is read, from the entry alone. A record
 				// SC4 reused without RemoveOverlay is then only noticed once it is
 				// in view. None has been seen in practice.
 				if (cull) {
 					float quad[4][3];
 					bool const hasQuad = GroundQuad(entry.low, entry.high, entry.baseHeight, sunWorld, quad);
-					if (ReachOutside(entry.low, entry.high, hasQuad, quad, worldToClip)) continue;
+					if (ReachOutside(entry.low, entry.high, hasQuad, quad, worldToClip)) {
+						if (counts) ++counts->culled;
+						continue;
+					}
 				}
 				// The in-use word, the flags and the binding, in one guarded read.
 				uint8_t header[kRecordBinding + sizeof(void *)];
@@ -818,15 +829,25 @@ namespace nSCD3D11::ShadowRegistry {
 					kept[write++] = id;
 					continue;
 				}
-				if ((flags & kShadowDrawFlags) != kShadowDrawFlags) continue; // disabled: native skips it too
-				if (entry.suppressOnly) continue;
+				if ((flags & kShadowDrawFlags) != kShadowDrawFlags) { // disabled: native skips it too
+					if (counts) ++counts->disabled;
+					continue;
+				}
+				if (entry.suppressOnly) {
+					if (counts) ++counts->suppressed;
+					continue;
+				}
 				if (!Read(binding, textureObject) || textureObject == nullptr || !Read(textureObject, texture)) {
+					if (counts) ++counts->noTexture;
 					kept[write++] = id;
 					continue;
 				}
 				if (entry.passSerial != gPassSerial) {
 					entry.passSerial = gPassSerial;
 					gPass.casters.push_back(PassCaster{entry.caster, texture, (flags & kWrapFlag) != 0});
+					if (counts) ++counts->added;
+				} else if (counts) {
+					++counts->repeated;
 				}
 			}
 			kept.resize(write);
@@ -1252,7 +1273,19 @@ namespace nSCD3D11::ShadowRegistry {
 			for (uint32_t id = 0; id <= gHighestId && id < gCasters.size(); ++id)
 				if (gCasters[id].caster) ids.push_back(static_cast<int32_t>(id));
 		}
-		return Collect(manager, eyeToWorld, projection, ids);
+		CollectCounts counts;
+		gCollectCounts = &counts;
+		bool const collected = Collect(manager, eyeToWorld, projection, ids);
+		gCollectCounts = nullptr;
+		static unsigned logged = 0;
+		if (logged++ < 40) {
+			Log(LogCategory::Initialization,
+			    "shadow registry: view gather %s, %u of %u ids looked at: %u culled, %u disabled, %u suppressed, "
+			    "%u without texture, %u already in the pass, %u added",
+			    collected ? "ran" : "refused", counts.candidates, static_cast<unsigned>(ids.size()), counts.culled,
+			    counts.disabled, counts.suppressed, counts.noTexture, counts.repeated, counts.added);
+		}
+		return collected;
 	}
 
 	bool TakePass(Pass &pass) {
