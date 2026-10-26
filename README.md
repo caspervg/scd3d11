@@ -11,7 +11,10 @@ Not affiliated with or endorsed by EA Games.
 ## Requirements
 
 * SimCity 4 Deluxe Edition 1.1.641 (Windows).
+* Windows 10 or later.
 * A GPU supporting Direct3D 11 or better.
+* The [Microsoft Visual C++ 2015–2022 Redistributable (x86)](https://aka.ms/vs/17/release/vc_redist.x86.exe). The
+  32-bit version is needed even on 64-bit Windows, because SimCity 4 is a 32-bit game.
 
 ## Installing
 

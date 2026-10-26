@@ -12,8 +12,7 @@ permissions:
 
 jobs:
   build:
-    # Pinned rather than windows-latest: the VS 2022 toolset keeps the VC++ runtime dependency
-    # compatible with older Windows versions such as Windows 7.
+    # Pinned rather than windows-latest so a runner image change cannot silently switch toolsets.
     runs-on: windows-2022
     strategy:
       fail-fast: false
