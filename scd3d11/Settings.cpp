@@ -83,10 +83,16 @@ namespace nSCD3D11::Settings {
 			return value;
 		}
 
-		// Logs each setting that is set anywhere, so a log shows what a session
-		// ran with.
-		void NoteSetting(char const *name, std::string const &value, char const *source) {
-			Log(LogCategory::Initialization, "setting %s = %s (%s)", name, value.empty() ? "on" : value.c_str(), source);
+		// GPU=default or GPU=high-performance.
+		bool ParseAdapter(std::string_view value, bool &defaultAdapter) {
+			defaultAdapter = value == "default";
+			return defaultAdapter || value == "high-performance";
+		}
+
+		// LogLevel=trace or LogLevel=info.
+		bool ParseLogLevel(std::string_view value, bool &trace) {
+			trace = value == "trace";
+			return trace || value == "info";
 		}
 
 		// The setting from the first source whose value parse accepts: the
@@ -101,17 +107,19 @@ namespace nSCD3D11::Settings {
 			for (auto const &[source, value] : candidates) {
 				if (!value) continue;
 				T result{};
+				// Only a value that took effect is logged as the setting, so the
+				// log shows what the session ran with.
 				if (parse(*value, result)) {
-					NoteSetting(name, *value, source);
+					Log(LogCategory::Initialization, "setting %s = %s (%s)", name, value->empty() ? "on" : value->c_str(),
+					    source);
 					return result;
 				}
-				Log(LogCategory::Initialization, "setting %s: '%s' from the %s is not a valid value, ignored", name,
-				    value->c_str(), source);
+				Log(LogCategory::Initialization, "setting %s: %s%s%s from the %s is not a valid value, ignored", name,
+				    value->empty() ? "a bare switch" : "'", value->c_str(), value->empty() ? "" : "'", source);
 			}
 			return fallback;
 		}
 
-		std::string Value(Sources const &sources, char const *name);
 
 		// Constant-initialised, so readable before Load.
 		Values gValues;
@@ -125,19 +133,6 @@ namespace nSCD3D11::Settings {
 		return StringViewUtil::TryParse(value, flag);
 	}
 
-	namespace {
-		std::string Value(Sources const &sources, char const *name) {
-			if (std::optional<std::string> const value = FromCommandLine(sources.commandLine, name)) {
-				NoteSetting(name, *value, "command line");
-				return *value;
-			}
-			if (std::optional<std::string> const value = FromIni(sources.ini, name)) {
-				NoteSetting(name, *value, "SCD3D11.ini");
-				return *value;
-			}
-			return {};
-		}
-	}
 
 	void Load(cIGZCmdLine *commandLine) {
 		std::optional<IniSection> const ini = ReadIni();
@@ -148,11 +143,11 @@ namespace nSCD3D11::Settings {
 		values.vsync = Resolve(sources, "VSync", ParseFlag, values.vsync);
 		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
 		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
-		values.defaultAdapter = Value(sources, "GPU") == "default";
+		values.defaultAdapter = Resolve(sources, "GPU", ParseAdapter, values.defaultAdapter);
 		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
-		values.traceLog = Value(sources, "LogLevel") == "trace";
+		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}
