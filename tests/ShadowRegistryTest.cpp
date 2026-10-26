@@ -67,7 +67,7 @@ int main() {
 	worldToClip[13] = 5.0f;
 	assert(nSCD3D11::ShadowRegistry::ReachOutside(caster, true, quad, worldToClip));
 
-	// Nothing is installed without -LiveShadows:on, and an idle
+	// Nothing is installed without LiveShadows, and an idle
 	// registry reports no pass.
 	assert(!nSCD3D11::ShadowRegistry::Install());
 	assert(!nSCD3D11::ShadowRegistry::Enabled());

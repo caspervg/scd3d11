@@ -11,7 +11,7 @@
 // Live shadows for prebuilt network pieces and True3D props.
 //
 // SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
-// -LiveShadows:on. Every site is guarded by its exact bytes and restored during
+// LiveShadows. Every site is guarded by its exact bytes and restored during
 // PreAppShutdown.
 //
 // The game decides which draws are casters; cGDriver captures their indexed,
@@ -37,7 +37,7 @@
 //
 //   A 0x0061E35C  35 bytes  the gate, replaced by a jump to its reject branch
 //                           (XOR BL,BL at 0x0061E383), so no decal is mapped;
-//                           left alone with -NetworkShadowMasks:on
+//                           left alone with NetworkShadowMasks on
 //
 // A piece is two entries in the view's sorted
 // drawable list, each drawn through virtual slot +0x30 by DrawStaticView_

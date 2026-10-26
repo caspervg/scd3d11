@@ -12,7 +12,7 @@
 
 #include <cstdint>
 
-// Game-side half of live shadows, opt-in with -LiveShadows:on. Prebuilt network
+// Game-side half of live shadows, opt-in with LiveShadows. Prebuilt network
 // pieces and True3D props are identified here and captured by cGDriver as
 // indexed casters; SC4's lighting state is read here for the composite.
 

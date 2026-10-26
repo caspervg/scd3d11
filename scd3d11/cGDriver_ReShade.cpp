@@ -20,7 +20,7 @@
 //    (cSC43DRender::UpdateCameraZoomAndRotationParams -> SetOrtho).
 // Only effect runtime events and calls are used. ReShade's regular build (not only the "full add-on
 // support" one) allows those for externally registered add-ons. Requires ReShade 6.0 or later.
-// -ReShade:off on the command line leaves ReShade's default behaviour untouched.
+// ReShade=off leaves ReShade's default behaviour untouched.
 //
 // SC4 keeps its back buffer across Present and redraws only what changed, so effects rendered into it
 // persist until the city view is redrawn. Frames that only redraw UI must not get effects again at

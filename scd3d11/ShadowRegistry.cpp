@@ -11,7 +11,7 @@
 // Shadow records for the live shadow map.
 //
 // SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
-// -LiveShadows:on. Every site is guarded by its exact bytes or slot
+// LiveShadows. Every site is guarded by its exact bytes or slot
 // value and restored during PreAppShutdown.
 //
 //   0x00AB3A14  cSTEOverlayManager vtable +0x2C, AddShadow 0x0073C0D0
@@ -56,7 +56,7 @@
 // list {+4 begin, +8 end} of {primitive, start, count}.
 //
 // Props without Is Ground Model (0x8A5E5DB8) are never shadowed by SC4. With
-// -LiveShadows:on, LiveShadowHooks' site D lets their AddShadow run
+// LiveShadows, LiveShadowHooks' site D lets their AddShadow run
 // and flags it (ExpectMeshCaster); the record then only exists for its lifetime
 // and dirty rectangle. Such a prop floating above the terrain - the building
 // zots AddBuildingZotProp places, 46-56 m up - stays unshadowed; one whose UVs

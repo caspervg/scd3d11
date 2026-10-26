@@ -212,7 +212,7 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain> swapChain;
 		PresentationMode presentationMode;
-		// Off with -FlipModel:off.
+		// Off with FlipModel=off.
 		bool preferFlipModel;
 		UINT swapChainFlags;
 		// SC4 redraws only dirty rectangles and expects the back buffer to survive Present. DISCARD
@@ -312,7 +312,7 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainAltitudeView;
 			uint32_t terrainAltitudeWidth = 0;
 			uint32_t terrainAltitudeHeight = 0;
-			// -DrawStats GPU timing: shadow map start, composite start, end.
+			// DrawStats GPU timing: shadow map start, composite start, end.
 			struct GpuTimer {
 				Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
 				Microsoft::WRL::ComPtr<ID3D11Query> stamps[3];
@@ -424,7 +424,7 @@ namespace nSCD3D11 {
 		bool clipRowsDirty;
 		ClipRows clipRows;
 		ClipBounds viewportCullBounds;
-		// Cheap per-frame counters, reported with -DrawStats (see ReportFrameStats).
+		// Cheap per-frame counters, reported with DrawStats (see ReportFrameStats).
 		struct FrameStats {
 			uint32_t draws = 0;
 			uint32_t culledDraws = 0;
@@ -463,7 +463,7 @@ namespace nSCD3D11 {
 			uint32_t shadowCaptures = 0;
 			uint32_t shadowHashedDraws = 0;
 			uint64_t shadowHashedVertices = 0;
-			// CPU milliseconds; the hash and capture timers only run with -DrawStats.
+			// CPU milliseconds; the hash and capture timers only run with DrawStats.
 			double shadowStaticMs = 0.0;
 			double shadowStaticMaxMs = 0.0;
 			double shadowDynamicMs = 0.0;
@@ -743,7 +743,7 @@ namespace nSCD3D11 {
 		bool TrackLiveShadowWorldCasters(
 			float const *eyeToWorld, float const *worldToView, float const *projection, float const sun[3],
 			bool sunKnown, bool partialPass);
-		// RenderLivePropShadows' body; the wrapper times it for -DrawStats.
+		// RenderLivePropShadows' body; the wrapper times it for DrawStats.
 		void DrawLivePropShadows(bool staticPass);
 
 		void FinishReShadeFrame(void);
@@ -759,7 +759,7 @@ namespace nSCD3D11 {
 		// live: the LiveShadowRedrawCause bits. The caller invalidates SC4's
 		// backing store so the next draw is a clean full redraw.
 		uint32_t ConsumeLiveShadowCleanRedraw(void);
-		// -DrawStats: DrawHook invalidated the backing store for these causes.
+		// DrawStats: DrawHook invalidated the backing store for these causes.
 		void CountForcedStaticRedraw(uint32_t causes);
 
 		cGDriver();

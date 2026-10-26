@@ -1,6 +1,6 @@
 /*
  * Live indexed shadows for True3D props and prebuilt network pieces
- * (-LiveShadows:on). SC4's own shadow paths only see positions and UVs; this
+ * (LiveShadows). SC4's own shadow paths only see positions and UVs; this
  * pass runs where the index buffer and alpha texture still exist.
  *
  * The same shadow map also takes every shadow record SC4's AddShadow made
@@ -462,7 +462,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                        : 0.0;
         }
 
-        // Adds its scope's wall time to a -DrawStats total; costs a branch without -DrawStats.
+        // Adds its scope's wall time to a DrawStats total; costs a branch without DrawStats.
         struct ScopeTimer {
             double* total;
             LARGE_INTEGER start{};
@@ -1333,7 +1333,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             liveShadowDraws.clear();
             return;
         }
-        // -DrawStats GPU timing of this call: shadow map, then composite.
+        // DrawStats GPU timing of this call: shadow map, then composite.
         LiveShadowPipeline::GpuTimer* gpuTimer = nullptr;
         unsigned gpuStamps = 0;
         if (DrawStatsEnabled()) {

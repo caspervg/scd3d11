@@ -15,7 +15,7 @@
 #include <vector>
 
 // Replaces SC4's projected BAT shadows (buildings, flora, BAT props, poles) with
-// casters in cGDriver's live shadow map, as part of -LiveShadows:on.
+// casters in cGDriver's live shadow map, as part of LiveShadows.
 //
 // cSTEOverlayManager::AddShadow already turns each caster mesh into a world-to-UV
 // projector for SC4's prerendered texture. This module keeps that projector, the
@@ -126,7 +126,7 @@ namespace nSCD3D11::ShadowRegistry {
 	// The same for a terrain the caller already has.
 	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ);
 
-	// -DrawStats: time spent in the AddShadow and DrawShadows hooks since the last call.
+	// DrawStats: time spent in the AddShadow and DrawShadows hooks since the last call.
 	struct Stats {
 		uint32_t registrations = 0;
 		// AddShadow calls made on another thread than DrawShadows.
