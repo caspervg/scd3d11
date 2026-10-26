@@ -65,17 +65,15 @@ namespace nSCD3D11::TerrainShadowMap {
 		float originAcross = 0.0f;
 		float spacing = 0.0f;
 		// Row-major, b * width + a: the altitude below which the terrain up-sun
-		// shadows a point. Never more than kFloorDepth below the terrain, so
-		// that filtering between a shadowed and an unshadowed texel lands the
-		// edge between them rather than on the shadowed one.
+		// starts to shadow a point, i.e. hides the sun's lower limb. Never more
+		// than kFloorDepth below the terrain, so that filtering between a
+		// shadowed and an unshadowed texel lands the edge between them rather
+		// than on the shadowed one.
 		std::vector<float> ceiling;
-	};
-
-	struct Region {
-		float minX = 0.0f;
-		float minZ = 0.0f;
-		float maxX = 0.0f;
-		float maxZ = 0.0f;
+		// Laid out like ceiling: the altitude below which the sun's upper limb
+		// is hidden too and the shadow is full. The gap between the two is the
+		// penumbra, which widens with the distance from the ridge casting it.
+		std::vector<float> umbra;
 	};
 
 	// How far the stored ceiling may sit below the terrain.
@@ -91,18 +89,11 @@ namespace nSCD3D11::TerrainShadowMap {
 	// Builds the map for light travelling along sun (world space, any length),
 	// one texel per spacing world units. False for a malformed height field or
 	// a sun that is not below the horizon and off the vertical.
-	bool Build(HeightField const &terrain, float const sun[3], float spacing, Map &map);
+	// sunRadius is the sun's apparent radius in radians; 0 gives one sharp
+	// ceiling.
+	bool Build(HeightField const &terrain, float const sun[3], float spacing, Map &map, float sunRadius = 0.0f);
 
 	// The ceiling at a world position, filtered as the composite samples it.
 	float Ceiling(Map const &map, float x, float z);
 
-	// Whether two maps put their texels at the same world positions, i.e. can
-	// be compared texel by texel.
-	bool SameLayout(Map const &a, Map const &b);
-
-	// World rectangles covering every texel inside the city whose shading can
-	// differ between before and after, which must share a layout. More than
-	// maxRegions collapse into their union.
-	void ChangedRegions(Map const &before, Map const &after, HeightField const &terrain, size_t maxRegions,
-	                    std::vector<Region> &regions);
 } // namespace nSCD3D11::TerrainShadowMap

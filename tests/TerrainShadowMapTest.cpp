@@ -29,12 +29,6 @@ namespace {
 	bool Shadowed(Map const &map, HeightField const &field, float x, float z) {
 		return Ceiling(map, x, z) > Altitude(field, x, z) + kBias;
 	}
-
-	bool Covered(std::vector<Region> const &regions, float x, float z) {
-		for (Region const &region: regions)
-			if (x >= region.minX && x <= region.maxX && z >= region.minZ && z <= region.maxZ) return true;
-		return false;
-	}
 } // namespace
 
 int main() {
@@ -116,31 +110,23 @@ int main() {
 	assert(!Shadowed(spikeMap, spike, upwind[0], upwind[1]));
 	assert(!Shadowed(flatMap, flat, downwind[0], downwind[1]));
 
-	// Raising the spike changes the shading downwind of it, which is what a
-	// partial pass must redisplay, and nothing up-sun.
+	// A sun with a radius leaves a penumbra under the ceiling that is empty
+	// right behind the ridge and widens with the distance from it.
 	{
-		assert(SameLayout(flatMap, spikeMap));
-		std::vector<Region> regions;
-		ChangedRegions(flatMap, spikeMap, spike, 32, regions);
-		assert(!regions.empty());
-		assert(Covered(regions, downwind[0], downwind[1]));
-		// A changed tile spans 128 m of map, under 190 m of world however it is turned.
-		assert(!Covered(regions, peak - along[0] * 300.0f, peak - along[1] * 300.0f));
-		for (Region const &region: regions)
-			assert(region.minX >= 0.0f && region.minZ >= 0.0f && region.maxX <= 1024.0f && region.maxZ <= 1024.0f);
-		ChangedRegions(spikeMap, spikeMap, spike, 32, regions);
-		assert(regions.empty());
-		// Too many regions collapse into their union.
-		ChangedRegions(flatMap, spikeMap, spike, 0, regions);
-		assert(regions.size() == 1 && Covered(regions, downwind[0], downwind[1]));
-	}
-
-	// Another rotation lays the map out differently.
-	{
-		float const rotated[3]{-sc4Sun[2], sc4Sun[1], sc4Sun[0]};
-		Map map;
-		assert(Build(flat, rotated, 8.0f, map));
-		assert(!SameLayout(map, flatMap));
+		Map soft;
+		assert(Build(spike, sc4Sun, 8.0f, soft, 0.05f));
+		assert(soft.umbra.size() == soft.ceiling.size());
+		for (size_t index = 0; index < soft.ceiling.size(); ++index) assert(soft.umbra[index] <= soft.ceiling[index]);
+		auto const gap = [&](float distance) {
+			float const x = peak + along[0] * distance, z = peak + along[1] * distance;
+			float const a = x * soft.along[0] + z * soft.along[1];
+			float const b = x * soft.across[0] + z * soft.across[1];
+			size_t const column = static_cast<size_t>(std::lround((a - soft.originAlong) / soft.spacing));
+			size_t const row = static_cast<size_t>(std::lround((b - soft.originAcross) / soft.spacing));
+			size_t const index = row * soft.width + column;
+			return soft.ceiling[index] - soft.umbra[index];
+		};
+		assert(gap(40.0f) < gap(120.0f));
 	}
 
 	// Terrain beyond the city edge is not drawn and casts nothing: the up-sun

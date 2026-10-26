@@ -10,7 +10,7 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
-#include "NativeShadowMasks.h"
+#include "LiveShadowHooks.h"
 #include "VertexFormatUtils.h"
 
 #include <cstddef>
@@ -715,29 +715,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			constantsDirty = false;
 			constantsFlagInputs = flagInputs;
 		}
-		static bool const gridDebug = std::strstr(GetCommandLineA(), "-GridDebug") != nullptr;
-		if (gridDebug && textureStageEnabled[0] &&
-		    (textureStages[0].coordinateSource & 0xfffffff8u) == 0x10u) {
-			auto const gridTexture = textures.find(boundTextures[0]);
-			if (gridTexture != textures.end()) {
-				static ULONGLONG lastGridLog = 0;
-				ULONGLONG const now = GetTickCount64();
-				if (now - lastGridLog >= 1000) {
-					TextureResource const &texture = gridTexture->second;
-					float const *matrix = textureStages[0].matrix;
-					Log(LogCategory::Grid,
-					    "texture=%u size=%ux%u mips=%u uploaded=0x%X filter=%u/%u wrap=%u/%u "
-					    "vb=%p+%u matrix=[%.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g; "
-					    "%.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g]",
-					    boundTextures[0], texture.width, texture.height, texture.levels,
-					    texture.uploadedMipLevels, textureStages[0].magFilter, textureStages[0].minFilter,
-					    textureStages[0].wrapU, textureStages[0].wrapV, dynamicVertexBuffer.Get(), dynamicVertexBufferOffset,
-					    matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5], matrix[6], matrix[7],
-					    matrix[8], matrix[9], matrix[10], matrix[11], matrix[12], matrix[13], matrix[14], matrix[15]);
-					lastGridLog = now;
-				}
-			}
-		}
 
 		UINT const stride = sizeof(D3D11Vertex);
 		UINT const offset = dynamicVertexBufferOffset;
@@ -846,7 +823,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			// non-indexed caster (flat network quads are the classic case)
 			// never reached the shadow map.
 			if (MatchesLiveShadowMesh(firstVertex, vertexCount)) {
-				if (NativeShadowMasks::LiveNetworkDrawActive()) {
+				if (LiveShadowHooks::NetworkDrawActive()) {
 					static bool loggedBracketArrays = false;
 					if (!loggedBracketArrays) {
 						loggedBracketArrays = true;
@@ -873,7 +850,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		} catch (std::bad_alloc const &) {
 		}
 		if (built && MatchesLiveShadowMesh(firstVertex, vertexCount)) {
-			if (NativeShadowMasks::LiveNetworkDrawActive()) {
+			if (LiveShadowHooks::NetworkDrawActive()) {
 				static bool loggedBracketArraysConverted = false;
 				if (!loggedBracketArraysConverted) {
 					loggedBracketArraysConverted = true;
@@ -937,7 +914,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (!culled && !UploadVertices(minimumIndex, maximumIndex - minimumIndex + 1)) return;
 		INT const baseVertex = -static_cast<INT>(minimumIndex);
 		if (MatchesLiveShadowMesh(minimumIndex, maximumIndex - minimumIndex + 1)) {
-			if (NativeShadowMasks::LiveNetworkDrawActive()) {
+			if (LiveShadowHooks::NetworkDrawActive()) {
 				static bool loggedBracketElements = false;
 				if (!loggedBracketElements) {
 					loggedBracketElements = true;

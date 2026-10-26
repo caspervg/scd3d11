@@ -11,8 +11,8 @@
 // The city side of terrain shadows (docs/true3d-shadows-terrain.md).
 //
 // SimCity 4 Deluxe 1.1.641. The terrain is reached through gzcom-dll's
-// interfaces, so it is known in a city without a single shadow record, where
-// NativeShadowRegistry never learns an overlay manager. cSTETerrain (vtable
+// interfaces, so it is known in a city without a single shadow record.
+// cSTETerrain (vtable
 // 0x00AB3D18) keeps one 0x24-byte record per vertex at +0x6C: the altitude at
 // +0x00, the normal its vertex lighting uses at +0x04 (what DoLighting,
 // 0x00742930, hands GetTerrainVertexColors), and flags at +0x22, where 0x3000
@@ -54,7 +54,7 @@
 #include "TerrainShadows.h"
 
 #include "Diagnostics.h"
-#include "NativeShadowRegistry.h"
+#include "LiveShadowHooks.h"
 
 #include "GZServPtrs.h"
 #include "SC4Rect.h"
@@ -74,8 +74,10 @@ namespace nSCD3D11::TerrainShadows {
 		// Half a terrain cell: shadow edges follow the terrain's 16 m facets
 		// closely, and a large city stays under 700 texels a side.
 		constexpr float kSpacingCells = 0.5f;
-		// More changed tiles than this are redisplayed as their union.
-		constexpr size_t kMaxRedisplayRegions = 32;
+		// The sun's apparent radius for the penumbra, in radians. The real sun
+		// is 0.27 degrees; 3 degrees stands in for the sky light that softens
+		// real hill shadows, and is the knob if edges look too hard or too soft.
+		constexpr float kSunRadius = 3.0f * 0.0174532925f;
 		// The sun is view-locked and only moves with a rotation.
 		constexpr float kSunTolerance = 1.0e-5f;
 		// How often an unchanged sun re-reads the height field to catch terraforming.
@@ -110,11 +112,6 @@ namespace nSCD3D11::TerrainShadows {
 		unsigned gBuilds = 0;
 		// -2 before the first lookup, -1 when RenderShadows cannot be read.
 		int32_t gRenderShadowsId = -2;
-
-		bool DiagnosticsEnabled() {
-			static bool const enabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
-			return enabled;
-		}
 
 		cISTETerrain *CityTerrain() {
 			cISC4AppPtr app;
@@ -267,19 +264,6 @@ namespace nSCD3D11::TerrainShadows {
 			       std::memcmp(a.normals.data(), b.normals.data(), a.normals.size() * sizeof(float)) == 0;
 		}
 
-		// RedisplayStaticOverlay's route (NativeShadowRegistry::RedisplayWorldRect)
-		// on the city's own terrain: the registry's overlay manager is only
-		// replaced by the next city's first shadow record, so its terrain is used
-		// for nothing but its view flag, and only while it is this terrain.
-		void Redisplay(cISTETerrain *terrain, TerrainShadowMap::Region const &region) {
-			void *overlayTerrain = nullptr;
-			bool overlayUpdateView = true;
-			bool const sameTerrain = NativeShadowRegistry::OverlayTerrain(overlayTerrain, overlayUpdateView) &&
-			                         overlayTerrain == terrain;
-			NativeShadowRegistry::RedisplayTerrainRect(terrain, sameTerrain ? overlayUpdateView : true, region.minX,
-			                                           region.minZ, region.maxX, region.maxZ);
-		}
-
 		double Milliseconds(LARGE_INTEGER const &start) {
 			LARGE_INTEGER end{}, frequency{};
 			QueryPerformanceCounter(&end);
@@ -290,12 +274,8 @@ namespace nSCD3D11::TerrainShadows {
 		}
 	} // namespace
 
-	bool Enabled() {
-		return NativeShadowRegistry::Enabled();
-	}
-
 	void Install() {
-		if (gShadowDepthPatched || !Enabled()) return;
+		if (gShadowDepthPatched || !LiveShadowHooks::Enabled()) return;
 		uint8_t *const site = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr)) + (kShadowDepthVA - kImageBase);
 		if (std::memcmp(site, kShadowDepthGuard, sizeof(kShadowDepthGuard)) != 0) {
 			Log(LogCategory::Initialization,
@@ -348,7 +328,7 @@ namespace nSCD3D11::TerrainShadows {
 		return gRenderShadowsId < 0 || !SafeBoolValue(properties, gRenderShadowsId, value) || value;
 	}
 
-	TerrainShadowMap::Map const *Update(float const sun[3], bool redisplayChanges, uint64_t &generation) {
+	TerrainShadowMap::Map const *Update(float const sun[3], uint64_t &generation) {
 		cISTETerrain *const terrain = CityTerrain();
 		bool const sameSun = gMapValid && std::fabs(sun[0] - gSun[0]) <= kSunTolerance &&
 		                     std::fabs(sun[1] - gSun[1]) <= kSunTolerance &&
@@ -356,7 +336,7 @@ namespace nSCD3D11::TerrainShadows {
 		// Reading and comparing the height field is the expensive part, so an
 		// unchanged sun over the same terrain re-reads it at most every
 		// kTerrainPollMilliseconds. A terraform shows up on the first pass after
-		// that, and its changed regions are redisplayed like any other change.
+		// that, as a new generation.
 		ULONGLONG const now = GetTickCount64();
 		if (sameSun && terrain != nullptr && terrain == gTerrain && now - gLastRead < kTerrainPollMilliseconds) {
 			generation = gGeneration;
@@ -377,7 +357,7 @@ namespace nSCD3D11::TerrainShadows {
 		LARGE_INTEGER start{};
 		QueryPerformanceCounter(&start);
 		TerrainShadowMap::Map next;
-		if (!TerrainShadowMap::Build(gScratch, sun, gScratch.cellWidth * kSpacingCells, next)) {
+		if (!TerrainShadowMap::Build(gScratch, sun, gScratch.cellWidth * kSpacingCells, next, kSunRadius)) {
 			static bool logged = false;
 			if (!logged) {
 				logged = true;
@@ -386,20 +366,6 @@ namespace nSCD3D11::TerrainShadows {
 			}
 			gMapValid = false;
 			return nullptr;
-		}
-		// Pixels outside a partial pass keep the shadows they were drawn with.
-		// Where those changed they are redisplayed; without an earlier map of
-		// this city to compare against, that is all of it.
-		std::vector<TerrainShadowMap::Region> regions;
-		if (redisplayChanges) {
-			if (gMapValid && terrain == gTerrain && TerrainShadowMap::SameLayout(gMap, next)) {
-				TerrainShadowMap::ChangedRegions(gMap, next, gScratch, kMaxRedisplayRegions, regions);
-			} else {
-				regions.push_back(TerrainShadowMap::Region{
-					0.0f, 0.0f, static_cast<float>(gScratch.verticesX - 1) * gScratch.cellWidth,
-					static_cast<float>(gScratch.verticesZ - 1) * gScratch.cellWidth
-				});
-			}
 		}
 		double const buildTime = Milliseconds(start);
 		bool const newCity = terrain != gTerrain;
@@ -410,19 +376,13 @@ namespace nSCD3D11::TerrainShadows {
 		std::memcpy(gSun, sun, sizeof(gSun));
 		++gGeneration;
 		++gBuilds;
-		for (TerrainShadowMap::Region const &region: regions) Redisplay(terrain, region);
 
-		if (newCity || gBuilds <= 2 || DiagnosticsEnabled()) {
-			static unsigned logged = 0;
-			if (newCity || logged < 64) {
-				++logged;
-				Log(LogCategory::Initialization,
-				    "terrain shadows: %s %ux%u vertices (cell %.1f), map %ux%u at %.1f, sun %.4f/%.4f/%.4f, "
-				    "%.2f ms, %u regions redisplayed",
-				    newCity ? "city" : (sameSun ? "terrain changed," : "sun changed,"), gField.verticesX,
-				    gField.verticesZ, gField.cellWidth, gMap.width, gMap.height, gMap.spacing, sun[0], sun[1], sun[2],
-				    buildTime, static_cast<unsigned>(regions.size()));
-			}
+		if (newCity || gBuilds <= 2) {
+			Log(LogCategory::Initialization,
+			    "terrain shadows: %s %ux%u vertices (cell %.1f), map %ux%u at %.1f, sun %.4f/%.4f/%.4f, %.2f ms",
+			    newCity ? "city" : (sameSun ? "terrain changed," : "sun changed,"), gField.verticesX,
+			    gField.verticesZ, gField.cellWidth, gMap.width, gMap.height, gMap.spacing, sun[0], sun[1], sun[2],
+			    buildTime);
 		}
 		generation = gGeneration;
 		return &gMap;

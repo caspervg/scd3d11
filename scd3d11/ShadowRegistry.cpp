@@ -8,10 +8,10 @@
  *  version 2.1 of the License, or (at your option) any later version.
  */
 
-// Shadow records for the live shadow map (docs/true3d-shadows-replace-all.md).
+// Shadow records for the live shadow map.
 //
 // SimCity 4 Deluxe 1.1.641, Windows x86, image base 0x00400000. Opt-in with
-// -NativeShadowMasks:replace. Every site is guarded by its exact bytes or slot
+// -LiveShadows:on. Every site is guarded by its exact bytes or slot
 // value and restored during PreAppShutdown.
 //
 //   0x00AB3A14  cSTEOverlayManager vtable +0x2C, AddShadow 0x0073C0D0
@@ -56,7 +56,7 @@
 // list {+4 begin, +8 end} of {primitive, start, count}.
 //
 // Props without Is Ground Model (0x8A5E5DB8) are never shadowed by SC4. With
-// -NativeShadowMasks:replace, NativeShadowMasks' site D lets their AddShadow run
+// -LiveShadows:on, LiveShadowHooks' site D lets their AddShadow run
 // and flags it (ExpectMeshCaster); the record then only exists for its lifetime
 // and dirty rectangle. Such a prop floating above the terrain - the building
 // zots AddBuildingZotProp places, 46-56 m up - stays unshadowed; one whose UVs
@@ -67,10 +67,10 @@
 // manager's terrain (+0x88) RedisplayTerrain (vtable +0x110, 0x00749850) with a
 // rectangle of terrain cells, which queues a partial static pass.
 
-#include "NativeShadowRegistry.h"
+#include "ShadowRegistry.h"
 
 #include "Diagnostics.h"
-#include "NativeShadowMasks.h"
+#include "LiveShadowHooks.h"
 
 #include <algorithm>
 #include <array>
@@ -86,7 +86,7 @@
 #include <intrin.h>
 #include <windows.h>
 
-namespace nSCD3D11::NativeShadowRegistry {
+namespace nSCD3D11::ShadowRegistry {
 	namespace {
 		constexpr uintptr_t kImageBase = 0x00400000;
 
@@ -105,9 +105,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 		constexpr size_t kRendererLightingSlot = 0x24 / sizeof(void *);
 		// Lighting manager vtable 0x00ABB530 +0x34, GetShadowDirection 0x007D6B50.
 		constexpr size_t kLightingShadowDirectionSlot = 0x34 / sizeof(void *);
-		// SetTimeOfDay (0x007D9DF0) writes max((lighting red - 0.8) / 0.2, 0)
-		// here and sends it as the daylight transition parameter.
-		constexpr ptrdiff_t kLightingDaylight = 0xBC;
 		// GetShadowParams (0x007D6B70) only copies these globals out.
 		constexpr uintptr_t kShadowStrengthVA = 0x00B0DC78;
 		constexpr uintptr_t kShadowAlphaScaleVA = 0x00B4E330;
@@ -228,7 +225,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 		// index recovery, never correctness.
 		void const *gStashedMesh = nullptr;
 		uint8_t const *gStashedFrame = nullptr;
-		// Set by NativeShadowMasks' site D stub for a relaxed prop, consumed by
+		// Set by LiveShadowHooks' site D stub for a relaxed prop, consumed by
 		// the AddShadow call that follows on the same thread.
 		thread_local bool tExpectMeshCaster = false;
 
@@ -249,7 +246,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 		unsigned gRemoved = 0;
 		unsigned gStaleRecords = 0;
 		unsigned gPasses = 0;
-		unsigned gProjectorChecks = 0;
 		unsigned gDrawCalls = 0;
 		unsigned gGathered = 0;
 		unsigned gNotGathered = 0;
@@ -263,11 +259,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 				Log(LogCategory::Initialization, "shadow registry: DrawShadows call left native (%s, manager %p, registry %p)",
 				    reason, manager, gManager);
 			}
-		}
-
-		bool DiagnosticsEnabled() {
-			static bool const enabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
-			return enabled;
 		}
 
 		// ------------------------------------------------------------------
@@ -297,22 +288,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 				reinterpret_cast<GetDirection>(
 					(*reinterpret_cast<void ***>(lighting))[kLightingShadowDirectionSlot])(lighting, direction);
 				return true;
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				return false;
-			}
-		}
-
-		bool SafeShadowDaylight(uintptr_t rendererPointer, float &daylight) {
-			__try {
-				void *const renderer = *reinterpret_cast<void **>(rendererPointer);
-				if (renderer == nullptr) return false;
-				using GetLighting = void *(__thiscall *)(void *);
-				void *const lighting =
-					reinterpret_cast<GetLighting>((*reinterpret_cast<void ***>(renderer))[kRendererLightingSlot])(
-						renderer);
-				if (lighting == nullptr) return false;
-				return SafeCopy(static_cast<uint8_t const *>(lighting) + kLightingDaylight,
-				                &daylight, sizeof(daylight));
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				return false;
 			}
@@ -360,7 +335,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 #else
 		bool SafeCopy(void const *, void *, size_t) { return false; }
 		bool SafeShadowDirection(uintptr_t, float *) { return false; }
-		bool SafeShadowDaylight(uintptr_t, float &) { return false; }
 		struct TerrainGrid {
 			float cellWidth;
 			uint32_t cellsX;
@@ -483,36 +457,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 			return count == 0 ? 0.0 : std::sqrt(squared / count);
 		}
 
-		// -LiveShadowDiag checks 2 and 3 of the design: the projector reproduces
-		// the mesh's UVs from world positions, and the transformed mesh sits
-		// where AddShadow's bounding box says the model is.
-		void LogProjectorCheck(Caster const &caster, float const *uvs, uint32_t count, void const *box) {
-			if (!DiagnosticsEnabled() || gProjectorChecks >= 8) return;
-			++gProjectorChecks;
-			double squared = 0.0;
-			double worst = 0.0;
-			for (uint32_t vertex = 0; vertex < count; ++vertex) {
-				float const *const world = caster.positions.data() + vertex * 3;
-				float const *const m = caster.projector;
-				float const u = m[0] * world[0] + m[4] * world[1] + m[8] * world[2] + m[12];
-				float const v = m[1] * world[0] + m[5] * world[1] + m[9] * world[2] + m[13];
-				double const du = u - uvs[vertex * 2 + 0];
-				double const dv = v - uvs[vertex * 2 + 1];
-				squared += du * du + dv * dv;
-				worst = (std::max)(worst, std::sqrt(du * du + dv * dv));
-			}
-			float boxValues[6]{};
-			bool const haveBox = SafeCopy(box, boxValues, sizeof(boxValues));
-			Log(LogCategory::Initialization,
-			    "shadow registry check: id=%u verts=%u indices=%u uv=[%.3g,%.3g..%.3g,%.3g] residual rms=%.4g max=%.4g "
-			    "world=[%.1f,%.1f,%.1f..%.1f,%.1f,%.1f] box=%s[%.1f,%.1f,%.1f..%.1f,%.1f,%.1f] base=%.2f",
-			    caster.id, count, static_cast<unsigned>(caster.indices.size()), caster.uvBounds[0],
-			    caster.uvBounds[1], caster.uvBounds[2], caster.uvBounds[3], std::sqrt(squared / count), worst,
-			    caster.low[0], caster.low[1], caster.low[2], caster.high[0], caster.high[1], caster.high[2],
-			    haveBox ? "" : "?", boxValues[0], boxValues[1], boxValues[2], boxValues[3], boxValues[4],
-			    boxValues[5], caster.baseHeight);
-		}
-
 		void Register(void *manager, int32_t id, void const *binding, int32_t count, void const *positions,
 		              void const *uvs, void const *box, void const *transform, uint8_t const *returnSlot,
 		              bool meshCaster) {
@@ -584,13 +528,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 				}
 				double const residual = ProjectorResidual(*caster, uvValues.data(), vertexCount);
 				bool const floating = caster->low[1] - ground > kFloatingPropHeight;
-				if (DiagnosticsEnabled() && gMeshCasters + gFloatingProps + gPrerenderedProps < 24) {
-					Log(LogCategory::Initialization,
-					    "shadow registry: relaxed prop id=%d verts=%u lowest %.2f above terrain, residual %.4f -> %s",
-					    id, vertexCount, caster->low[1] - ground, residual,
-					    floating ? "floating, no shadow" : residual < kPrerenderedResidual ? "projector"
-						    : indexed ? "own UVs" : "per-draw");
-				}
 				if (floating) {
 					caster->suppressOnly = true;
 					++gFloatingProps;
@@ -605,11 +542,10 @@ namespace nSCD3D11::NativeShadowRegistry {
 					// through the per-draw path instead, and its record - whose
 					// projector would stamp a slab - is only kept out of DrawShadows.
 					caster->suppressOnly = true;
-					NativeShadowMasks::RegisterLivePropMesh(vertexCount, positions, uvs);
+					LiveShadowHooks::RegisterPropMesh(vertexCount, positions, uvs);
 					++gMeshFallbacks;
 				}
 			}
-			if (!caster->meshUVs) LogProjectorCheck(*caster, uvValues.data(), vertexCount, box);
 
 			std::lock_guard<std::mutex> lock(gMutex);
 			if (gManager != manager) {
@@ -785,7 +721,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 			} else if (meshCaster && count > 0) {
 				// CalcShadowProjection rejected the fit, so there is no record to
 				// keep: the prop casts through the per-draw path as before.
-				NativeShadowMasks::RegisterLivePropMesh(static_cast<uint32_t>(count), positions, uvs);
+				LiveShadowHooks::RegisterPropMesh(static_cast<uint32_t>(count), positions, uvs);
 				++gMeshFallbacks;
 			}
 			return id;
@@ -913,11 +849,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 		}
 
 		bool Requested() {
-			char const *argument = std::strstr(GetCommandLineA(), "-NativeShadowMasks:");
-			if (argument == nullptr) return false;
-			argument += sizeof("-NativeShadowMasks:") - 1;
-			return _strnicmp(argument, "replace", 7) == 0 &&
-			       (argument[7] == '\0' || argument[7] == ' ' || argument[7] == '\t');
+			return std::strstr(GetCommandLineA(), "-LiveShadows:on") != nullptr;
 		}
 
 		bool BytesMatch(PatchSite const &site) {
@@ -1074,10 +1006,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 		       RedisplayTerrainRect(terrain, updateView, minX, minZ, maxX, maxZ);
 	}
 
-	bool OverlayTerrain(void *&terrain, bool &updateView) {
-		return gInstalled && CityTerrain(terrain, updateView);
-	}
-
 	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ) {
 		TerrainGrid grid{};
 		if (!gInstalled || terrain == nullptr || !(minX <= maxX) || !(minZ <= maxZ) ||
@@ -1097,47 +1025,6 @@ namespace nSCD3D11::NativeShadowRegistry {
 		return SafeRedisplayTerrain(terrain, updateView, rect);
 	}
 
-	bool TerrainAltitude(float x, float z, float &altitude) {
-		void *terrain = nullptr;
-		bool updateView = false;
-		return gInstalled && CityTerrain(terrain, updateView) && SafeTerrainAltitude(terrain, x, z, altitude) &&
-		       std::isfinite(altitude);
-	}
-
-	bool SunDirection(float direction[3]) {
-		float sun[3]{};
-		if (!gInstalled || !SafeShadowDirection(gRendererPointer, sun) || !std::isfinite(sun[0]) ||
-		    !std::isfinite(sun[1]) || !std::isfinite(sun[2]))
-			return false;
-		std::memcpy(direction, sun, sizeof(sun));
-		return true;
-	}
-
-	bool ShadowParams(float colour[3], float &strength) {
-		float tone[3]{};
-		float value = 0.0f;
-		if (!gInstalled || !SafeCopy(reinterpret_cast<void const *>(gShadowColour), tone, sizeof(tone)) ||
-		    !Read(reinterpret_cast<void const *>(gShadowStrength), value))
-			return false;
-		std::memcpy(colour, tone, sizeof(tone));
-		strength = value;
-		return true;
-	}
-
-	bool ShadowDaylight(float &daylight) {
-		// The replacement hooks are optional, but the live per-draw caster path
-		// needs the same transition. Resolve the supported game's renderer here.
-		static bool const supported = IsSupportedGameVersion();
-		if (!supported) return false;
-		auto const *module = reinterpret_cast<uint8_t const *>(GetModuleHandleW(nullptr));
-		if (module == nullptr) return false;
-		float value = 0.0f;
-		if (!SafeShadowDaylight(reinterpret_cast<uintptr_t>(module + (kRendererPointerVA - kImageBase)), value) ||
-		    !std::isfinite(value)) return false;
-		daylight = (std::clamp)(value, 0.0f, 1.0f);
-		return true;
-	}
-
 	bool TakePass(Pass &pass) {
 		std::lock_guard<std::mutex> lock(gMutex);
 		if (!gPassValid) return false;
@@ -1148,4 +1035,4 @@ namespace nSCD3D11::NativeShadowRegistry {
 		++gPasses;
 		return true;
 	}
-} // namespace nSCD3D11::NativeShadowRegistry
+} // namespace nSCD3D11::ShadowRegistry

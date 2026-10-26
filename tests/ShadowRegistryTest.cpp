@@ -1,9 +1,9 @@
-#include "NativeShadowRegistry.h"
+#include "ShadowRegistry.h"
 
 #include <cassert>
 #include <vector>
 
-using nSCD3D11::NativeShadowRegistry::AppendTriangles;
+using nSCD3D11::ShadowRegistry::AppendTriangles;
 
 int main() {
 	uint32_t const indices[]{10, 11, 12, 13, 14, 15};
@@ -42,11 +42,11 @@ int main() {
 	assert(!AppendTriangles(6, indices, 3, triangles));
 	assert(triangles.empty());
 
-	// Nothing is installed without -NativeShadowMasks:replace, and an idle
+	// Nothing is installed without -LiveShadows:on, and an idle
 	// registry reports no pass.
-	assert(!nSCD3D11::NativeShadowRegistry::Install());
-	assert(!nSCD3D11::NativeShadowRegistry::Enabled());
-	nSCD3D11::NativeShadowRegistry::Pass pass;
-	assert(!nSCD3D11::NativeShadowRegistry::TakePass(pass));
+	assert(!nSCD3D11::ShadowRegistry::Install());
+	assert(!nSCD3D11::ShadowRegistry::Enabled());
+	nSCD3D11::ShadowRegistry::Pass pass;
+	assert(!nSCD3D11::ShadowRegistry::TakePass(pass));
 	return 0;
 }

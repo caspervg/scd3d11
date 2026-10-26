@@ -15,20 +15,19 @@
 #include <vector>
 
 // Replaces SC4's projected BAT shadows (buildings, flora, BAT props, poles) with
-// casters in cGDriver's live shadow map. Opt-in with -NativeShadowMasks:replace,
-// which also turns on every live path NativeShadowMasks:all enables.
+// casters in cGDriver's live shadow map, as part of -LiveShadows:on.
 //
 // cSTEOverlayManager::AddShadow already turns each caster mesh into a world-to-UV
 // projector for SC4's prerendered texture. This module keeps that projector, the
 // texture and the mesh for every shadow record the game creates, takes those
 // records out of the list DrawShadows draws, and hands the driver the ones each
 // static pass would have drawn. True3D props SC4 would not shadow (no Is Ground
-// Model) come through the same call once NativeShadowMasks lets it run, and cast
+// Model) come through the same call once LiveShadowHooks lets it run, and cast
 // with their own UVs. Because SC4 tracks every record's lifetime and dirties its
 // rectangle when it changes, none of these casters needs a full redraw to stay
-// correct. See docs/true3d-shadows-replace-all.md.
+// correct.
 
-namespace nSCD3D11::NativeShadowRegistry {
+namespace nSCD3D11::ShadowRegistry {
 	struct Caster {
 		uint32_t id = 0;
 		void const *manager = nullptr;
@@ -87,7 +86,7 @@ namespace nSCD3D11::NativeShadowRegistry {
 	bool Enabled();
 
 	// Marks the next AddShadow on this thread as a relaxed True3D prop
-	// (NativeShadowMasks site D), to be kept with its own UVs.
+	// (LiveShadowHooks site D), to be kept with its own UVs.
 	void ExpectMeshCaster();
 
 	// Moves out the pass gathered since the last call. False when no
@@ -99,32 +98,11 @@ namespace nSCD3D11::NativeShadowRegistry {
 	// removed. The redraw happens as a partial static pass on a later frame.
 	bool RedisplayWorldRect(float minX, float minZ, float maxX, float maxZ);
 
-	// The same for a terrain the caller already has: a city's before any
-	// shadow record has shown the registry its overlay manager.
+	// The same for a terrain the caller already has.
 	bool RedisplayTerrainRect(void *terrain, bool updateView, float minX, float minZ, float maxX, float maxZ);
-
-	// The terrain and view-update flag RedisplayWorldRect uses: those of the
-	// overlay manager the last shadow record came from, which a city without
-	// records has not replaced yet.
-	bool OverlayTerrain(void *&terrain, bool &updateView);
-
-	// Terrain altitude at a world position; false when there is no city.
-	bool TerrainAltitude(float x, float z, float &altitude);
-
-	// GetShadowDirection: the world-space direction the light travels. Unlike
-	// Pass::sunDirection it is available in a pass without shadow records.
-	bool SunDirection(float direction[3]);
-
-	// GetShadowParams' colour and strength, read directly for the same reason.
-	bool ShadowParams(float colour[3], float &strength);
-
-	// The daylight blend computed by cSC4LightingManager::SetTimeOfDay from
-	// SC4's lighting curve. Available in all live-shadow modes, including when
-	// the registry's replacement hooks are not installed.
-	bool ShadowDaylight(float &daylight);
 
 	// Exposed for tests: SC4's SimGL primitive enumeration to a triangle list.
 	// Points and lines append nothing and return false.
 	bool AppendTriangles(uint32_t primitive, uint32_t const *indices, uint32_t count,
 	                     std::vector<uint32_t> &triangles);
-} // namespace nSCD3D11::NativeShadowRegistry
+} // namespace nSCD3D11::ShadowRegistry

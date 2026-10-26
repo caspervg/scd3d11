@@ -74,10 +74,8 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
         scd3d11/cGDriversCOMDirector.cpp
-        scd3d11/NativeShadowDiagnostics.cpp
-        scd3d11/NativeShadowMasks.cpp
-        scd3d11/NativeShadowRegistry.cpp
-        scd3d11/NativeShadowExperiment.cpp
+        scd3d11/LiveShadowHooks.cpp
+        scd3d11/ShadowRegistry.cpp
         scd3d11/TerrainShadowMap.cpp
         scd3d11/TerrainShadows.cpp
         scd3d11/ThumbnailFocusGuard.cpp
@@ -165,12 +163,12 @@ if (BUILD_TESTING)
             SC4D3D11_SHADER_ENTRIES="CasterVS=vs_4_0,CasterPS=ps_4_0,FullscreenVS=vs_4_0,CompositePS=ps_4_0,RegistryVS=vs_4_0,RegistryPS=ps_4_0")
     target_link_libraries(LiveShadowShaderCompileTest PRIVATE d3dcompiler)
 
-    scd3d11_add_test(NativeShadowRegistryTest
-            tests/NativeShadowRegistryTest.cpp
-            scd3d11/NativeShadowRegistry.cpp
-            scd3d11/NativeShadowMasks.cpp
+    scd3d11_add_test(ShadowRegistryTest
+            tests/ShadowRegistryTest.cpp
+            scd3d11/ShadowRegistry.cpp
+            scd3d11/LiveShadowHooks.cpp
             scd3d11/Diagnostics.cpp)
-    target_link_libraries(NativeShadowRegistryTest PRIVATE version)
+    target_link_libraries(ShadowRegistryTest PRIVATE version)
 
     scd3d11_add_test(TerrainShadowMapTest
             tests/TerrainShadowMapTest.cpp

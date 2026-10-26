@@ -2,7 +2,7 @@ param(
     [string]$GameExe = 'C:\Program Files (x86)\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe',
     # Used only to locate plugins/logs. Do not override the game's user directory.
     [string]$UserDir = 'C:\Users\caspe\Documents\SimCity 4\',
-    [string[]]$GameArguments = @('-CPUCount:8', '-w', '-r3200x1800x32', '-CustomResolution:enabled', '-Intro:off', '-NativeShadowMasks:all'),
+    [string[]]$GameArguments = @('-CPUCount:8', '-w', '-r3200x1800x32', '-CustomResolution:enabled', '-Intro:off', '-LiveShadows:on'),
     [string]$CaptureRoot = (Join-Path $PSScriptRoot '..\runtime-captures'),
     [switch]$DisableDriverThreading,
     [switch]$WithoutValidation,
