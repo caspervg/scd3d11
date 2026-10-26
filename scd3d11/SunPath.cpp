@@ -34,6 +34,18 @@ namespace nSCD3D11::SunPath {
 		// Shadows fade out over the last degrees before sunset.
 		constexpr float kFadeElevation = 6.0f;
 
+		// cISC424HourClock::GetVisualTimePercentage (0x00445450 in 1.1.641) takes
+		// a pointer to its result and returns it, not a float as gzcom-dll
+		// declares, so it is called through its vtable slot.
+		constexpr size_t kVisualTimeSlot = 9;
+
+		float VisualTimeFraction(cISC424HourClock *clock) {
+			using Get = float *(__thiscall *)(cISC424HourClock *, float *);
+			float fraction = 0.0f;
+			reinterpret_cast<Get>((*reinterpret_cast<void ***>(clock))[kVisualTimeSlot])(clock, &fraction);
+			return std::isfinite(fraction) ? (std::clamp)(fraction, 0.0f, 1.0f) : 0.0f;
+		}
+
 		bool gValid = false;
 		uint32_t gStep = 0;
 		float gDirection[3]{};
@@ -76,7 +88,7 @@ namespace nSCD3D11::SunPath {
 			gValid = false;
 			return changed;
 		}
-		float const fraction = (std::clamp)(clock->GetVisualTimePercentage(), 0.0f, 1.0f);
+		float const fraction = VisualTimeFraction(clock);
 		uint32_t const seconds = static_cast<uint32_t>(fraction * 86400.0f);
 		uint32_t const step = seconds / kStepSeconds;
 		if (gValid && step == gStep) return false;
