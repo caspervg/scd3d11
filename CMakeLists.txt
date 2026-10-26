@@ -147,6 +147,12 @@ string(REGEX REPLACE "^v" "" SCD3D11_VERSION_STRING "${SCD3D11_VERSION_TAG}")
 configure_file(scd3d11/SCD3D11.rc.in "${PROJECT_BINARY_DIR}/SCD3D11.rc" @ONLY)
 target_sources(SCD3D11 PRIVATE "${PROJECT_BINARY_DIR}/SCD3D11.rc")
 
+# Release builds also write SCD3D11.pdb, which is published with each release so crash reports can be
+# matched to functions. /DEBUG turns off /OPT:REF and /OPT:ICF unless they are asked for again, and /FS
+# lets parallel compiles share the PDB.
+target_compile_options(SCD3D11 PRIVATE $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Zi;/FS>)
+target_link_options(SCD3D11 PRIVATE $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/DEBUG;/OPT:REF;/OPT:ICF>)
+
 # SC4 loads the driver as SCD3D11.dll, so suppress CMake's "lib" prefix.
 set_target_properties(SCD3D11 PROPERTIES PREFIX "")
 

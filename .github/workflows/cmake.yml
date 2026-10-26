@@ -86,9 +86,10 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: SCD3D11-${{ matrix.configuration }}
-        # SBOMs only exist for Release, but the DLL is always required.
+        # The SBOMs and the PDB only exist for Release, but the DLL is always required.
         path: |
           build/SCD3D11.dll
+          build/SCD3D11.pdb
           build/SCD3D11.*.json
         if-no-files-found: error
 
@@ -116,5 +117,5 @@ jobs:
         zip -j "$archive" dist/SCD3D11.dll SCD3D11.ini dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json README.md LICENSE THIRD_PARTY_NOTICES.txt
         prerelease=""
         if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
-        gh release create "$GITHUB_REF_NAME" "$archive" dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json \
+        gh release create "$GITHUB_REF_NAME" "$archive" dist/SCD3D11.pdb dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json \
           --verify-tag --generate-notes $prerelease
