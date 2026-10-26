@@ -973,13 +973,26 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         LiveShadowCleanView& clean = liveShadowClean;
         uint32_t const colour = clean.storeColour;
         uint32_t const depth = clean.storeDepth;
-        if (!LiveShadowCleanWanted() || !IsDeviceReady() || !clean.viewValid || !liveShadowWorldCastersValid ||
-            !IsBufferRegion(colour) || !IsBufferRegion(depth) || !clean.regionValid[colour - 1] ||
-            !clean.regions[colour - 1])
+        // The first sun steps are logged, to show what each one did.
+        static unsigned loggedSteps = 0;
+        bool const logStep = loggedSteps < 40;
+        if (logStep) ++loggedSteps;
+        char const* refused = !LiveShadowCleanWanted()                              ? "not wanted"
+                            : !IsDeviceReady()                                      ? "device not ready"
+                            : !clean.viewValid                                      ? "no view yet"
+                            : !liveShadowWorldCastersValid                          ? "tracked casters not valid"
+                            : !IsBufferRegion(colour) || !IsBufferRegion(depth)     ? "backing store regions unknown"
+                            : !clean.regionValid[colour - 1] || !clean.regions[colour - 1] ? "no unshadowed copy"
+                            : nullptr;
+        if (refused == nullptr && !ShadowRegistry::GatherView(clean.eyeToWorld, clean.projection))
+            refused = "registry gather failed";
+        if (refused != nullptr) {
+            if (logStep) Log(LogCategory::Initialization, "sun step: redrawn instead (%s)", refused);
             return false;
+        }
         LARGE_INTEGER start{};
         QueryPerformanceCounter(&start);
-        if (!ShadowRegistry::GatherView(clean.eyeToWorld, clean.projection)) return false;
+        FrameStats const before = frameStats;
 
         // The stored view without shadows and its depth become the frame, as a
         // full static pass would leave them.
@@ -1015,7 +1028,17 @@ CompositeOutput CompositePS(float4 position : SV_POSITION) {
         // stays as it is.
         d3dContext->CopyResource(bufferRegions[colour - 1].texture.Get(), backBufferTexture.Get());
         ++frameStats.shadowReshades;
-        frameStats.shadowStaticMs += Milliseconds(start);
+        double const milliseconds = Milliseconds(start);
+        frameStats.shadowStaticMs += milliseconds;
+        if (logStep) {
+            Log(LogCategory::Initialization,
+                "sun step: re-shaded regions %u/%u, %u registry + %u tracked casters, %u map renders, %u composites, "
+                "%.1f ms",
+                colour, depth, frameStats.shadowRegistryCasters - before.shadowRegistryCasters,
+                static_cast<unsigned>(liveShadowWorldCasters.size()),
+                frameStats.shadowMapRenders - before.shadowMapRenders,
+                frameStats.shadowComposites - before.shadowComposites, milliseconds);
+        }
         return true;
     }
 
