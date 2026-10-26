@@ -37,10 +37,6 @@ namespace nSCD3D11 {
         // The black the casters composite with until SC4's own shadow
         // parameters have been read.
         constexpr float kFallbackShadowOpacity = 0.38f;
-        // A registry caster's ground quad sits this far above the occupant's
-        // placement height, so the terrain under it is behind it by more than
-        // the composite bias along the 45-degree sun.
-        constexpr float kGroundLiftWorld = 0.2f;
         // Used when SC4 reports no alpha-test scale: DrawShadows then blends the
         // texture alpha without a test, and the shadow map needs some cut. Also
         // the cut for True3D props cast through their own UVs.
@@ -445,34 +441,6 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             if (ndcLow[0] >= -1.0f && ndcHigh[0] <= 1.0f && ndcLow[1] >= -1.0f && ndcHigh[1] <= 1.0f)
                 return ViewportOverlap::Inside;
             return ViewportOverlap::Partial;
-        }
-
-        // The ground quad a registry caster adds for silhouettes its mesh does
-        // not cover from the sun (tree cards, thin LOD shells): the caster's box
-        // pushed down the sun onto the plane at its placement height. Every
-        // point of it shares its UV with the terrain point below along the sun,
-        // so on flat ground it reproduces SC4's projected shadow exactly.
-        bool GroundQuad(ShadowRegistry::Caster const& caster, float const sun[3], float quad[4][3]) {
-            if (sun[1] > -1.0e-3f) return false;
-            float const height = caster.baseHeight + kGroundLiftWorld;
-            // The box's top and bottom corners land this far along the sun; the
-            // footprint spans the box and both landings.
-            float const alongLow = (height - caster.low[1]) / sun[1];
-            float const alongHigh = (height - caster.high[1]) / sun[1];
-            float low[2]{}, high[2]{};
-            for (unsigned axis = 0; axis < 2; ++axis) {
-                unsigned const world = axis * 2;
-                float const a = sun[world] * alongLow, b = sun[world] * alongHigh;
-                low[axis] = caster.low[world] + (std::min)({0.0f, a, b});
-                high[axis] = caster.high[world] + (std::max)({0.0f, a, b});
-            }
-            float const corners[4][2]{{low[0], low[1]}, {high[0], low[1]}, {high[0], high[1]}, {low[0], high[1]}};
-            for (unsigned index = 0; index < 4; ++index) {
-                quad[index][0] = corners[index][0];
-                quad[index][1] = height;
-                quad[index][2] = corners[index][1];
-            }
-            return true;
         }
 
         double Milliseconds(LARGE_INTEGER const& start) {
@@ -1244,35 +1212,23 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             Normalize(sunWorld);
             float worldToClip[16]{};
             Multiply(projection, worldToView, worldToClip);
+            if (pass.culled && std::memcmp(pass.projection, projection, sizeof(projection)) != 0) {
+                static bool loggedProjection = false;
+                if (!loggedProjection) {
+                    loggedProjection = true;
+                    Log(LogCategory::Initialization,
+                        "shadow registry: DrawShadows ran under another projection than its pass; casters may be missing");
+                }
+            }
             for (ShadowRegistry::PassCaster const& passCaster : pass.casters) {
                 ShadowRegistry::Caster const& caster = *passCaster.caster;
                 float quad[4][3];
-                bool const hasQuad = GroundQuad(caster, sunWorld, quad);
+                bool const hasQuad = ShadowRegistry::GroundQuad(caster, sunWorld, quad);
                 bool const drawQuad = hasQuad && !caster.meshUVs;
                 if (caster.indices.empty() && !drawQuad) continue;
-                // SC4 hands a strip pass thousands of casters, nearly all far
-                // from it. Reject those first through the world box holding the
-                // caster and its quad: the projection is affine, so the box's
-                // NDC extent is its centre and half-size mapped through it.
-                float low[3]{caster.low[0], caster.low[1], caster.low[2]};
-                float high[3]{caster.high[0], caster.high[1], caster.high[2]};
-                if (hasQuad) {
-                    low[0] = (std::min)(low[0], quad[0][0]);
-                    low[1] = (std::min)(low[1], quad[0][1]);
-                    low[2] = (std::min)(low[2], quad[0][2]);
-                    high[0] = (std::max)(high[0], quad[2][0]);
-                    high[1] = (std::max)(high[1], quad[2][1]);
-                    high[2] = (std::max)(high[2], quad[2][2]);
-                }
-                bool outside = false;
-                for (unsigned axis = 0; axis < 2 && !outside; ++axis) {
-                    float centre = worldToClip[12 + axis], extent = 0.0f;
-                    for (unsigned k = 0; k < 3; ++k) {
-                        centre += worldToClip[k * 4 + axis] * (low[k] + high[k]) * 0.5f;
-                        extent += std::fabs(worldToClip[k * 4 + axis]) * (high[k] - low[k]) * 0.5f;
-                    }
-                    outside = centre + extent < -1.0f || centre - extent > 1.0f;
-                }
+                // The gather already culled against this pass's projection; this
+                // catches a pass whose projection changed after DrawShadows.
+                bool const outside = ShadowRegistry::ReachOutside(caster, hasQuad, quad, worldToClip);
                 if (outside) {
                     ++registryCulled;
                     continue;

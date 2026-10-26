@@ -69,6 +69,10 @@ namespace nSCD3D11::ShadowRegistry {
 
 	// Everything the DrawShadows call sites handed over since the last TakePass.
 	struct Pass {
+		// The projection the casters were culled against (see NoteProjection),
+		// when culled is set.
+		float projection[16]{};
+		bool culled = false;
 		// DrawShadows' first argument: eye space to world, the texgen transform
 		// SC4 composes with each record's projector.
 		float eyeToWorld[16]{};
@@ -90,6 +94,25 @@ namespace nSCD3D11::ShadowRegistry {
 	// Marks the next AddShadow on this thread as a relaxed True3D prop
 	// (LiveShadowHooks site D), to be kept with its own UVs.
 	void ExpectMeshCaster();
+
+	// The ground quad a caster adds for silhouettes its mesh does not cover
+	// from the sun (tree cards, thin LOD shells): the caster's box pushed down
+	// the sun (the world direction light travels, normalized) onto the plane
+	// at its placement height. Every point of it shares its UV with the
+	// terrain point below along the sun, so on flat ground it reproduces SC4's
+	// projected shadow exactly. False when the sun is at or above the horizon.
+	bool GroundQuad(Caster const &caster, float const sun[3], float quad[4][3]);
+
+	// True when the world box holding the caster and its quad (if hasQuad)
+	// lies outside the NDC square of worldToClip, an affine column-major
+	// matrix: then nothing the caster shades is in that view.
+	bool ReachOutside(Caster const &caster, bool hasQuad, float const quad[4][3], float const *worldToClip);
+
+	// The driver's projection matrix whenever it changes. A static pass's
+	// DrawShadows runs under that pass's projection, so the gather culls the
+	// pass's casters against it rather than handing over thousands the pass
+	// cannot see. Render thread only.
+	void NoteProjection(float const projection[16]);
 
 	// Moves out the pass gathered since the last call. False when no
 	// DrawShadows call ran in between, i.e. SC4 drew no shadows.

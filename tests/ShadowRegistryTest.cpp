@@ -42,6 +42,31 @@ int main() {
 	assert(!AppendTriangles(6, indices, 3, triangles));
 	assert(triangles.empty());
 
+	// A unit box standing on y = 0 under a 45-degree sun travelling +x: its
+	// quad runs from just behind its foot to where its top lands.
+	nSCD3D11::ShadowRegistry::Caster caster;
+	caster.high[0] = caster.high[1] = caster.high[2] = 1.0f;
+	float const sun[3]{0.70710678f, -0.70710678f, 0.0f};
+	float quad[4][3]{};
+	assert(nSCD3D11::ShadowRegistry::GroundQuad(caster, sun, quad));
+	assert(quad[0][0] < -0.19f && quad[0][0] > -0.21f); // the foot sits below the lifted plane
+	assert(quad[2][2] == 1.0f && quad[0][1] > 0.0f);
+	assert(quad[2][0] > 1.79f && quad[2][0] < 1.81f); // 1 + (1 - 0.2 lift)
+	float const sunUp[3]{0.0f, 1.0f, 0.0f};
+	assert(!nSCD3D11::ShadowRegistry::GroundQuad(caster, sunUp, quad));
+
+	// Reach is culled only once box and quad both miss the NDC square. With
+	// world x -> NDC x - 2.5, the box [0, 1] misses but the quad to 1.8 does not.
+	float worldToClip[16]{};
+	worldToClip[0] = worldToClip[5] = worldToClip[10] = worldToClip[15] = 1.0f;
+	worldToClip[12] = -2.5f;
+	assert(nSCD3D11::ShadowRegistry::ReachOutside(caster, false, quad, worldToClip));
+	assert(nSCD3D11::ShadowRegistry::GroundQuad(caster, sun, quad));
+	assert(!nSCD3D11::ShadowRegistry::ReachOutside(caster, true, quad, worldToClip));
+	worldToClip[12] = 0.0f;
+	worldToClip[13] = 5.0f;
+	assert(nSCD3D11::ShadowRegistry::ReachOutside(caster, true, quad, worldToClip));
+
 	// Nothing is installed without -LiveShadows:on, and an idle
 	// registry reports no pass.
 	assert(!nSCD3D11::ShadowRegistry::Install());

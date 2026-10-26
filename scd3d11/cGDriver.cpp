@@ -20,6 +20,7 @@
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
 #include "GLSupport.h"
+#include "ShadowRegistry.h"
 #include "VertexFormatUtils.h"
 
 #include <cstring>
@@ -388,6 +389,7 @@ namespace nSCD3D11 {
 		memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
 		constantsDirty = true;
 		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
+		else ShadowRegistry::NoteProjection(m);
 		clipRowsDirty = true;
 	}
 

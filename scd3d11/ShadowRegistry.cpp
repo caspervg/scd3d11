@@ -258,6 +258,39 @@ namespace nSCD3D11::ShadowRegistry {
 		Stats gStats;
 		DWORD gDrawThread = 0;
 
+		// The driver's current projection (NoteProjection), render thread only.
+		float gProjection[16]{};
+		bool gProjectionKnown = false;
+
+		// A ground quad sits this far above the occupant's placement height, so
+		// the terrain under it is behind it by more than the composite bias
+		// along the 45-degree sun.
+		constexpr float kGroundLiftWorld = 0.2f;
+
+		// Inverse of an affine column-major matrix; false for any other.
+		bool InvertAffine(float const *m, float out[16]) {
+			if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f) return false;
+			float const c0[3]{m[0], m[1], m[2]}, c1[3]{m[4], m[5], m[6]}, c2[3]{m[8], m[9], m[10]};
+			auto cross = [](float const *a, float const *b, float *result) {
+				result[0] = a[1] * b[2] - a[2] * b[1];
+				result[1] = a[2] * b[0] - a[0] * b[2];
+				result[2] = a[0] * b[1] - a[1] * b[0];
+			};
+			float rows[3][3];
+			cross(c1, c2, rows[0]);
+			cross(c2, c0, rows[1]);
+			cross(c0, c1, rows[2]);
+			float const determinant = c0[0] * rows[0][0] + c0[1] * rows[0][1] + c0[2] * rows[0][2];
+			if (!std::isfinite(determinant) || std::fabs(determinant) < 1.0e-12f) return false;
+			for (unsigned row = 0; row < 3; ++row) {
+				for (unsigned column = 0; column < 3; ++column) out[column * 4 + row] = rows[row][column] / determinant;
+				out[12 + row] = -(out[row] * m[12] + out[4 + row] * m[13] + out[8 + row] * m[14]);
+				out[row * 4 + 3] = 0.0f;
+			}
+			out[15] = 1.0f;
+			return true;
+		}
+
 		double Milliseconds(LARGE_INTEGER const &start) {
 			static LARGE_INTEGER const frequency = [] {
 				LARGE_INTEGER value{};
@@ -640,6 +673,25 @@ namespace nSCD3D11::ShadowRegistry {
 				return false;
 			}
 
+			// Rows x and y of projection * world-to-eye, for culling. Only an
+			// orthographic projection with a known sun is used; anything else
+			// hands every caster over, as before.
+			float worldToClip[16]{};
+			float sunWorld[3]{sun[0], sun[1], sun[2]};
+			float worldToEye[16]{};
+			float const sunLength = std::sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+			float const *const p = gProjection;
+			bool const cull = haveSun && sunLength > 1.0e-6f && gProjectionKnown && p[3] == 0.0f && p[7] == 0.0f &&
+			                  p[11] == 0.0f && p[15] == 1.0f && InvertAffine(matrix, worldToEye);
+			if (cull) {
+				for (float &value: sunWorld) value /= sunLength;
+				for (unsigned column = 0; column < 4; ++column)
+					for (unsigned row = 0; row < 2; ++row)
+						worldToClip[column * 4 + row] = p[row] * worldToEye[column * 4] + p[4 + row] * worldToEye[column * 4 + 1] +
+						                                p[8 + row] * worldToEye[column * 4 + 2] +
+						                                p[12 + row] * worldToEye[column * 4 + 3];
+			}
+
 			std::lock_guard<std::mutex> lock(gMutex);
 			if (manager != gManager) {
 				NoteNotGathered("not the registry's overlay manager", manager);
@@ -688,6 +740,11 @@ namespace nSCD3D11::ShadowRegistry {
 				}
 				if ((flags & kShadowDrawFlags) != kShadowDrawFlags) continue; // disabled: native skips it too
 				if (caster.suppressOnly) continue;
+				if (cull) {
+					float quad[4][3];
+					bool const hasQuad = GroundQuad(caster, sunWorld, quad);
+					if (ReachOutside(caster, hasQuad, quad, worldToClip)) continue;
+				}
 				if (!Read(binding, textureObject) || textureObject == nullptr || !Read(textureObject, texture)) {
 					kept[write++] = id;
 					continue;
@@ -704,11 +761,63 @@ namespace nSCD3D11::ShadowRegistry {
 			std::memcpy(gPass.colour, colour, sizeof(colour));
 			gPass.strength = strength;
 			gPass.alphaScale = alphaScale;
+			gPass.culled = cull;
+			if (cull) std::memcpy(gPass.projection, gProjection, sizeof(gPass.projection));
 			gPassValid = true;
 			return true;
 		}
 
 	} // namespace
+
+	bool GroundQuad(Caster const &caster, float const sun[3], float quad[4][3]) {
+		if (sun[1] > -1.0e-3f) return false;
+		float const height = caster.baseHeight + kGroundLiftWorld;
+		// The box's top and bottom corners land this far along the sun; the
+		// footprint spans the box and both landings.
+		float const alongLow = (height - caster.low[1]) / sun[1];
+		float const alongHigh = (height - caster.high[1]) / sun[1];
+		float low[2]{}, high[2]{};
+		for (unsigned axis = 0; axis < 2; ++axis) {
+			unsigned const world = axis * 2;
+			float const a = sun[world] * alongLow, b = sun[world] * alongHigh;
+			low[axis] = caster.low[world] + (std::min)({0.0f, a, b});
+			high[axis] = caster.high[world] + (std::max)({0.0f, a, b});
+		}
+		float const corners[4][2]{{low[0], low[1]}, {high[0], low[1]}, {high[0], high[1]}, {low[0], high[1]}};
+		for (unsigned index = 0; index < 4; ++index) {
+			quad[index][0] = corners[index][0];
+			quad[index][1] = height;
+			quad[index][2] = corners[index][1];
+		}
+		return true;
+	}
+
+	bool ReachOutside(Caster const &caster, bool hasQuad, float const quad[4][3], float const *worldToClip) {
+		float low[3]{caster.low[0], caster.low[1], caster.low[2]};
+		float high[3]{caster.high[0], caster.high[1], caster.high[2]};
+		if (hasQuad) {
+			for (unsigned axis = 0; axis < 3; ++axis) {
+				low[axis] = (std::min)(low[axis], quad[0][axis]);
+				high[axis] = (std::max)(high[axis], quad[2][axis]);
+			}
+		}
+		// The matrix is affine, so the box's NDC extent is its centre and
+		// half-size mapped through it.
+		for (unsigned axis = 0; axis < 2; ++axis) {
+			float centre = worldToClip[12 + axis], extent = 0.0f;
+			for (unsigned k = 0; k < 3; ++k) {
+				centre += worldToClip[k * 4 + axis] * (low[k] + high[k]) * 0.5f;
+				extent += std::fabs(worldToClip[k * 4 + axis]) * (high[k] - low[k]) * 0.5f;
+			}
+			if (centre + extent < -1.0f || centre - extent > 1.0f) return true;
+		}
+		return false;
+	}
+
+	void NoteProjection(float const projection[16]) {
+		std::memcpy(gProjection, projection, sizeof(gProjection));
+		gProjectionKnown = true;
+	}
 
 	Stats TakeStats() {
 		std::lock_guard<std::mutex> lock(gMutex);
