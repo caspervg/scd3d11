@@ -36,8 +36,8 @@ so SC4 selects it automatically. No `-d:` switch is needed. Do not launch with `
 If you keep plugins outside `Documents\SimCity 4`, pass `-UserDir:` and **quote it**. SC4 splits an unquoted value at
 the first space, silently loads the wrong plugin folder, and falls back to its built-in DirectX driver.
 
-To check that it is active, start the game and open `SC4D3D11.log` next to the plugins folder (normally
-`Documents\SimCity 4\SC4D3D11.log`). Its `adapter:` line names the GPU in use.
+To check that it is active, start the game and open `SCD3D11.log` in the `Logs` folder next to the plugins folder
+(normally `Documents\SimCity 4\Logs\SCD3D11.log`). Its `adapter:` line names the GPU in use.
 
 ## Uninstalling
 
@@ -47,8 +47,8 @@ Delete `SCD3D11.dll` and `SCD3D11.ini` from the plugins folder. SimCity 4 goes b
 
 Set these in `SCD3D11.ini` next to `SCD3D11.dll`, as `Name=value` under `[SCD3D11]`. A launch argument of the same
 name overrides the INI for one session: `-Name:value`, or `-Name` alone for `on`. Values are `on` or `off` (also
-`enabled`/`disabled`, `true`/`false` and `1`/`0`), in any case. `SC4D3D11.log` lists every setting in effect and where
-it came from.
+`enabled`/`disabled`, `true`/`false` and `1`/`0`), in any case. `Logs\SCD3D11.log` lists every setting in effect and
+where it came from.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
@@ -67,7 +67,7 @@ Standard SimCity 4 switches that SCD3D11 reacts to:
 |--------|--------|
 | `-w` / `-f` | Windowed / fullscreen |
 | `-CustomResolution:enabled` `-r<width>x<height>x32` | Render at an arbitrary resolution |
-| `-UserDir:"<path>"` | User directory. With `SCD3D11.dll` in its `Plugins` folder, `SC4D3D11.log` is written there |
+| `-UserDir:"<path>"` | User directory. With `SCD3D11.dll` in its `Plugins` folder, the log goes to its `Logs` folder |
 
 ### Presentation modes
 
@@ -75,7 +75,7 @@ SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-B
 launch to get a monitor-sized borderless window instead.
 
 On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Set `GPU=default`
-to use the adapter Windows picks instead. `SC4D3D11.log` names the adapter in use on its `adapter:` line.
+to use the adapter Windows picks instead. `SCD3D11.log` names the adapter in use on its `adapter:` line.
 
 ### CPU options
 
@@ -96,18 +96,19 @@ add-on and:
 
 In the ReShade overlay's Add-ons tab, disable **Generic Depth**. SCD3D11 overrides its choice anyway. Outside the city
 view (menus, region view) ReShade behaves as usual, except that effects can stay off in the region view after leaving
-a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for `reshade: add-on registered`. `ReShade=off` turns the
+a city. Requires SimCity 4 1.1.641. Check `SCD3D11.log` for `reshade: add-on registered`. `ReShade=off` turns the
 integration off.
 
 ## Known issues
 
 * With ReShade, effects can stay off in the region view after leaving a city.
-* `LiveShadows` costs frame rate in large cities, most of all while scrolling.
+* `LiveShadows` costs some frame rate. While scrolling a large city, about a tenth of each frame goes to shadows.
 
 ## Reporting bugs
 
-[Open an issue](https://github.com/caspervg/scd3d11/issues/new/choose) and attach `SC4D3D11.log` from the session that
-went wrong. The log is recreated each time the game starts, so copy it before relaunching.
+[Open an issue](https://github.com/caspervg/scd3d11/issues/new/choose) and attach `Logs\SCD3D11.log` from the session
+that went wrong. The log is recreated each time the game starts, so copy it before relaunching. If the game crashed,
+also paste its crash report.
 
 ## Development
 
@@ -125,9 +126,10 @@ ctest --test-dir build\debug --output-on-failure
 
 ### Diagnostics
 
-The driver writes `SC4D3D11.log` to the parent of the plugins folder holding `SCD3D11.dll` (normally
-`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`.
-The log is recreated each session.
+The driver writes `SCD3D11.log` to the `Logs` folder next to the plugins folder holding `SCD3D11.dll` (normally
+`Documents\SimCity 4\Logs`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`,
+`window`. The log is recreated each session. Each release also carries `SCD3D11.pdb`, which turns the addresses in a
+crash report into function names.
 
 `window` records focus, activation, size, visibility and system-command messages on the game window (Alt+Tab and the
 Windows key included), and `swapchain` records changes in the Present result, paused presentation and the exclusive
