@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -35,6 +36,9 @@ namespace nSCD3D11::Settings {
 		// through SC4's day and year. Empty keeps SC4's fixed sun.
 		std::optional<float> sunLatitude;
 		bool viewportCull = true;
+		// Anisotropy: the most texture samples per pixel along a slanted
+		// surface, 1 when off.
+		uint32_t anisotropy = 1;
 		bool reshade = true;
 		bool drawStats = false;
 		// LogLevel=trace.
@@ -52,6 +56,9 @@ namespace nSCD3D11::Settings {
 	// (on/off, true/false, enabled/disabled, 1/0, any case), with an empty
 	// value - a bare -Name - meaning on. False when it is none of those.
 	bool ParseFlag(std::string_view value, bool &flag);
+
+	// Exposed for tests: Anisotropy, off or 2, 4, 8 or 16.
+	bool ParseAnisotropy(std::string_view value, uint32_t &anisotropy);
 
 	// Exposed for tests: SunLatitude, a number from -90 to 90 or off.
 	bool ParseLatitude(std::string_view value, std::optional<float> &latitude);

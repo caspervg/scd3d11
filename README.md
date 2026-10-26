@@ -56,6 +56,7 @@ where it came from.
 | `VSync` | on | Wait for vsync before presenting |
 | `FlipModel` | on | Windowed and borderless: present with the flip model. Off uses the legacy DISCARD swap chain |
 | `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one |
+| `Anisotropy` | off | Anisotropic texture filtering, `2`, `4`, `8` or `16`: sharper terrain and roads under SC4's slanted camera, at almost no cost on a recent GPU |
 | `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |
 | `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props, network pieces and moving cars, trains and ships shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |

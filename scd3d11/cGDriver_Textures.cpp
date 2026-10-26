@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "cGDCombiner.h"
 #include "Diagnostics.h"
+#include "Settings.h"
 #include "TextureUploadUtils.h"
 
 #include <cfloat>
@@ -140,6 +141,15 @@ namespace nSCD3D11 {
         description.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
         description.ComparisonFunc = D3D11_COMPARISON_NEVER;
         description.MaxLOD = FLT_MAX;
+        // Anisotropy sharpens mipmapped textures seen at a slant, such as the
+        // terrain and roads under SC4's camera. Only samplers SC4 already
+        // filters smoothly change.
+        uint32_t const anisotropy = Settings::Get().anisotropy;
+        if (anisotropy > 1 && minimum == D3D11_FILTER_TYPE_LINEAR && magnification == D3D11_FILTER_TYPE_LINEAR &&
+            stage.minFilter >= 5) {
+            description.Filter = D3D11_FILTER_ANISOTROPIC;
+            description.MaxAnisotropy = anisotropy;
+        }
 
         uint32_t const key = stage.magFilter |
                               (static_cast<uint32_t>(stage.minFilter) << 8) |

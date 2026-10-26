@@ -138,6 +138,19 @@ namespace nSCD3D11::Settings {
 		return StringViewUtil::TryParse(value, flag);
 	}
 
+	bool ParseAnisotropy(std::string_view value, uint32_t &anisotropy) {
+		for (uint32_t const level: {2u, 4u, 8u, 16u}) {
+			if (value == std::to_string(level)) {
+				anisotropy = level;
+				return true;
+			}
+		}
+		bool on = true;
+		if (value.empty() || !ParseFlag(value, on) || on) return false;
+		anisotropy = 1;
+		return true;
+	}
+
 	bool ParseLatitude(std::string_view value, std::optional<float> &latitude) {
 		// A number first, so that 0 is the equator rather than off.
 		float degrees = 0.0f;
@@ -173,6 +186,7 @@ namespace nSCD3D11::Settings {
 		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
 		values.defaultAdapter = Resolve(sources, "GPU", ParseAdapter, values.defaultAdapter);
 		values.sunLatitude = Resolve(sources, "SunLatitude", ParseLatitude, values.sunLatitude);
+		values.anisotropy = Resolve(sources, "Anisotropy", ParseAnisotropy, values.anisotropy);
 		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
