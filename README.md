@@ -94,6 +94,12 @@ view (menus, region view) ReShade behaves as usual, except that effects can stay
 a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for `reshade: add-on registered`; `-ReShade:off` turns the
 integration off.
 
+## Known issues
+
+* With ReShade, effects can stay off in the region view after leaving a city.
+* `-NativeShadowMasks:all` costs frame rate in large cities.
+* `-NativeShadowMasks:replace` is experimental and can cast blocks of shadow beside dense parks.
+
 ## Reporting bugs
 
 [Open an issue](https://github.com/caspervg/scd3d11/issues/new/choose) and attach `SC4D3D11.log` from the session that
