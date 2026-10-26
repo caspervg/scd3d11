@@ -469,7 +469,7 @@ namespace nSCD3D11::ShadowRegistry {
 		double ProjectorResidual(Caster const &caster, float const *uvs, uint32_t count) {
 			double squared = 0.0;
 			for (uint32_t vertex = 0; vertex < count; ++vertex) {
-				float const *const world = caster.positions.data() + vertex * 3;
+				float const *const world = caster.vertices.data() + vertex * kVertexFloats;
 				float const *const m = caster.projector;
 				double const du = m[0] * world[0] + m[4] * world[1] + m[8] * world[2] + m[12] - uvs[vertex * 2 + 0];
 				double const dv = m[1] * world[0] + m[5] * world[1] + m[9] * world[2] + m[13] - uvs[vertex * 2 + 1];
@@ -512,7 +512,7 @@ namespace nSCD3D11::ShadowRegistry {
 				return;
 			}
 
-			caster->positions.resize(local.size());
+			caster->vertices.resize(static_cast<size_t>(vertexCount) * kVertexFloats);
 			for (unsigned axis = 0; axis < 3; ++axis) {
 				caster->low[axis] = FLT_MAX;
 				caster->high[axis] = -FLT_MAX;
@@ -520,7 +520,7 @@ namespace nSCD3D11::ShadowRegistry {
 			caster->uvBounds[0] = caster->uvBounds[1] = FLT_MAX;
 			caster->uvBounds[2] = caster->uvBounds[3] = -FLT_MAX;
 			for (uint32_t vertex = 0; vertex < vertexCount; ++vertex) {
-				float *const world = caster->positions.data() + vertex * 3;
+				float *const world = caster->vertices.data() + vertex * kVertexFloats;
 				ToWorld(xf, local.data() + vertex * 3, world);
 				for (unsigned axis = 0; axis < 3; ++axis) {
 					caster->low[axis] = (std::min)(caster->low[axis], world[axis]);
@@ -559,7 +559,9 @@ namespace nSCD3D11::ShadowRegistry {
 					++gPrerenderedProps;
 				} else if (indexed) {
 					caster->meshUVs = true;
-					caster->uvs = std::move(uvValues);
+					for (uint32_t vertex = 0; vertex < vertexCount; ++vertex)
+						std::memcpy(caster->vertices.data() + vertex * kVertexFloats + 3, uvValues.data() + vertex * 2,
+						            sizeof(float) * 2);
 					++gMeshCasters;
 				} else {
 					// Without triangles the UVs cannot be drawn. The prop casts

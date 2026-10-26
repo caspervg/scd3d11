@@ -28,13 +28,16 @@
 // correct.
 
 namespace nSCD3D11::ShadowRegistry {
+	// Floats per Caster vertex: world position, then the mesh UV (zero unless meshUVs).
+	constexpr uint32_t kVertexFloats = 5;
+
 	struct Caster {
 		uint32_t id = 0;
 		void const *manager = nullptr;
 		void const *binding = nullptr;
-		// World-space positions, three floats per vertex.
-		std::vector<float> positions;
-		// Triangle list into positions. Empty when the mesh's topology could not
+		// kVertexFloats per vertex, laid out as the driver's shadow pass reads them.
+		std::vector<float> vertices;
+		// Triangle list into vertices. Empty when the mesh's topology could not
 		// be recovered; the caster then casts from its ground quad alone.
 		std::vector<uint32_t> indices;
 		// cSTEOverlayManager record +0x1C: world position to texture UV,
@@ -47,10 +50,9 @@ namespace nSCD3D11::ShadowRegistry {
 		// The occupant's placement height, which is where its ground quad sits.
 		float baseHeight = 0.0f;
 		// A True3D prop SC4 itself would not shadow: it casts with its own UVs
-		// (two floats per vertex) rather than through the projector, which only
-		// fits a prerendered view.
+		// (in vertices) rather than through the projector, which only fits a
+		// prerendered view.
 		bool meshUVs = false;
-		std::vector<float> uvs;
 		// Taken out of DrawShadows but not cast: a relaxed prop the registry
 		// could not keep, which casts through the per-draw path instead.
 		bool suppressOnly = false;

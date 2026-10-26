@@ -45,11 +45,10 @@ namespace nSCD3D11 {
         // texture alpha without a test, and the shadow map needs some cut. Also
         // the cut for True3D props cast through their own UVs.
         constexpr float kDefaultRegistryAlphaReference = 0.5f;
-        // A registry vertex: world position, then UV (zero for projector casters).
-        constexpr UINT kRegistryVertexFloats = 5;
-        // The shadow arenas start at this many vertices and indices - about
-        // 5 MB and 4 MB for registry meshes, 11 MB and 4 MB for per-draw
-        // casters - and never grow past kArenaMaxBytes per buffer.
+        constexpr UINT kRegistryVertexFloats = ShadowRegistry::kVertexFloats;
+        // The per-draw caster arena starts at this many vertices and indices -
+        // about 11 MB and 4 MB - and never grows past kArenaMaxBytes per
+        // buffer, which also caps a pass's registry upload.
         constexpr uint32_t kArenaVertices = 1u << 18;
         constexpr uint32_t kArenaIndices = 1u << 20;
         constexpr uint64_t kArenaMaxBytes = 128ull << 20;
@@ -284,22 +283,18 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         static_assert(sizeof(ShadowConstants) % 16 == 0, "constant buffers are sized in 16-byte registers");
 
         // A registry caster that survived culling, with where its geometry
-        // landed in this pass's upload. The ground quad always bounds the
-        // caster's reach; it is drawn only for projector casters.
+        // landed in this pass's upload: its mesh, then its ground quad. The
+        // quad always bounds the caster's reach; it is drawn only for
+        // projector casters.
         struct RegistryDraw {
             ShadowRegistry::PassCaster const *caster = nullptr;
             ID3D11ShaderResourceView *texture = nullptr;
             float quad[4][3]{};
             bool hasQuad = false;
             bool drawQuad = false;
-            // The ground quad, in this pass's dynamic upload.
             UINT startIndex = 0;
+            UINT indexCount = 0;
             INT baseVertex = 0;
-            // The mesh, in the persistent arena.
-            bool hasMesh = false;
-            UINT meshFirstIndex = 0;
-            UINT meshIndexCount = 0;
-            INT meshFirstVertex = 0;
         };
 
         void TransformPoint(float const* matrix, float const point[3], float out[3]) {
@@ -1295,13 +1290,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
                 draw.texture = texture->second.view.Get();
                 for (unsigned index = 0; index < pointCount; ++index) includeBounds(points[index]);
-                draw.hasMesh = !caster.indices.empty();
-                if (draw.drawQuad) {
-                    draw.baseVertex = static_cast<INT>(registryVertexCount);
-                    draw.startIndex = registryIndexCount;
-                    registryVertexCount += 4;
-                    registryIndexCount += 6;
-                }
+                draw.baseVertex = static_cast<INT>(registryVertexCount);
+                draw.startIndex = registryIndexCount;
+                draw.indexCount = static_cast<UINT>(caster.indices.size()) + (draw.drawQuad ? 6 : 0);
+                registryVertexCount +=
+                    (caster.indices.empty() ? 0 : static_cast<UINT>(caster.vertices.size() / kRegistryVertexFloats)) +
+                    (draw.drawQuad ? 4 : 0);
+                registryIndexCount += draw.indexCount;
                 if (caster.indices.empty()) ++registryQuadOnly;
                 if (caster.meshUVs) ++registryMeshCasters;
                 registryDraws.push_back(draw);
@@ -1396,7 +1391,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                 UINT bind) {
             if (buffer && capacity >= bytes) return S_OK;
             buffer.Reset();
-            capacity = (std::max)(bytes, 65536u);
+            // Half again as much, so a growing city does not reallocate every pass.
+            capacity = (std::max)(bytes + bytes / 2, 65536u);
             D3D11_BUFFER_DESC desc{capacity, D3D11_USAGE_DYNAMIC, bind, D3D11_CPU_ACCESS_WRITE, 0, 0};
             return d3dDevice->CreateBuffer(&desc, nullptr, &buffer);
         };
@@ -1463,99 +1459,47 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                     static_cast<INT>(draw.arenaFirstVertex));
         }
 
-        // Registry casters: meshes from the persistent arena, ground quads from
-        // one upload for the pass, then one draw each, since each record
-        // carries its own projector and texture.
+        // Registry casters: every caster's mesh and ground quad go into one
+        // upload for the pass - SC4 creates and drops shadow records far too
+        // often for a persistent copy to pay - then one draw each, since each
+        // record carries its own projector and texture.
         if (!registryDraws.empty()) {
             UINT const registryStride = sizeof(float) * kRegistryVertexFloats;
-            // Entries the registry has let go of; their arena space comes back
-            // when the arena is next rebuilt.
-            for (auto entry = pipeline.registryMeshes.begin(); entry != pipeline.registryMeshes.end();)
-                entry = entry->second.owner.use_count() > 1 ? std::next(entry) : pipeline.registryMeshes.erase(entry);
-            auto placeMeshes = [&]() {
-                for (RegistryDraw& draw : registryDraws) {
-                    if (!draw.hasMesh) continue;
-                    auto const& owner = draw.caster->caster;
-                    auto found = pipeline.registryMeshes.find(owner.get());
-                    if (found == pipeline.registryMeshes.end()) {
-                        ShadowRegistry::Caster const& caster = *owner;
-                        uint32_t const vertexCount = static_cast<uint32_t>(caster.positions.size() / 3);
-                        uint32_t const indexCount = static_cast<uint32_t>(caster.indices.size());
-                        if (pipeline.registryArena.generation == 0) return false;
-                        std::vector<float> packed(static_cast<size_t>(vertexCount) * kRegistryVertexFloats);
-                        for (uint32_t vertex = 0; vertex < vertexCount; ++vertex) {
-                            float* const out = packed.data() + static_cast<size_t>(vertex) * kRegistryVertexFloats;
-                            std::memcpy(out, caster.positions.data() + static_cast<size_t>(vertex) * 3,
-                                        sizeof(float) * 3);
-                            out[3] = caster.meshUVs ? caster.uvs[vertex * 2] : 0.0f;
-                            out[4] = caster.meshUVs ? caster.uvs[vertex * 2 + 1] : 0.0f;
-                        }
-                        LiveShadowPipeline::RegistryMesh mesh;
-                        if (!ArenaAppend(d3dContext.Get(), pipeline.registryArena, registryStride, packed.data(),
-                                         vertexCount, caster.indices.data(), indexCount, mesh.firstVertex,
-                                         mesh.firstIndex))
-                            return false;
-                        ++frameStats.shadowMeshUploads;
-                        frameStats.shadowUploadBytes += static_cast<uint64_t>(vertexCount) * registryStride +
-                                                        static_cast<uint64_t>(indexCount) * sizeof(uint32_t);
-                        mesh.owner = owner;
-                        mesh.vertexCount = vertexCount;
-                        mesh.indexCount = indexCount;
-                        found = pipeline.registryMeshes.emplace(owner.get(), std::move(mesh)).first;
-                    }
-                    draw.meshFirstVertex = static_cast<INT>(found->second.firstVertex);
-                    draw.meshFirstIndex = found->second.firstIndex;
-                    draw.meshIndexCount = found->second.indexCount;
-                }
-                return true;
-            };
-            auto rebuildArena = [&]() {
-                uint64_t needVertices = 0, needIndices = 0;
-                for (RegistryDraw const& draw : registryDraws) {
-                    if (!draw.hasMesh) continue;
-                    needVertices += draw.caster->caster->positions.size() / 3;
-                    needIndices += draw.caster->caster->indices.size();
-                }
-                pipeline.registryMeshes.clear();
-                ++frameStats.shadowArenaRebuilds;
-                return ArenaRebuild(d3dDevice.Get(), pipeline.registryArena, registryStride, needVertices,
-                                    needIndices);
-            };
-            bool meshesReady = false;
+            uint64_t const vertexBytes = static_cast<uint64_t>(registryVertexCount) * registryStride;
+            uint64_t const indexBytes = static_cast<uint64_t>(registryIndexCount) * sizeof(uint32_t);
+            D3D11_MAPPED_SUBRESOURCE vertexMap{}, indexMap{};
+            bool uploaded = false;
             {
                 ScopeTimer const timer(frameStats.shadowUploadMs);
-                try {
-                    meshesReady = placeMeshes() || (rebuildArena() && placeMeshes());
-                } catch (std::bad_alloc const&) {
-                    meshesReady = false;
-                }
-            }
-
-            bool quadsReady = true;
-            if (registryVertexCount != 0) {
-                D3D11_MAPPED_SUBRESOURCE vertexMap{}, indexMap{};
-                quadsReady =
-                    SUCCEEDED(ensureBuffer(pipeline.registryVertices, pipeline.registryVertexCapacity,
-                                           registryVertexCount * registryStride, D3D11_BIND_VERTEX_BUFFER)) &&
-                    SUCCEEDED(ensureBuffer(pipeline.registryIndices, pipeline.registryIndexCapacity,
-                                           registryIndexCount * static_cast<UINT>(sizeof(uint32_t)),
-                                           D3D11_BIND_INDEX_BUFFER)) &&
-                    SUCCEEDED(d3dContext->Map(pipeline.registryVertices.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
-                                              &vertexMap));
-                if (quadsReady) {
-                    quadsReady = SUCCEEDED(d3dContext->Map(pipeline.registryIndices.Get(), 0, D3D11_MAP_WRITE_DISCARD,
-                                                           0, &indexMap));
-                    if (quadsReady) {
+                uploaded = vertexBytes <= kArenaMaxBytes && indexBytes <= kArenaMaxBytes &&
+                           SUCCEEDED(ensureBuffer(pipeline.registryVertices, pipeline.registryVertexCapacity,
+                                                  static_cast<UINT>(vertexBytes), D3D11_BIND_VERTEX_BUFFER)) &&
+                           SUCCEEDED(ensureBuffer(pipeline.registryIndices, pipeline.registryIndexCapacity,
+                                                  static_cast<UINT>(indexBytes), D3D11_BIND_INDEX_BUFFER)) &&
+                           SUCCEEDED(d3dContext->Map(pipeline.registryVertices.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
+                                                     &vertexMap));
+                if (uploaded) {
+                    uploaded = SUCCEEDED(d3dContext->Map(pipeline.registryIndices.Get(), 0, D3D11_MAP_WRITE_DISCARD,
+                                                         0, &indexMap));
+                    if (uploaded) {
                         auto* vertexOut = static_cast<float*>(vertexMap.pData);
                         auto* indexOut = static_cast<uint32_t*>(indexMap.pData);
-                        uint32_t const quad[6]{0, 1, 2, 0, 2, 3};
                         for (RegistryDraw const& draw : registryDraws) {
+                            ShadowRegistry::Caster const& caster = *draw.caster->caster;
+                            // A caster without triangles casts from its quad alone.
+                            size_t const meshFloats = caster.indices.empty() ? 0 : caster.vertices.size();
+                            std::memcpy(vertexOut, caster.vertices.data(), meshFloats * sizeof(float));
+                            vertexOut += meshFloats;
+                            std::memcpy(indexOut, caster.indices.data(), caster.indices.size() * sizeof(uint32_t));
+                            indexOut += caster.indices.size();
                             if (!draw.drawQuad) continue;
                             for (auto const& corner : draw.quad) {
                                 std::memcpy(vertexOut, corner, sizeof(corner));
                                 vertexOut[3] = vertexOut[4] = 0.0f;
                                 vertexOut += kRegistryVertexFloats;
                             }
+                            uint32_t const first = static_cast<uint32_t>(meshFloats / kRegistryVertexFloats);
+                            uint32_t const quad[6]{first, first + 1, first + 2, first, first + 2, first + 3};
                             std::memcpy(indexOut, quad, sizeof(quad));
                             indexOut += 6;
                         }
@@ -1564,22 +1508,20 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     d3dContext->Unmap(pipeline.registryVertices.Get(), 0);
                 }
             }
+            frameStats.shadowMeshUploads += static_cast<uint32_t>(registryDraws.size());
+            frameStats.shadowUploadBytes += vertexBytes + indexBytes;
             ScopeTimer const submitTimer(frameStats.shadowSubmitMs);
-            if (meshesReady || quadsReady) {
+            if (uploaded) {
                 d3dContext->IASetInputLayout(pipeline.registryLayout.Get());
                 d3dContext->VSSetShader(pipeline.registryVS.Get(), nullptr, 0);
                 d3dContext->PSSetShader(pipeline.registryPS.Get(), nullptr, 0);
                 d3dContext->VSSetConstantBuffers(0, 1, &cb);
                 d3dContext->PSSetConstantBuffers(0, 1, &cb);
                 d3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                ID3D11Buffer* boundVertices = nullptr;
-                auto bind = [&](ID3D11Buffer* vertices, ID3D11Buffer* indices) {
-                    if (vertices == boundVertices) return;
-                    boundVertices = vertices;
-                    UINT offset = 0;
-                    d3dContext->IASetVertexBuffers(0, 1, &vertices, &registryStride, &offset);
-                    d3dContext->IASetIndexBuffer(indices, DXGI_FORMAT_R32_UINT, 0);
-                };
+                ID3D11Buffer* const vertices = pipeline.registryVertices.Get();
+                UINT const offset = 0;
+                d3dContext->IASetVertexBuffers(0, 1, &vertices, &registryStride, &offset);
+                d3dContext->IASetIndexBuffer(pipeline.registryIndices.Get(), DXGI_FORMAT_R32_UINT, 0);
                 // DrawShadows tests strength * alpha against strength * alphaScale,
                 // i.e. the texture's alpha against alphaScale.
                 float const alphaReference =
@@ -1587,9 +1529,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 ShadowConstants constants{};
                 std::memcpy(constants.lightMatrix, lightWorld, sizeof(lightWorld));
                 for (RegistryDraw const& draw : registryDraws) {
-                    bool const mesh = draw.hasMesh && meshesReady;
-                    bool const quad = draw.drawQuad && quadsReady;
-                    if (!mesh && !quad) continue;
+                    if (draw.indexCount == 0) continue;
                     ShadowRegistry::Caster const& caster = *draw.caster->caster;
                     std::memcpy(constants.textureMatrix, caster.projector, sizeof(constants.textureMatrix));
                     std::memcpy(constants.uvBounds, caster.uvBounds, sizeof(constants.uvBounds));
@@ -1603,22 +1543,14 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                                       ? pipeline.wrapSampler.Get()
                                                       : pipeline.clampSampler.Get();
                     d3dContext->PSSetSamplers(0, 1, &sampler);
-                    if (mesh) {
-                        bind(pipeline.registryArena.vertices.Get(), pipeline.registryArena.indices.Get());
-                        d3dContext->DrawIndexed(draw.meshIndexCount, draw.meshFirstIndex, draw.meshFirstVertex);
-                    }
-                    if (quad) {
-                        bind(pipeline.registryVertices.Get(), pipeline.registryIndices.Get());
-                        d3dContext->DrawIndexed(6, draw.startIndex, draw.baseVertex);
-                    }
+                    d3dContext->DrawIndexed(draw.indexCount, draw.startIndex, draw.baseVertex);
                 }
-            }
-            if (!meshesReady || !quadsReady) {
+            } else {
                 static bool loggedUpload = false;
                 if (!loggedUpload) {
                     loggedUpload = true;
-                    Log(LogCategory::Resource, "shadow registry: caster upload failed (meshes %s, ground quads %s)",
-                        meshesReady ? "ok" : "failed", quadsReady ? "ok" : "failed");
+                    Log(LogCategory::Resource, "shadow registry: caster upload failed (%llu vertex bytes, %llu index bytes)",
+                        static_cast<unsigned long long>(vertexBytes), static_cast<unsigned long long>(indexBytes));
                 }
             }
         }

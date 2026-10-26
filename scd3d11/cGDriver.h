@@ -297,20 +297,8 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> registryIndices;
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> clampSampler;
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
-			uint32_t registryVertexCapacity = 0;
+				uint32_t registryVertexCapacity = 0;
 			uint32_t registryIndexCapacity = 0;
-			// Where each registry caster's mesh sits in registryArena. An entry
-			// keeps its caster alive, so the key cannot be reused while it
-			// exists; it is dropped once the registry lets go.
-			struct RegistryMesh {
-				std::shared_ptr<void const> owner;
-				uint32_t firstVertex = 0;
-				uint32_t firstIndex = 0;
-				uint32_t vertexCount = 0;
-				uint32_t indexCount = 0;
-			};
-			std::unordered_map<void const *, RegistryMesh> registryMeshes;
-			ShadowArena registryArena;
 			// TerrainShadows' ceiling map, uploaded whenever its generation moves.
 			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainMap;
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainMapView;
