@@ -113,6 +113,7 @@ CMake is the only build. Install [Visual Studio 2022](https://visualstudio.micro
 the desktop C++ components, then from an **x86** Developer Command Prompt:
 
 ```
+git submodule update --init
 cmake -S . -B build\debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build\debug
 ctest --test-dir build\debug --output-on-failure
@@ -159,7 +160,10 @@ increments whenever the device is recreated, so stale resources can be detected 
 Included in the `vendor` folder:
 
 * [gzcom-dll](https://github.com/nsgomez/gzcom-dll) (LGPLv2.1) — registers the graphics implementation with the game.
-* [Scion](https://github.com/nsgomez/scion) (LGPLv2.1) — compatibility with game components.
+* [sc4-dll-utilities](https://github.com/0xC0000054/sc4-dll-utilities) (LGPLv2.1) — game version detection and the
+  path of `SCD3D11.ini`.
+* [Windows Implementation Library](https://github.com/microsoft/wil) (MIT) — used by sc4-dll-utilities.
+* [mINI](https://github.com/metayeti/mINI) (MIT) — reads `SCD3D11.ini`.
 * [xxHash](https://github.com/Cyan4973/xxHash) (BSD 2-Clause) — fingerprints geometry for the upload cache.
 * [ReShade](https://github.com/crosire/reshade) add-on API headers (BSD 3-Clause) — the [ReShade](#reshade) integration.
 

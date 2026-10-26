@@ -77,12 +77,20 @@ def main():
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     serial = uuid.uuid4()
 
-    reshade_url = "https://github.com/crosire/reshade"
-    reshade_commit = git("-C", "vendor/reshade", "rev-parse", "HEAD")
-    reshade_revision = remote_tag(f"{reshade_url}.git", reshade_commit) or reshade_commit
-    xxhash_url = "https://github.com/Cyan4973/xxHash"
-    xxhash_commit = git("-C", "vendor/xxhash", "rev-parse", "HEAD")
-    xxhash_revision = remote_tag(f"{xxhash_url}.git", xxhash_commit) or xxhash_commit
+    def submodule(name, path, repository, license, description):
+        url = f"https://github.com/{repository}"
+        commit = git("-C", path, "rev-parse", "HEAD")
+        revision = remote_tag(f"{url}.git", commit) or commit
+        return {
+            "spdx_id": f"SPDXRef-{name}",
+            "name": name,
+            "version": revision.removeprefix("v"),
+            "description": f"{description}, commit {commit}",
+            "license": license,
+            "purl": f"pkg:github/{repository}@{revision}",
+            "vcs": url,
+            "download_location": f"git+{url}.git@{commit}",
+        }
 
     main_package = {
         "spdx_id": "SPDXRef-SCD3D11",
@@ -96,36 +104,15 @@ def main():
         "sha256": hashlib.sha256(dll_path.read_bytes()).hexdigest(),
     }
     dependencies = [
-        {
-            "spdx_id": "SPDXRef-reshade",
-            "name": "reshade",
-            "version": reshade_revision.removeprefix("v"),
-            "description": f"ReShade add-on API headers (include/ only), commit {reshade_commit}",
-            "license": "BSD-3-Clause",
-            "purl": f"pkg:github/crosire/reshade@{reshade_revision}",
-            "vcs": reshade_url,
-            "download_location": f"git+{reshade_url}.git@{reshade_commit}",
-        },
-        {
-            "spdx_id": "SPDXRef-xxhash",
-            "name": "xxhash",
-            "version": xxhash_revision.removeprefix("v"),
-            "description": f"xxHash (xxhash.h only), commit {xxhash_commit}",
-            "license": "BSD-2-Clause",
-            "purl": f"pkg:github/Cyan4973/xxHash@{xxhash_revision}",
-            "vcs": xxhash_url,
-            "download_location": f"git+{xxhash_url}.git@{xxhash_commit}",
-        },
-        {
-            "spdx_id": "SPDXRef-scion",
-            "name": "scion",
-            "version": None,  # vendored copy without a recorded upstream revision
-            "description": "GZCOM framework sources from src/framework, vendored in vendor/framework",
-            "license": "LGPL-2.1-only",
-            "purl": "pkg:github/nsgomez/scion",
-            "vcs": "https://github.com/nsgomez/scion",
-            "download_location": "git+https://github.com/nsgomez/scion.git",
-        },
+        submodule("reshade", "vendor/reshade", "crosire/reshade", "BSD-3-Clause",
+                  "ReShade add-on API headers (include/ only)"),
+        submodule("xxhash", "vendor/xxhash", "Cyan4973/xxHash", "BSD-2-Clause", "xxHash (xxhash.h only)"),
+        submodule("gzcom-dll", "vendor/gzcom-dll", "nsgomez/gzcom-dll", "LGPL-2.1-or-later",
+                  "GZCOM DLL plugin SDK (gzcom-dll/)"),
+        submodule("sc4-dll-utilities", "vendor/sc4-dll-utilities", "0xC0000054/sc4-dll-utilities",
+                  "LGPL-2.1-or-later", "SimCity 4 DLL plugin utilities, without Logger.cpp"),
+        submodule("wil", "vendor/wil", "microsoft/wil", "MIT", "Windows Implementation Library headers"),
+        submodule("mini", "vendor/mINI", "metayeti/mINI", "MIT", "mINI INI reader (src/mini/ini.h)"),
     ]
 
     cyclonedx = {

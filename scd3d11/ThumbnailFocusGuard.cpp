@@ -33,6 +33,7 @@
 #include "ThumbnailFocusGuard.h"
 
 #include "Diagnostics.h"
+#include "GameVersion.h"
 
 #include <cstring>
 #include <intrin.h>
@@ -101,23 +102,6 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 			return true;
 		}
 
-		bool IsSupportedGameVersion() {
-			wchar_t path[MAX_PATH]{};
-			if (GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) return false;
-			DWORD ignored = 0;
-			DWORD const size = GetFileVersionInfoSizeW(path, &ignored);
-			if (size == 0) return false;
-			std::vector<uint8_t> data(size);
-			if (!GetFileVersionInfoW(path, 0, size, data.data())) return false;
-			VS_FIXEDFILEINFO *version = nullptr;
-			UINT length = 0;
-			if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void **>(&version), &length) ||
-			    version == nullptr || length < sizeof(VS_FIXEDFILEINFO))
-				return false;
-			return HIWORD(version->dwFileVersionMS) == 1 && LOWORD(version->dwFileVersionMS) == 1 &&
-			       HIWORD(version->dwFileVersionLS) == 641;
-		}
-
 		bool WriteCode(uint8_t *target, uint8_t const *bytes, size_t length) {
 			DWORD protection = 0;
 			if (!VirtualProtect(target, length, PAGE_EXECUTE_READWRITE, &protection)) return false;
@@ -136,7 +120,7 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 		if (gAttempted) return false;
 		gAttempted = true;
 
-		if (!IsSupportedGameVersion()) {
+		if (!IsGameVersion641()) {
 			Log(LogCategory::Initialization, "thumbnail focus guard: requires SimCity 4 1.1.641, skipping");
 			return false;
 		}

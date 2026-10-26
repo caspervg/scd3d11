@@ -9,14 +9,13 @@
  */
 
 #include <cRZCOMDllDirector.h>
+#include <cRZCOMDllDirector.h>
 #include <cRZSysServPtr.h>
 
 #include "../cGDriver.h"
 #include "../Diagnostics.h"
 
 #include <algorithm>
-
-extern cRZCOMSlimDllDirector *RZGetCOMDllDirector();
 
 static const uint32_t GZIID_cIGZGraphicSystem = 0x73283c;
 static const uint32_t RZSRVID_GraphicSystem = 0xc416025c;

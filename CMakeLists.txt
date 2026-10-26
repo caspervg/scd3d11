@@ -17,7 +17,7 @@ set(CMAKE_SYSTEM_PROCESSOR "x86")
 
 project(SCD3D11 LANGUAGES C CXX RC)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -29,6 +29,38 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "You're using a compiler that generates 64-bit code. SCD3D11 must be 32-bit.")
 endif ()
 
+# gzcom-dll, sc4-dll-utilities (with the WIL headers it needs) and mINI, wired up as in
+# sc4-dll-template. They are git submodules.
+set(GZCOM_DIR "${PROJECT_SOURCE_DIR}/vendor/gzcom-dll/gzcom-dll")
+set(SC4_DLL_UTILITIES_DIR "${PROJECT_SOURCE_DIR}/vendor/sc4-dll-utilities/sc4-dll-utilities")
+set(WIL_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/vendor/wil/include")
+set(MINI_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/vendor/mINI/src")
+foreach (required "${GZCOM_DIR}/include" "${SC4_DLL_UTILITIES_DIR}/include" "${WIL_INCLUDE_DIR}/wil"
+        "${MINI_INCLUDE_DIR}/mini/ini.h")
+    if (NOT EXISTS "${required}")
+        message(FATAL_ERROR "Missing ${required}. Initialize submodules with: git submodule update --init")
+    endif ()
+endforeach ()
+
+file(GLOB GZCOM_SOURCES CONFIGURE_DEPENDS "${GZCOM_DIR}/src/*.cpp")
+list(REMOVE_ITEM GZCOM_SOURCES
+        "${GZCOM_DIR}/src/main.cpp"
+        "${GZCOM_DIR}/src/cGZExampleDllDirector.cpp"
+        "${GZCOM_DIR}/src/cGZExtraCheatsDllDirector.cpp"
+        "${GZCOM_DIR}/src/cGZExtraExtraCheatsDllDirector.cpp"
+        "${GZCOM_DIR}/src/cGZCityHallUpgradeDllDirector.cpp")
+add_library(gzcom2 STATIC ${GZCOM_SOURCES})
+target_include_directories(gzcom2 PUBLIC "${GZCOM_DIR}/include")
+
+# Its Logger is left out: SCD3D11 logs from before SC4's application exists and from its watchdog
+# thread, which Diagnostics.cpp handles.
+file(GLOB SC4_DLL_UTILITIES_SOURCES CONFIGURE_DEPENDS "${SC4_DLL_UTILITIES_DIR}/src/*.cpp")
+list(REMOVE_ITEM SC4_DLL_UTILITIES_SOURCES "${SC4_DLL_UTILITIES_DIR}/src/Logger.cpp")
+add_library(sc4_dll_utilities STATIC ${SC4_DLL_UTILITIES_SOURCES})
+target_include_directories(sc4_dll_utilities PUBLIC "${SC4_DLL_UTILITIES_DIR}/include" "${WIL_INCLUDE_DIR}")
+target_compile_definitions(sc4_dll_utilities PUBLIC NOMINMAX)
+target_link_libraries(sc4_dll_utilities PUBLIC gzcom2 version)
+
 # Settings shared by the driver and its tests, kept on one INTERFACE target so the two cannot
 # drift apart. These apply to every configuration on purpose: a MinSizeRel or RelWithDebInfo
 # build needs /utf-8 and the warning level just as much as Debug and Release do. Optimisation
@@ -39,7 +71,9 @@ target_include_directories(scd3d11_common INTERFACE
         "${PROJECT_SOURCE_DIR}/scd3d11"
         "${PROJECT_SOURCE_DIR}/scd3d11/ext"
         "${PROJECT_SOURCE_DIR}/vendor/xxhash"
+        "${MINI_INCLUDE_DIR}"
 )
+target_link_libraries(scd3d11_common INTERFACE sc4_dll_utilities)
 
 # Limited to C++ sources so none of these reach the resource compiler.
 target_compile_options(scd3d11_common INTERFACE
@@ -87,6 +121,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Blit.cpp
         scd3d11/cGDriver_ReShade.cpp
         scd3d11/cGDriver_Viewport.cpp
+        scd3d11/cRZRefCount.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
         scd3d11/SCD3D11Service.cpp
@@ -98,8 +133,6 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/ext/cGDriver_Lighting.cpp
         scd3d11/ext/cGDriver_Snapshot.cpp
         scd3d11/ext/cGDriver_VertexBuffers.cpp
-        vendor/framework/src/cRZCOMDllDirector.cpp
-        vendor/framework/src/cRZRefCount.cpp
 )
 
 add_library(SCD3D11 SHARED scd3d11/SCD3D11.def ${SCD3D11_DRIVER_SOURCES})
@@ -120,9 +153,7 @@ target_sources(SCD3D11 PRIVATE "${PROJECT_BINARY_DIR}/SCD3D11.rc")
 # SC4 loads the driver as SCD3D11.dll, so suppress CMake's "lib" prefix.
 set_target_properties(SCD3D11 PROPERTIES PREFIX "")
 
-set(SCD3D11_DRIVER_INCLUDES
-        "${PROJECT_SOURCE_DIR}/vendor/framework/include"
-        "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
+set(SCD3D11_DRIVER_INCLUDES "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
 target_include_directories(SCD3D11 PRIVATE ${SCD3D11_DRIVER_INCLUDES})
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.

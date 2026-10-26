@@ -28,12 +28,12 @@ namespace nSCD3D11
 {
 	static const uint32_t kSCVKGDriverPluginCOMDirectorID = 0xCB6EC543;
 
-	class cGDriversCOMDirector : public cRZCOMSlimDllDirector
+	class cGDriversCOMDirector : public cRZCOMDllDirector
 	{
 	public:
-		cGDriversCOMDirector() :
-			cRZCOMSlimDllDirector(cGDriver::kSCD3D11GDriverGZCLSID, cGDriver::FactoryFunctionPtr2)
+		cGDriversCOMDirector()
 		{
+			AddCls(cGDriver::kSCD3D11GDriverGZCLSID, cGDriver::FactoryFunctionPtr2);
 		}
 
 	public:
@@ -69,13 +69,15 @@ namespace nSCD3D11
 			return true;
 		}
 
+		// The game's own DirectX driver has this class ID too; the higher
+		// version is what makes SC4 pick SCD3D11.
 		void EnumClassObjects(ClassObjectEnumerationCallback pCallback, void* pContext) {
-			pCallback(classId, 1000000, pContext);
+			pCallback(cGDriver::kSCD3D11GDriverGZCLSID, 1000000, pContext);
 		}
 	};
 }
 
-cRZCOMSlimDllDirector* RZGetCOMDllDirector() {
+cRZCOMDllDirector* RZGetCOMDllDirector() {
 	static nSCD3D11::cGDriversCOMDirector sDirector;
 	return &sDirector;
 }
