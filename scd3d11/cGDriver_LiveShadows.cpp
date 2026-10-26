@@ -89,6 +89,9 @@ cbuffer ShadowConstants : register(b0) {
 	float4 terrainGrid; // composite: map uv = (along * x + y, across * z + w)
 	float4 terrainShade; // composite: terrain map on, bias, minimum softness, caster map on
 	float4 terrainCell;  // composite: cell width, how close to the terrain a terrain pixel lies, vertices x, z
+	float4 relight0;     // composite: the rows of the turn from the new sun to SC4's, w = relight on
+	float4 relight1;
+	float4 relight2;
 };
 Texture2D sourceTexture : register(t0);
 Texture2D<float> sceneDepth : register(t0);
@@ -96,6 +99,7 @@ Texture2D<float> shadowMap : register(t1);
 Texture2D<float2> terrainCeiling : register(t2); // ceiling, umbra
 Texture2D<float4> terrainVertices : register(t3); // altitude, normal x, normal z, cell flipped
 Texture2D<float4> sceneColour : register(t4); // composite of the per-frame pass: the frame so far
+Texture2D<float4> terrainLight : register(t5); // composite: SC4's terrain light by normal x, z
 SamplerState sourceSampler : register(s0);
 SamplerState shadowSampler : register(s1);
 SamplerState terrainSampler : register(s2);
@@ -158,6 +162,12 @@ void RegistryPS(RegistryOutput input) {
 	clip(sourceTexture.Sample(sourceSampler, uv).a - material.y);
 }
 
+// SC4's light for a world normal. One below the horizon gets the horizon's.
+float3 TerrainLight(float3 normal) {
+	float2 xz = normal.y < 0.0 ? normal.xz / max(length(normal.xz), 1e-4) : normal.xz;
+	return terrainLight.SampleLevel(terrainSampler, xz * 0.5 + 0.5, 0).rgb;
+}
+
 float4 FullscreenVS(uint id : SV_VertexID) : SV_POSITION {
 	float2 uv = float2((id << 1) & 2, id & 2);
 	return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
@@ -204,7 +214,13 @@ float TerrainSurface(float2 xz, out float3 normal) {
 	return v.x;
 }
 
-float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
+// Blended as target * (shade + brighten), so the light can rise as well as fall.
+struct CompositeOutput {
+	float4 shade : SV_TARGET0;
+	float4 brighten : SV_TARGET1;
+};
+
+CompositeOutput CompositePS(float4 position : SV_POSITION) {
 	int2 pixel = int2(position.xy);
 	float depth = sceneDepth.Load(int3(pixel, 0));
 	if (depth >= 0.999999) discard;
@@ -220,6 +236,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 	// strength is set for flat ground. A face turned partly away gets less
 	// shadow, and a face that is already unlit gets none.
 	float facing = 1.0;
+	// SunLatitude: SC4 lit the terrain from its own sun. It gets the light
+	// SC4 would give it from the new one, by turning its normal the way that
+	// turns the new sun onto SC4's.
+	float3 relight = float3(1.0, 1.0, 1.0);
+	bool relit = false;
 	if (sun.w != 0.0) {
 		float3 normal = normalize(cross(SurfaceStep(pixel, viewPosition, int2(0, 1)),
 		                                SurfaceStep(pixel, viewPosition, int2(1, 0))));
@@ -232,11 +253,18 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 			float3 vertexNormal;
 			float ground = TerrainSurface(world.xz, vertexNormal);
 			float3 worldNormal = mul((float3x3)eyeToWorld, normal);
-			if (abs(world.y - ground) < terrainCell.y && worldNormal.y > 0.3 * length(worldNormal))
+			if (abs(world.y - ground) < terrainCell.y && worldNormal.y > 0.3 * length(worldNormal)) {
 				light = dot(vertexNormal, -normalize(mul((float3x3)eyeToWorld, sun.xyz)));
+				if (relight0.w != 0.0) {
+					float3 turned = float3(dot(relight0.xyz, vertexNormal), dot(relight1.xyz, vertexNormal),
+					                       dot(relight2.xyz, vertexNormal));
+					relight = TerrainLight(turned) / max(TerrainLight(vertexNormal), 1.0 / 255.0);
+					relit = true;
+				}
+			}
 		}
 		facing = saturate(light * sun.w);
-		clip(facing - 0.001);
+		if (!relit) clip(facing - 0.001);
 	}
 	float shade = 0.0;
 	if (terrainShade.w != 0.0) {
@@ -275,7 +303,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 		colour = lerp(float3(1.0, 1.0, 1.0), tone.rgb, max(amount, settled)) /
 		         lerp(float3(1.0, 1.0, 1.0), tone.rgb, settled);
 	}
-	return float4(colour, 1.0 - amount);
+	colour *= relight;
+	CompositeOutput output;
+	output.shade = float4(min(colour, 1.0), 1.0 - amount);
+	output.brighten = float4(max(colour - 1.0, 0.0), 0.0);
+	return output;
 }
 )";
 
@@ -294,6 +326,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             float terrainGrid[4];
             float terrainShade[4];
             float terrainCell[4];
+            float relight[3][4];
         };
         static_assert(sizeof(ShadowConstants) % 16 == 0, "constant buffers are sized in 16-byte registers");
 
@@ -821,6 +854,52 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         }
     }
 
+    // SC4's terrain light sampled for normals over the upper half sphere, by
+    // their x and z. The light itself depends on the time of day, so it is
+    // sampled again whenever the sun moves.
+    bool cGDriver::UpdateTerrainLight() {
+        constexpr UINT kSize = 32;
+        LiveShadowPipeline& pipeline = liveShadows;
+        if (pipeline.terrainLightView && std::memcmp(pipeline.terrainLightSun, liveShadowSunWorld,
+                                                     sizeof(liveShadowSunWorld)) == 0)
+            return true;
+        if (!pipeline.terrainLight) {
+            D3D11_TEXTURE2D_DESC description{};
+            description.Width = description.Height = kSize;
+            description.MipLevels = description.ArraySize = 1;
+            description.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            description.SampleDesc.Count = 1;
+            description.Usage = D3D11_USAGE_DEFAULT;
+            description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(d3dDevice->CreateTexture2D(&description, nullptr, &pipeline.terrainLight)) ||
+                FAILED(d3dDevice->CreateShaderResourceView(pipeline.terrainLight.Get(), nullptr,
+                                                           &pipeline.terrainLightView))) {
+                pipeline.terrainLight.Reset();
+                pipeline.terrainLightView.Reset();
+                return false;
+            }
+        }
+        float texels[kSize * kSize][4]{};
+        for (UINT row = 0; row < kSize; ++row) {
+            for (UINT column = 0; column < kSize; ++column) {
+                float normal[3]{(column + 0.5f) / kSize * 2.0f - 1.0f, 0.0f, (row + 0.5f) / kSize * 2.0f - 1.0f};
+                float const flat = normal[0] * normal[0] + normal[2] * normal[2];
+                if (flat > 1.0f) {
+                    normal[0] /= std::sqrt(flat);
+                    normal[2] /= std::sqrt(flat);
+                } else {
+                    normal[1] = std::sqrt(1.0f - flat);
+                }
+                float* const texel = texels[row * kSize + column];
+                if (!LiveShadowHooks::TerrainLight(normal, texel)) return false;
+                texel[3] = 1.0f;
+            }
+        }
+        d3dContext->UpdateSubresource(pipeline.terrainLight.Get(), 0, nullptr, texels, kSize * sizeof(texels[0]), 0);
+        std::memcpy(pipeline.terrainLightSun, liveShadowSunWorld, sizeof(liveShadowSunWorld));
+        return true;
+    }
+
     bool cGDriver::LiveShadowCleanWanted() const {
         return Settings::Get().sunLatitude.has_value() && LiveShadowHooks::Enabled() && ShadowRegistry::Enabled();
     }
@@ -1255,8 +1334,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             if (SUCCEEDED(result)) result = d3dDevice->CreateDepthStencilState(&depth, &pipeline.compositeDepth);
             D3D11_BLEND_DESC blend{};
             blend.RenderTarget[0].BlendEnable = TRUE;
-            blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ZERO;
-            blend.RenderTarget[0].DestBlend = D3D11_BLEND_SRC_COLOR;
+            blend.RenderTarget[0].SrcBlend = D3D11_BLEND_DEST_COLOR;
+            blend.RenderTarget[0].DestBlend = D3D11_BLEND_SRC1_COLOR;
             blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
             blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
             blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
@@ -1883,6 +1962,35 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             flatLight = (std::max)(-sunWorld[1], 0.05f);
         }
         composite.sun[3] = 1.0f / flatLight;
+        // SunLatitude relights the terrain in the static passes.
+        float sunPath[3]{};
+        if (staticPass && terrainBound && SunPath::Current(sunPath) && UpdateTerrainLight()) {
+            float from[3]{-liveShadowSunWorld[0], -liveShadowSunWorld[1], -liveShadowSunWorld[2]};
+            float to[3]{};
+            Normalize(from);
+            if (LiveShadowHooks::LightingSun(to)) {
+                // The turn taking from onto to (Rodrigues), as rows.
+                float const axis[3]{from[1] * to[2] - from[2] * to[1], from[2] * to[0] - from[0] * to[2],
+                                    from[0] * to[1] - from[1] * to[0]};
+                float const cosine = Dot(from, to);
+                if (cosine > -0.999f) {
+                    float const k = 1.0f / (1.0f + cosine);
+                    float const cross[3][3]{
+                        {0.0f, -axis[2], axis[1]}, {axis[2], 0.0f, -axis[0]}, {-axis[1], axis[0], 0.0f}
+                    };
+                    for (unsigned row = 0; row < 3; ++row) {
+                        for (unsigned column = 0; column < 3; ++column) {
+                            float squared = 0.0f;
+                            for (unsigned inner = 0; inner < 3; ++inner)
+                                squared += cross[row][inner] * cross[inner][column];
+                            composite.relight[row][column] =
+                                (row == column ? 1.0f : 0.0f) + cross[row][column] + squared * k;
+                        }
+                    }
+                    composite.relight[0][3] = 1.0f;
+                }
+            }
+        }
         // The per-frame pass reads the frame it shades, so it works on a copy.
         bool const readScene = !staticPass && backBufferTexture && [&]() {
             D3D11_TEXTURE2D_DESC wanted{};
@@ -1930,11 +2038,12 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         d3dContext->PSSetShader(pipeline.compositePS.Get(), nullptr, 0);
         d3dContext->VSSetConstantBuffers(0, 1, &cb);
         d3dContext->PSSetConstantBuffers(0, 1, &cb);
-        ID3D11ShaderResourceView* views[5]{
+        ID3D11ShaderResourceView* views[6]{
             depthShaderView.Get(), pipeline.mapView.Get(), terrainBound ? pipeline.terrainMapView.Get() : nullptr,
-            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr, readScene ? pipeline.sceneView.Get() : nullptr
+            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr, readScene ? pipeline.sceneView.Get() : nullptr,
+            composite.relight[0][3] != 0.0f ? pipeline.terrainLightView.Get() : nullptr
         };
-        d3dContext->PSSetShaderResources(0, 5, views);
+        d3dContext->PSSetShaderResources(0, 6, views);
         ID3D11SamplerState* samplers[3]{
             pipeline.mapSampler.Get(), pipeline.mapSampler.Get(), pipeline.clampSampler.Get()
         };
@@ -1943,8 +2052,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         gpuStamp(2);
         ++frameStats.shadowComposites;
         frameStats.shadowCompositePixels += static_cast<uint64_t>(viewport.Width * viewport.Height);
-        views[0] = views[1] = views[2] = views[3] = views[4] = nullptr;
-        d3dContext->PSSetShaderResources(0, 5, views);
+        for (ID3D11ShaderResourceView*& view : views) view = nullptr;
+        d3dContext->PSSetShaderResources(0, 6, views);
         liveShadowDraws.clear();
         d3dContext->ClearState();
         InvalidateD3D11StateCache();

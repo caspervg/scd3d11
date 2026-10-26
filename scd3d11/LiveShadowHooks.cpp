@@ -103,6 +103,12 @@ namespace nSCD3D11::LiveShadowHooks {
 		constexpr size_t kRendererLightingSlot = 0x24 / sizeof(void *);
 		// Lighting manager vtable 0x00ABB530 +0x34, GetShadowDirection 0x007D6B50.
 		constexpr size_t kLightingShadowDirectionSlot = 0x34 / sizeof(void *);
+		// +0x5C, GetColor(normal) 0x007D7460: float *(this, float result[3], float const normal[3]).
+		constexpr size_t kLightingColourSlot = 0x5C / sizeof(void *);
+		// GetColor turns the normal's x and z by the 2x2 matrix at +0x7C and
+		// dots it with the sun at +0x58 (x, y, z in that turned frame).
+		constexpr ptrdiff_t kLightingSun = 0x58;
+		constexpr ptrdiff_t kLightingTurn = 0x7C;
 		// SetTimeOfDay (0x007D9DF0) writes max((lighting red - 0.8) / 0.2, 0)
 		// here and sends it as the daylight transition parameter.
 		constexpr ptrdiff_t kLightingDaylight = 0xBC;
@@ -229,6 +235,18 @@ namespace nSCD3D11::LiveShadowHooks {
 			}
 		}
 
+		bool SafeLightingColour(void *lighting, float const normal[3], float colour[3]) {
+			__try {
+				using GetColour = float *(__thiscall *)(void *, float *, float const *);
+				float const *const result = reinterpret_cast<GetColour>(
+					(*reinterpret_cast<void ***>(lighting))[kLightingColourSlot])(lighting, colour, normal);
+				if (result != colour) std::memcpy(colour, result, sizeof(float) * 3);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
 		bool SafeShadowDirection(void *lighting, float direction[3]) {
 			__try {
 				using GetDirection = float *(__thiscall *)(void *, float *);
@@ -243,6 +261,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		bool SafeCopy(void const *, void *, size_t) { return false; }
 		void *SafeLighting(uintptr_t) { return nullptr; }
 		void const *SafeModelDrawable(void *) { return nullptr; }
+		bool SafeLightingColour(void *, float const *, float *) { return false; }
 		bool SafeShadowDirection(void *, float *) { return false; }
 #endif
 
@@ -468,6 +487,30 @@ namespace nSCD3D11::LiveShadowHooks {
 			return false;
 		std::memcpy(colour, tone, sizeof(tone));
 		strength = value;
+		return true;
+	}
+
+	bool TerrainLight(float const normal[3], float colour[3]) {
+		void *const lighting = gInstalled ? SafeLighting(gRendererPointer) : nullptr;
+		return lighting != nullptr && SafeLightingColour(lighting, normal, colour) && std::isfinite(colour[0]) &&
+		       std::isfinite(colour[1]) && std::isfinite(colour[2]);
+	}
+
+	bool LightingSun(float toLight[3]) {
+		void *const lighting = gInstalled ? SafeLighting(gRendererPointer) : nullptr;
+		float sun[3]{}, turn[4]{};
+		if (lighting == nullptr ||
+		    !SafeCopy(static_cast<uint8_t const *>(lighting) + kLightingSun, sun, sizeof(sun)) ||
+		    !SafeCopy(static_cast<uint8_t const *>(lighting) + kLightingTurn, turn, sizeof(turn)))
+			return false;
+		// GetColor dots (a x + b z, y, c x + d z) with the sun, which is the
+		// world normal dotted with this.
+		toLight[0] = turn[0] * sun[0] + turn[2] * sun[2];
+		toLight[1] = sun[1];
+		toLight[2] = turn[1] * sun[0] + turn[3] * sun[2];
+		float const length = std::sqrt(toLight[0] * toLight[0] + toLight[1] * toLight[1] + toLight[2] * toLight[2]);
+		if (!(length > 1.0e-6f)) return false;
+		for (unsigned axis = 0; axis < 3; ++axis) toLight[axis] /= length;
 		return true;
 	}
 

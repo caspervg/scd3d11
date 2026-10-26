@@ -292,6 +292,11 @@ namespace nSCD3D11 {
 			// the static shadow each pixel already has from its alpha.
 			Microsoft::WRL::ComPtr<ID3D11Texture2D> scene;
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> sceneView;
+			// SunLatitude: SC4's terrain light for normals over the upper half
+			// sphere, by their x and z, and the sun it was sampled under.
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainLight;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainLightView;
+			float terrainLightSun[3]{};
 			// Per-draw casters persist across passes with the registry, so they
 			// are uploaded once too.
 			ShadowArena casterArena;
@@ -386,6 +391,7 @@ namespace nSCD3D11 {
 		// Set while ReshadeLiveShadows runs its pass.
 		bool liveShadowReshading = false;
 		bool LiveShadowCleanWanted(void) const;
+		bool UpdateTerrainLight(void);
 		HRESULT EnsureLiveShadowClean(void);
 		void NoteLiveShadowCleanCopy(uint32_t region, bool intoRegion, int32_t destinationX, int32_t destinationY,
 		                             int32_t width, int32_t height, int32_t sourceX, int32_t sourceY);

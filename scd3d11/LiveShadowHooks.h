@@ -40,4 +40,9 @@ namespace nSCD3D11::LiveShadowHooks {
 	bool SunDirection(float direction[3]);
 	bool ShadowParams(float colour[3], float &strength);
 	bool ShadowDaylight(float &daylight);
+	// The light SC4 gives a world-space normal (cSC4LightingManager::GetColor,
+	// 0x007D7460), which is what it colours terrain vertices with.
+	bool TerrainLight(float const normal[3], float colour[3]);
+	// The world direction towards SC4's own sun in that lighting.
+	bool LightingSun(float toLight[3]);
 } // namespace nSCD3D11::LiveShadowHooks
