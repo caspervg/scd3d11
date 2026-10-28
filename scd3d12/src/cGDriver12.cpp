@@ -41,6 +41,8 @@ namespace nSCD3D12 {
 		constexpr uint64_t kUploadChunkBytes = 32ull << 20;
 		// Shader-visible texture views. Slot 0 is the empty view for stages without a texture.
 		constexpr uint32_t kViewSlots = 1u << 18;
+		// With relighting, the lighting pass's views of the back buffer, light layer and depth buffer.
+		constexpr uint32_t kLightingViews = 1;
 		constexpr uint32_t kRegionCount = 8;
 		constexpr uint32_t kExtensionCapacity = 32768;
 		// Sampler heap: 32 filter and wrap combinations, then the blit sampler.
@@ -49,6 +51,9 @@ namespace nSCD3D12 {
 		constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 		constexpr DXGI_FORMAT kDepthTypeless = DXGI_FORMAT_R24G8_TYPELESS;
 		constexpr uint32_t kPuntBlitSourceAlpha = 0x6C4236E7;
+		// The view object that draws SC4's own shadows, in the static and the dynamic pass. They point at
+		// SC4's sun, so relighting leaves them out and casts its own.
+		constexpr uint32_t kShadowViewObjectVtable = 0x00AB39D0;
 
 		// cGDriver_Geometry.cpp's shader, unchanged.
 		char const kShaderSource[] = R"(
@@ -183,7 +188,7 @@ float4 ApplyStage(StageState state, float4 textureColor, float4 previous, float4
 	return result;
 }
 
-float4 PSMain(PSInput input) : SV_TARGET
+float4 Shade(PSInput input)
 {
 	float4 primary = input.color;
 	if ((flags & 4) != 0)
@@ -230,6 +235,47 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 	return color;
 }
+
+#ifndef SCD3D12_GBUFFER
+float4 PSMain(PSInput input) : SV_TARGET
+{
+	return Shade(input);
+}
+#else
+struct GBufferOutput
+{
+	float4 color : SV_TARGET0;
+	float4 light : SV_TARGET1;
+};
+
+// What SC4's own lighting multiplied into the colour: the colour multiplier and the lights' ambient.
+// SC4 draws without normals, so there is no diffuse term to take out.
+float3 LightFactor()
+{
+	if ((flags & 4) == 0) return 1.0f;
+	float3 factor = globalAmbient.rgb;
+	[loop] for (uint light = 0; light < 8; ++light)
+	{
+		if ((enabledLights & (1u << light)) != 0) factor += lightAmbient[light].rgb;
+	}
+	return saturate(factor);
+}
+
+// The light layer holds the factor premultiplied by the relight weight. An opaque draw replaces it, a
+// blended one covers it by its alpha.
+GBufferOutput PSMain(PSInput input)
+{
+	GBufferOutput output;
+	output.color = Shade(input);
+#if SCD3D12_GBUFFER == 1
+	output.light = float4(LightFactor(), 1.0f);
+#else
+	float coverage = saturate(output.color.a);
+	output.light = float4(LightFactor() * coverage, coverage);
+#endif
+	return output;
+}
+#endif
 )";
 
 		// cGDriver_Blit.cpp's shader, unchanged.
@@ -249,11 +295,144 @@ cbuffer BlitConstants : register(b0) {
 	float4 colorKey;
 	float sourceAlpha;
 };
-float4 PSMain(VertexOutput input) : SV_TARGET {
+float4 Blit(VertexOutput input) {
 	float4 color = source.Sample(sourceSampler, input.texCoord);
 	color.a = lerp(1.0f, color.a, sourceAlpha);
 	if (colorKey.a > 0.5f && all(abs(color.rgb - colorKey.rgb) < 0.5f / 255.0f)) color.a = 0.0f;
 	return color * modulate;
+}
+#ifndef SCD3D12_GBUFFER
+float4 PSMain(VertexOutput input) : SV_TARGET {
+	return Blit(input);
+}
+#else
+// Blits are UI: their alpha is how far they cover the city's relight weight.
+struct GBufferOutput { float4 color : SV_TARGET0; float4 light : SV_TARGET1; };
+GBufferOutput PSMain(VertexOutput input) {
+	GBufferOutput output;
+	output.color = Blit(input);
+	output.light = float4(0.0f, 0.0f, 0.0f, saturate(output.color.a));
+	return output;
+}
+#endif
+)";
+
+		// The lighting pass: SC4's frame relit with another sun, from the colour, the light layer and the
+		// depth buffer. SC4's camera is orthographic, so a pixel's view position is its window position
+		// scaled, and the walk towards the sun is a straight line on screen with a constant climb.
+		char const kLightingShaderSource[] = R"(
+#define SHADOW_STEPS 24
+cbuffer LightingConstants : register(b0)
+{
+	float4 camera;    // view units per pixel across and down, view z per unit of depth, 1 once known
+	float4 sun;       // towards the sun in view space
+	float4 sunColor;
+	float4 ambient;
+	float4 sc4Sun;    // towards SC4's own sun in view space
+	float4 sc4Light;  // the ambient and direct light SC4's art is lit with, the largest relight ratio
+	float4 march;     // longest shadow in view units and in pixels, bias, softness
+	float4 occluder;  // thickness: deeper steps belong to something else in front, blur depth tolerance
+};
+Texture2D<float4> scene : register(t0);
+Texture2D<float4> lightLayer : register(t1);
+Texture2D<float> sceneDepth : register(t2);
+Texture2D<float> sunlight : register(t3);
+
+float4 VSMain(uint id : SV_VertexID) : SV_POSITION
+{
+	float2 uv = float2((id << 1) & 2, id & 2);
+	return float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
+}
+
+float3 ViewPosition(int2 pixel)
+{
+	return float3(pixel.x * camera.x, -pixel.y * camera.y, sceneDepth.Load(int3(pixel, 0)) * camera.z);
+}
+
+// Of the two neighbours along one axis, the step to the one on the same surface: the smaller depth step.
+float3 SurfaceStep(int2 pixel, float3 centre, int2 axis)
+{
+	float3 forward = ViewPosition(pixel + axis) - centre;
+	float3 backward = centre - ViewPosition(pixel - axis);
+	return abs(forward.z) < abs(backward.z) ? forward : backward;
+}
+
+float3 Normal(float3 across, float3 down)
+{
+	float3 normal = normalize(cross(across, down));
+	return normal.z < 0.0f ? -normal : normal;
+}
+
+// Pass 1: how much of the sun each city pixel sees, from a walk towards it over the depth buffer. The
+// steps grow with distance so contact shadows stay sharp, and each pixel of a 4x4 tile starts the walk
+// at another offset, which the blur in pass 2 averages out.
+float TracePS(float4 position : SV_POSITION) : SV_TARGET
+{
+	int2 pixel = int2(position.xy);
+	if (lightLayer.Load(int3(pixel, 0)).a <= 0.0f || camera.w == 0.0f) return 1.0f;
+	float3 centre = ViewPosition(pixel);
+	float3 normal = Normal(SurfaceStep(pixel, centre, int2(1, 0)), SurfaceStep(pixel, centre, int2(0, 1)));
+	if (dot(normal, sun.xyz) <= 0.0f) return 1.0f;
+	float2 pixelsPerUnit = float2(sun.x / camera.x, -sun.y / camera.y);
+	float rate = length(pixelsPerUnit);
+	if (rate < 1.0e-4f) return 1.0f;
+	float reach = min(march.x, march.y / rate);
+	uint2 size;
+	sceneDepth.GetDimensions(size.x, size.y);
+	static const float bayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+	float offset = (bayer[(pixel.y & 3) * 4 + (pixel.x & 3)] + 0.5f) / 16.0f;
+	float shade = 0.0f;
+	[loop] for (uint i = 0; i < SHADOW_STEPS; ++i)
+	{
+		float along = (i + offset) / SHADOW_STEPS;
+		float distance = reach * along * along;
+		float2 at = float2(pixel) + 0.5f + pixelsPerUnit * distance;
+		if (any(at < 0.0f) || any(at >= float2(size))) break;
+		float height = sceneDepth.Load(int3(int2(at), 0)) * camera.z - (centre.z + sun.z * distance);
+		if (height < occluder.x) shade = max(shade, saturate((height - march.z) / march.w));
+	}
+	return 1.0f - shade;
+}
+
+// Pass 2: the relit frame. The sunlight is averaged over the 4x4 tile around the pixel, from the
+// neighbours that lie on the pixel's own surface.
+float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
+{
+	int2 pixel = int2(position.xy);
+	float4 color = scene.Load(int3(pixel, 0));
+	float4 layer = lightLayer.Load(int3(pixel, 0));
+	if (layer.a <= 0.0f || camera.w == 0.0f) return color;
+	float3 centre = ViewPosition(pixel);
+	float3 across = SurfaceStep(pixel, centre, int2(1, 0));
+	float3 down = SurfaceStep(pixel, centre, int2(0, 1));
+	float3 normal = Normal(across, down);
+	float facing = saturate(dot(normal, sun.xyz));
+	float visibility = 1.0f;
+	if (facing > 0.0f)
+	{
+		float total = 0.0f, count = 0.0f;
+		[unroll] for (int y = -2; y < 2; ++y)
+		{
+			[unroll] for (int x = -2; x < 2; ++x)
+			{
+				int2 at = pixel + int2(x, y);
+				float expected = centre.z + across.z * x + down.z * y;
+				float actual = sceneDepth.Load(int3(at, 0)) * camera.z;
+				if (abs(actual - expected) < occluder.y)
+				{
+					total += sunlight.Load(int3(at, 0));
+					count += 1.0f;
+				}
+			}
+		}
+		visibility = count > 0.0f ? total / count : sunlight.Load(int3(pixel, 0));
+	}
+	// SC4's art carries its own sun and its light factor. Both come out, the new light goes in.
+	float baked = sc4Light.x + sc4Light.y * saturate(dot(normal, sc4Sun.xyz));
+	float3 factor = max(layer.rgb / layer.a, 1.0f / 255.0f);
+	float3 light = ambient.rgb + sunColor.rgb * facing * visibility;
+	float3 ratio = min(light / (baked * factor), sc4Light.z);
+	return float4(saturate(color.rgb * lerp(1.0f, ratio, saturate(layer.a))), color.a);
 }
 )";
 
@@ -299,6 +478,34 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			float sourceAlpha;
 			float padding[7];
 		};
+
+		struct LightingConstants {
+			float camera[4];
+			float sun[4];
+			float sunColor[4];
+			float ambient[4];
+			float sc4Sun[4];
+			float sc4Light[4];
+			float march[4];
+			float occluder[4];
+		};
+
+		// The light SC4's art is drawn with: its sun stands at the screen's left, 45 degrees up, and turns
+		// with the camera. The ambient and direct shares light flat ground fully.
+		constexpr float kSC4Ambient = 0.55f;
+		constexpr float kSC4Direct = 0.64f;
+		// Relighting may brighten a pixel at most this much, so a face SC4 drew nearly black stays dark.
+		constexpr float kLargestRelight = 4.0f;
+		// Shadows reach at most this far, in world units (metres) and in pixels.
+		constexpr float kShadowReach = 400.0f;
+		constexpr float kShadowReachPixels = 400.0f;
+		// A step this much below the surface ahead starts the shadow, which deepens over the softness.
+		// Deeper than the thickness, the surface ahead belongs to something else in front.
+		constexpr float kShadowBias = 0.3f;
+		constexpr float kShadowSoftness = 2.0f;
+		constexpr float kShadowThickness = 80.0f;
+		// The sunlight blur takes a neighbour within this much of the pixel's own surface.
+		constexpr float kShadowBlurTolerance = 1.0f;
 
 		void MakeNormalMatrix(float const *m, float *out) {
 			float const a00=m[0], a01=m[4], a02=m[8], a10=m[1], a11=m[5], a12=m[9];
@@ -435,12 +642,27 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			std::vector<UploadChunk> chunks;
 			std::vector<ComPtr<ID3D12Resource> > garbage;
 			std::vector<uint32_t> freedViews;
+			// The lighting pass ran in this frame and its timestamps are waiting to be read.
+			bool timed = false;
+			// The frame drew some of the city, so the lighting pass had city pixels to light.
+			bool cityFrame = false;
 		};
 
 		struct Region {
 			ComPtr<ID3D12Resource> texture;
 			D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
 			int32_t type = 0;
+			// With relighting, a colour region also keeps the light layer, so the two move together.
+			ComPtr<ID3D12Resource> light;
+			D3D12_RESOURCE_STATES lightState = D3D12_RESOURCE_STATE_COPY_DEST;
+		};
+
+		// Where the camera is, as the lighting pass needs it. Taken from the city's own draws.
+		struct Camera {
+			bool known = false;
+			float up[3]{};
+			float pixel[2]{};
+			float depth = 0.0f;
 		};
 
 		ComPtr<IDXGIFactory6> factory;
@@ -464,6 +686,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		ComPtr<ID3D12DescriptorHeap> viewHeap;
 		ComPtr<ID3D12DescriptorHeap> samplerHeap;
 		uint32_t viewIncrement = 0;
+		uint32_t rtvIncrement = 0;
 		uint32_t samplerIncrement = 0;
 		std::vector<uint32_t> freeViews;
 		uint32_t nextView = 1;
@@ -479,6 +702,32 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		int32_t windowHeight = 0;
 		Region regions[kRegionCount];
 		uint8_t regionFlags = 0;
+
+		// Relighting. The light layer is drawn alongside the back buffer: SC4's light factor in rgb and
+		// the relight weight in alpha (1 for the city, 0 for UI), premultiplied by that weight. The
+		// lighting pass writes the published frame into litBuffer, so the back buffer stays SC4's.
+		bool relight = false;
+		cGDriver12::Sun sun;
+		Camera camera;
+		// True once the stream has bracketed a draw with its owner. Streams without owners count every
+		// depth-tested draw as the city.
+		bool ownersSeen = false;
+		uint32_t ownerDepth = 0;
+		uint8_t ownerPass = 0;
+		// The innermost owner is SC4's shadow view object.
+		bool ownerDrawsShadows = false;
+		ComPtr<ID3D12Resource> lightBuffer;
+		ComPtr<ID3D12Resource> litBuffer;
+		// How much sun each pixel sees, traced before the lighting pass blurs and uses it.
+		ComPtr<ID3D12Resource> sunlightBuffer;
+		ComPtr<ID3D12RootSignature> lightingRootSignature;
+		ComPtr<ID3D12PipelineState> lightingPipeline, tracePipeline;
+		ComPtr<ID3DBlob> gbufferPixelShaders[2][2], blitGBufferPixelShader;
+		ComPtr<ID3D12QueryHeap> timestamps;
+		ComPtr<ID3D12Resource> timestampReadback;
+		uint64_t timestampFrequency = 0;
+		std::vector<float> lightingMilliseconds;
+		bool cityDrawn = false;
 
 		// The command list's bindings, so unchanged state is not set again. Forgotten with each new list.
 		ID3D12PipelineState *appliedPipeline = nullptr;
@@ -574,8 +823,39 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		}
 
 		~Impl() {
-			if (queue && fence) WaitIdle();
+			if (queue && fence) {
+				WaitIdle();
+				for (uint32_t index = 0; index < kFrameCount; ++index) ReadTimestamps(index);
+			}
 			if (fenceEvent != nullptr) CloseHandle(fenceEvent);
+			if (!lightingMilliseconds.empty()) {
+				std::vector<float> sorted = lightingMilliseconds;
+				std::sort(sorted.begin(), sorted.end());
+				double total = 0.0;
+				for (float value: sorted) total += value;
+				std::printf("lighting pass, frames that drew the city: %zu frames, %.3f ms on average, median %.3f ms, "
+				            "95th percentile %.3f ms, slowest %.3f ms\n",
+				            sorted.size(), total / static_cast<double>(sorted.size()), sorted[sorted.size() / 2],
+				            sorted[sorted.size() * 95 / 100], sorted.back());
+			}
+		}
+
+		// The lighting pass's GPU time in frame slot index, once the GPU is past it.
+		void ReadTimestamps(uint32_t index) {
+			FrameSlot &slot = frames[index];
+			if (!slot.timed) return;
+			slot.timed = false;
+			D3D12_RANGE const range{index * 16, index * 16 + 16};
+			uint64_t *ticks = nullptr;
+			if (FAILED(timestampReadback->Map(0, &range, reinterpret_cast<void **>(&ticks)))) return;
+			uint64_t const begin = ticks[index * 2];
+			uint64_t const end = ticks[index * 2 + 1];
+			D3D12_RANGE const none{0, 0};
+			timestampReadback->Unmap(0, &none);
+			if (end > begin && timestampFrequency != 0 && slot.cityFrame) {
+				lightingMilliseconds.push_back(static_cast<float>(
+					static_cast<double>(end - begin) * 1000.0 / static_cast<double>(timestampFrequency)));
+			}
 		}
 
 		// Frames and submission
@@ -611,6 +891,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			frameIndex = index;
 			FrameSlot &slot = frames[index];
 			WaitFor(slot.fence);
+			ReadTimestamps(index);
 			for (UploadChunk &chunk: slot.chunks) {
 				if (chunk.size == kUploadChunkBytes) chunkPool.push_back(std::move(chunk));
 			}
@@ -634,12 +915,17 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			// Constants live in upload memory the next frames recycle.
 			constantsAddress = 0;
 			if (backBuffer) {
-				D3D12_CPU_DESCRIPTOR_HANDLE const target = RenderTargetView();
-				D3D12_CPU_DESCRIPTOR_HANDLE const depth = DepthStencilView();
-				list->OMSetRenderTargets(1, &target, FALSE, &depth);
+				BindTargets();
 				list->RSSetViewports(1, &viewport);
 				list->RSSetScissorRects(1, &scissor);
 			}
+		}
+
+		// The back buffer, with the light layer next to it when relighting, and the depth buffer.
+		void BindTargets() {
+			D3D12_CPU_DESCRIPTOR_HANDLE const target = RenderTargetView();
+			D3D12_CPU_DESCRIPTOR_HANDLE const depth = DepthStencilView();
+			list->OMSetRenderTargets(relight ? 2 : 1, &target, TRUE, &depth);
 		}
 
 		// Hands the recorded commands to the queue and moves on to the next frame slot.
@@ -717,7 +1003,12 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			state = wanted;
 		}
 
-		D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView() const { return rtvHeap->GetCPUDescriptorHandleForHeapStart(); }
+		// 0 the back buffer, 1 the light layer, 2 the relit frame, 3 the sunlight.
+		D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView(uint32_t index = 0) const {
+			D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+			handle.ptr += static_cast<SIZE_T>(index) * rtvIncrement;
+			return handle;
+		}
 		D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView() const { return dsvHeap->GetCPUDescriptorHandleForHeapStart(); }
 
 		// Texture views
@@ -840,7 +1131,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
 			description.pRootSignature = rootSignature.Get();
 			ID3DBlob *const vs = blit ? blitVertexShader.Get() : vertexShader.Get();
-			ID3DBlob *const ps = blit ? blitPixelShader.Get() : (kind == 1 ? flatPixelShader.Get() : pixelShader.Get());
+			ID3DBlob *ps = blit ? blitPixelShader.Get() : (kind == 1 ? flatPixelShader.Get() : pixelShader.Get());
+			if (relight) ps = blit ? blitGBufferPixelShader.Get() : gbufferPixelShaders[kind][(bits >> 6) & 1].Get();
 			description.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
 			description.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
 
@@ -926,6 +1218,30 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			description.SampleMask = UINT_MAX;
 			description.NumRenderTargets = 1;
 			description.RTVFormats[0] = kColorFormat;
+			if (relight) {
+				// The light layer follows the colour's coverage. The city puts its factor and full weight
+				// down, UI takes the weight away, and additive glows leave the surface beneath as it was.
+				description.NumRenderTargets = 2;
+				description.RTVFormats[1] = kColorFormat;
+				description.BlendState.IndependentBlendEnable = TRUE;
+				D3D12_RENDER_TARGET_BLEND_DESC &light = description.BlendState.RenderTarget[1];
+				light.LogicOp = D3D12_LOGIC_OP_NOOP;
+				light.BlendOp = light.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+				light.RenderTargetWriteMask = target.RenderTargetWriteMask;
+				bool const city = (bits >> 51) & 1;
+				if (target.BlendEnable && target.DestBlend == D3D12_BLEND_ONE) {
+					light.RenderTargetWriteMask = 0;
+				} else if (city) {
+					light.BlendEnable = target.BlendEnable;
+					light.SrcBlend = light.SrcBlendAlpha = D3D12_BLEND_ONE;
+					light.DestBlend = light.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+				} else {
+					light.BlendEnable = TRUE;
+					light.SrcBlend = light.SrcBlendAlpha = D3D12_BLEND_ZERO;
+					light.DestBlend = light.DestBlendAlpha =
+						target.BlendEnable ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ZERO;
+				}
+			}
 			description.DSVFormat = kDepthFormat;
 			description.SampleDesc.Count = 1;
 
@@ -976,6 +1292,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		bool BindGeometry(uint32_t primitive, uint32_t indexBits) {
 			D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 			if (!backBuffer || topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) return false;
+			if (relight && ownerDrawsShadows && ownerDepth > 0) return false;
+			if (relight) cityDrawn |= DrawsCity();
 
 			uint32_t views[2]{};
 			uint32_t samplers[2]{};
@@ -1055,6 +1373,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 				}
 				constantsDirty = false;
 				constantsFlagInputs = flagInputs;
+				if (relight) TrackCamera();
 			}
 
 			bool const stencil = enabledCapabilities[kGDCapability_StencilTest];
@@ -1084,7 +1403,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			           (static_cast<uint64_t>(stencilFailOperation) << 41) |
 			           (static_cast<uint64_t>(stencilDepthFailOperation) << 44) |
 			           (static_cast<uint64_t>(stencilPassOperation) << 47) |
-			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_CullFace]) << 50);
+			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_CullFace]) << 50) |
+			           (static_cast<uint64_t>(relight && DrawsCity()) << 51);
 			key.depthBias = polygonOffset;
 			if (!SetPipeline(key)) return false;
 			if (stencilReference != appliedStencilReference) {
@@ -1098,6 +1418,32 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 				depthScratchValid = false;
 			}
 			return true;
+		}
+
+		// Whether the next draw is part of the city, which relighting may change.
+		bool DrawsCity() const {
+			return ownersSeen ? ownerDepth > 0 : enabledCapabilities[kGDCapability_DepthTest];
+		}
+
+		// Learns the camera from a static city draw. Models only turn about world up, so column 1 of their
+		// model-view is world up in view space. A tilted one (an automaton on a slope) is skipped.
+		void TrackCamera() {
+			if (!DrawsCity() || (ownersSeen && ownerPass != 1) || !enabledCapabilities[kGDCapability_DepthTest]) return;
+			float const *const modelView = matrices[0];
+			float const *const projection = matrices[1];
+			float const length = std::sqrt(modelView[5] * modelView[5] + modelView[6] * modelView[6]);
+			if (length < 1.0e-6f || std::fabs(modelView[4]) > 1.0e-3f * length || projection[0] == 0.0f ||
+			    projection[5] == 0.0f || projection[10] == 0.0f || viewportWidth <= 0 || viewportHeight <= 0) {
+				return;
+			}
+			camera.up[0] = 0.0f;
+			camera.up[1] = modelView[5] / length;
+			camera.up[2] = modelView[6] / length;
+			// A partial redraw fits the projection to its viewport, so pixel sizes come from both.
+			camera.pixel[0] = 2.0f / (static_cast<float>(viewportWidth) * projection[0]);
+			camera.pixel[1] = 2.0f / (static_cast<float>(viewportHeight) * projection[5]);
+			camera.depth = 2.0f / projection[10];
+			camera.known = true;
 		}
 
 		// Converts vertices [first, first + count) of the InterleavedArrays source and binds them.
@@ -1199,15 +1545,40 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
 			D3D12_RESOURCE_DESC const description =
 				TextureDescription(type == 0 ? kColorFormat : kDepthTypeless, windowWidth, windowHeight, 1);
-			ComPtr<ID3D12Resource> texture;
+			ComPtr<ID3D12Resource> texture, light;
 			if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
 			                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
 			                                           IID_PPV_ARGS(&texture)))) return false;
+			if (relight && type == 0 &&
+			    FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+			                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+			                                           IID_PPV_ARGS(&light)))) return false;
 			Retire(regions[index].texture);
+			Retire(regions[index].light);
 			regions[index].texture = std::move(texture);
 			regions[index].state = D3D12_RESOURCE_STATE_COPY_DEST;
+			regions[index].light = std::move(light);
+			regions[index].lightState = D3D12_RESOURCE_STATE_COPY_DEST;
 			regions[index].type = type;
 			return true;
+		}
+
+		void RetireRegion(Region &region) {
+			Retire(region.texture);
+			Retire(region.light);
+		}
+
+		// Copies the light layer the way a colour region copy moves the back buffer. toRegion says which
+		// way.
+		void CopyLightRegion(Region &region, bool toRegion, uint32_t x, uint32_t y, D3D12_BOX const &box) {
+			if (!region.light || !lightBuffer) return;
+			D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			Transition(region.light.Get(), region.lightState,
+			           toRegion ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_COPY_SOURCE);
+			Transition(lightBuffer.Get(), state, toRegion ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_COPY_DEST);
+			if (toRegion) CopyRegion(region.light.Get(), x, y, lightBuffer.Get(), box, false);
+			else CopyRegion(lightBuffer.Get(), x, y, region.light.Get(), box, false);
+			Transition(lightBuffer.Get(), state, D3D12_RESOURCE_STATE_RENDER_TARGET);
 		}
 
 		bool RegionArgumentsFit(uint32_t region, int32_t a, int32_t b, int32_t width, int32_t height, int32_t c,
@@ -1355,6 +1726,200 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			list->DrawInstanced(4, 1, 0, 0);
 			list->RSSetViewports(1, &viewport);
 		}
+
+		// Relighting
+
+		// The sun's direction for azimuth and elevation in degrees, in view space. The azimuth turns from
+		// the screen's left towards the far side of the scene, about world up.
+		void SunDirection(float azimuth, float elevation, float out[3]) const {
+			float const a = azimuth * 0.01745329f;
+			float const e = elevation * 0.01745329f;
+			float const *const up = camera.up;
+			// Left on screen is level, since SC4's camera does not roll. Away is level and into the scene.
+			float const left[3]{-1.0f, 0.0f, 0.0f};
+			float const away[3]{0.0f, up[2], -up[1]};
+			for (int i = 0; i < 3; ++i) {
+				out[i] = std::cos(e) * (std::cos(a) * left[i] + std::sin(a) * away[i]) + std::sin(e) * up[i];
+			}
+		}
+
+		// Draws the published frame: the back buffer relit from the light layer and the depth buffer.
+		void RecordLighting() {
+			LightingConstants constants{};
+			if (camera.known) {
+				constants.camera[0] = camera.pixel[0];
+				constants.camera[1] = camera.pixel[1];
+				constants.camera[2] = camera.depth;
+				constants.camera[3] = 1.0f;
+			}
+			SunDirection(sun.azimuth, sun.elevation, constants.sun);
+			SunDirection(0.0f, 45.0f, constants.sc4Sun);
+			memcpy(constants.sunColor, sun.color, sizeof(sun.color));
+			memcpy(constants.ambient, sun.ambient, sizeof(sun.ambient));
+			constants.sc4Light[0] = kSC4Ambient;
+			constants.sc4Light[1] = kSC4Direct;
+			constants.sc4Light[2] = kLargestRelight;
+			constants.march[0] = kShadowReach;
+			constants.march[1] = kShadowReachPixels;
+			constants.march[2] = kShadowBias;
+			constants.march[3] = kShadowSoftness;
+			constants.occluder[0] = kShadowThickness;
+			constants.occluder[1] = kShadowBlurTolerance;
+			Allocation const allocation = Upload(&constants, sizeof(constants), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+			if (allocation.cpu == nullptr) return;
+
+			list->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2);
+			D3D12_RESOURCE_STATES colorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			D3D12_RESOURCE_STATES lightState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			D3D12_RESOURCE_STATES depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+			Transition(backBuffer.Get(), colorState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			Transition(lightBuffer.Get(), lightState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			Transition(depthBuffer.Get(), depthState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			D3D12_VIEWPORT const full{0.0f, 0.0f, static_cast<float>(windowWidth), static_cast<float>(windowHeight), 0.0f, 1.0f};
+			D3D12_RECT const all{0, 0, windowWidth, windowHeight};
+			list->RSSetViewports(1, &full);
+			list->RSSetScissorRects(1, &all);
+			list->SetGraphicsRootSignature(lightingRootSignature.Get());
+			list->SetGraphicsRootConstantBufferView(0, allocation.gpu);
+			list->SetGraphicsRootDescriptorTable(1, ViewGpu(kLightingViews));
+			list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			D3D12_CPU_DESCRIPTOR_HANDLE const sunlight = RenderTargetView(3);
+			list->OMSetRenderTargets(1, &sunlight, FALSE, nullptr);
+			list->SetPipelineState(tracePipeline.Get());
+			list->DrawInstanced(3, 1, 0, 0);
+			D3D12_RESOURCE_STATES sunlightState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			Transition(sunlightBuffer.Get(), sunlightState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			D3D12_CPU_DESCRIPTOR_HANDLE const output = RenderTargetView(2);
+			list->OMSetRenderTargets(1, &output, FALSE, nullptr);
+			list->SetPipelineState(lightingPipeline.Get());
+			list->DrawInstanced(3, 1, 0, 0);
+			Transition(sunlightBuffer.Get(), sunlightState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			Transition(backBuffer.Get(), colorState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			Transition(lightBuffer.Get(), lightState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			Transition(depthBuffer.Get(), depthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+			list->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2 + 1);
+			list->ResolveQueryData(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2, 2,
+			                       timestampReadback.Get(), frameIndex * 16);
+			frames[frameIndex].timed = true;
+			frames[frameIndex].cityFrame = cityDrawn;
+			cityDrawn = false;
+		}
+
+		// The shaders that also write the light layer, and the lighting pass with its root signature,
+		// pipeline and timestamps.
+		template<typename Compile>
+		bool CreateLighting(Compile const &compile, UINT compileFlags) {
+			nextView = kLightingViews + 4;
+			for (uint32_t kind = 0; kind < 2; ++kind) {
+				for (uint32_t blended = 0; blended < 2; ++blended) {
+					D3D_SHADER_MACRO const macros[] = {
+						{"SCD3D12_GBUFFER", blended ? "2" : "1"},
+						{kind == 1 ? "SCD3D11_INTERPOLATION" : nullptr, "nointerpolation"},
+						{nullptr, nullptr}
+					};
+					if (!compile(kShaderSource, sizeof(kShaderSource) - 1, macros, "PSMain", "ps_5_0", compileFlags,
+					             gbufferPixelShaders[kind][blended])) return false;
+				}
+			}
+			D3D_SHADER_MACRO const blitMacros[] = {{"SCD3D12_GBUFFER", "1"}, {nullptr, nullptr}};
+			ComPtr<ID3DBlob> lightingVertexShader, lightingPixelShader, tracePixelShader;
+			if (!compile(kBlitShaderSource, sizeof(kBlitShaderSource) - 1, blitMacros, "PSMain", "ps_5_0",
+			             D3DCOMPILE_ENABLE_STRICTNESS, blitGBufferPixelShader) ||
+			    !compile(kLightingShaderSource, sizeof(kLightingShaderSource) - 1, nullptr, "VSMain", "vs_5_0",
+			             D3DCOMPILE_ENABLE_STRICTNESS, lightingVertexShader) ||
+			    !compile(kLightingShaderSource, sizeof(kLightingShaderSource) - 1, nullptr, "PSMain", "ps_5_0",
+			             D3DCOMPILE_ENABLE_STRICTNESS, lightingPixelShader) ||
+			    !compile(kLightingShaderSource, sizeof(kLightingShaderSource) - 1, nullptr, "TracePS", "ps_5_0",
+			             D3DCOMPILE_ENABLE_STRICTNESS, tracePixelShader)) {
+				return false;
+			}
+
+			// The constants, then the colour, light layer, depth and sunlight views.
+			D3D12_DESCRIPTOR_RANGE const views{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0};
+			D3D12_ROOT_PARAMETER parameters[2]{};
+			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+			parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			parameters[1].DescriptorTable = {1, &views};
+			parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+			D3D12_ROOT_SIGNATURE_DESC const signature{2, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+			ComPtr<ID3DBlob> serialized, errors;
+			if (FAILED(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &errors)) ||
+			    FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+			                                       IID_PPV_ARGS(&lightingRootSignature)))) {
+				return false;
+			}
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+			description.pRootSignature = lightingRootSignature.Get();
+			description.VS = {lightingVertexShader->GetBufferPointer(), lightingVertexShader->GetBufferSize()};
+			description.PS = {lightingPixelShader->GetBufferPointer(), lightingPixelShader->GetBufferSize()};
+			description.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+			description.SampleMask = UINT_MAX;
+			description.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+			description.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+			description.RasterizerState.DepthClipEnable = TRUE;
+			description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+			description.NumRenderTargets = 1;
+			description.RTVFormats[0] = kColorFormat;
+			description.SampleDesc.Count = 1;
+			if (FAILED(device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&lightingPipeline)))) return false;
+			description.PS = {tracePixelShader->GetBufferPointer(), tracePixelShader->GetBufferSize()};
+			description.RTVFormats[0] = DXGI_FORMAT_R8_UNORM;
+			if (FAILED(device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&tracePipeline)))) return false;
+
+			D3D12_QUERY_HEAP_DESC const queries{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kFrameCount * 2, 0};
+			if (FAILED(device->CreateQueryHeap(&queries, IID_PPV_ARGS(&timestamps)))) return false;
+			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_READBACK};
+			D3D12_RESOURCE_DESC buffer{};
+			buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			buffer.Width = kFrameCount * 16;
+			buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
+			buffer.SampleDesc.Count = 1;
+			buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+			                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+			                                           IID_PPV_ARGS(&timestampReadback)))) return false;
+			return SUCCEEDED(queue->GetTimestampFrequency(&timestampFrequency));
+		}
+
+		// New light layer and relit frame for a new back buffer, and the lighting pass's views of them.
+		bool CreateLightingTargets(uint32_t width, uint32_t height) {
+			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
+			D3D12_RESOURCE_DESC description =
+				TextureDescription(kColorFormat, width, height, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+			D3D12_CLEAR_VALUE clear{kColorFormat, {0, 0, 0, 0}};
+			if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+			                                           D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+			                                           IID_PPV_ARGS(&lightBuffer))) ||
+			    FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+			                                           D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+			                                           IID_PPV_ARGS(&litBuffer)))) {
+				return false;
+			}
+			device->CreateRenderTargetView(lightBuffer.Get(), nullptr, RenderTargetView(1));
+			device->CreateRenderTargetView(litBuffer.Get(), nullptr, RenderTargetView(2));
+			// A new layer starts as no city at all, so a frame drawn before the first clear passes through.
+			list->ClearRenderTargetView(RenderTargetView(1), clear.Color, 0, nullptr);
+			description.Format = clear.Format = DXGI_FORMAT_R8_UNORM;
+			if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+			                                           D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+			                                           IID_PPV_ARGS(&sunlightBuffer)))) {
+				return false;
+			}
+			device->CreateRenderTargetView(sunlightBuffer.Get(), nullptr, RenderTargetView(3));
+			D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+			view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			view.Texture2D.MipLevels = 1;
+			view.Format = kColorFormat;
+			device->CreateShaderResourceView(backBuffer.Get(), &view, ViewCpu(kLightingViews));
+			device->CreateShaderResourceView(lightBuffer.Get(), &view, ViewCpu(kLightingViews + 1));
+			view.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+			device->CreateShaderResourceView(depthBuffer.Get(), &view, ViewCpu(kLightingViews + 2));
+			view.Format = DXGI_FORMAT_R8_UNORM;
+			device->CreateShaderResourceView(sunlightBuffer.Get(), &view, ViewCpu(kLightingViews + 3));
+			return true;
+		}
 	};
 
 	cGDriver12::cGDriver12() : impl(std::make_unique<Impl>()) {}
@@ -1404,9 +1969,11 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 		D3D12_DESCRIPTOR_HEAP_DESC heap{};
 		heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-		heap.NumDescriptors = 1;
+		heap.NumDescriptors = d.relight ? 4 : 1;
 		if (FAILED(d.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&d.rtvHeap)))) return false;
+		d.rtvIncrement = d.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 		heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+		heap.NumDescriptors = 1;
 		if (FAILED(d.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&d.dsvHeap)))) return false;
 		heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		heap.NumDescriptors = kViewSlots;
@@ -1497,6 +2064,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		             D3DCOMPILE_ENABLE_STRICTNESS, d.blitPixelShader)) {
 			return false;
 		}
+		if (d.relight && !d.CreateLighting(compile, compileFlags)) return false;
 
 		d.BeginFrame(0);
 		return true;
@@ -1504,18 +2072,22 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 	ID3D12Device *cGDriver12::Device() const { return impl->device.Get(); }
 	ID3D12CommandQueue *cGDriver12::Queue() const { return impl->queue.Get(); }
-	ID3D12Resource *cGDriver12::BackBuffer() const { return impl->backBuffer.Get(); }
 
 	// cGDriver::SetVideoMode: new targets of the mode's size, and the textures and buffer regions of the
 	// old device are gone.
 	void cGDriver12::VideoMode(bool, uint32_t width, uint32_t height, bool) {
 		Impl &d = *impl;
 		if (!d.device || width == 0 || height == 0) return;
+		// The lighting pass's views are rewritten below while earlier frames may still read them.
+		if (d.relight) d.WaitIdle();
 		d.Retire(d.backBuffer);
+		d.Retire(d.lightBuffer);
+		d.Retire(d.litBuffer);
+		d.Retire(d.sunlightBuffer);
 		d.Retire(d.depthBuffer);
 		d.Retire(d.depthScratch);
 		d.depthScratchValid = false;
-		for (Impl::Region &region: d.regions) d.Retire(region.texture);
+		for (Impl::Region &region: d.regions) d.RetireRegion(region);
 		d.regionFlags = 0;
 		for (auto &entry: d.textures) d.ReleaseTexture(entry.second);
 		d.textures.clear();
@@ -1544,11 +2116,13 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		depthView.Format = kDepthFormat;
 		depthView.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
 		d.device->CreateDepthStencilView(d.depthBuffer.Get(), &depthView, d.DepthStencilView());
+		if (d.relight && !d.CreateLightingTargets(width, height)) {
+			d.backBuffer.Reset();
+			return;
+		}
 		d.windowWidth = static_cast<int32_t>(width);
 		d.windowHeight = static_cast<int32_t>(height);
-		D3D12_CPU_DESCRIPTOR_HANDLE const target = d.RenderTargetView();
-		D3D12_CPU_DESCRIPTOR_HANDLE const depth = d.DepthStencilView();
-		d.list->OMSetRenderTargets(1, &target, FALSE, &depth);
+		d.BindTargets();
 		d.SetFullViewport();
 	}
 
@@ -1566,10 +2140,31 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 	bool cGDriver12::Frame() { return true; }
 
+	void cGDriver12::OwnerBegin(nSCDWire::DrawOwner const &owner) {
+		Impl &d = *impl;
+		d.ownersSeen = true;
+		++d.ownerDepth;
+		d.ownerPass = owner.pass;
+		d.ownerDrawsShadows = owner.vtable == kShadowViewObjectVtable;
+	}
+	void cGDriver12::OwnerEnd() {
+		Impl &d = *impl;
+		if (d.ownerDepth > 0) --d.ownerDepth;
+	}
+	void cGDriver12::Relight(Sun const &sun) {
+		impl->relight = true;
+		impl->sun = sun;
+	}
+
+	ID3D12Resource *cGDriver12::Output() const {
+		return impl->relight ? impl->litBuffer.Get() : impl->backBuffer.Get();
+	}
+
 	bool cGDriver12::ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height) {
 		Impl &d = *impl;
-		if (!d.backBuffer) return false;
-		D3D12_RESOURCE_DESC const description = d.backBuffer->GetDesc();
+		ID3D12Resource *const output = Output();
+		if (output == nullptr) return false;
+		D3D12_RESOURCE_DESC const description = output->GetDesc();
 		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
 		UINT64 total = 0;
 		d.device->GetCopyableFootprints(&description, 0, 1, 0, &footprint, nullptr, nullptr, &total);
@@ -1585,12 +2180,12 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		                                              D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
 		                                              IID_PPV_ARGS(&readback)))) return false;
 		D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		d.Transition(d.backBuffer.Get(), state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		d.Transition(output, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
 		D3D12_TEXTURE_COPY_LOCATION destination{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
 		destination.PlacedFootprint = footprint;
-		D3D12_TEXTURE_COPY_LOCATION source{d.backBuffer.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+		D3D12_TEXTURE_COPY_LOCATION source{output, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
 		d.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
-		d.Transition(d.backBuffer.Get(), state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		d.Transition(output, state, D3D12_RESOURCE_STATE_RENDER_TARGET);
 		if (!d.Submit()) return false;
 		d.WaitIdle();
 
@@ -1699,7 +2294,11 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 	void cGDriver12::Clear(uint32_t mask) {
 		Impl &d = *impl;
 		if (!d.backBuffer) return;
-		if (ClearsColor(mask)) d.list->ClearRenderTargetView(d.RenderTargetView(), d.clearColor, 0, nullptr);
+		if (ClearsColor(mask)) {
+			d.list->ClearRenderTargetView(d.RenderTargetView(), d.clearColor, 0, nullptr);
+			float const noCity[4]{};
+			if (d.relight) d.list->ClearRenderTargetView(d.RenderTargetView(1), noCity, 0, nullptr);
+		}
 		D3D12_CLEAR_FLAGS const flags = static_cast<D3D12_CLEAR_FLAGS>(
 			((mask & 0x1000) != 0 ? D3D12_CLEAR_FLAG_DEPTH : 0) | ((mask & 0x2000) != 0 ? D3D12_CLEAR_FLAG_STENCIL : 0));
 		if (flags != 0) {
@@ -2238,7 +2837,11 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 	bool cGDriver12::IsDeviceReady(void) { return impl->backBuffer != nullptr; }
 
 	// The frame is complete: hand it to the GPU without waiting for it.
-	void cGDriver12::Flush(void) { impl->Submit(); }
+	void cGDriver12::Flush(void) {
+		Impl &d = *impl;
+		if (d.relight && d.backBuffer) d.RecordLighting();
+		d.Submit();
+	}
 
 	// Vertex buffer extension. The replay fills the buffer through Vertices().
 
@@ -2301,7 +2904,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		Impl &d = *impl;
 		if (region < 1 || region > static_cast<int32_t>(kRegionCount)) return false;
 		uint32_t const index = static_cast<uint32_t>(region - 1);
-		d.Retire(d.regions[index].texture);
+		d.RetireRegion(d.regions[index]);
 		d.regionFlags &= static_cast<uint8_t>(~(1u << index));
 		return true;
 	}
@@ -2321,6 +2924,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			d.Transition(d.backBuffer.Get(), state, D3D12_RESOURCE_STATE_COPY_SOURCE);
 			d.CopyRegion(target.texture.Get(), destinationX, destinationY, d.backBuffer.Get(), box, false);
 			d.Transition(d.backBuffer.Get(), state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			d.CopyLightRegion(target, true, destinationX, destinationY, box);
 		} else {
 			if (!d.RefreshDepthScratch()) return false;
 			d.Transition(d.depthScratch.Get(), d.depthScratchState, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -2344,6 +2948,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			d.Transition(d.backBuffer.Get(), state, D3D12_RESOURCE_STATE_COPY_DEST);
 			d.CopyRegion(d.backBuffer.Get(), destinationX, destinationY, source.texture.Get(), box, false);
 			d.Transition(d.backBuffer.Get(), state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			d.CopyLightRegion(source, false, destinationX, destinationY, box);
 			return true;
 		}
 		// Patch the plain copy, then replace the depth buffer with it.
@@ -2365,7 +2970,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 	bool cGDriver12::FinalRelease(void) { return true; }
 	bool cGDriver12::DeleteAllBufferRegions(void) {
 		Impl &d = *impl;
-		for (Impl::Region &region: d.regions) d.Retire(region.texture);
+		for (Impl::Region &region: d.regions) d.RetireRegion(region);
 		d.regionFlags = 0;
 		return true;
 	}

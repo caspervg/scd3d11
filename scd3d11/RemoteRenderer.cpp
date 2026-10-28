@@ -56,6 +56,8 @@ namespace nSCD3D11 {
 		std::wstring const log = ModuleFolder() + L"..\\Logs\\SCD3D12Server.log";
 		std::wstring command = L"\"" + server + L"\" serve --ring " + name + L" --parent " + std::to_wstring(self) +
 		                       L" --log \"" + log + L"\"";
+		std::string const &relight = Settings::Get().serverRelight;
+		if (!relight.empty() && relight != "off") command += L" --relight " + std::wstring(relight.begin(), relight.end());
 
 		job = CreateJobObjectW(nullptr, nullptr);
 		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};

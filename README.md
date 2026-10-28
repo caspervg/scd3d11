@@ -62,6 +62,7 @@ where it came from.
 | `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included). See [ReShade](#reshade) |
 | `Renderer` | `local` | Experimental. `server` draws the game in `SCD3D12Server.exe`, a separate 64-bit Direct3D 12 process in `Plugins\SCD3D12\`, and falls back to `local` if it stops. See [scd3d12/README.md](scd3d12/README.md) |
 | `ServerPresent` | `copy` | Experimental, with `Renderer=server`. `composition` lets the server present on the game's window itself through DirectComposition |
+| `ServerRelight` | `off` | Experimental, with `Renderer=server`. Relights the city every frame with another sun: an hour of the day (`8.5`) or an azimuth and elevation in degrees (`30,45`). UI is left as drawn |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:
 
