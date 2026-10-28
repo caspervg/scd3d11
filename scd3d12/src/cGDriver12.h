@@ -121,6 +121,25 @@ namespace nSCD3D12 {
 		void DrawTriangles(D3D12_VERTEX_BUFFER_VIEW const &vertices, D3D12_INDEX_BUFFER_VIEW const &indices,
 		                   uint32_t count, uint32_t format);
 
+		// For the retained scene (RetainedScene.h), which draws the city from its own copy with the game's camera.
+
+		// The modelview and projection matrices and which one LoadMatrix sets.
+		struct Transform {
+			float modelView[16];
+			float projection[16];
+			uint8_t mode;
+		};
+		void SaveTransform(Transform &transform) const;
+		void RestoreTransform(Transform const &transform);
+		// What PolygonOffset set last.
+		int32_t GetPolygonOffset() const;
+		// The depth buffer, in the DEPTH_WRITE state between calls, and its view.
+		ID3D12Resource *DepthBuffer() const;
+		D3D12_CPU_DESCRIPTOR_HANDLE DepthView() const;
+		// Binds the driver's heaps, root signature, targets, viewport and scissor again after commands of the
+		// caller's own.
+		void Rebind();
+
 		// nSCDWire::ReplayHooks
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
 		void Resize(uint32_t width, uint32_t height) override;

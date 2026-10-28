@@ -988,7 +988,14 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			slot.allocator->Reset();
 			list->Reset(slot.allocator.Get(), nullptr);
 			if (timestamps) list->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, index * 2);
+			BindFrame();
+			// Constants live in upload memory the next frames recycle.
+			constantsAddress = 0;
+		}
 
+		// The heaps, root signature, targets, viewport and scissor every draw expects, with the record of what
+		// is bound forgotten.
+		void BindFrame() {
 			ID3D12DescriptorHeap *const heaps[]{viewHeap.Get(), samplerHeap.Get()};
 			list->SetDescriptorHeaps(2, heaps);
 			list->SetGraphicsRootSignature(rootSignature.Get());
@@ -998,8 +1005,6 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			appliedSamplers[0] = appliedSamplers[1] = UINT32_MAX;
 			appliedTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 			appliedStencilReference = INT32_MIN;
-			// Constants live in upload memory the next frames recycle.
-			constantsAddress = 0;
 			if (backBuffer) {
 				BindTargets();
 				list->RSSetViewports(1, &viewport);
@@ -3439,4 +3444,27 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		d.list->IASetIndexBuffer(&indices);
 		d.list->DrawIndexedInstanced(count, 1, 0, 0, 0);
 	}
+
+	// The retained scene's hooks.
+
+	void cGDriver12::SaveTransform(Transform &transform) const {
+		Impl const &d = *impl;
+		memcpy(transform.modelView, d.matrices[0], sizeof(transform.modelView));
+		memcpy(transform.projection, d.matrices[1], sizeof(transform.projection));
+		transform.mode = d.activeMatrixMode;
+	}
+
+	void cGDriver12::RestoreTransform(Transform const &transform) {
+		Impl &d = *impl;
+		d.activeMatrixMode = 0;
+		LoadMatrix(transform.modelView);
+		d.activeMatrixMode = 1;
+		LoadMatrix(transform.projection);
+		d.activeMatrixMode = transform.mode;
+	}
+
+	int32_t cGDriver12::GetPolygonOffset() const { return impl->polygonOffset; }
+	ID3D12Resource *cGDriver12::DepthBuffer() const { return impl->depthBuffer.Get(); }
+	D3D12_CPU_DESCRIPTOR_HANDLE cGDriver12::DepthView() const { return impl->DepthStencilView(); }
+	void cGDriver12::Rebind() { impl->BindFrame(); }
 }
