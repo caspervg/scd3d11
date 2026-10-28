@@ -46,8 +46,8 @@ namespace nSCD3D12 {
 		cGDriver12();
 		~cGDriver12();
 
-		// Creates the device. useWarp picks the software rasterizer (tests and machines without a GPU), and
-		// adapter a particular GPU, the one the game's own device runs on when serving it.
+		// Creates the device. useWarp picks the software rasterizer (tests and machines without a GPU).
+		// A non-null adapter picks that GPU, so textures can be shared with a device on the same one.
 		bool Create(bool useWarp, LUID const *adapter = nullptr);
 
 		// The current back buffer as tightly packed RGBA rows, after waiting for the GPU.
