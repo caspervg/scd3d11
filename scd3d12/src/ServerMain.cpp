@@ -11,11 +11,14 @@
 // SCD3D12Server: SimCity 4's renderer as a separate 64-bit process.
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
-//                        [--relight <sun>] [--until <frame>] [--scene substitute|check [--game <SimCity 4 folder>]]
+//                        [--relight <sun>] [--until <frame>]
+//                        [--scene substitute|check|retained [--game <SimCity 4 folder>]]
 //       Renders a Record=<file> capture offline and saves the chosen frames as PNG. With --scene substitute the
 //       server draws the game's models, networks and lot textures from its own copy of the game's data
 //       (SceneLane.h) and writes per frame counts to scene.csv in the output folder. check also compares each
-//       such draw with the game's. The data comes from the folders the capture names, or from --game.
+//       such draw with the game's. The data comes from the folders the capture names, or from --game. retained
+//       substitutes too, keeps the static models and draws them every frame with the game's camera
+//       (RetainedScene.h), and saves the motion vectors of each chosen frame as motion<frame>.png.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
 //                       [--scene substitute|check]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
@@ -29,6 +32,7 @@
 
 #include "AssetStore.h"
 #include "cGDriver12.h"
+#include "RetainedScene.h"
 #include "SceneLane.h"
 #include "Serve.h"
 #include "wire/ImageFile.h"
@@ -106,6 +110,7 @@ namespace {
 		uint64_t until = UINT64_MAX;
 		bool substitute = false;
 		bool check = false;
+		bool retained = false;
 		std::wstring game;
 	};
 
@@ -132,9 +137,10 @@ namespace {
 			else if (argument == L"--until" && hasValue) options.until = _wtoi64(argv[++i]);
 			else if (argument == L"--scene" && hasValue) {
 				std::wstring const mode = argv[++i];
-				if (mode != L"substitute" && mode != L"check") return false;
+				if (mode != L"substitute" && mode != L"check" && mode != L"retained") return false;
 				options.substitute = true;
 				options.check = mode == L"check";
+				options.retained = mode == L"retained";
 			} else if (argument == L"--game" && hasValue) options.game = argv[++i];
 			else if (options.capture.empty()) options.capture = argument;
 			else return false;
@@ -149,6 +155,7 @@ namespace {
 		ReplayOptions const &options;
 		nSCAssets::AssetStore store;
 		std::unique_ptr<nSCD3D12::SceneLane> scene;
+		std::unique_ptr<nSCD3D12::RetainedScene> retained;
 		std::FILE *sceneCsv = nullptr;
 		uint64_t frame = 0;
 		uint64_t saved = 0;
@@ -157,16 +164,21 @@ namespace {
 
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 			driver.VideoMode(show, width, height, fullscreen);
+			if (retained != nullptr) retained->VideoMode();
 		}
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override { driver.Vertices(name, data, bytes); }
 		void Resize(uint32_t width, uint32_t height) override { driver.Resize(width, height); }
 		void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
+			if (retained != nullptr) retained->OwnerBegin(owner);
 			driver.OwnerBegin(owner);
 			if (scene != nullptr) scene->OwnerBegin(owner);
 		}
 		void OwnerEnd() override {
 			driver.OwnerEnd();
 			if (scene != nullptr) scene->OwnerEnd();
+		}
+		void Occupant(nSCDWire::OccupantEvent const &event) override {
+			if (retained != nullptr) retained->Occupant(event);
 		}
 		void ModelInstance(nSCDWire::ModelInstance const &model) override {
 			if (scene != nullptr) scene->ModelInstance(model);
@@ -188,6 +200,10 @@ namespace {
 			scene = std::make_unique<nSCD3D12::SceneLane>(driver, store, options.check);
 			_wfopen_s(&sceneCsv, (options.out + L"\\scene.csv").c_str(), L"w");
 			if (sceneCsv != nullptr) nSCD3D12::SceneLane::WriteCsvHeader(sceneCsv);
+			if (options.retained) {
+				retained = std::make_unique<nSCD3D12::RetainedScene>(driver, *scene);
+				if (Chosen(frame)) retained->KeepMotion();
+			}
 		}
 		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
 			driver.DrawBlobs(vertices, indices);
@@ -195,12 +211,23 @@ namespace {
 		bool Frame() override {
 			driver.Frame();
 			if (scene != nullptr) scene->EndFrame(frame, sceneCsv);
-			if (options.frames.count(frame) != 0 || (options.every != 0 && frame % options.every == 0)) {
+			bool const chosen = Chosen(frame);
+			if (chosen) {
 				wchar_t name[64];
 				swprintf_s(name, L"\\frame%06llu.png", static_cast<unsigned long long>(frame));
 				Save(options.out + name);
 			}
+			if (retained != nullptr) {
+				wchar_t name[64];
+				swprintf_s(name, L"\\motion%06llu.png", static_cast<unsigned long long>(frame));
+				std::wstring const path = options.out + name;
+				retained->EndFrame(chosen ? &path : nullptr);
+				if (Chosen(frame + 1)) retained->KeepMotion();
+			}
 			return ++frame <= options.until;
+		}
+		bool Chosen(uint64_t number) const {
+			return options.frames.count(number) != 0 || (options.every != 0 && number % options.every == 0);
 		}
 		void Save(std::wstring const &path) {
 			std::vector<uint8_t> rgba;
@@ -249,6 +276,7 @@ namespace {
 			}
 		}
 		if (hooks.scene != nullptr) hooks.scene->PrintTotals();
+		if (hooks.retained != nullptr) hooks.retained->PrintTotals();
 		else if (options.substitute) std::puts("scene: the capture names no game folders, pass --game");
 		if (hooks.sceneCsv != nullptr) std::fclose(hooks.sceneCsv);
 		std::fclose(file);
@@ -322,7 +350,7 @@ int wmain(int argc, wchar_t **argv) {
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
 		std::puts("                     [--relight <hour or azimuth,elevation>] [--until <frame>]"
-		          " [--scene substitute|check [--game <SimCity 4 folder>]]");
+		          " [--scene substitute|check|retained [--game <SimCity 4 folder>]]");
 		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]"
 		          " [--scene substitute|check]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");

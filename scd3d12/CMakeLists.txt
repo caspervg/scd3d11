@@ -7,6 +7,7 @@ add_executable(SCD3D12Server
         src/ServerMain.cpp
         src/Serve.cpp
         src/SceneLane.cpp
+        src/RetainedScene.cpp
         "${SCD3D11_SOURCE}/wire/SharedRing.cpp"
         src/cGDriver12.cpp
         "${SCD3D11_SOURCE}/wire/ImageFile.cpp"
