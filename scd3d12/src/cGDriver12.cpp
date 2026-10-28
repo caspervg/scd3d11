@@ -561,6 +561,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		float clearColor[4]{};
 		float clearDepth = 1.0f;
 		uint8_t clearStencil = 0;
+		DrawFilter *drawFilter = nullptr;
 
 		Impl() {
 			for (float *matrix: matrices) matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
@@ -1642,6 +1643,9 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 	void cGDriver12::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
 		Impl &d = *impl;
 		if (first < 0 || count <= 0 || !d.backBuffer) return;
+		if (d.drawFilter != nullptr && !d.drawFilter->AllowDraw(primitive, first, static_cast<uint32_t>(count), 0, nullptr)) {
+			return;
+		}
 		if (!d.UploadVertices(d.interleavedPointer, d.interleavedFormat, d.interleavedStride,
 		                      static_cast<uint32_t>(first), static_cast<uint32_t>(count))) return;
 		if (D3D11Topology(primitive) != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
@@ -1657,6 +1661,9 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 	void cGDriver12::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
 		Impl &d = *impl;
 		if (count <= 0 || indices == nullptr || (type != 3 && type != 5) || !d.backBuffer) return;
+		if (d.drawFilter != nullptr && !d.drawFilter->AllowDraw(primitive, 0, static_cast<uint32_t>(count), type, indices)) {
+			return;
+		}
 		bool const convertPrimitive = D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
@@ -2438,5 +2445,104 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		if (specular) memcpy(d.materialSpecular, specular, sizeof(d.materialSpecular));
 		if (emission) memcpy(d.materialEmission, emission, sizeof(d.materialEmission));
 		if (shininess >= 0.0f) d.materialShininess = shininess;
+	}
+
+	// The scene lane's hooks.
+
+	void cGDriver12::SetDrawFilter(DrawFilter *filter) { impl->drawFilter = filter; }
+
+	void cGDriver12::SaveDrawState(DrawState &state) const {
+		Impl const &d = *impl;
+		for (uint32_t i = 0; i < 2; ++i) {
+			Impl::TextureStage const &from = d.textureStages[i];
+			DrawState::Stage &to = state.stages[i];
+			to.enabled = d.textureStageEnabled[i];
+			to.texture = d.boundTextures[i];
+			to.magFilter = from.magFilter;
+			to.minFilter = from.minFilter;
+			to.wrapU = from.wrapU;
+			to.wrapV = from.wrapV;
+			to.mode = from.environmentMode;
+			to.coordinates = from.coordinateSource;
+			memcpy(to.matrix, from.matrix, sizeof(to.matrix));
+		}
+		state.activeStage = d.activeTextureStage;
+		state.alphaTest = d.enabledCapabilities[kGDCapability_AlphaTest];
+		state.depthTest = d.enabledCapabilities[kGDCapability_DepthTest];
+		state.cullFace = d.enabledCapabilities[kGDCapability_CullFace];
+		state.blend = d.enabledCapabilities[kGDCapability_Blend];
+		state.colorWrite = d.colorWriteEnabled;
+		state.depthWrite = d.depthWriteEnabled;
+		state.depthFunction = d.depthFunction;
+		state.sourceBlend = d.sourceBlend;
+		state.destinationBlend = d.destinationBlend;
+		state.alphaFunction = d.alphaFunction;
+		state.alphaReference = d.alphaReference;
+		state.lighting = d.lightingEnabled;
+		state.diffuseFromVertex = d.diffuseFromVertex;
+		memcpy(state.globalAmbient, d.globalAmbient, sizeof(state.globalAmbient));
+		memcpy(state.materialAmbient, d.materialAmbient, sizeof(state.materialAmbient));
+		memcpy(state.materialDiffuse, d.materialDiffuse, sizeof(state.materialDiffuse));
+		state.vertexFormat = d.interleavedFormat;
+		state.vertexStride = d.interleavedStride;
+		state.vertexPointer = d.interleavedPointer;
+	}
+
+	void cGDriver12::RestoreDrawState(DrawState const &state) {
+		Impl &d = *impl;
+		for (uint32_t i = 0; i < 2; ++i) {
+			DrawState::Stage const &from = state.stages[i];
+			Impl::TextureStage &to = d.textureStages[i];
+			d.textureStageEnabled[i] = from.enabled;
+			d.boundTextures[i] = from.texture;
+			to.magFilter = from.magFilter;
+			to.minFilter = from.minFilter;
+			to.wrapU = from.wrapU;
+			to.wrapV = from.wrapV;
+			to.environmentMode = from.mode;
+			to.coordinateSource = from.coordinates;
+			memcpy(to.matrix, from.matrix, sizeof(to.matrix));
+		}
+		d.activeTextureStage = state.activeStage;
+		d.enabledCapabilities[kGDCapability_AlphaTest] = state.alphaTest;
+		d.enabledCapabilities[kGDCapability_DepthTest] = state.depthTest;
+		d.enabledCapabilities[kGDCapability_CullFace] = state.cullFace;
+		d.enabledCapabilities[kGDCapability_Blend] = state.blend;
+		d.colorWriteEnabled = state.colorWrite;
+		d.depthWriteEnabled = state.depthWrite;
+		d.depthFunction = state.depthFunction;
+		d.sourceBlend = state.sourceBlend;
+		d.destinationBlend = state.destinationBlend;
+		d.alphaFunction = state.alphaFunction;
+		d.alphaReference = state.alphaReference;
+		d.lightingEnabled = state.lighting;
+		d.diffuseFromVertex = state.diffuseFromVertex;
+		memcpy(d.globalAmbient, state.globalAmbient, sizeof(d.globalAmbient));
+		memcpy(d.materialAmbient, state.materialAmbient, sizeof(d.materialAmbient));
+		memcpy(d.materialDiffuse, state.materialDiffuse, sizeof(d.materialDiffuse));
+		d.interleavedFormat = state.vertexFormat;
+		d.interleavedStride = state.vertexStride;
+		d.interleavedPointer = state.vertexPointer;
+		d.constantsDirty = true;
+	}
+
+	ID3D12GraphicsCommandList *cGDriver12::CommandList() const { return impl->list.Get(); }
+
+	bool cGDriver12::Upload(void const *data, uint64_t bytes, ID3D12Resource *&resource, uint64_t &offset) {
+		Impl::Allocation const allocation = impl->Upload(data, bytes, 16);
+		resource = allocation.resource;
+		offset = allocation.offset;
+		return allocation.cpu != nullptr;
+	}
+
+	void cGDriver12::DrawTriangles(D3D12_VERTEX_BUFFER_VIEW const &vertices, D3D12_INDEX_BUFFER_VIEW const &indices,
+	                               uint32_t count, uint32_t format) {
+		Impl &d = *impl;
+		if (count == 0 || !d.backBuffer) return;
+		d.interleavedFormat = format;
+		if (!d.BindGeometry(0, 16)) return;
+		d.list->IASetVertexBuffers(0, 1, &vertices);
+		d.list->IASetIndexBuffer(&indices);
+		d.list->DrawIndexedInstanced(count, 1, 0, 0, 0);
 	}
 }
