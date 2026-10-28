@@ -40,6 +40,8 @@ namespace nSCD3D12 {
 	namespace {
 		constexpr uint32_t kSlots = 4;
 		constexpr DXGI_FORMAT kMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
+		// The stage 1 coordinate source of the game's flora tint: positions in view space.
+		constexpr uint32_t kViewPositions = 16;
 
 		// Column major, as OpenGL: m[column * 4 + row].
 		void Multiply(float const *a, float const *b, float *out) {
@@ -139,6 +141,9 @@ namespace nSCD3D12 {
 			float previousWorld[16]{};
 			// SC4's own modelview, used as it is while the camera has not changed since.
 			float modelView[16]{};
+			// The view SC4 drew it with, which texture coordinates made from view positions depend on.
+			float view[16]{};
+			bool viewPositions = false;
 			std::vector<MeshDraw> meshes;
 		};
 
@@ -578,6 +583,8 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 			camera = now;
 			float pv[16];
 			Multiply(now.projection, now.view, pv);
+			float inverseView[16];
+			bool const inverted = Invert(now.view, inverseView);
 
 			// What SC4 drew this frame normally has this frame's camera, and then its own modelview is used as it
 			// is. How closely view x world matches it shows how well the camera is recovered.
@@ -594,8 +601,11 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 				// shows the frame with. Such a modelview is no use for this camera.
 				if (worst < 0.01) {
 					instance.camera = cameraId;
+					std::memcpy(instance.view, now.view, sizeof(instance.view));
 					totals.worstModelViewError = (std::max)(totals.worstModelViewError, worst);
 				} else {
+					float inverseWorld[16];
+					if (Invert(instance.world, inverseWorld)) Multiply(instance.modelView, inverseWorld, instance.view);
 					++totals.otherCamera;
 				}
 			}
@@ -642,15 +652,27 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 					++totals.culled;
 					continue;
 				}
-				if (instance.camera == cameraId) {
+				bool const sameCamera = instance.camera == cameraId;
+				if (sameCamera) {
 					driver.LoadMatrix(instance.modelView);
 				} else {
 					float modelView[16];
 					Multiply(now.view, instance.world, modelView);
 					driver.LoadMatrix(modelView);
 				}
+				// Coordinates from view positions stay where SC4 put them: back to the view it drew with.
+				float viewChange[16];
+				bool const moveCoordinates = !sameCamera && instance.viewPositions && inverted && instance.view[15] == 1.0f;
+				if (moveCoordinates) Multiply(instance.view, inverseView, viewChange);
 				for (MeshDraw const &mesh: instance.meshes) {
-					driver.RestoreDrawState(mesh.state);
+					if (moveCoordinates && mesh.state.stages[1].enabled &&
+					    mesh.state.stages[1].coordinates == kViewPositions) {
+						cGDriver12::DrawState state = mesh.state;
+						Multiply(mesh.state.stages[1].matrix, viewChange, state.stages[1].matrix);
+						driver.RestoreDrawState(state);
+					} else {
+						driver.RestoreDrawState(mesh.state);
+					}
 					if (mesh.fog != fogNow) {
 						fogNow = mesh.fog;
 						if (fogNow) driver.Enable(kGDCapability_Fog);
@@ -963,6 +985,7 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 			instance.frame = d.frame;
 			instance.camera = 0;
 			instance.orphan = false;
+			instance.viewPositions = false;
 			instance.meshes.clear();
 			d.capturedThisFrame.push_back(index);
 			d.capturing = index;
@@ -976,6 +999,9 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 		draw.count = count;
 		d.driver.SaveDrawState(draw.state);
 		draw.state.vertexPointer = nullptr;
+		if (draw.state.stages[1].enabled && draw.state.stages[1].coordinates == kViewPositions) {
+			d.instances[d.capturing].viewPositions = true;
+		}
 		draw.polygonOffset = d.driver.GetPolygonOffset();
 		draw.fog = d.driver.IsEnabled(kGDCapability_Fog);
 		draw.stencil = d.driver.IsEnabled(kGDCapability_StencilTest);
