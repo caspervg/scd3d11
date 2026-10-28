@@ -25,6 +25,9 @@ namespace nSCDWire {
 		virtual void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) = 0;
 		// Fill vertex buffer `name` with what the game wrote between GetVertices and ReleaseVertices.
 		virtual void Vertices(uint32_t name, void const *data, uint32_t bytes) = 0;
+		// Before each draw: the blobs it reads its vertices and indices from, size 0 for none. A blob's
+		// bytes never change under its key, so a target may keep what it made from them.
+		virtual void DrawBlobs(BlobKey const &, BlobKey const &) {}
 		// After each Flush. Return false to stop the replay.
 		virtual bool Frame() { return true; }
 		virtual void CopyColorBuffer(int32_t, int32_t, int32_t, int32_t) {}

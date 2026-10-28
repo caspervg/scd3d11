@@ -18,6 +18,7 @@
 
 namespace nSCD3D12 {
 	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits. A non-null
-	// relight relights every frame with that sun.
-	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight);
+	// relight relights every frame with that sun. With logStats, logs the frame rate and the CPU and GPU time
+	// per frame every second.
+	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats);
 }

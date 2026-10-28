@@ -68,6 +68,8 @@ namespace nSCD3D12 {
 
 		// The frame Output() holds as tightly packed RGBA rows, after waiting for the GPU.
 		bool ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height);
+		// The GPU time of the frames finished since the last call, and how many there were.
+		void TakeGpuTime(double &milliseconds, uint32_t &frames);
 		ID3D12Device *Device() const;
 		ID3D12CommandQueue *Queue() const;
 		// The frame to publish, in the RENDER_TARGET state between calls: the relit frame, or the back
@@ -122,6 +124,7 @@ namespace nSCD3D12 {
 		// nSCDWire::ReplayHooks
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override;
+		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override;
 		bool Frame() override;
 		void OwnerBegin(nSCDWire::DrawOwner const &owner) override;
 		void OwnerEnd() override;

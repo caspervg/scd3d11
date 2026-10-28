@@ -8,6 +8,10 @@ int main() {
 	uint8_t rgba[4]{};
 	uint8_t bgra[] = {10, 20, 30, 40};
 	assert(nSCD3D11::TextureSourcePixelBytes(3, 1) == 4);
+	// Rows 10 pixels apart: two full rows and the last one only as wide as the image.
+	assert(nSCD3D11::SourceImageBytes(3, 1, 4, 3, 10) == 4 * (10 * 2 + 4));
+	assert(nSCD3D11::SourceImageBytes(3, 1, 4, 3, 0) == 4 * 4 * 3);
+	assert(nSCD3D11::SourceImageBytes(3, 1, 0, 3, 0) == 0);
 	assert(nSCD3D11::ConvertTextureSourcePixel(3, 1, bgra, rgba));
 	assert(rgba[0] == 30 && rgba[1] == 20 && rgba[2] == 10 && rgba[3] == 40);
 

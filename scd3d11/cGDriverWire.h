@@ -16,6 +16,8 @@
 
 #include <cRZBaseUnknown.h>
 
+#include <cstring>
+
 namespace nSCD3D11 {
 	// Stands in front of cGDriver: every call goes to the driver, and the calls a renderer elsewhere would
 	// have to repeat are also written to an SCDW stream (wire/Wire.h). SC4 sees this object as its driver.
@@ -197,6 +199,84 @@ namespace nSCD3D11 {
 			writer.End();
 		}
 
+		// State setters the game repeats a lot, each with a slot that remembers its last recorded call. A call
+		// that repeats it changes nothing on the other side and is not recorded. Calls that change the same
+		// state another way forget the slot, so the next setter call is recorded again.
+		enum Slot : uint32_t {
+			kTexStageSlot,
+			kTexParameterSlot, // 2 stages x 4 parameters
+			kColorMultiplierSlot = kTexParameterSlot + 8,
+			kAlphaMultiplierSlot,
+			kVertexColorsSlot,
+			kAlphaFuncSlot,
+			kBlendFuncSlot,
+			kDepthMaskSlot,
+			kColorMaskSlot,
+			kDepthFuncSlot,
+			kShadeModelSlot,
+			kPolygonOffsetSlot,
+			kMatrixModeSlot,
+			kMatrixSlot, // 2 matrix modes
+			kCapabilitySlot = kMatrixSlot + 2, // kGDNumCapabilities, then Texture2D for the second stage
+			kTexEnvSlot = kCapabilitySlot + kGDNumCapabilities + 1, // 2 stages
+			kTexStageCoordSlot = kTexEnvSlot + 2, // 2 stages
+			kTexStageMatrixSlot = kTexStageCoordSlot + 2, // 2 stages
+			kTextureSlot = kTexStageMatrixSlot + 2, // 2 stages
+			kSlotCount = kTextureSlot + 2,
+		};
+		struct SentState {
+			uint8_t bytes[80];
+			uint32_t size = 0;
+			bool known = false;
+		};
+
+		// True when slot's last recorded call had the same op and fields. Otherwise remembers this one, which
+		// the caller then records.
+		template<typename... Fields>
+		bool Unchanged(uint32_t slot, nSCDWire::Op op, Fields const &... fields) {
+			static_assert(sizeof(op) + (sizeof(Fields) + ... + 0) <= sizeof(SentState::bytes));
+			uint8_t bytes[sizeof(SentState::bytes)];
+			uint32_t size = 0;
+			auto const put = [&](void const *data, uint32_t count) {
+				std::memcpy(bytes + size, data, count);
+				size += count;
+			};
+			put(&op, sizeof(op));
+			(put(&fields, sizeof(fields)), ...);
+			SentState &sent = sentState[slot];
+			if (sent.known && sent.size == size && std::memcmp(sent.bytes, bytes, size) == 0) return true;
+			std::memcpy(sent.bytes, bytes, size);
+			sent.size = size;
+			sent.known = true;
+			return false;
+		}
+
+		template<typename... Fields>
+		void RecordState(uint32_t slot, nSCDWire::Op op, Fields const &... fields) {
+			if (!Unchanged(slot, op, fields...)) Record(op, fields...);
+		}
+		void Forget(uint32_t slot, uint32_t count = 1) {
+			for (uint32_t i = 0; i < count; ++i) sentState[slot + i].known = false;
+		}
+		// The lighting extension sets the lighting switch and colours the multipliers set too.
+		void ForgetMultipliers() {
+			Forget(kColorMultiplierSlot);
+			Forget(kAlphaMultiplierSlot);
+		}
+		// Enable and Disable share a slot per capability. Texture2D is one per texture stage.
+		void RecordSwitch(nSCDWire::Op op, uint32_t state) {
+			if (state >= kGDNumCapabilities) {
+				Record(op, state);
+				return;
+			}
+			bool const secondStage = state == kGDCapability_Texture2D && activeStage == 1;
+			RecordState(kCapabilitySlot + (secondStage ? kGDNumCapabilities : state), op, state);
+		}
+
+		struct Matrix {
+			float v[16];
+		};
+
 		void RecordReservation(uint32_t name, uint32_t bytes);
 		void RecordBlit(nSCDWire::BlitKind kind, int32_t x, int32_t y, int32_t width, int32_t height,
 		                int32_t sourceWidth, int32_t sourceHeight, uint32_t format, uint32_t type,
@@ -217,6 +297,11 @@ namespace nSCD3D11 {
 		uint8_t const *reservation = nullptr;
 		uint32_t reservationVertices = 0;
 		std::vector<uint8_t> scratch;
+		SentState sentState[kSlotCount];
+		// The texture stage and matrix mode the other side has, which pick the slots of the setters that
+		// act on them.
+		uint32_t activeStage = 0;
+		uint32_t matrixMode = 0;
 	};
 
 	// The GZCOM factory for the driver class. With Record=<file> the driver comes wrapped in cGDriverWire
@@ -227,11 +312,14 @@ namespace nSCD3D11 {
 	// terrain vertex buffer.
 	class cGDriverReplayHooks : public nSCDWire::ReplayHooks {
 	public:
-		explicit cGDriverReplayHooks(cGDriver &driver) : driver(driver) {}
+		// A cGDriver, or a cGDriverWire in front of one to record the replay again.
+		template<typename Driver>
+		explicit cGDriverReplayHooks(Driver &driver) : driver(driver), vertexBuffers(driver) {}
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override;
 
 	private:
-		cGDriver &driver;
+		cIGZGDriver &driver;
+		cIGZGDriverVertexBufferExtension &vertexBuffers;
 	};
 }

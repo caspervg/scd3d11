@@ -15,8 +15,9 @@
 //       Renders a Record=<file> capture offline and saves the chosen frames as PNG. With --scene substitute the
 //       server draws the game's models from its own copy of the game's data (SceneLane.h) and writes per frame
 //       counts to scene.csv in the output folder. check also compares each such draw with the game's.
-//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>]
-//       Draws the game live. SCD3D11 starts it this way with Renderer=server.
+//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
+//       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
+//       rate and the CPU and GPU time per frame every second.
 //
 //   --relight relights every frame with another sun: an hour of the day from 0 to 24, or
 //   <azimuth>,<elevation> in degrees (see cGDriver12::Sun).
@@ -165,6 +166,9 @@ namespace {
 		void ModelInstance(nSCDWire::ModelInstance const &model) override {
 			if (scene != nullptr) scene->ModelInstance(model);
 		}
+		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
+			driver.DrawBlobs(vertices, indices);
+		}
 		bool Frame() override {
 			driver.Frame();
 			if (scene != nullptr) scene->EndFrame(frame, sceneCsv);
@@ -221,6 +225,12 @@ namespace {
 		std::printf("%s: %llu frames, %llu records, %llu images saved, %.1f s\n", ok ? "done" : error,
 		            static_cast<unsigned long long>(stats.frames), static_cast<unsigned long long>(stats.records),
 		            static_cast<unsigned long long>(hooks.saved), seconds);
+		for (size_t op = 1; op < static_cast<size_t>(nSCDWire::Op::Count); ++op) {
+			if (stats.opCounts[op] != 0) {
+				std::printf("  %-24s %llu\n", nSCDWire::OpName(static_cast<nSCDWire::Op>(op)),
+				            static_cast<unsigned long long>(stats.opCounts[op]));
+			}
+		}
 		if (scene != nullptr) scene->PrintTotals();
 		if (hooks.sceneCsv != nullptr) std::fclose(hooks.sceneCsv);
 		std::fclose(file);
@@ -232,18 +242,20 @@ namespace {
 		DWORD parent = 0;
 		Sun sun;
 		bool relight = false;
+		bool stats = false;
 		for (int i = 2; i + 1 < argc; i += 2) {
 			std::wstring const argument = argv[i];
 			if (argument == L"--ring") ring = argv[i + 1];
 			else if (argument == L"--parent") parent = static_cast<DWORD>(_wtoi(argv[i + 1]));
 			else if (argument == L"--relight") relight = ParseSun(argv[i + 1], sun);
+			else if (argument == L"--stats") stats = std::wstring(argv[i + 1]) == L"on";
 			else if (argument == L"--log") {
 				std::FILE *log = nullptr;
 				_wfreopen_s(&log, argv[i + 1], L"w", stdout);
 			}
 		}
 		if (ring.empty() || parent == 0) return 2;
-		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr);
+		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats);
 	}
 
 	int RunCompare(int argc, wchar_t **argv) {
@@ -287,7 +299,7 @@ int wmain(int argc, wchar_t **argv) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
 		std::puts("                     [--relight <hour or azimuth,elevation>] [--until <frame>]"
 		          " [--scene substitute|check --game <SimCity 4 folder>]");
-		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>]");
+		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
 	CoUninitialize();

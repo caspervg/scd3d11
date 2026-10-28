@@ -58,6 +58,7 @@ namespace nSCD3D11 {
 		                       L" --log \"" + log + L"\"";
 		std::string const &relight = Settings::Get().serverRelight;
 		if (!relight.empty() && relight != "off") command += L" --relight " + std::wstring(relight.begin(), relight.end());
+		if (DrawStatsEnabled()) command += L" --stats on";
 
 		job = CreateJobObjectW(nullptr, nullptr);
 		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
