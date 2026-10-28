@@ -41,8 +41,9 @@ The live stream and a recorded capture are the same bytes. Every capture replays
    20 MB of geometry per second of which 1 MB the cache had not seen, peaks of 90 MB and 9.5 MB, textures up to 57 MB
    per second while loading, the largest single frame 19 MB (while loading). About 220 draws per frame at rest and
    600 while scrolling. A heavy NAM city is still to be measured.
-3. **Presenting from another process.** Open: a DirectComposition surface from the server shown on SC4's window, and
-   Streamline frame generation on such a swap chain.
+3. **Presenting from another process.** Half answered: yes. With `ServerPresent=composition` the server's own
+   flip-model swap chain sits on a DirectComposition surface the shim attaches to SC4's window, and the live game
+   showed the server's frames that way. Streamline frame generation on such a swap chain is still to be tried.
 4. **Plugin folder scanning.** Answered: SC4 does not load DLLs from subfolders of Plugins (a test DLL in
    `Plugins\SCD3D12\` was never loaded). The server and its own DLLs can live there.
 5. **Address space.** Answered: worth it already. Big City Tutorial just after loading, SC4's own process: 884 MB
@@ -54,7 +55,7 @@ The live stream and a recorded capture are the same bytes. Every capture replays
 | | State |
 |---|---|
 | M0 | Done. `scripts/bench_sc4.py` runs the game unattended through its HTTP command listener |
-| M1 | Wire format, `Record=<file>`, `SCDReplay.exe` (Direct3D 11 reference images) and `SCD3D12Server.exe replay` done. The Direct3D 12 renderer is being ported |
-| M2 | `Renderer=server` works end to end: the stream goes through a 64 MB shared ring, frames come back through two shared textures and fences, and the shim falls back to drawing locally when the server stops. `ServerPresent=composition` presents from the server through DirectComposition |
-| M3 | Occupant inserts, removes and moves are streamed (plus a listing of every occupant once a city loads), and `DrawOwnerHooks` brackets every grid and view object draw with its owner. In a test session 78% of all draws were bracketed (the rest are UI, background and loading screens) and 99.97% of bracketed occupants matched the occupant records. Motion vectors come with the Direct3D 12 renderer |
+| M1 | Done. The Direct3D 12 driver (`cGDriver12`) renders a 57,835-frame capture bit-identically to SCD3D11 on every frame compared, in 26 s |
+| M2 | The live game runs drawn by the server. `Renderer=server` works end to end: the stream goes through a 64 MB shared ring, frames come back through two shared textures and fences, and the shim falls back to drawing locally when the server stops. `ServerPresent=composition` presents from the server through DirectComposition |
+| M3 | Occupant inserts, removes and moves are streamed (plus a listing of every occupant once a city loads), and `DrawOwnerHooks` brackets every grid and view object draw with its owner. In a test session 78% of all draws were bracketed (the rest are UI, background and loading screens) and 99.97% of bracketed occupants matched the occupant records. Each model instance's S3D key and world transform follow its OwnerBegin. Motion vectors are next |
 | M4 | Asset readers (DBPF, QFS, S3D, FSH, exemplars) in progress |
