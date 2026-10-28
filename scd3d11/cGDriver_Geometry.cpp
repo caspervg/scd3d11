@@ -271,6 +271,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 #endif
 		Microsoft::WRL::ComPtr<ID3DBlob> vertexBytecode;
 		Microsoft::WRL::ComPtr<ID3DBlob> pixelBytecode;
+		Microsoft::WRL::ComPtr<ID3DBlob> flatVertexBytecode;
 		Microsoft::WRL::ComPtr<ID3DBlob> flatPixelBytecode;
 		Microsoft::WRL::ComPtr<ID3DBlob> messages;
 
@@ -287,6 +288,16 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return result;
 		}
 		D3D_SHADER_MACRO const flatMacros[] = {{"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+		// The flat pair is compiled together: the interpolation modes decide how outputs pack into
+		// registers, so the smooth vertex shader would hand the flat pixel shader the wrong fog distance.
+		result = D3DCompile(
+			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", flatMacros, nullptr,
+			"VSMain", "vs_4_0", compileFlags, 0, &flatVertexBytecode, &messages);
+		if (messages) messages.Reset();
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "D3DCompile(VSMain flat)", result);
+			return result;
+		}
 		result = D3DCompile(
 			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", flatMacros, nullptr,
 			"PSMain", "ps_4_0", compileFlags, 0, &flatPixelBytecode, &messages);
@@ -323,6 +334,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		result = d3dDevice->CreatePixelShader(
 			flatPixelBytecode->GetBufferPointer(), flatPixelBytecode->GetBufferSize(), nullptr, &flatPixelShader);
+		if (FAILED(result)) return result;
+		result = d3dDevice->CreateVertexShader(
+			flatVertexBytecode->GetBufferPointer(), flatVertexBytecode->GetBufferSize(), nullptr, &flatVertexShader);
 		if (FAILED(result)) return result;
 
 		D3D11_INPUT_ELEMENT_DESC const elements[] = {
@@ -616,7 +630,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
-		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
+		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !flatVertexShader || !inputLayout ||
 		    !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
 		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
@@ -723,13 +737,15 @@ float4 PSMain(PSInput input) : SV_TARGET
 		UINT const offset = dynamicVertexBufferOffset;
 		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
 		ID3D11Buffer *constantBuffer = transformBuffers[activeTransformBuffer].Get();
-		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
+		bool const flat = shadeModel == 0;
+		ID3D11PixelShader *desiredPixelShader = flat ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
 			d3dContext->IASetInputLayout(inputLayout.Get());
-			d3dContext->VSSetShader(vertexShader.Get(), nullptr, 0);
 			geometryPipelineBound = true;
 		}
+		// The vertex shader goes with the pixel shader, and every cache reset forgets both.
 		if (desiredPixelShader != appliedPixelShader) {
+			d3dContext->VSSetShader(flat ? flatVertexShader.Get() : vertexShader.Get(), nullptr, 0);
 			d3dContext->PSSetShader(desiredPixelShader, nullptr, 0);
 			appliedPixelShader = desiredPixelShader;
 		}

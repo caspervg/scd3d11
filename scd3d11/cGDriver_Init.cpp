@@ -377,6 +377,7 @@ namespace nSCD3D11 {
 		activeTransformBuffer = 0;
 		inputLayout.Reset();
 		flatPixelShader.Reset();
+		flatVertexShader.Reset();
 		pixelShader.Reset();
 		appliedPixelShader = nullptr;
 		vertexShader.Reset();

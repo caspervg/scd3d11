@@ -456,7 +456,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		uint64_t uploadCursor = 0;
 
 		ComPtr<ID3D12RootSignature> rootSignature;
-		ComPtr<ID3DBlob> vertexShader, pixelShader, flatPixelShader, blitVertexShader, blitPixelShader;
+		ComPtr<ID3DBlob> vertexShader, pixelShader, flatVertexShader, flatPixelShader, blitVertexShader, blitPixelShader;
 		std::unordered_map<PipelineKey, ComPtr<ID3D12PipelineState>, PipelineKeyHash> pipelines;
 
 		ComPtr<ID3D12DescriptorHeap> rtvHeap;
@@ -839,7 +839,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			bool const blit = kind >= 2;
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
 			description.pRootSignature = rootSignature.Get();
-			ID3DBlob *const vs = blit ? blitVertexShader.Get() : vertexShader.Get();
+			ID3DBlob *const vs = blit ? blitVertexShader.Get() : (kind == 1 ? flatVertexShader.Get() : vertexShader.Get());
 			ID3DBlob *const ps = blit ? blitPixelShader.Get() : (kind == 1 ? flatPixelShader.Get() : pixelShader.Get());
 			description.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
 			description.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
@@ -1491,6 +1491,9 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		    !compile(kShaderSource, sizeof(kShaderSource) - 1, nullptr, "PSMain", "ps_5_0", compileFlags, d.pixelShader) ||
 		    !compile(kShaderSource, sizeof(kShaderSource) - 1, flatMacros, "PSMain", "ps_5_0", compileFlags,
 		             d.flatPixelShader) ||
+		    // Compiled with the same modes as its pixel shader, so their registers line up.
+		    !compile(kShaderSource, sizeof(kShaderSource) - 1, flatMacros, "VSMain", "vs_5_0", compileFlags,
+		             d.flatVertexShader) ||
 		    !compile(kBlitShaderSource, sizeof(kBlitShaderSource) - 1, nullptr, "VSMain", "vs_5_0",
 		             D3DCOMPILE_ENABLE_STRICTNESS, d.blitVertexShader) ||
 		    !compile(kBlitShaderSource, sizeof(kBlitShaderSource) - 1, nullptr, "PSMain", "ps_5_0",
