@@ -105,6 +105,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
         scd3d11/cGDriverWire.cpp
+        scd3d11/wire/ImageFile.cpp
         scd3d11/wire/WireReplay.cpp
         scd3d11/wire/WireStream.cpp
         scd3d11/cGDriversCOMDirector.cpp
@@ -164,6 +165,12 @@ target_include_directories(SCD3D11 PRIVATE ${SCD3D11_DRIVER_INCLUDES})
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
 target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version)
+
+# Replays a Record=<file> capture into the driver outside the game and saves frames as PNG.
+add_executable(SCDReplay scd3d11/replay/SCDReplay.cpp ${SCD3D11_DRIVER_SOURCES})
+target_include_directories(SCDReplay PRIVATE ${SCD3D11_DRIVER_INCLUDES})
+target_link_libraries(SCDReplay PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version windowscodecs ole32)
+target_link_options(SCDReplay PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/ENTRY:wmainCRTStartup>)
 
 include(CTest)
 if (BUILD_TESTING)
