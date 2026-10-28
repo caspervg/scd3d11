@@ -67,12 +67,13 @@ namespace nSCD3D12 {
 			kSecondStage, // the game set up stage 1 in a way the lane does not know
 			kNightMissing, // the game lit the instance but the store has no night texture
 			kTextureMissing, // the store has neither the texture nor the placeholder
+			kGameColors, // the game draws this instance with vertex colours of its own (a car's paint)
 			kReasonCount
 		};
 
 		char const *const kReasonNames[kReasonCount] = {
 			"none", "no_model_key", "model_missing", "highlighted", "extra_draw", "mesh_mismatch",
-			"two_textures", "unbound_texture", "second_stage", "night_missing", "texture_missing",
+			"two_textures", "unbound_texture", "second_stage", "night_missing", "texture_missing", "game_colors",
 		};
 
 		enum Field : uint8_t {
@@ -370,6 +371,8 @@ namespace nSCD3D12 {
 				return false;
 			}
 			uint32_t const uvOffset = RZVertexFormatElementOffset(format, kGDElementType_TexCoord, 0);
+			bool const colored = RZVertexFormatNumElements(format, kGDElementType_Color) != 0;
+			uint32_t const colorOffset = colored ? RZVertexFormatElementOffset(format, kGDElementType_Color, 0) : 0;
 			for (uint32_t i = 0; i < mesh.count; ++i) {
 				uint32_t index = static_cast<uint32_t>(first) + i;
 				if (indexType == 3) index = static_cast<uint16_t const *>(indices)[i];
@@ -378,6 +381,11 @@ namespace nSCD3D12 {
 				nSCAssets::MeshVertex const &own = mesh.cpuVertices[mesh.cpuIndices[i]];
 				if (std::memcmp(vertex, own.position, sizeof(own.position)) != 0 ||
 				    std::memcmp(vertex + uvOffset, own.uv, sizeof(own.uv)) != 0) return false;
+				// The game's colour is B, G, R, A in memory, the lane's R, G, B, A. White without colours.
+				uint8_t const *bgra = colored ? vertex + colorOffset : nullptr;
+				uint32_t const color = bgra ? (bgra[2] | bgra[1] << 8 | bgra[0] << 16 | static_cast<uint32_t>(bgra[3]) << 24)
+				                            : 0xFFFFFFFFu;
+				if (color != own.color) return false;
 			}
 			return true;
 		}
@@ -386,6 +394,7 @@ namespace nSCD3D12 {
 		Reason Draw(Bracket const &bracket, GpuMesh const &mesh, int32_t first, uint32_t indexType, void const *indices) {
 			cGDriver12::DrawState game{};
 			driver.SaveDrawState(game);
+			if (RZVertexFormatNumElements(game.vertexFormat, kGDElementType_Color) != 0) return kGameColors;
 			if (check && !SameGeometry(game, mesh, first, indexType, indices)) {
 				++frame.stateMismatches[kGeometry];
 				if (reported++ < 20) {
