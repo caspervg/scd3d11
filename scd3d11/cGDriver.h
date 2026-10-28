@@ -27,6 +27,7 @@
 #include <cRZBaseUnknown.h>
 #include "cIGZGDriver.h"
 #include "D3D11Conversions.h"
+#include "GeometryCache.h"
 #include "sGDMode.h"
 #include "ViewportCull.h"
 #include "ext/cIGZGBufferRegionExtension.h"
@@ -186,7 +187,7 @@ namespace nSCD3D11 {
 			uint32_t offset;
 		};
 
-		using GeometryCache = std::unordered_map<GeometryCacheKey, GeometryCacheEntry, GeometryCacheKeyHash>;
+		using GeometryCache = FlatGeometryCache<GeometryCacheEntry>;
 
 		struct GeometryCacheSegment {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;

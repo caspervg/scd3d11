@@ -59,14 +59,9 @@ namespace nSCD3D11 {
         bool generation = false;
 
         bool operator==(GeometryCacheKey const &other) const {
-            return XXH128_isEqual(digest, other.digest) && count == other.count && format == other.format &&
-                   generation == other.generation;
-        }
-    };
-
-    struct GeometryCacheKeyHash {
-        size_t operator()(GeometryCacheKey const &key) const {
-            return static_cast<size_t>(key.digest.low64 ^ key.digest.high64);
+            // Not XXH128_isEqual, which is an out-of-line call on every cache probe.
+            return digest.low64 == other.digest.low64 && digest.high64 == other.digest.high64 &&
+                   count == other.count && format == other.format && generation == other.generation;
         }
     };
 
