@@ -43,9 +43,6 @@ namespace nSCD3D11::SunPath {
 	// SC4's day and night cycle is turned off.
 	bool Current(float direction[3]);
 
-	// True when the sun has set and the moon casts instead.
-	bool Moonlit();
-
 	// How strong shadows are for the real elevation of the sun, or of the moon
 	// when it casts: 1 when well up, falling to 0 at the horizon.
 	float Strength();

@@ -149,10 +149,6 @@ namespace nSCD3D11::SunPath {
 		return true;
 	}
 
-	bool Moonlit() {
-		return gValid && gMoonlit;
-	}
-
 	float Strength() {
 		return gValid ? (std::clamp)(gElevation / kFadeElevation, 0.0f, 1.0f) : 1.0f;
 	}

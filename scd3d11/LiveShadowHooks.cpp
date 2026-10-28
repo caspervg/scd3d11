@@ -118,9 +118,13 @@ namespace nSCD3D11::LiveShadowHooks {
 		// dots it with the sun at +0x58 (x, y, z in that turned frame).
 		constexpr ptrdiff_t kLightingSun = 0x58;
 		constexpr ptrdiff_t kLightingTurn = 0x7C;
-		// SetTimeOfDay (0x007D9DF0) writes max((lighting red - 0.8) / 0.2, 0)
-		// here and sends it as the daylight transition parameter.
-		constexpr ptrdiff_t kLightingDaylight = 0xBC;
+		// SetTimeOfDay (0x007D9DF0) writes how far into night the lighting is
+		// here: max(1 - (red - m) / (0.8 - m), 0), with m the darkest red of the
+		// day's lighting map.
+		constexpr ptrdiff_t kLightingNight = 0xC0;
+		// How much of a shadow night takes away, 0.6 unless a lighting exemplar
+		// sets property 0x085489D3 (ReadProperties_ 0x007DA9E4).
+		constexpr uintptr_t kNightShadowReductionVA = 0x00B0DC98;
 		// GetShadowParams (0x007D6B70) only copies these globals out.
 		constexpr uintptr_t kShadowStrengthVA = 0x00B0DC78;
 		constexpr uintptr_t kShadowColourVA = 0x00B4E34C;
@@ -542,14 +546,18 @@ namespace nSCD3D11::LiveShadowHooks {
 		return true;
 	}
 
-	bool ShadowDaylight(float &daylight) {
-		float value = 0.0f;
+	// GetShadowStrengthFromLocation (0x007D6BB0) scales every shadow by this
+	// before DrawShadows draws it.
+	bool ShadowNightScale(float &scale) {
+		float night = 0.0f;
+		float reduction = 0.0f;
 		void *const lighting = gInstalled ? SafeLighting(gRendererPointer) : nullptr;
 		if (lighting == nullptr ||
-		    !SafeCopy(static_cast<uint8_t const *>(lighting) + kLightingDaylight, &value, sizeof(value)) ||
-		    !std::isfinite(value))
+		    !SafeCopy(static_cast<uint8_t const *>(lighting) + kLightingNight, &night, sizeof(night)) ||
+		    !SafeCopy(reinterpret_cast<void const *>(kNightShadowReductionVA), &reduction, sizeof(reduction)) ||
+		    !std::isfinite(night) || !std::isfinite(reduction))
 			return false;
-		daylight = (std::clamp)(value, 0.0f, 1.0f);
+		scale = (std::clamp)(1.0f - reduction * night, 0.0f, 1.0f);
 		return true;
 	}
 

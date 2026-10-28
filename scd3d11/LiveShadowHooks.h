@@ -38,10 +38,11 @@ namespace nSCD3D11::LiveShadowHooks {
 
 	// SC4's lighting, read from the 1.1.641 renderer: the world direction
 	// shadows travel (GetShadowDirection), the shadow colour and strength
-	// (GetShadowParams) and the day/night weight of that tint.
+	// (GetShadowParams) and how much of that strength SC4 keeps at this time
+	// of night.
 	bool SunDirection(float direction[3]);
 	bool ShadowParams(float colour[3], float &strength);
-	bool ShadowDaylight(float &daylight);
+	bool ShadowNightScale(float &scale);
 	// The light SC4 gives a world-space normal (cSC4LightingManager::GetColor,
 	// 0x007D7460), which is what it colours terrain vertices with.
 	bool TerrainLight(float const normal[3], float colour[3]);
