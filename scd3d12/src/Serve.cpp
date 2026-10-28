@@ -29,8 +29,9 @@ namespace nSCD3D12 {
 	namespace {
 		class ServeHooks : public nSCDWire::ReplayHooks {
 		public:
-			ServeHooks(cGDriver12 &driver, nSCDWire::RingControl &control, HANDLE parent, HANDLE frameEvent)
-				: driver(driver), control(control), parent(parent), frameEvent(frameEvent) {}
+			ServeHooks(cGDriver12 &driver, nSCDWire::RingControl &control, HANDLE parent, HANDLE frameEvent,
+			           bool stats)
+				: driver(driver), control(control), parent(parent), frameEvent(frameEvent), stats(stats) {}
 
 			~ServeHooks() {
 				if (copyEvent != nullptr) CloseHandle(copyEvent);
@@ -54,10 +55,36 @@ namespace nSCD3D12 {
 				driver.Frame();
 				uint64_t const index = frame++;
 				if (frameFence) Publish(index);
+				if (stats) Report();
 				return true;
 			}
 
 		private:
+			// Once a second: frames, this thread's CPU time and the GPU time per frame.
+			void Report() {
+				++reportFrames;
+				ULONGLONG const now = GetTickCount64();
+				if (reportStart == 0) reportStart = now;
+				if (now - reportStart < 1000) return;
+				FILETIME created, exited, kernel, user;
+				GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user);
+				auto const ticks = [](FILETIME const &time) {
+					return static_cast<uint64_t>(time.dwHighDateTime) << 32 | time.dwLowDateTime;
+				};
+				uint64_t const cpu = ticks(kernel) + ticks(user);
+				double gpu = 0.0;
+				uint32_t gpuFrames = 0;
+				driver.TakeGpuTime(gpu, gpuFrames);
+				std::printf("%u frames in %.2f s, CPU %.2f ms and GPU %.2f ms per frame\n", reportFrames,
+				            static_cast<double>(now - reportStart) / 1000.0,
+				            static_cast<double>(cpu - reportCpu) / 1.0e4 / reportFrames,
+				            gpuFrames != 0 ? gpu / gpuFrames : 0.0);
+				std::fflush(stdout);
+				reportStart = now;
+				reportCpu = cpu;
+				reportFrames = 0;
+			}
+
 			// New shared textures and fences for frames of this size, handed to the shim as handles it owns.
 			void Share(uint32_t width, uint32_t height) {
 				ID3D12Device *const device = driver.Device();
@@ -243,10 +270,14 @@ namespace nSCD3D12 {
 			ComPtr<ID3D12Resource> swapBuffers[2];
 			HANDLE copyEvent = nullptr;
 			uint64_t copyValue = 0;
+			bool stats;
+			ULONGLONG reportStart = 0;
+			uint64_t reportCpu = 0;
+			uint32_t reportFrames = 0;
 		};
 	}
 
-	int RunServe(std::wstring const &ringName, DWORD parentId) {
+	int RunServe(std::wstring const &ringName, DWORD parentId, bool logStats) {
 		HANDLE const parent = OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, FALSE, parentId);
 		if (parent == nullptr) {
 			std::puts("cannot open the game's process");
@@ -284,7 +315,7 @@ namespace nSCD3D12 {
 		std::puts("serving");
 		std::fflush(stdout);
 
-		ServeHooks hooks(driver, control, parent, ring.FrameEvent());
+		ServeHooks hooks(driver, control, parent, ring.FrameEvent(), logStats);
 		nSCDWire::Reader reader([&](void *data, size_t size) { return ring.Read(data, size, alive); });
 		nSCDWire::ReplayStats stats;
 		char const *error = nullptr;

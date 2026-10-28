@@ -15,6 +15,7 @@
 #include <windows.h>
 
 namespace nSCD3D12 {
-	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits.
-	int RunServe(std::wstring const &ringName, DWORD parentId);
+	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits. With logStats, logs
+	// the frame rate and the CPU and GPU time per frame every second.
+	int RunServe(std::wstring const &ringName, DWORD parentId, bool logStats);
 }

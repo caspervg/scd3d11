@@ -52,6 +52,8 @@ namespace nSCD3D12 {
 
 		// The current back buffer as tightly packed RGBA rows, after waiting for the GPU.
 		bool ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height);
+		// The GPU time of the frames finished since the last call, and how many there were.
+		void TakeGpuTime(double &milliseconds, uint32_t &frames);
 		ID3D12Device *Device() const;
 		ID3D12CommandQueue *Queue() const;
 		// The persistent back buffer every frame is drawn into, in the RENDER_TARGET state between calls.

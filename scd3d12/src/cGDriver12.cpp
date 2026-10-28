@@ -516,6 +516,15 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		ComPtr<ID3D12Fence> fence;
 		HANDLE fenceEvent = nullptr;
 		uint64_t fenceValue = 0;
+		// GPU time of each frame: a timestamp as its command list opens and one as it closes, read back
+		// once the frame slot comes round again.
+		ComPtr<ID3D12QueryHeap> timestamps;
+		ComPtr<ID3D12Resource> timestampReadback;
+		uint64_t *timestampValues = nullptr;
+		double timestampMilliseconds = 0.0;
+		bool frameTimed[kFrameCount]{};
+		double gpuMilliseconds = 0.0;
+		uint32_t gpuFrames = 0;
 		FrameSlot frames[kFrameCount];
 		uint32_t frameIndex = 0;
 		std::vector<UploadChunk> chunkPool;
@@ -677,6 +686,12 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			frameIndex = index;
 			FrameSlot &slot = frames[index];
 			WaitFor(slot.fence);
+			if (frameTimed[index] && timestampValues != nullptr) {
+				gpuMilliseconds += static_cast<double>(timestampValues[index * 2 + 1] - timestampValues[index * 2]) *
+				                   timestampMilliseconds;
+				++gpuFrames;
+				frameTimed[index] = false;
+			}
 			for (UploadChunk &chunk: slot.chunks) {
 				if (chunk.size == kUploadChunkBytes) chunkPool.push_back(std::move(chunk));
 			}
@@ -687,6 +702,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			uploadCursor = 0;
 			slot.allocator->Reset();
 			list->Reset(slot.allocator.Get(), nullptr);
+			if (timestamps) list->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, index * 2);
 
 			ID3D12DescriptorHeap *const heaps[]{viewHeap.Get(), samplerHeap.Get()};
 			list->SetDescriptorHeaps(2, heaps);
@@ -710,6 +726,12 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 		// Hands the recorded commands to the queue and moves on to the next frame slot.
 		bool Submit() {
+			if (timestamps) {
+				list->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2 + 1);
+				list->ResolveQueryData(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2, 2,
+				                       timestampReadback.Get(), frameIndex * 2 * sizeof(uint64_t));
+				frameTimed[frameIndex] = true;
+			}
 			if (FAILED(list->Close())) {
 				ReportDebugMessages();
 				return false;
@@ -1661,11 +1683,37 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			return false;
 		}
 
+		// Frame timing is optional: without it the server still draws.
+		UINT64 frequency = 0;
+		D3D12_QUERY_HEAP_DESC queries{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kFrameCount * 2, 0};
+		D3D12_HEAP_PROPERTIES const readbackHeap{D3D12_HEAP_TYPE_READBACK};
+		D3D12_RESOURCE_DESC readback{};
+		readback.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		readback.Width = kFrameCount * 2 * sizeof(uint64_t);
+		readback.Height = readback.DepthOrArraySize = readback.MipLevels = 1;
+		readback.SampleDesc.Count = 1;
+		readback.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		if (SUCCEEDED(d.queue->GetTimestampFrequency(&frequency)) && frequency != 0 &&
+		    SUCCEEDED(d.device->CreateQueryHeap(&queries, IID_PPV_ARGS(&d.timestamps))) &&
+		    SUCCEEDED(d.device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &readback,
+		                                                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+		                                                IID_PPV_ARGS(&d.timestampReadback))) &&
+		    SUCCEEDED(d.timestampReadback->Map(0, nullptr, reinterpret_cast<void **>(&d.timestampValues)))) {
+			d.timestampMilliseconds = 1000.0 / static_cast<double>(frequency);
+		} else {
+			d.timestamps.Reset();
+		}
+
 		d.BeginFrame(0);
 		return true;
 	}
 
 	ID3D12Device *cGDriver12::Device() const { return impl->device.Get(); }
+
+	void cGDriver12::TakeGpuTime(double &milliseconds, uint32_t &frames) {
+		milliseconds = std::exchange(impl->gpuMilliseconds, 0.0);
+		frames = std::exchange(impl->gpuFrames, 0);
+	}
 	ID3D12CommandQueue *cGDriver12::Queue() const { return impl->queue.Get(); }
 	ID3D12Resource *cGDriver12::BackBuffer() const { return impl->backBuffer.Get(); }
 

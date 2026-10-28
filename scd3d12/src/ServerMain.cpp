@@ -12,8 +12,9 @@
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
 //       Renders a Record=<file> capture offline and saves the chosen frames as PNG.
-//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>]
-//       Draws the game live. SCD3D11 starts it this way with Renderer=server.
+//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--stats on]
+//       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
+//       rate and the CPU and GPU time per frame every second.
 //   SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]
 //       Compares two images channel by channel. Exit code 0 when no channel differs by more than n.
 
@@ -135,17 +136,19 @@ namespace {
 	int RunServeCommand(int argc, wchar_t **argv) {
 		std::wstring ring;
 		DWORD parent = 0;
+		bool stats = false;
 		for (int i = 2; i + 1 < argc; i += 2) {
 			std::wstring const argument = argv[i];
 			if (argument == L"--ring") ring = argv[i + 1];
 			else if (argument == L"--parent") parent = static_cast<DWORD>(_wtoi(argv[i + 1]));
+			else if (argument == L"--stats") stats = std::wstring(argv[i + 1]) == L"on";
 			else if (argument == L"--log") {
 				std::FILE *log = nullptr;
 				_wfreopen_s(&log, argv[i + 1], L"w", stdout);
 			}
 		}
 		if (ring.empty() || parent == 0) return 2;
-		return nSCD3D12::RunServe(ring, parent);
+		return nSCD3D12::RunServe(ring, parent, stats);
 	}
 
 	int RunCompare(int argc, wchar_t **argv) {
@@ -187,7 +190,7 @@ int wmain(int argc, wchar_t **argv) {
 	else if (command == L"compare") result = RunCompare(argc, argv);
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
-		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>]");
+		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--stats on]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
 	CoUninitialize();
