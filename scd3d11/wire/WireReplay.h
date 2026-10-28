@@ -13,6 +13,7 @@
 #include "WireStream.h"
 
 #include <cstdint>
+#include <string>
 
 class cIGZGDriver;
 
@@ -37,6 +38,10 @@ namespace nSCDWire {
 		virtual void ModelInstance(nSCDWire::ModelInstance const &) {}
 		// The window changed size: the back buffer and buffer regions follow, textures stay.
 		virtual void Resize(uint32_t, uint32_t) {}
+		virtual void GameFolders(std::wstring const (&)[static_cast<size_t>(GameFolder::Count)]) {}
+		// parts holds piece.partCount parts.
+		virtual void NetworkPiece(nSCDWire::NetworkPiece const &, NetworkPart const *) {}
+		virtual void CellTexture(nSCDWire::CellTexture const &) {}
 	};
 
 	struct ReplayStats {

@@ -38,6 +38,20 @@
 //   q-0x0C  the animation frame, q-0x0A the properties
 // These are plain loads of fields the draw itself reads.
 //
+// Plain network pieces (vtable 0x00AA7F10, Draw 0x0061A850) get a NetworkPiece record. From q:
+//   q-0xE0  the quad: 4 vertices of 0x18 bytes (x, y, z, BGRA, u, v) in world space
+//   q-0x80  the piece id, q-0x7C the under texture, q-0x78 rotation and flip, q-0x77 the variation
+//   q-0x64  begin and q-0x60 end of the extra parts, 0x4C bytes each: a texture id and 3 vertices
+//   q-0x40  the network flags: 0x2000000 and 0x4000000 draw the quad's two triangles, 0x1000000 picks the
+//           other diagonal (indices 0,1,3 and 3,1,2 instead of 0,1,2 and 0,2,3)
+// The draw context's word at +0x14 is the zoom.
+//
+// Lot cell textures (cSC4CellTextureModel, vtable 0x00AA2C30, Draw 0x005E0200) get a CellTexture record:
+// q-0xB8 the texture key, cell x and z, orientation, mirror, RGB, alpha, mode and the binding's image (14 bytes),
+// q-0xA8 whether the texture has alpha, q-0xA7 the zoom it was loaded for (the draw reloads it when the
+// context's zoom differs, so the record carries the context's), q-0xA4 the texture binding, q-0x88
+// the four vertices of a flat cell, q-0x28 whether it is flat.
+//
 // Each site becomes a call to a stub below plus a NOP. Every patch checks the bytes it replaces and is
 // undone in PreAppShutdown.
 
@@ -51,6 +65,7 @@
 #include <cIGZUnknown.h>
 
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <initializer_list>
 
@@ -119,6 +134,54 @@ namespace nSCD3D11::DrawOwnerHooks {
 			return true;
 		}
 
+		constexpr uintptr_t kNetworkPieceVtable = 0x00AA7F10;
+		constexpr uintptr_t kCellTextureVtable = 0x00AA2C30;
+		constexpr ptrdiff_t kContextZoom = 0x14;
+		// More would mean the fields are not what they seem.
+		constexpr size_t kMaxNetworkParts = 64;
+
+		uint8_t const *Body(void *drawable) {
+			auto const *const p = static_cast<uint8_t const *>(drawable);
+			return p - *reinterpret_cast<int32_t const *>(p - 4);
+		}
+
+		uint8_t ContextZoom(void *context) {
+			return context != nullptr ? static_cast<uint8_t>(*reinterpret_cast<uint32_t const *>(
+				static_cast<uint8_t const *>(context) + kContextZoom)) : 0;
+		}
+
+		void RecordNetworkPiece(cGDriverWire &wire, void *drawable, void *context, uint32_t flag) {
+			uint8_t const *const q = Body(drawable);
+			nSCDWire::NetworkPiece piece{};
+			std::memcpy(piece.corners, q - 0xE0, sizeof(piece.corners));
+			piece.piece = *reinterpret_cast<uint32_t const *>(q - 0x80);
+			piece.underTexture = *reinterpret_cast<uint32_t const *>(q - 0x7C);
+			piece.rotationFlip = q[-0x78];
+			piece.variation = q[-0x77];
+			piece.zoom = ContextZoom(context);
+			piece.highlighted = flag != 0;
+			piece.flags = *reinterpret_cast<uint32_t const *>(q - 0x40);
+			auto const *const begin = *reinterpret_cast<nSCDWire::NetworkPart const *const *>(q - 0x64);
+			auto const *const end = *reinterpret_cast<nSCDWire::NetworkPart const *const *>(q - 0x60);
+			size_t const count = begin != nullptr && end > begin ? static_cast<size_t>(end - begin) : 0;
+			piece.partCount = static_cast<uint32_t>(count <= kMaxNetworkParts ? count : 0);
+			wire.RecordNetworkPiece(piece, begin);
+		}
+
+		void RecordCellTexture(cGDriverWire &wire, void *drawable, void *context, uint32_t flag) {
+			uint8_t const *const q = Body(drawable);
+			nSCDWire::CellTexture cell{};
+			// Key to element: the record SetTexture copies.
+			std::memcpy(&cell, q - 0xB8, offsetof(nSCDWire::CellTexture, textureAlpha));
+			cell.textureAlpha = q[-0xA8];
+			cell.zoom = ContextZoom(context);
+			cell.highlighted = flag != 0;
+			cell.bound = *reinterpret_cast<void *const *>(q - 0xA4) != nullptr;
+			cell.flat = q[-0x28];
+			std::memcpy(cell.vertices, q - 0x88, sizeof(cell.vertices));
+			wire.RecordCellTexture(cell);
+		}
+
 		uint32_t __fastcall DrawGrid(void *drawable, void *, void *context, uint32_t flag) {
 			auto **const vtable = *static_cast<void ***>(drawable);
 			using Draw = uint32_t(__thiscall *)(void *, void *, uint32_t);
@@ -130,6 +193,8 @@ namespace nSCD3D11::DrawOwnerHooks {
 			wire->RecordOwnerBegin(owner);
 			nSCDWire::ModelInstance model;
 			if (ReadModelInstance(drawable, owner.vtable, model)) wire->RecordModelInstance(model);
+			else if (owner.vtable == kNetworkPieceVtable) RecordNetworkPiece(*wire, drawable, context, flag);
+			else if (owner.vtable == kCellTextureVtable) RecordCellTexture(*wire, drawable, context, flag);
 			uint32_t const result = reinterpret_cast<Draw>(vtable[12])(drawable, context, flag);
 			wire->RecordOwnerEnd();
 			return result;

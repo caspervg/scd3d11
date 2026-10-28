@@ -326,6 +326,24 @@ namespace {
 			return 77;
 		}
 
+		// The scene lane's records, which must come back as they went in.
+		std::wstring const folders[] = {L"C:\\Game", L"C:\\Game\\English", L"", L"C:\\Game\\Plugins", L"D:\\Me\\Plugins"};
+		nSCDWire::NetworkPiece piece{};
+		piece.piece = 0x5E00;
+		piece.flags = 0x6000000;
+		piece.corners[3].uv[1] = 1.0f;
+		piece.partCount = 2;
+		NetworkPart parts[2]{};
+		parts[1].texture = 7;
+		parts[1].vertices[2].position[0] = 16.0f;
+		nSCDWire::CellTexture cell{};
+		cell.key = 0x26213000;
+		cell.flat = 1;
+		cell.vertices[3].color = 0xFFD6D2D4;
+		wire->RecordGameFolders(folders);
+		wire->RecordNetworkPiece(piece, parts);
+		wire->RecordCellTexture(cell);
+
 		std::vector<std::vector<uint8_t>> expected;
 		for (int frame = 0; frame < kFrames; ++frame) {
 			if (frame < 3) DrawScene(*wire, frame);
@@ -346,11 +364,23 @@ namespace {
 		struct Hooks : nSCD3D11::cGDriverReplayHooks {
 			cGDriver &driver;
 			std::vector<std::vector<uint8_t>> frames;
+			std::wstring folders[static_cast<size_t>(GameFolder::Count)];
+			nSCDWire::NetworkPiece piece{};
+			std::vector<NetworkPart> parts;
+			nSCDWire::CellTexture cell{};
 			explicit Hooks(cGDriver &driver) : cGDriverReplayHooks(driver), driver(driver) {}
 			bool Frame() override {
 				frames.push_back(cGDriverTestAccess{driver}.BackBuffer());
 				return true;
 			}
+			void GameFolders(std::wstring const (&names)[static_cast<size_t>(GameFolder::Count)]) override {
+				for (size_t i = 0; i < std::size(names); ++i) folders[i] = names[i];
+			}
+			void NetworkPiece(nSCDWire::NetworkPiece const &read, NetworkPart const *readParts) override {
+				piece = read;
+				parts.assign(readParts, readParts + read.partCount);
+			}
+			void CellTexture(nSCDWire::CellTexture const &read) override { cell = read; }
 		} hooks(*replayed);
 
 		size_t offset = 0;
@@ -366,6 +396,10 @@ namespace {
 		if (!ok) std::printf("replay failed: %s\n", error);
 		assert(ok);
 		assert(stats.frames == kFrames && hooks.frames.size() == kFrames);
+		for (size_t i = 0; i < std::size(folders); ++i) assert(hooks.folders[i] == folders[i]);
+		assert(std::memcmp(&hooks.piece, &piece, sizeof(piece)) == 0);
+		assert(hooks.parts.size() == 2 && std::memcmp(hooks.parts.data(), parts, sizeof(parts)) == 0);
+		assert(std::memcmp(&hooks.cell, &cell, sizeof(cell)) == 0);
 		for (size_t frame = 0; frame < kFrames; ++frame) {
 			assert(hooks.frames[frame].size() == expected[frame].size());
 			size_t differing = 0;

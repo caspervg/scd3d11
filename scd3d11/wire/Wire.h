@@ -154,6 +154,13 @@ namespace nSCDWire {
 		// The window's client area changed size between two frames: width, height. Unlike SetVideoMode the
 		// game keeps its textures and buffer regions.
 		Resize,
+		// The folders SimCity 4 loaded its data from, so the server can read the same packages: for each of
+		// GameFolder's kinds in order, a uint32 count of UTF-16 code units, then the units.
+		GameFolders,
+		// After an OwnerBegin of a plain network piece: NetworkPiece, then its partCount NetworkParts.
+		NetworkPiece,
+		// After an OwnerBegin of a lot's cell texture (cSC4CellTextureModel): CellTexture.
+		CellTexture,
 
 		Count
 	};
@@ -217,6 +224,66 @@ namespace nSCDWire {
 		uint16_t properties;
 	};
 	static_assert(sizeof(ModelInstance) == 92);
+
+	// GameFolders, in the order SimCity 4 adds them to its resources (see AssetStore.h).
+	enum class GameFolder : uint8_t {
+		Install, // the install folder's *.dat files
+		Language, // its language folder, English for example
+		Sku, // Sku_Data, every *.dat below it
+		Plugins, // the install folder's Plugins
+		UserPlugins, // the user folder's Plugins
+		Count
+	};
+
+	// A vertex as SC4 keeps it for networks and lot textures (format 10): position, BGRA colour, uv.
+	struct GridVertex {
+		float position[3];
+		uint32_t color;
+		float uv[2];
+	};
+	static_assert(sizeof(GridVertex) == 24);
+
+	// A plain network piece (a cSC4NetworkOccupant drawn as a textured quad), read from the game's own fields
+	// as it is drawn. It draws the under texture first when it has one, then the piece's texture, each as up to
+	// two triangles of the quad, then its extra parts, one triangle each.
+	struct NetworkPiece {
+		uint32_t piece; // the texture id when variation is 0, and the fallback
+		uint32_t underTexture; // 0 for none
+		uint8_t rotationFlip; // rotation in the low 7 bits, bit 7 flipped
+		uint8_t variation; // the texture is piece + 16 x variation
+		uint8_t zoom; // the draw context's zoom, 0 to 4
+		uint8_t highlighted; // drawn by the highlight pass, twice and self lit
+		// Bit 0x2000000 draws the first triangle, 0x4000000 the second, 0x1000000 splits the quad along the
+		// other diagonal.
+		uint32_t flags;
+		GridVertex corners[4]; // world space
+		uint32_t partCount;
+	};
+	static_assert(sizeof(NetworkPiece) == 116);
+
+	struct NetworkPart {
+		uint32_t texture;
+		GridVertex vertices[3]; // world space
+	};
+	static_assert(sizeof(NetworkPart) == 76);
+
+	// A lot's cell texture (cSC4CellTextureModel), read as it is drawn: a 16 m square at (16 x, 16 z).
+	struct CellTexture {
+		uint32_t key; // the texture is (FSH, 0x0986135E, key + zoom), or key itself when that is missing
+		uint8_t x, z;
+		uint8_t orientation, mirror;
+		uint8_t rgb[3], alpha;
+		uint8_t mode; // 255 untinted, else the tint combiner's colour operation
+		uint8_t element; // which of the texture binding's images is drawn
+		uint8_t textureAlpha; // the bound texture has alpha
+		uint8_t zoom; // the draw context's zoom, which the texture is loaded for
+		uint8_t flat; // on a flat lot the model draws its own four vertices, otherwise the terrain draws it
+		uint8_t highlighted; // the highlight pass, which draws nothing
+		uint8_t bound; // the game found a texture
+		uint8_t reserved;
+		GridVertex vertices[4]; // a triangle strip, for a flat cell
+	};
+	static_assert(sizeof(CellTexture) == 116);
 
 	char const *OpName(Op op);
 }

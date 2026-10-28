@@ -44,6 +44,22 @@ namespace nSCD3D11 {
 		void RecordOwnerBegin(nSCDWire::DrawOwner const &owner) { Record(nSCDWire::Op::OwnerBegin, owner); }
 		void RecordOwnerEnd() { Record(nSCDWire::Op::OwnerEnd); }
 		void RecordModelInstance(nSCDWire::ModelInstance const &model) { Record(nSCDWire::Op::ModelInstance, model); }
+		void RecordNetworkPiece(nSCDWire::NetworkPiece const &piece, nSCDWire::NetworkPart const *parts) {
+			writer.Begin(nSCDWire::Op::NetworkPiece);
+			writer.Put(piece);
+			writer.PutBytes(parts, piece.partCount * sizeof(nSCDWire::NetworkPart));
+			writer.End();
+		}
+		void RecordCellTexture(nSCDWire::CellTexture const &cell) { Record(nSCDWire::Op::CellTexture, cell); }
+		// One folder per nSCDWire::GameFolder kind.
+		void RecordGameFolders(std::wstring const *folders) {
+			writer.Begin(nSCDWire::Op::GameFolders);
+			for (size_t i = 0; i < static_cast<size_t>(nSCDWire::GameFolder::Count); ++i) {
+				writer.Put(static_cast<uint32_t>(folders[i].size()));
+				writer.PutBytes(folders[i].data(), folders[i].size() * sizeof(wchar_t));
+			}
+			writer.End();
+		}
 		nSCDWire::Writer &Stream() { return writer; }
 
 		// cIGZUnknown

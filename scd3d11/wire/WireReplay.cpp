@@ -54,6 +54,7 @@ namespace nSCDWire {
 		NameMap textures;
 		NameMap regionNames;
 		std::vector<uint8_t> scratch;
+		std::vector<NetworkPart> networkParts;
 		// The unpack row length, so image blobs can be checked against what the driver will read.
 		int32_t rowLength = 0;
 		char const *failure = nullptr;
@@ -589,6 +590,32 @@ namespace nSCDWire {
 				case Op::ModelInstance: {
 					auto const model = f.Get<nSCDWire::ModelInstance>();
 					if (f.ok) hooks.ModelInstance(model);
+					break;
+				}
+				case Op::GameFolders: {
+					std::wstring folders[static_cast<size_t>(GameFolder::Count)];
+					for (std::wstring &folder: folders) {
+						auto const units = f.Get<uint32_t>();
+						if (uint8_t const *bytes = f.Bytes(static_cast<size_t>(units) * sizeof(wchar_t))) {
+							folder.assign(reinterpret_cast<wchar_t const *>(bytes), units);
+						}
+					}
+					if (f.ok) hooks.GameFolders(folders);
+					break;
+				}
+				case Op::NetworkPiece: {
+					auto const piece = f.Get<nSCDWire::NetworkPiece>();
+					uint8_t const *parts = f.ok ? f.Bytes(static_cast<size_t>(piece.partCount) * sizeof(NetworkPart)) : nullptr;
+					if (f.ok) {
+						networkParts.resize(piece.partCount);
+						if (piece.partCount != 0) std::memcpy(networkParts.data(), parts, piece.partCount * sizeof(NetworkPart));
+						hooks.NetworkPiece(piece, networkParts.data());
+					}
+					break;
+				}
+				case Op::CellTexture: {
+					auto const cell = f.Get<nSCDWire::CellTexture>();
+					if (f.ok) hooks.CellTexture(cell);
 					break;
 				}
 
