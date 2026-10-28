@@ -561,7 +561,6 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		float clearColor[4]{};
 		float clearDepth = 1.0f;
 		uint8_t clearStencil = 0;
-		uint32_t lastError = 0;
 
 		Impl() {
 			for (float *matrix: matrices) matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
@@ -1854,11 +1853,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 	void cGDriver12::GetFloat(uint32_t parameter, float *value) {
 		if (parameter == 0 && value != nullptr) *value = static_cast<float>(impl->pixelStoreRowLength);
 	}
-	uint32_t cGDriver12::GetError(void) {
-		uint32_t const error = impl->lastError;
-		impl->lastError = 0;
-		return error;
-	}
+	// The game reads state back from the shim, which answers queries itself.
+	uint32_t cGDriver12::GetError(void) { return 0; }
 
 	// Textures
 
