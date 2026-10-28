@@ -35,6 +35,8 @@ namespace nSCD3D11::Settings {
 		bool drawStats = false;
 		// LogLevel=trace.
 		bool traceLog = false;
+		// Record=<file>: write every SimGL call to this file as an SCDW stream (see wire/Wire.h).
+		std::string record;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.

@@ -19,6 +19,7 @@
 #include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
+#include "cGDriverWire.h"
 #include "LiveShadowHooks.h"
 #include "Settings.h"
 #include "ShadowRegistry.h"
@@ -34,7 +35,7 @@ namespace nSCD3D11
 	public:
 		cGDriversCOMDirector()
 		{
-			AddCls(cGDriver::kSCD3D11GDriverGZCLSID, cGDriver::FactoryFunctionPtr2);
+			AddCls(cGDriver::kSCD3D11GDriverGZCLSID, CreateDriver);
 		}
 
 	public:

@@ -98,6 +98,12 @@ namespace nSCD3D11::Settings {
 			return trace || value == "info";
 		}
 
+		// Record=<file>. Any non-empty value is a path.
+		bool ParsePath(std::string_view value, std::string &path) {
+			path = value;
+			return !path.empty();
+		}
+
 		// The setting from the first source whose value parse accepts: the
 		// command line, then the INI. A value it rejects is logged and skipped,
 		// so a mistyped switch leaves the INI's setting in force.
@@ -160,6 +166,7 @@ namespace nSCD3D11::Settings {
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
 		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);
+		values.record = Resolve(sources, "Record", ParsePath, values.record);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

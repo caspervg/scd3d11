@@ -104,6 +104,9 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
+        scd3d11/cGDriverWire.cpp
+        scd3d11/wire/WireReplay.cpp
+        scd3d11/wire/WireStream.cpp
         scd3d11/cGDriversCOMDirector.cpp
         scd3d11/LiveShadowHooks.cpp
         scd3d11/ShadowRegistry.cpp
@@ -249,4 +252,11 @@ if (BUILD_TESTING)
     target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version)
     # No usable D3D11 device skips instead of failing.
     set_tests_properties(cGDriverTest PROPERTIES SKIP_RETURN_CODE 77)
+
+    # Records a real cGDriver through cGDriverWire, replays the stream into a second one and compares pixels.
+    scd3d11_add_test(WireTest tests/WireTest.cpp ${SCD3D11_DRIVER_SOURCES})
+    target_include_directories(WireTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
+    target_compile_definitions(WireTest PRIVATE SCD3D11_TESTING)
+    target_link_libraries(WireTest PRIVATE d3d11 d3dcompiler dxgi version)
+    set_tests_properties(WireTest PROPERTIES SKIP_RETURN_CODE 77)
 endif ()
