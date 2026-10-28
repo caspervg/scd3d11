@@ -46,6 +46,10 @@ namespace nSCD3D12 {
 				driver.Vertices(name, data, bytes);
 			}
 
+			void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
+				driver.DrawBlobs(vertices, indices);
+			}
+
 			bool Frame() override {
 				driver.Frame();
 				uint64_t const index = frame++;

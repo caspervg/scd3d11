@@ -76,6 +76,9 @@ namespace {
 			driver.VideoMode(show, width, height, fullscreen);
 		}
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override { driver.Vertices(name, data, bytes); }
+		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
+			driver.DrawBlobs(vertices, indices);
+		}
 		bool Frame() override {
 			driver.Frame();
 			if (options.frames.count(frame) != 0 || (options.every != 0 && frame % options.every == 0)) {

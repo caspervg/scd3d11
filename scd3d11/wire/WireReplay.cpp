@@ -89,9 +89,11 @@ namespace nSCDWire {
 					auto const stride = f.Get<uint32_t>();
 					auto const primitive = f.Get<uint32_t>();
 					auto const count = f.Get<int32_t>();
-					auto const *vertices = blob(f.Get<BlobKey>());
+					auto const vertexKey = f.Get<BlobKey>();
+					auto const *vertices = blob(vertexKey);
 					if (!f.ok || vertices == nullptr || vertices->empty()) break;
 					driver.InterleavedArrays(format, static_cast<int32_t>(stride), vertices->data());
+					hooks.DrawBlobs(vertexKey, BlobKey{});
 					driver.DrawArrays(primitive, 0, count);
 					break;
 				}
@@ -101,10 +103,13 @@ namespace nSCDWire {
 					auto const primitive = f.Get<uint32_t>();
 					auto const count = f.Get<int32_t>();
 					auto const type = f.Get<uint32_t>();
-					auto const *vertices = blob(f.Get<BlobKey>());
-					auto const *indices = blob(f.Get<BlobKey>());
+					auto const vertexKey = f.Get<BlobKey>();
+					auto const indexKey = f.Get<BlobKey>();
+					auto const *vertices = blob(vertexKey);
+					auto const *indices = blob(indexKey);
 					if (!f.ok || vertices == nullptr || indices == nullptr || vertices->empty()) break;
 					driver.InterleavedArrays(format, static_cast<int32_t>(stride), vertices->data());
+					hooks.DrawBlobs(vertexKey, indexKey);
 					driver.DrawElements(primitive, count, type, indices->data());
 					break;
 				}
@@ -516,8 +521,10 @@ namespace nSCDWire {
 					auto const name = f.Get<uint32_t>();
 					auto const primitive = f.Get<uint32_t>();
 					auto const bytes = f.Get<uint32_t>();
-					auto const *vertices = blob(f.Get<BlobKey>());
+					auto const vertexKey = f.Get<BlobKey>();
+					auto const *vertices = blob(vertexKey);
 					if (!f.ok || vertices == nullptr || vertexBuffers == nullptr) break;
+					hooks.DrawBlobs(vertexKey, BlobKey{});
 					hooks.Vertices(name, vertices->data(), static_cast<uint32_t>(vertices->size()));
 					vertexBuffers->DrawPrims(name, primitive, nullptr, bytes);
 					break;
@@ -526,9 +533,12 @@ namespace nSCDWire {
 					auto const name = f.Get<uint32_t>();
 					auto const primitive = f.Get<uint32_t>();
 					auto const count = f.Get<uint32_t>();
-					auto const *indices = blob(f.Get<BlobKey>());
-					auto const *vertices = blob(f.Get<BlobKey>());
+					auto const indexKey = f.Get<BlobKey>();
+					auto const vertexKey = f.Get<BlobKey>();
+					auto const *indices = blob(indexKey);
+					auto const *vertices = blob(vertexKey);
 					if (!f.ok || indices == nullptr || vertices == nullptr || vertexBuffers == nullptr) break;
+					hooks.DrawBlobs(vertexKey, indexKey);
 					hooks.Vertices(name, vertices->data(), static_cast<uint32_t>(vertices->size()));
 					scratch.assign(indices->begin(), indices->end());
 					vertexBuffers->DrawPrimsIndexed(name, primitive, count,

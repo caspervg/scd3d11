@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#include <utility>
 
 using Microsoft::WRL::ComPtr;
 using namespace nSCD3D11;
@@ -383,6 +384,50 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 				return static_cast<size_t>(key.bits * 0x9E3779B97F4A7C15ull ^ static_cast<uint32_t>(key.depthBias));
 			}
 		};
+
+		// Converted geometry kept across frames, in upload memory the GPU reads directly, like SCD3D11's
+		// dynamic cache buffers. Filled in order, a segment at a time, the oldest segment reused first.
+		constexpr uint32_t kCacheSegments = 8;
+		constexpr uint64_t kCacheSegmentBytes = 32ull << 20;
+
+		enum class CacheKind : uint32_t { Vertices, Indices, ConvertedIndices, SequentialIndices };
+
+		// What a cached buffer was made from: a blob (or none, for sequential indices) and how it was read.
+		struct CacheKey {
+			uint64_t low = 0;
+			uint64_t high = 0;
+			uint32_t size = 0;
+			CacheKind kind = CacheKind::Vertices;
+			uint32_t format = 0; // vertex format, index type or primitive
+			uint32_t stride = 0;
+			uint32_t first = 0;
+			uint32_t count = 0;
+
+			bool operator==(CacheKey const &other) const {
+				return low == other.low && high == other.high && size == other.size && kind == other.kind &&
+				       format == other.format && stride == other.stride && first == other.first &&
+				       count == other.count;
+			}
+		};
+
+		struct CacheKeyHash {
+			size_t operator()(CacheKey const &key) const {
+				uint64_t const mixed = key.low ^ key.high * 0x9E3779B97F4A7C15ull ^
+				                       (static_cast<uint64_t>(key.format) << 32 | key.count) * 0xC2B2AE3D27D4EB4Full ^
+				                       (static_cast<uint64_t>(key.kind) << 32 | key.first);
+				return static_cast<size_t>(mixed ^ mixed >> 29);
+			}
+		};
+
+		struct CacheEntry {
+			uint32_t segment = 0;
+			uint32_t offset = 0;
+			uint32_t bytes = 0;
+			// Indices only: how many to draw, and the range of vertices they use.
+			uint32_t indexCount = 0;
+			uint32_t minimumIndex = 0;
+			uint32_t maximumIndex = 0;
+		};
 	}
 
 	struct cGDriver12::Impl {
@@ -442,6 +487,24 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
 			int32_t type = 0;
 		};
+
+		struct CacheSegment {
+			ComPtr<ID3D12Resource> buffer;
+			uint8_t *cpu = nullptr;
+			D3D12_GPU_VIRTUAL_ADDRESS gpu = 0;
+			uint64_t cursor = 0;
+			// The fence value of the last frame that read from it.
+			uint64_t lastUse = 0;
+			std::vector<CacheKey> keys;
+		};
+
+		// The blobs the next draw reads, from DrawBlobs. Taken by the draw, so a draw without them
+		// converts and uploads its geometry every time.
+		nSCDWire::BlobKey drawVertices;
+		nSCDWire::BlobKey drawIndices;
+		CacheSegment cacheSegments[kCacheSegments];
+		uint32_t activeCacheSegment = 0;
+		std::unordered_map<CacheKey, CacheEntry, CacheKeyHash> cache;
 
 		ComPtr<IDXGIFactory6> factory;
 		ComPtr<ID3D12Device> device;
@@ -703,6 +766,65 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			Allocation const allocation = Allocate(bytes, alignment);
 			if (allocation.cpu != nullptr) std::memcpy(allocation.cpu, data, bytes);
 			return allocation;
+		}
+
+		// Geometry cache
+
+		// A cached buffer, or null. Its segment is then in use by the frame being recorded.
+		CacheEntry const *FindCached(CacheKey const &key) {
+			auto const found = cache.find(key);
+			if (found == cache.end()) return nullptr;
+			cacheSegments[found->second.segment].lastUse = fenceValue + 1;
+			return &found->second;
+		}
+
+		// Room for a new cached buffer. False when it does not fit, or the next segment is still in use by
+		// this frame, and then the caller uploads for this frame only.
+		bool StoreCached(CacheKey const &key, uint64_t bytes, CacheEntry &entry, uint8_t *&cpu) {
+			if (bytes == 0 || bytes > kCacheSegmentBytes) return false;
+			CacheSegment *segment = &cacheSegments[activeCacheSegment];
+			uint64_t offset = AlignUp(segment->cursor, 16);
+			if (!segment->buffer || offset + bytes > kCacheSegmentBytes) {
+				if (segment->buffer) activeCacheSegment = (activeCacheSegment + 1) % kCacheSegments;
+				segment = &cacheSegments[activeCacheSegment];
+				uint64_t const thisFrame = fenceValue + 1;
+				if (segment->lastUse == thisFrame) return false;
+				WaitFor(segment->lastUse);
+				for (CacheKey const &old: segment->keys) cache.erase(old);
+				segment->keys.clear();
+				segment->cursor = offset = 0;
+				if (!segment->buffer) {
+					D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_UPLOAD};
+					D3D12_RESOURCE_DESC description{};
+					description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+					description.Width = kCacheSegmentBytes;
+					description.Height = description.DepthOrArraySize = description.MipLevels = 1;
+					description.SampleDesc.Count = 1;
+					description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+					D3D12_RANGE const none{0, 0};
+					if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+					                                           D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+					                                           IID_PPV_ARGS(&segment->buffer))) ||
+					    FAILED(segment->buffer->Map(0, &none, reinterpret_cast<void **>(&segment->cpu)))) {
+						segment->buffer.Reset();
+						return false;
+					}
+					segment->gpu = segment->buffer->GetGPUVirtualAddress();
+				}
+			}
+			segment->cursor = offset + bytes;
+			segment->lastUse = fenceValue + 1;
+			segment->keys.push_back(key);
+			entry.segment = activeCacheSegment;
+			entry.offset = static_cast<uint32_t>(offset);
+			entry.bytes = static_cast<uint32_t>(bytes);
+			cache[key] = entry;
+			cpu = segment->cpu + offset;
+			return true;
+		}
+
+		D3D12_GPU_VIRTUAL_ADDRESS CachedAddress(CacheEntry const &entry) const {
+			return cacheSegments[entry.segment].gpu + entry.offset;
 		}
 
 		void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES &state, D3D12_RESOURCE_STATES wanted) {
@@ -1100,31 +1222,63 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			return true;
 		}
 
-		// Converts vertices [first, first + count) of the InterleavedArrays source and binds them.
-		bool UploadVertices(uint8_t const *base, uint32_t format, uint32_t stride, uint32_t first, uint32_t count) {
+		// Converts vertices [first, first + count) of the InterleavedArrays source and binds them. With the
+		// blob they came from, the converted vertices are kept and later draws of the blob reuse them.
+		bool UploadVertices(uint8_t const *base, uint32_t format, uint32_t stride, uint32_t first, uint32_t count,
+		                    nSCDWire::BlobKey const &blob) {
 			if (base == nullptr || stride == 0 || count == 0) return false;
 			uint64_t const byteSize = static_cast<uint64_t>(count) * sizeof(D3D11Vertex);
 			if (byteSize > UINT32_MAX) return false;
-			if (!ConvertVertices(format, stride, base + static_cast<size_t>(first) * stride, count, vertexScratch)) {
-				return false;
+			CacheKey const key{blob.low, blob.high, blob.size, CacheKind::Vertices, format, stride, first, count};
+			D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+			if (blob.size != 0) {
+				if (CacheEntry const *cached = FindCached(key)) address = CachedAddress(*cached);
 			}
-			Allocation const allocation = Upload(vertexScratch.data(), byteSize, 16);
-			if (allocation.cpu == nullptr) return false;
-			D3D12_VERTEX_BUFFER_VIEW const view{allocation.gpu, static_cast<UINT>(byteSize), sizeof(D3D11Vertex)};
+			if (address == 0) {
+				if (!ConvertVertices(format, stride, base + static_cast<size_t>(first) * stride, count, vertexScratch)) {
+					return false;
+				}
+				CacheEntry entry;
+				uint8_t *cpu = nullptr;
+				if (blob.size != 0 && StoreCached(key, byteSize, entry, cpu)) {
+					std::memcpy(cpu, vertexScratch.data(), byteSize);
+					address = CachedAddress(entry);
+				} else {
+					Allocation const allocation = Upload(vertexScratch.data(), byteSize, 16);
+					if (allocation.cpu == nullptr) return false;
+					address = allocation.gpu;
+				}
+			}
+			D3D12_VERTEX_BUFFER_VIEW const view{address, static_cast<UINT>(byteSize), sizeof(D3D11Vertex)};
 			list->IASetVertexBuffers(0, 1, &view);
 			return true;
 		}
 
-		bool UploadIndices(void const *indices, uint32_t count, bool wide) {
+		// Binds indices. A cached copy is kept when key names what they were made from.
+		bool UploadIndices(void const *indices, uint32_t count, bool wide, CacheKey const *key = nullptr,
+		                   uint32_t minimumIndex = 0, uint32_t maximumIndex = 0) {
 			uint64_t const bytes = static_cast<uint64_t>(count) * (wide ? 4 : 2);
 			if (count == 0 || bytes > UINT32_MAX) return false;
-			Allocation const allocation = Upload(indices, bytes, 4);
-			if (allocation.cpu == nullptr) return false;
+			D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+			CacheEntry entry{0, 0, 0, count, minimumIndex, maximumIndex};
+			uint8_t *cpu = nullptr;
+			if (key != nullptr && StoreCached(*key, bytes, entry, cpu)) {
+				std::memcpy(cpu, indices, bytes);
+				address = CachedAddress(entry);
+			} else {
+				Allocation const allocation = Upload(indices, bytes, 4);
+				if (allocation.cpu == nullptr) return false;
+				address = allocation.gpu;
+			}
+			BindIndices(address, count, wide);
+			return true;
+		}
+
+		void BindIndices(D3D12_GPU_VIRTUAL_ADDRESS address, uint32_t count, bool wide) {
 			D3D12_INDEX_BUFFER_VIEW const view{
-				allocation.gpu, static_cast<UINT>(bytes), wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT
+				address, count * (wide ? 4u : 2u), wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT
 			};
 			list->IASetIndexBuffer(&view);
-			return true;
 		}
 
 		// The extension's vertices hold byteSize bytes, as cGDriver::ExtensionReservationHolds.
@@ -1642,50 +1796,86 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		d.interleavedPointer = static_cast<uint8_t const *>(pointer);
 	}
 
+	void cGDriver12::DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) {
+		impl->drawVertices = vertices;
+		impl->drawIndices = indices;
+	}
+
 	void cGDriver12::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
 		Impl &d = *impl;
+		nSCDWire::BlobKey const blob = std::exchange(d.drawVertices, {});
+		d.drawIndices = {};
 		if (first < 0 || count <= 0 || !d.backBuffer) return;
 		if (!d.UploadVertices(d.interleavedPointer, d.interleavedFormat, d.interleavedStride,
-		                      static_cast<uint32_t>(first), static_cast<uint32_t>(count))) return;
+		                      static_cast<uint32_t>(first), static_cast<uint32_t>(count), blob)) return;
 		if (D3D11Topology(primitive) != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			if (d.BindGeometry(primitive, 0)) d.list->DrawInstanced(static_cast<UINT>(count), 1, 0, 0);
 			return;
 		}
+		// The same primitive and count always give the same indices.
+		CacheKey const key{0, 0, 0, CacheKind::SequentialIndices, primitive, 0, 0,
+		                         static_cast<uint32_t>(count)};
+		if (CacheEntry const *cached = d.FindCached(key)) {
+			d.BindIndices(d.CachedAddress(*cached), cached->indexCount, true);
+			if (d.BindGeometry(0, 32)) d.list->DrawIndexedInstanced(cached->indexCount, 1, 0, 0, 0);
+			return;
+		}
 		if (!BuildSequentialIndices(primitive, static_cast<uint32_t>(count), d.drawIndexScratch)) return;
-		if (!d.UploadIndices(d.drawIndexScratch.data(), static_cast<uint32_t>(d.drawIndexScratch.size()), true) ||
+		if (!d.UploadIndices(d.drawIndexScratch.data(), static_cast<uint32_t>(d.drawIndexScratch.size()), true,
+		                     &key) ||
 		    !d.BindGeometry(0, 32)) return;
 		d.list->DrawIndexedInstanced(static_cast<UINT>(d.drawIndexScratch.size()), 1, 0, 0, 0);
 	}
 
 	void cGDriver12::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
 		Impl &d = *impl;
+		nSCDWire::BlobKey const vertexBlob = std::exchange(d.drawVertices, {});
+		nSCDWire::BlobKey const indexBlob = std::exchange(d.drawIndices, {});
 		if (count <= 0 || indices == nullptr || (type != 3 && type != 5) || !d.backBuffer) return;
 		bool const convertPrimitive = D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		CacheKey const key{
+			indexBlob.low, indexBlob.high, indexBlob.size,
+			convertPrimitive ? CacheKind::ConvertedIndices : CacheKind::Indices,
+			convertPrimitive ? primitive : type, 0, 0, static_cast<uint32_t>(count)
+		};
+		CacheEntry const *cached = indexBlob.size != 0 ? d.FindCached(key) : nullptr;
 		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
-		auto const scan = [&](auto const *source) {
-			for (int32_t i = 0; i < count; ++i) {
-				minimumIndex = (std::min)(minimumIndex, static_cast<uint32_t>(source[i]));
-				maximumIndex = (std::max)(maximumIndex, static_cast<uint32_t>(source[i]));
+		if (cached != nullptr) {
+			minimumIndex = cached->minimumIndex;
+			maximumIndex = cached->maximumIndex;
+		} else {
+			auto const scan = [&](auto const *source) {
+				for (int32_t i = 0; i < count; ++i) {
+					minimumIndex = (std::min)(minimumIndex, static_cast<uint32_t>(source[i]));
+					maximumIndex = (std::max)(maximumIndex, static_cast<uint32_t>(source[i]));
+				}
+				if (convertPrimitive) d.sourceIndexScratch.assign(source, source + count);
+			};
+			if (type == 3) scan(static_cast<uint16_t const *>(indices));
+			else scan(static_cast<uint32_t const *>(indices));
+			if (convertPrimitive && !ConvertPrimitiveIndices(primitive, d.sourceIndexScratch, d.drawIndexScratch)) {
+				return;
 			}
-			if (convertPrimitive) d.sourceIndexScratch.assign(source, source + count);
-		};
-		if (type == 3) scan(static_cast<uint16_t const *>(indices));
-		else scan(static_cast<uint32_t const *>(indices));
-		if (convertPrimitive && !ConvertPrimitiveIndices(primitive, d.sourceIndexScratch, d.drawIndexScratch)) return;
+		}
 		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX) return;
 		if (!d.UploadVertices(d.interleavedPointer, d.interleavedFormat, d.interleavedStride, minimumIndex,
-		                      maximumIndex - minimumIndex + 1)) return;
+		                      maximumIndex - minimumIndex + 1, vertexBlob)) return;
 		INT const baseVertex = -static_cast<INT>(minimumIndex);
-		if (!convertPrimitive) {
-			if (!d.UploadIndices(indices, static_cast<uint32_t>(count), type == 5) ||
-			    !d.BindGeometry(primitive, type == 3 ? 16 : 32)) return;
-			d.list->DrawIndexedInstanced(static_cast<UINT>(count), 1, 0, baseVertex, 0);
-			return;
+		bool const wide = convertPrimitive || type == 5;
+		uint32_t drawCount = 0;
+		if (cached != nullptr) {
+			// Still there: a segment this frame reads is never reused within the frame.
+			drawCount = cached->indexCount;
+			d.BindIndices(d.CachedAddress(*cached), drawCount, wide);
+		} else {
+			void const *source = convertPrimitive ? d.drawIndexScratch.data() : indices;
+			drawCount = convertPrimitive ? static_cast<uint32_t>(d.drawIndexScratch.size()) : static_cast<uint32_t>(count);
+			if (!d.UploadIndices(source, drawCount, wide, indexBlob.size != 0 ? &key : nullptr, minimumIndex,
+			                     maximumIndex)) return;
 		}
-		if (!d.UploadIndices(d.drawIndexScratch.data(), static_cast<uint32_t>(d.drawIndexScratch.size()), true) ||
-		    !d.BindGeometry(0, 32)) return;
-		d.list->DrawIndexedInstanced(static_cast<UINT>(d.drawIndexScratch.size()), 1, 0, baseVertex, 0);
+		if (!d.BindGeometry(convertPrimitive ? 0 : primitive, wide ? 32 : 16)) return;
+		d.list->DrawIndexedInstanced(drawCount, 1, 0, baseVertex, 0);
 	}
 
 	uint32_t cGDriver12::MakeVertexFormat(uint32_t, intptr_t) { return UINT_MAX; }
@@ -2254,11 +2444,13 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 	void cGDriver12::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
 		Impl &d = *impl;
+		nSCDWire::BlobKey const blob = std::exchange(d.drawVertices, {});
+		d.drawIndices = {};
 		uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
 		uint32_t const stride = RZVertexFormatStride(format);
 		if (name != 0 || !d.backBuffer || !d.ExtensionHolds(byteSize)) return;
 		if (D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) return;
-		if (!d.UploadVertices(d.extensionVertices.data(), format, stride, 0, byteSize / stride)) return;
+		if (!d.UploadVertices(d.extensionVertices.data(), format, stride, 0, byteSize / stride, blob)) return;
 		uint32_t const previousFormat = d.interleavedFormat;
 		d.interleavedFormat = format;
 		if (d.BindGeometry(primitive, 0)) d.list->DrawInstanced(byteSize / stride, 1, 0, 0);
@@ -2267,15 +2459,21 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 	void cGDriver12::DrawPrimsIndexed(uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices) {
 		Impl &d = *impl;
+		nSCDWire::BlobKey const vertexBlob = std::exchange(d.drawVertices, {});
+		nSCDWire::BlobKey const indexBlob = std::exchange(d.drawIndices, {});
 		if (name != 0 || count == 0 || indices == nullptr || !d.backBuffer) return;
-		uint16_t maximumIndex = 0;
-		for (uint32_t i = 0; i < count; ++i) maximumIndex = (std::max)(maximumIndex, indices[i]);
+		CacheKey const key{indexBlob.low, indexBlob.high, indexBlob.size, CacheKind::Indices, 3, 0, 0, count};
+		CacheEntry const *cached = indexBlob.size != 0 ? d.FindCached(key) : nullptr;
+		uint32_t maximumIndex = 0;
+		if (cached != nullptr) maximumIndex = cached->maximumIndex;
+		else for (uint32_t i = 0; i < count; ++i) maximumIndex = (std::max)(maximumIndex, static_cast<uint32_t>(indices[i]));
 		uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
 		uint32_t const stride = RZVertexFormatStride(format);
-		uint32_t const byteSize = (static_cast<uint32_t>(maximumIndex) + 1) * stride;
+		uint32_t const byteSize = (maximumIndex + 1) * stride;
 		if (!d.ExtensionHolds(byteSize) || D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) return;
-		if (!d.UploadVertices(d.extensionVertices.data(), format, stride, 0, byteSize / stride) ||
-		    !d.UploadIndices(indices, count, false)) return;
+		if (!d.UploadVertices(d.extensionVertices.data(), format, stride, 0, byteSize / stride, vertexBlob)) return;
+		if (cached != nullptr) d.BindIndices(d.CachedAddress(*cached), count, false);
+		else if (!d.UploadIndices(indices, count, false, indexBlob.size != 0 ? &key : nullptr, 0, maximumIndex)) return;
 		uint32_t const previousFormat = d.interleavedFormat;
 		d.interleavedFormat = format;
 		if (d.BindGeometry(primitive, 16)) d.list->DrawIndexedInstanced(count, 1, 0, 0, 0);
