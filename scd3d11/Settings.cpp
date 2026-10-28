@@ -110,6 +110,12 @@ namespace nSCD3D11::Settings {
 			return composition || value == "copy";
 		}
 
+		// ServerScene=substitute, check or off.
+		bool ParseServerScene(std::string_view value, std::string &mode) {
+			mode = value;
+			return value == "substitute" || value == "check" || value == "off";
+		}
+
 		// Record=<file>. Any non-empty value is a path.
 		bool ParsePath(std::string_view value, std::string &path) {
 			path = value;
@@ -182,6 +188,7 @@ namespace nSCD3D11::Settings {
 		values.server = Resolve(sources, "Renderer", ParseRenderer, values.server);
 		values.serverComposition = Resolve(sources, "ServerPresent", ParseServerPresent, values.serverComposition);
 		values.serverRelight = Resolve(sources, "ServerRelight", ParsePath, values.serverRelight);
+		values.serverScene = Resolve(sources, "ServerScene", ParseServerScene, values.serverScene);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

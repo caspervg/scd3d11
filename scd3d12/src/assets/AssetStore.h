@@ -55,6 +55,9 @@ namespace nSCAssets {
 
 		// Steps 1 to 4 above. The SKU folder is Sku_Data below the install folder.
 		void AddGameData(std::wstring const &installDir, std::wstring const &language = L"English");
+		// Steps 1 to 5 from the folders SimCity 4 itself names. An empty name is skipped.
+		void AddFolders(std::wstring const &installDir, std::wstring const &languageDir, std::wstring const &skuDir,
+		                std::wstring const &pluginsDir, std::wstring const &userPluginsDir);
 		// Steps 4 and 5: one Plugins folder.
 		void AddPlugins(std::wstring const &pluginsDir);
 		// One package on top of everything added so far.

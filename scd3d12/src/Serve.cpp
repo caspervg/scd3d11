@@ -13,15 +13,21 @@
 
 #include "Serve.h"
 
+#include "AssetStore.h"
 #include "cGDriver12.h"
+#include "SceneLane.h"
 #include "wire/SharedRing.h"
 #include "wire/WireReplay.h"
 
 #include <dcomp.h>
 #include <dxgi1_4.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <memory>
 #include <string>
+#include <thread>
 
 using Microsoft::WRL::ComPtr;
 
@@ -30,11 +36,39 @@ namespace nSCD3D12 {
 		class ServeHooks : public nSCDWire::ReplayHooks {
 		public:
 			ServeHooks(cGDriver12 &driver, nSCDWire::RingControl &control, HANDLE parent, HANDLE frameEvent,
-			           bool stats)
-				: driver(driver), control(control), parent(parent), frameEvent(frameEvent), stats(stats) {}
+			           bool stats, SceneMode sceneMode)
+				: driver(driver), control(control), parent(parent), frameEvent(frameEvent), stats(stats),
+				  sceneMode(sceneMode) {}
 
 			~ServeHooks() {
+				if (indexer.joinable()) indexer.join();
 				if (copyEvent != nullptr) CloseHandle(copyEvent);
+			}
+
+			// The scene lane needs the game's data, which is indexed on a thread of its own once the game names
+			// its folders. The game's own draws stand until then.
+			void GameFolders(std::wstring const (&folders)[static_cast<size_t>(nSCDWire::GameFolder::Count)]) override {
+				if (sceneMode == SceneMode::Off || indexer.joinable()) return;
+				std::wstring copy[std::size(folders)];
+				for (size_t i = 0; i < std::size(folders); ++i) copy[i] = folders[i];
+				indexer = std::thread([this, copy] {
+					auto const start = std::chrono::steady_clock::now();
+					store.AddFolders(copy[0], copy[1], copy[2], copy[3], copy[4]);
+					std::printf("scene: indexed %zu packages, %zu entries in %.2f s\n", store.Files().size(),
+					            store.Index().size(),
+					            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+					std::fflush(stdout);
+					storeReady.store(true, std::memory_order_release);
+				});
+			}
+			void ModelInstance(nSCDWire::ModelInstance const &model) override {
+				if (scene) scene->ModelInstance(model);
+			}
+			void NetworkPiece(nSCDWire::NetworkPiece const &piece, nSCDWire::NetworkPart const *parts) override {
+				if (scene) scene->NetworkPiece(piece, parts);
+			}
+			void CellTexture(nSCDWire::CellTexture const &cell) override {
+				if (scene) scene->CellTexture(cell);
 			}
 
 			void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
@@ -53,14 +87,27 @@ namespace nSCD3D12 {
 				driver.Vertices(name, data, bytes);
 			}
 
-			void OwnerBegin(nSCDWire::DrawOwner const &owner) override { driver.OwnerBegin(owner); }
-			void OwnerEnd() override { driver.OwnerEnd(); }
+			void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
+				driver.OwnerBegin(owner);
+				if (scene) scene->OwnerBegin(owner);
+			}
+			void OwnerEnd() override {
+				driver.OwnerEnd();
+				if (scene) scene->OwnerEnd();
+			}
 			void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
 				driver.DrawBlobs(vertices, indices);
 			}
 
 			bool Frame() override {
 				driver.Frame();
+				if (scene) scene->EndFrame(frame, nullptr);
+				// Between frames no bracket is open, so the lane can start here.
+				else if (storeReady.load(std::memory_order_acquire)) {
+					scene = std::make_unique<SceneLane>(driver, store, sceneMode == SceneMode::Check);
+					std::printf("scene: substituting from frame %llu\n", static_cast<unsigned long long>(frame));
+					std::fflush(stdout);
+				}
 				uint64_t const index = frame++;
 				if (frameFence) Publish(index);
 				if (stats) Report();
@@ -87,6 +134,7 @@ namespace nSCD3D12 {
 				            static_cast<double>(now - reportStart) / 1000.0,
 				            static_cast<double>(cpu - reportCpu) / 1.0e4 / reportFrames,
 				            gpuFrames != 0 ? gpu / gpuFrames : 0.0);
+				if (scene && ++reports % 10 == 0) scene->PrintTotals();
 				std::fflush(stdout);
 				reportStart = now;
 				reportCpu = cpu;
@@ -279,13 +327,21 @@ namespace nSCD3D12 {
 			HANDLE copyEvent = nullptr;
 			uint64_t copyValue = 0;
 			bool stats;
+			SceneMode sceneMode;
+			nSCAssets::AssetStore store;
+			std::atomic<bool> storeReady{false};
+			std::thread indexer;
+			// Declared after the store it reads, so it goes first.
+			std::unique_ptr<SceneLane> scene;
+			uint32_t reports = 0;
 			ULONGLONG reportStart = 0;
 			uint64_t reportCpu = 0;
 			uint32_t reportFrames = 0;
 		};
 	}
 
-	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats) {
+	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats,
+	             SceneMode scene) {
 		HANDLE const parent = OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, FALSE, parentId);
 		if (parent == nullptr) {
 			std::puts("cannot open the game's process");
@@ -324,7 +380,7 @@ namespace nSCD3D12 {
 		std::puts("serving");
 		std::fflush(stdout);
 
-		ServeHooks hooks(driver, control, parent, ring.FrameEvent(), logStats);
+		ServeHooks hooks(driver, control, parent, ring.FrameEvent(), logStats, scene);
 		nSCDWire::Reader reader([&](void *data, size_t size) { return ring.Read(data, size, alive); });
 		nSCDWire::ReplayStats stats;
 		char const *error = nullptr;

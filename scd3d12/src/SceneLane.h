@@ -31,8 +31,14 @@ namespace nSCD3D12 {
 	// lighting, fog and the stage 0 texture mode are the ones the game has set for the draw. Each draw the lane
 	// cannot stand in for exactly is left to the game, and counted with the reason.
 	//
+	// Plain network pieces and lot cell textures are drawn from their records (NetworkPiece, CellTexture): the
+	// lane matches each of the game's draws to a triangle of the record, draws the record's vertices with the
+	// texture it reads from the store, and keeps the rest of the game's state. A cell on a slope is drawn by
+	// the terrain, so there the lane keeps the game's vertices and only swaps the texture.
+	//
 	// With check set, every draw the lane stands in for is also compared with the game's: the render state the
-	// lane worked out against the one the game set, and the lane's vertices against the game's.
+	// lane worked out against the one the game set, and the lane's vertices against the game's. For networks
+	// and cells it checks that each of the game's textures always matches the same store texture and back.
 	class SceneLane final : public cGDriver12::DrawFilter {
 	public:
 		SceneLane(cGDriver12 &driver, nSCAssets::AssetStore const &store, bool check);
@@ -41,6 +47,8 @@ namespace nSCD3D12 {
 		void OwnerBegin(nSCDWire::DrawOwner const &owner);
 		void OwnerEnd();
 		void ModelInstance(nSCDWire::ModelInstance const &model);
+		void NetworkPiece(nSCDWire::NetworkPiece const &piece, nSCDWire::NetworkPart const *parts);
+		void CellTexture(nSCDWire::CellTexture const &cell);
 		bool AllowDraw(uint32_t primitive, int32_t first, uint32_t count, uint32_t indexType,
 		               void const *indices) override;
 

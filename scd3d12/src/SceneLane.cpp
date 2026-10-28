@@ -44,6 +44,7 @@
 #include "Textures.h"
 #include "VertexFormatUtils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -68,27 +69,42 @@ namespace nSCD3D12 {
 			kNightMissing, // the game lit the instance but the store has no night texture
 			kTextureMissing, // the store has neither the texture nor the placeholder
 			kGameColors, // the game draws this instance with vertex colours of its own (a car's paint)
+			kNoMatch, // a network or cell draw that is none of the record's triangles
 			kReasonCount
 		};
 
 		char const *const kReasonNames[kReasonCount] = {
 			"none", "no_model_key", "model_missing", "highlighted", "extra_draw", "mesh_mismatch",
 			"two_textures", "unbound_texture", "second_stage", "night_missing", "texture_missing", "game_colors",
+			"no_match",
 		};
+
+		// The kinds of grid drawable the lane stands in for.
+		enum Kind : uint8_t { kModel, kNetwork, kCell, kKindCount };
+		char const *const kKindNames[kKindCount] = {"model", "network", "cell"};
 
 		enum Field : uint8_t {
 			kAlphaTest, kDepthTest, kCullFace, kBlend, kColorWrite, kDepthWrite, kDepthFunction, kBlendFactors,
 			kAlphaFunction, kStage0Enabled, kStage0Sampler, kStage0Transform, kStage1Enabled, kStage1Sampler,
-			kStage1Mode, kStage1Transform, kColorMultiplier, kAlphaMultiplier, kGeometry, kFieldCount
+			kStage1Mode, kStage1Transform, kColorMultiplier, kAlphaMultiplier, kGeometry, kTexture, kFieldCount
 		};
 
 		char const *const kFieldNames[kFieldCount] = {
 			"alpha_test", "depth_test", "cull", "blend", "color_write", "depth_write", "depth_func", "blend_factors",
 			"alpha_func", "stage0_enabled", "stage0_sampler", "stage0_transform", "stage1_enabled", "stage1_sampler",
-			"stage1_mode", "stage1_transform", "color_multiplier", "alpha_multiplier", "geometry",
+			"stage1_mode", "stage1_transform", "color_multiplier", "alpha_multiplier", "geometry", "texture",
 		};
 
 		constexpr uint32_t kS3dFormat = 0x80004001;
+		// Position, colour, uv: how networks and lot cells reach the driver.
+		constexpr uint32_t kGridFormat = 10;
+		constexpr uint32_t kCellTextureGroup = 0x0986135E;
+		// NetworkPiece flags.
+		constexpr uint32_t kFirstTriangle = 0x2000000, kSecondTriangle = 0x4000000, kOtherDiagonal = 0x1000000;
+		// The quad's two triangles for each diagonal (0x00AA7D28 and 0x00AA7D34 in the game).
+		constexpr uint16_t kQuadIndices[2][6] = {{0, 1, 2, 0, 2, 3}, {0, 1, 3, 3, 1, 2}};
+		// A flat cell's strip of four as a list, in the order the strip's triangles have.
+		constexpr uint16_t kStripIndices[6] = {0, 1, 2, 2, 1, 3};
 		constexpr uint32_t kNightOffset = 0x8000;
 		constexpr uint64_t kChunkBytes = 8ull << 20;
 		constexpr D3D12_RESOURCE_STATES kReadable =
@@ -126,6 +142,8 @@ namespace nSCD3D12 {
 		struct LoadedTexture {
 			uint32_t name = 0;
 			bool found = false;
+			// The image of the FSH file it holds.
+			uint8_t image = 0;
 		};
 
 		struct Bracket {
@@ -137,6 +155,15 @@ namespace nSCD3D12 {
 			uint32_t substituted = 0;
 			Reason firstFallback = kNone;
 			nSCDWire::ModelInstance instance{};
+			Kind kind = kModel;
+			// The drawable's vtable, for grid drawables only.
+			uint32_t gridVtable = 0;
+			// Networks: the record, where its parts start in Impl::parts, and how far the draws have got.
+			nSCDWire::NetworkPiece piece{};
+			size_t partsBegin = 0;
+			uint32_t quadDraws = 0;
+			uint32_t partCursor = 0;
+			nSCDWire::CellTexture cell{};
 		};
 
 		struct Counts {
@@ -190,7 +217,19 @@ namespace nSCD3D12 {
 		};
 		std::vector<Chunk> chunks;
 		std::vector<Bracket> stack;
-		Counts frame, total;
+		Counts frame[kKindCount], total[kKindCount];
+		// The parts of the network pieces whose brackets are open, each bracket's from its partsBegin on.
+		std::vector<nSCDWire::NetworkPart> parts;
+		// Textures by (image, group, instance).
+		std::unordered_map<nSCAssets::Tgi, LoadedTexture, nSCAssets::TgiHash> exact;
+		// For the check: which store texture each of the game's textures stood for.
+		std::unordered_map<uint32_t, uint64_t> gameToStore;
+		cGDriver12::DrawFilter *filter = nullptr;
+		// For the check: every grid drawable's draws and how many of them the lane stood in for, by vtable.
+		std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> gridDraws;
+
+		bool Allow(Bracket &bracket, uint32_t primitive, int32_t first, uint32_t count, uint32_t indexType,
+		           void const *indices);
 		std::vector<D3D11Vertex> vertexScratch;
 		std::vector<uint8_t> uploadScratch;
 		std::vector<uint8_t> rgbaScratch;
@@ -336,7 +375,15 @@ namespace nSCD3D12 {
 				}
 			}
 			entry.found = true;
-			if (loaded && !texture.levels.empty()) {
+			if (loaded) entry.name = Create(texture);
+			loadSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+			return entry.name;
+		}
+
+		// A driver texture made from a store texture, 0 when it cannot be made.
+		uint32_t Create(nSCAssets::Texture const &texture) {
+			uint32_t name = 0;
+			if (!texture.levels.empty()) {
 				uint32_t internalFormat = 4, sourceFormat = 3, sourceType = 1;
 				switch (texture.format) {
 					case nSCAssets::TextureFormat::Bc1: internalFormat = 5, sourceFormat = 7, sourceType = 0; break;
@@ -345,7 +392,7 @@ namespace nSCD3D12 {
 					case nSCAssets::TextureFormat::Rgba8: break;
 				}
 				nSCAssets::TextureLevel const &top = texture.levels[0];
-				uint32_t const name = static_cast<uint32_t>(driver.CreateTexture(
+				name = static_cast<uint32_t>(driver.CreateTexture(
 					internalFormat, top.width, top.height, static_cast<uint32_t>(texture.levels.size()), 2));
 				for (size_t level = 0; name != 0 && level < texture.levels.size(); ++level) {
 					nSCAssets::TextureLevel const &l = texture.levels[level];
@@ -358,11 +405,201 @@ namespace nSCD3D12 {
 					driver.LoadTextureLevel(name, static_cast<int32_t>(level), 0, 0, static_cast<int32_t>(l.width),
 					                        static_cast<int32_t>(l.height), sourceFormat, sourceType, 0, pixels);
 				}
-				entry.name = name;
-				++texturesLoaded;
+				if (name != 0) ++texturesLoaded;
 			}
+			return name;
+		}
+
+		// The texture (FSH, group, id) and nothing else, its image `element`, or the first one when the file has
+		// fewer, the way an S3D texture binding picks it. Changes the active stage's binding like Texture.
+		uint32_t Exact(uint32_t group, uint32_t id, uint32_t element = 0, uint8_t *image = nullptr) {
+			LoadedTexture &entry = exact[{element, group, id}];
+			if (image != nullptr) *image = entry.image;
+			if (entry.name != 0 && driver.IsTexture(entry.name)) return entry.name;
+			if (entry.name == 0 && entry.found) return 0;
+			auto const start = std::chrono::steady_clock::now();
+			entry = {};
+			entry.found = true;
+			std::vector<uint8_t> bytes;
+			nSCAssets::Texture texture;
+			if (store.Read({nSCAssets::kFshType, group, id}, bytes)) {
+				if (nSCAssets::DecodeTexture(bytes, texture, element)) entry.image = static_cast<uint8_t>(element);
+				else if (element == 0 || !nSCAssets::DecodeTexture(bytes, texture, 0)) texture.levels.clear();
+				entry.name = Create(texture);
+			}
+			if (image != nullptr) *image = entry.image;
 			loadSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 			return entry.name;
+		}
+
+		// A network texture as cSC4NetworkOccupant::GetTexture (0x0061C950) finds it: an id whose low four bits
+		// are 0 has one texture per zoom at id + zoom, and the fallback is tried when the first is missing.
+		uint32_t NetworkTexture(uint32_t id, uint32_t fallback, uint32_t zoom, uint64_t &key) {
+			auto const zoomed = [zoom](uint32_t value) { return (value & 15) == 0 ? value + zoom : value; };
+			uint32_t instance = zoomed(id);
+			uint32_t name = Exact(nSCAssets::kModelTextureGroup, instance);
+			if (name == 0 && fallback != 0 && fallback != id) {
+				instance = zoomed(fallback);
+				name = Exact(nSCAssets::kModelTextureGroup, instance);
+			}
+			key = static_cast<uint64_t>(nSCAssets::kModelTextureGroup) << 32 | instance;
+			return name;
+		}
+
+		// A cell's texture as cSC4CellTextureModel loads it (0x005DF020): key + zoom, else the key.
+		uint32_t CellTexture(nSCDWire::CellTexture const &cell, uint64_t &key) {
+			uint32_t instance = cell.key + cell.zoom;
+			uint8_t image = 0;
+			uint32_t name = Exact(kCellTextureGroup, instance, cell.element, &image);
+			if (name == 0) name = Exact(kCellTextureGroup, instance = cell.key, cell.element, &image);
+			key = static_cast<uint64_t>(image) << 56 | static_cast<uint64_t>(kCellTextureGroup) << 32 | instance;
+			return name;
+		}
+
+		// For the check: a game texture that stood for two store textures means the lane looked up the wrong
+		// one somewhere. A name the game deleted and made again can also show up here. The game does load
+		// one file into two textures at times, so the other way round says nothing.
+		void CheckTexture(Kind kind, uint32_t game, uint64_t own) {
+			auto const [toStore, added] = gameToStore.try_emplace(game, own);
+			if (toStore->second == own) return;
+			++frame[kind].stateMismatches[kTexture];
+			if (reported++ < 20) {
+				std::printf("scene: %s texture %u stands for %016llX and %016llX\n", kKindNames[kind], game,
+				            static_cast<unsigned long long>(toStore->second), static_cast<unsigned long long>(own));
+			}
+			toStore->second = own;
+		}
+
+		// Draws vertices from a record as a triangle list, with the game's state.
+		bool DrawGrid(nSCDWire::GridVertex const *vertices, uint32_t vertexCount, uint16_t const *indices,
+		              uint32_t count) {
+			if (!nSCD3D11::ConvertVertices(kGridFormat, sizeof(nSCDWire::GridVertex), vertices, vertexCount,
+			                               vertexScratch)) {
+				return false;
+			}
+			uint32_t const vertexBytes = vertexCount * static_cast<uint32_t>(sizeof(D3D11Vertex));
+			uploadScratch.resize(vertexBytes + count * sizeof(uint16_t));
+			std::memcpy(uploadScratch.data(), vertexScratch.data(), vertexBytes);
+			std::memcpy(uploadScratch.data() + vertexBytes, indices, count * sizeof(uint16_t));
+			ID3D12Resource *resource = nullptr;
+			uint64_t offset = 0;
+			if (!driver.Upload(uploadScratch.data(), uploadScratch.size(), resource, offset)) return false;
+			D3D12_GPU_VIRTUAL_ADDRESS const base = resource->GetGPUVirtualAddress() + offset;
+			driver.DrawTriangles({base, vertexBytes, sizeof(D3D11Vertex)},
+			                     {base + vertexBytes, count * static_cast<UINT>(sizeof(uint16_t)), DXGI_FORMAT_R16_UINT},
+			                     count, kGridFormat);
+			return true;
+		}
+
+		// The game's vertex i of a draw, through its indices or counted from first.
+		static nSCDWire::GridVertex const *GameVertex(cGDriver12::DrawState const &game, int32_t first,
+		                                              uint32_t indexType, void const *indices, uint32_t i) {
+			uint32_t index = static_cast<uint32_t>(first) + i;
+			if (indexType == 3) index = static_cast<uint16_t const *>(indices)[i];
+			else if (indexType == 5) index = static_cast<uint32_t const *>(indices)[i];
+			return reinterpret_cast<nSCDWire::GridVertex const *>(game.vertexPointer +
+			                                                      static_cast<size_t>(index) * game.vertexStride);
+		}
+
+		static bool IsGridDraw(cGDriver12::DrawState const &game) {
+			return game.vertexPointer != nullptr && game.vertexFormat == kGridFormat &&
+			       game.vertexStride == sizeof(nSCDWire::GridVertex);
+		}
+
+		// A plain network piece draws the quad's triangles with 16-bit indices into its four corners, first
+		// with the under texture when it has one, then with its own, then each extra part as one triangle.
+		Reason NetworkDraw(Bracket &bracket, uint32_t primitive, int32_t first, uint32_t count, uint32_t indexType,
+		                   void const *indices) {
+			nSCDWire::NetworkPiece const &piece = bracket.piece;
+			if (piece.highlighted) return kHighlighted;
+			cGDriver12::DrawState game{};
+			driver.SaveDrawState(game);
+			if (!IsGridDraw(game) || primitive != 0 || count != 3) return kNoMatch;
+			static constexpr uint16_t kTriangle[3] = {0, 1, 2};
+			nSCDWire::GridVertex const *vertices = nullptr;
+			uint32_t vertexCount = 0;
+			uint16_t const *own = nullptr;
+			uint32_t id = 0, fallback = 0;
+			if (indexType == 3) {
+				uint32_t const perPass = ((piece.flags & kFirstTriangle) != 0) + ((piece.flags & kSecondTriangle) != 0);
+				if (perPass == 0) return kNoMatch;
+				uint32_t const pass = bracket.quadDraws / perPass;
+				uint32_t const triangle = (piece.flags & kFirstTriangle) ? bracket.quadDraws % perPass : 1;
+				++bracket.quadDraws;
+				uint32_t const passes = piece.underTexture != 0 ? 2 : 1;
+				if (pass >= passes) return kExtraDraw;
+				if (pass + 1 == passes) {
+					id = piece.piece + 16 * piece.variation;
+					fallback = piece.piece;
+				} else {
+					id = piece.underTexture;
+				}
+				own = kQuadIndices[(piece.flags & kOtherDiagonal) != 0] + 3 * triangle;
+				vertices = piece.corners;
+				vertexCount = 4;
+				for (uint32_t i = 0; i < 3; ++i) {
+					if (std::memcmp(GameVertex(game, first, indexType, indices, i), &vertices[own[i]],
+					                sizeof(nSCDWire::GridVertex)) != 0) return kNoMatch;
+				}
+			} else {
+				nSCDWire::NetworkPart const *const begin = parts.data() + bracket.partsBegin;
+				nSCDWire::GridVertex const *const drawn = GameVertex(game, first, 0, nullptr, 0);
+				for (uint32_t i = bracket.partCursor; i < piece.partCount && vertices == nullptr; ++i) {
+					if (std::memcmp(drawn, begin[i].vertices, sizeof(begin[i].vertices)) == 0) {
+						bracket.partCursor = i + 1;
+						id = begin[i].texture;
+						vertices = begin[i].vertices;
+					}
+				}
+				if (vertices == nullptr) return kNoMatch;
+				vertexCount = 3;
+				own = kTriangle;
+			}
+			uint64_t key = 0;
+			uint32_t const name = NetworkTexture(id, fallback, piece.zoom, key);
+			if (name == 0) {
+				driver.RestoreDrawState(game);
+				return kTextureMissing;
+			}
+			if (check) CheckTexture(kNetwork, game.stages[0].texture, key);
+			driver.SetTexture(name, 0);
+			DrawGrid(vertices, vertexCount, own, 3);
+			driver.RestoreDrawState(game);
+			return kNone;
+		}
+
+		// A flat cell draws its four vertices as a strip. A cell on a slope asks the terrain to draw it with the
+		// terrain's vertices, so there the lane draws the game's vertices with its own texture.
+		Reason CellDraw(Bracket &bracket, uint32_t primitive, int32_t first, uint32_t count, uint32_t indexType,
+		                void const *indices) {
+			nSCDWire::CellTexture const &cell = bracket.cell;
+			if (cell.highlighted) return kHighlighted;
+			cGDriver12::DrawState game{};
+			driver.SaveDrawState(game);
+			if (!game.stages[0].enabled) return kNoMatch;
+			if (cell.flat && (!IsGridDraw(game) || primitive != 1 || count != 4 || indexType != 0 ||
+			                  std::memcmp(GameVertex(game, first, 0, nullptr, 0), cell.vertices,
+			                              sizeof(cell.vertices)) != 0)) {
+				return kNoMatch;
+			}
+			uint64_t key = 0;
+			uint32_t const name = CellTexture(cell, key);
+			if (name == 0) {
+				driver.RestoreDrawState(game);
+				return kTextureMissing;
+			}
+			if (check) CheckTexture(kCell, game.stages[0].texture, key);
+			driver.SetTexture(name, 0);
+			if (cell.flat) {
+				DrawGrid(cell.vertices, 4, kStripIndices, 6);
+			} else {
+				driver.SetDrawFilter(nullptr);
+				if (indices == nullptr) driver.DrawArrays(primitive, first, static_cast<int32_t>(count));
+				else driver.DrawElements(primitive, static_cast<int32_t>(count), indexType, indices);
+				driver.SetDrawFilter(filter);
+			}
+			driver.RestoreDrawState(game);
+			return kNone;
 		}
 
 		// Whether the game's draw reads the same positions and texture coordinates, in the same order, as the
@@ -399,7 +636,7 @@ namespace nSCD3D12 {
 			driver.SaveDrawState(game);
 			if (RZVertexFormatNumElements(game.vertexFormat, kGDElementType_Color) != 0) return kGameColors;
 			if (check && !SameGeometry(game, mesh, first, indexType, indices)) {
-				++frame.stateMismatches[kGeometry];
+				++frame[kModel].stateMismatches[kGeometry];
 				if (reported++ < 20) {
 					std::printf("scene: geometry differs: %08X-%08X-%08X frame %u mesh %u\n", bracket.instance.type,
 					            bracket.instance.group, bracket.instance.instance, bracket.instance.frame,
@@ -503,7 +740,7 @@ namespace nSCD3D12 {
 		// Counts where the lane's state differs from what the game set for the same draw. Textures are
 		// compared by what they hold, in the images, as the names differ.
 		void Compare(cGDriver12::DrawState const &game, cGDriver12::DrawState const &lane) {
-			uint64_t *const miss = frame.stateMismatches;
+			uint64_t *const miss = frame[kModel].stateMismatches;
 			miss[kAlphaTest] += game.alphaTest != lane.alphaTest;
 			miss[kDepthTest] += game.depthTest != lane.depthTest;
 			miss[kCullFace] += game.cullFace != lane.cullFace;
@@ -533,31 +770,53 @@ namespace nSCD3D12 {
 		}
 
 		void Close(Bracket const &bracket) {
-			if (bracket.model == nullptr && bracket.reason == kNone) return;
-			++frame.brackets;
-			if (bracket.draws == 0) ++frame.empty;
-			else if (bracket.substituted == bracket.draws) ++frame.full;
-			else if (bracket.substituted != 0) ++frame.partial;
+			if (bracket.kind == kModel && bracket.model == nullptr && bracket.reason == kNone) return;
+			Counts &counts = frame[bracket.kind];
+			++counts.brackets;
+			if (bracket.draws == 0) ++counts.empty;
+			else if (bracket.substituted == bracket.draws) ++counts.full;
+			else if (bracket.substituted != 0) ++counts.partial;
 			else {
-				++frame.fallback;
-				++frame.fallbackBrackets[bracket.firstFallback];
+				++counts.fallback;
+				++counts.fallbackBrackets[bracket.firstFallback];
 			}
 		}
 	};
 
 	SceneLane::SceneLane(cGDriver12 &driver, nSCAssets::AssetStore const &store, bool check)
 		: impl(std::make_unique<Impl>(driver, store, check)) {
+		impl->filter = this;
 		driver.SetDrawFilter(this);
 	}
 
 	SceneLane::~SceneLane() { impl->driver.SetDrawFilter(nullptr); }
 
-	void SceneLane::OwnerBegin(nSCDWire::DrawOwner const &) { impl->stack.emplace_back(); }
+	void SceneLane::OwnerBegin(nSCDWire::DrawOwner const &owner) {
+		impl->stack.emplace_back().gridVtable = owner.kind == nSCDWire::DrawOwnerKind::Grid ? owner.vtable : 0;
+	}
 
 	void SceneLane::OwnerEnd() {
 		if (impl->stack.empty()) return;
-		impl->Close(impl->stack.back());
+		Bracket const &bracket = impl->stack.back();
+		impl->Close(bracket);
+		if (bracket.kind == kNetwork) impl->parts.resize(bracket.partsBegin);
 		impl->stack.pop_back();
+	}
+
+	void SceneLane::NetworkPiece(nSCDWire::NetworkPiece const &piece, nSCDWire::NetworkPart const *parts) {
+		if (impl->stack.empty()) return;
+		Bracket &bracket = impl->stack.back();
+		bracket.kind = kNetwork;
+		bracket.piece = piece;
+		bracket.partsBegin = impl->parts.size();
+		impl->parts.insert(impl->parts.end(), parts, parts + piece.partCount);
+	}
+
+	void SceneLane::CellTexture(nSCDWire::CellTexture const &cell) {
+		if (impl->stack.empty()) return;
+		Bracket &bracket = impl->stack.back();
+		bracket.kind = kCell;
+		bracket.cell = cell;
 	}
 
 	void SceneLane::ModelInstance(nSCDWire::ModelInstance const &model) {
@@ -577,6 +836,33 @@ namespace nSCD3D12 {
 		Impl &d = *impl;
 		if (d.stack.empty()) return true;
 		Bracket &bracket = d.stack.back();
+		if (d.check && bracket.gridVtable != 0) {
+			bool const allowed = d.Allow(bracket, primitive, first, count, indexType, indices);
+			auto &[draws, substituted] = d.gridDraws[bracket.gridVtable];
+			++draws;
+			substituted += !allowed;
+			return allowed;
+		}
+		return d.Allow(bracket, primitive, first, count, indexType, indices);
+	}
+
+	bool SceneLane::Impl::Allow(Bracket &bracket, uint32_t primitive, int32_t first, uint32_t count,
+	                            uint32_t indexType, void const *indices) {
+		Impl &d = *this;
+		if (bracket.kind != kModel) {
+			++bracket.draws;
+			Reason const reason = bracket.kind == kNetwork ? d.NetworkDraw(bracket, primitive, first, count, indexType, indices)
+			                                               : d.CellDraw(bracket, primitive, first, count, indexType, indices);
+			Counts &counts = d.frame[bracket.kind];
+			if (reason == kNone) {
+				++bracket.substituted;
+				++counts.drawsSubstituted;
+				return false;
+			}
+			if (bracket.firstFallback == kNone) bracket.firstFallback = reason;
+			++counts.fallbackDraws[reason];
+			return true;
+		}
 		if (bracket.model == nullptr) return true;
 		uint32_t const index = bracket.draws++;
 		Reason reason = bracket.reason;
@@ -592,58 +878,75 @@ namespace nSCD3D12 {
 		if (reason == kNone) reason = d.Draw(bracket, *mesh, first, indexType, indices);
 		if (reason == kNone) {
 			++bracket.substituted;
-			++d.frame.drawsSubstituted;
-			d.frame.bytesNotUploaded += mesh->vertices.SizeInBytes + mesh->indices.SizeInBytes;
+			++d.frame[kModel].drawsSubstituted;
+			d.frame[kModel].bytesNotUploaded += mesh->vertices.SizeInBytes + mesh->indices.SizeInBytes;
 			return false;
 		}
 		if (bracket.firstFallback == kNone) bracket.firstFallback = reason;
-		++d.frame.fallbackDraws[reason];
+		++d.frame[kModel].fallbackDraws[reason];
 		return true;
 	}
 
 	void SceneLane::WriteCsvHeader(std::FILE *csv) {
 		std::fprintf(csv, "frame,brackets,full,partial,fallback,empty,draws_substituted,draws_fallback");
 		for (uint32_t i = 1; i < kReasonCount; ++i) std::fprintf(csv, ",%s", kReasonNames[i]);
+		for (uint32_t kind = kNetwork; kind < kKindCount; ++kind) {
+			std::fprintf(csv, ",%s_brackets,%s_substituted,%s_fallback", kKindNames[kind], kKindNames[kind], kKindNames[kind]);
+		}
 		std::fprintf(csv, "\n");
 	}
 
 	void SceneLane::EndFrame(uint64_t frameNumber, std::FILE *csv) {
 		Impl &d = *impl;
-		Counts const &c = d.frame;
+		Counts const &c = d.frame[kModel];
+		auto const u = [](uint64_t value) { return static_cast<unsigned long long>(value); };
 		if (csv != nullptr) {
-			std::fprintf(csv, "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu", static_cast<unsigned long long>(frameNumber),
-			             static_cast<unsigned long long>(c.brackets), static_cast<unsigned long long>(c.full),
-			             static_cast<unsigned long long>(c.partial), static_cast<unsigned long long>(c.fallback),
-			             static_cast<unsigned long long>(c.empty), static_cast<unsigned long long>(c.drawsSubstituted),
-			             static_cast<unsigned long long>(c.DrawsFallenBack()));
-			for (uint32_t i = 1; i < kReasonCount; ++i) {
-				std::fprintf(csv, ",%llu", static_cast<unsigned long long>(c.fallbackDraws[i]));
+			std::fprintf(csv, "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu", u(frameNumber), u(c.brackets), u(c.full),
+			             u(c.partial), u(c.fallback), u(c.empty), u(c.drawsSubstituted), u(c.DrawsFallenBack()));
+			for (uint32_t i = 1; i < kReasonCount; ++i) std::fprintf(csv, ",%llu", u(c.fallbackDraws[i]));
+			for (uint32_t kind = kNetwork; kind < kKindCount; ++kind) {
+				Counts const &k = d.frame[kind];
+				std::fprintf(csv, ",%llu,%llu,%llu", u(k.brackets), u(k.drawsSubstituted), u(k.DrawsFallenBack()));
 			}
 			std::fprintf(csv, "\n");
 		}
-		d.total.Add(c);
-		d.frame = {};
+		for (uint32_t kind = 0; kind < kKindCount; ++kind) {
+			d.total[kind].Add(d.frame[kind]);
+			d.frame[kind] = {};
+		}
 	}
 
 	void SceneLane::PrintTotals() const {
 		Impl const &d = *impl;
-		Counts const &c = d.total;
 		auto const u = [](uint64_t value) { return static_cast<unsigned long long>(value); };
-		std::printf("scene: %llu model brackets: %llu substituted, %llu partly, %llu left to the game, %llu without draws\n",
-		            u(c.brackets), u(c.full), u(c.partial), u(c.fallback), u(c.empty));
-		std::printf("scene: %llu draws substituted, %llu left to the game, %.1f MB of geometry uploads saved\n",
-		            u(c.drawsSubstituted), u(c.DrawsFallenBack()), static_cast<double>(c.bytesNotUploaded) / (1 << 20));
-		for (uint32_t i = 1; i < kReasonCount; ++i) {
-			if (c.fallbackDraws[i] != 0 || c.fallbackBrackets[i] != 0) {
-				std::printf("scene:   %-16s %llu draws, %llu whole brackets\n", kReasonNames[i], u(c.fallbackDraws[i]),
-				            u(c.fallbackBrackets[i]));
+		for (uint32_t kind = 0; kind < kKindCount; ++kind) {
+			Counts const &c = d.total[kind];
+			std::printf("scene: %llu %s brackets: %llu substituted, %llu partly, %llu left to the game, %llu without draws\n",
+			            u(c.brackets), kKindNames[kind], u(c.full), u(c.partial), u(c.fallback), u(c.empty));
+			std::printf("scene: %llu %s draws substituted, %llu left to the game\n", u(c.drawsSubstituted),
+			            kKindNames[kind], u(c.DrawsFallenBack()));
+			for (uint32_t i = 1; i < kReasonCount; ++i) {
+				if (c.fallbackDraws[i] != 0 || c.fallbackBrackets[i] != 0) {
+					std::printf("scene:   %-16s %llu draws, %llu whole brackets\n", kReasonNames[i], u(c.fallbackDraws[i]),
+					            u(c.fallbackBrackets[i]));
+				}
+			}
+			for (uint32_t i = 0; i < kFieldCount; ++i) {
+				if (c.stateMismatches[i] != 0) {
+					std::printf("scene:   differs: %-16s %llu draws\n", kFieldNames[i], u(c.stateMismatches[i]));
+				}
 			}
 		}
-		for (uint32_t i = 0; i < kFieldCount; ++i) {
-			if (c.stateMismatches[i] != 0) {
-				std::printf("scene:   differs: %-16s %llu draws\n", kFieldNames[i], u(c.stateMismatches[i]));
+		if (d.check) {
+			std::vector<std::pair<uint32_t, std::pair<uint64_t, uint64_t>>> rows(d.gridDraws.begin(), d.gridDraws.end());
+			std::sort(rows.begin(), rows.end(), [](auto const &a, auto const &b) { return a.second.first > b.second.first; });
+			std::printf("scene: grid draws by vtable: draws, substituted\n");
+			for (auto const &[vtable, counts]: rows) {
+				std::printf("scene:   %08X %llu %llu\n", vtable, u(counts.first), u(counts.second));
 			}
 		}
+		std::printf("scene: %.1f MB of model geometry uploads saved\n",
+		            static_cast<double>(d.total[kModel].bytesNotUploaded) / (1 << 20));
 		std::printf("scene: %llu models and %llu textures loaded in %.2f s, %.1f MB of geometry on the GPU\n",
 		            u(d.modelsLoaded), u(d.texturesLoaded), d.loadSeconds, static_cast<double>(d.bytesPlaced) / (1 << 20));
 	}

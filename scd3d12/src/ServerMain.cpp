@@ -11,13 +11,16 @@
 // SCD3D12Server: SimCity 4's renderer as a separate 64-bit process.
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
-//                        [--relight <sun>] [--until <frame>] [--scene substitute|check --game <SimCity 4 folder>]
+//                        [--relight <sun>] [--until <frame>] [--scene substitute|check [--game <SimCity 4 folder>]]
 //       Renders a Record=<file> capture offline and saves the chosen frames as PNG. With --scene substitute the
-//       server draws the game's models from its own copy of the game's data (SceneLane.h) and writes per frame
-//       counts to scene.csv in the output folder. check also compares each such draw with the game's.
+//       server draws the game's models, networks and lot textures from its own copy of the game's data
+//       (SceneLane.h) and writes per frame counts to scene.csv in the output folder. check also compares each
+//       such draw with the game's. The data comes from the folders the capture names, or from --game.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
+//                       [--scene substitute|check]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
-//       rate and the CPU and GPU time per frame every second.
+//       rate and the CPU and GPU time per frame every second. --scene works as for replay, with the data
+//       from the folders the game names, indexed while the game draws on.
 //
 //   --relight relights every frame with another sun: an hour of the day from 0 to 24, or
 //   <azimuth>,<elevation> in degrees (see cGDriver12::Sun).
@@ -136,7 +139,7 @@ namespace {
 			else if (options.capture.empty()) options.capture = argument;
 			else return false;
 		}
-		return !options.capture.empty() && (!options.substitute || !options.game.empty());
+		return !options.capture.empty();
 	}
 
 	// Saves the chosen frames as the replay reaches them. Frame numbers count Flush calls from zero, the
@@ -144,7 +147,8 @@ namespace {
 	struct ReplayFrames : nSCDWire::ReplayHooks {
 		nSCD3D12::cGDriver12 &driver;
 		ReplayOptions const &options;
-		nSCD3D12::SceneLane *scene = nullptr;
+		nSCAssets::AssetStore store;
+		std::unique_ptr<nSCD3D12::SceneLane> scene;
 		std::FILE *sceneCsv = nullptr;
 		uint64_t frame = 0;
 		uint64_t saved = 0;
@@ -166,6 +170,24 @@ namespace {
 		}
 		void ModelInstance(nSCDWire::ModelInstance const &model) override {
 			if (scene != nullptr) scene->ModelInstance(model);
+		}
+		void NetworkPiece(nSCDWire::NetworkPiece const &piece, nSCDWire::NetworkPart const *parts) override {
+			if (scene != nullptr) scene->NetworkPiece(piece, parts);
+		}
+		void CellTexture(nSCDWire::CellTexture const &cell) override {
+			if (scene != nullptr) scene->CellTexture(cell);
+		}
+		// Without --game the store reads the folders the game named. The record comes before the city loads.
+		void GameFolders(std::wstring const (&folders)[static_cast<size_t>(nSCDWire::GameFolder::Count)]) override {
+			if (!options.substitute || scene != nullptr) return;
+			store.AddFolders(folders[0], folders[1], folders[2], folders[3], folders[4]);
+			StartScene();
+		}
+		void StartScene() {
+			std::printf("scene: %zu packages, %zu entries\n", store.Files().size(), store.Index().size());
+			scene = std::make_unique<nSCD3D12::SceneLane>(driver, store, options.check);
+			_wfopen_s(&sceneCsv, (options.out + L"\\scene.csv").c_str(), L"w");
+			if (sceneCsv != nullptr) nSCD3D12::SceneLane::WriteCsvHeader(sceneCsv);
 		}
 		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
 			driver.DrawBlobs(vertices, indices);
@@ -206,15 +228,9 @@ namespace {
 			return 1;
 		}
 		ReplayFrames hooks(driver, options);
-		nSCAssets::AssetStore store;
-		std::unique_ptr<nSCD3D12::SceneLane> scene;
-		if (options.substitute) {
-			store.AddGameData(options.game);
-			std::printf("scene: %zu packages, %zu entries\n", store.Files().size(), store.Index().size());
-			scene = std::make_unique<nSCD3D12::SceneLane>(driver, store, options.check);
-			hooks.scene = scene.get();
-			_wfopen_s(&hooks.sceneCsv, (options.out + L"\\scene.csv").c_str(), L"w");
-			if (hooks.sceneCsv != nullptr) nSCD3D12::SceneLane::WriteCsvHeader(hooks.sceneCsv);
+		if (options.substitute && !options.game.empty()) {
+			hooks.store.AddGameData(options.game);
+			hooks.StartScene();
 		}
 		auto const start = std::chrono::steady_clock::now();
 		nSCDWire::Reader reader([file](void *data, size_t size) { return std::fread(data, 1, size, file) == size; });
@@ -232,7 +248,8 @@ namespace {
 				            static_cast<unsigned long long>(stats.opCounts[op]));
 			}
 		}
-		if (scene != nullptr) scene->PrintTotals();
+		if (hooks.scene != nullptr) hooks.scene->PrintTotals();
+		else if (options.substitute) std::puts("scene: the capture names no game folders, pass --game");
 		if (hooks.sceneCsv != nullptr) std::fclose(hooks.sceneCsv);
 		std::fclose(file);
 		return ok ? 0 : 1;
@@ -244,19 +261,25 @@ namespace {
 		Sun sun;
 		bool relight = false;
 		bool stats = false;
+		nSCD3D12::SceneMode scene = nSCD3D12::SceneMode::Off;
 		for (int i = 2; i + 1 < argc; i += 2) {
 			std::wstring const argument = argv[i];
 			if (argument == L"--ring") ring = argv[i + 1];
 			else if (argument == L"--parent") parent = static_cast<DWORD>(_wtoi(argv[i + 1]));
 			else if (argument == L"--relight") relight = ParseSun(argv[i + 1], sun);
 			else if (argument == L"--stats") stats = std::wstring(argv[i + 1]) == L"on";
+			else if (argument == L"--scene") {
+				std::wstring const mode = argv[i + 1];
+				if (mode == L"substitute") scene = nSCD3D12::SceneMode::Substitute;
+				else if (mode == L"check") scene = nSCD3D12::SceneMode::Check;
+			}
 			else if (argument == L"--log") {
 				std::FILE *log = nullptr;
 				_wfreopen_s(&log, argv[i + 1], L"w", stdout);
 			}
 		}
 		if (ring.empty() || parent == 0) return 2;
-		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats);
+		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats, scene);
 	}
 
 	int RunCompare(int argc, wchar_t **argv) {
@@ -299,8 +322,9 @@ int wmain(int argc, wchar_t **argv) {
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
 		std::puts("                     [--relight <hour or azimuth,elevation>] [--until <frame>]"
-		          " [--scene substitute|check --game <SimCity 4 folder>]");
-		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]");
+		          " [--scene substitute|check [--game <SimCity 4 folder>]]");
+		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]"
+		          " [--scene substitute|check]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
 	CoUninitialize();

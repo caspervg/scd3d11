@@ -47,12 +47,19 @@ namespace nSCAssets {
 	}
 
 	void AssetStore::AddGameData(std::wstring const &installDir, std::wstring const &language) {
+		AddFolders(installDir, installDir + L"\\" + language, installDir + L"\\Sku_Data", installDir + L"\\Plugins", L"");
+	}
+
+	void AssetStore::AddFolders(std::wstring const &installDir, std::wstring const &languageDir,
+	                            std::wstring const &skuDir, std::wstring const &pluginsDir,
+	                            std::wstring const &userPluginsDir) {
 		std::vector<std::wstring> paths;
-		ListFiles(installDir, L"*.dat", false, paths);
-		ListFiles(installDir + L"\\" + language, L"*.dat", false, paths);
-		ListFiles(installDir + L"\\Sku_Data", L"*.dat", true, paths);
+		if (!installDir.empty()) ListFiles(installDir, L"*.dat", false, paths);
+		if (!languageDir.empty()) ListFiles(languageDir, L"*.dat", false, paths);
+		if (!skuDir.empty()) ListFiles(skuDir, L"*.dat", true, paths);
 		AddFiles(paths);
-		AddPlugins(installDir + L"\\Plugins");
+		if (!pluginsDir.empty()) AddPlugins(pluginsDir);
+		if (!userPluginsDir.empty()) AddPlugins(userPluginsDir);
 	}
 
 	void AssetStore::AddPlugins(std::wstring const &pluginsDir) {

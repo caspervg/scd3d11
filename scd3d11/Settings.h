@@ -45,6 +45,9 @@ namespace nSCD3D11::Settings {
 		// ServerRelight=<hour> or <azimuth>,<elevation>: the server relights every frame with that sun
 		// (see SCD3D12Server's --relight). Empty or off draws the game's own light.
 		std::string serverRelight;
+		// ServerScene=substitute: the server draws the city's models, networks and lot textures from its own
+		// copy of the game's data (see SCD3D12Server's --scene). check also compares each with the game's.
+		std::string serverScene;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.
