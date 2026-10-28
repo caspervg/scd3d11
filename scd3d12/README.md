@@ -60,3 +60,40 @@ The live stream and a recorded capture are the same bytes. Every capture replays
 | M3 | Occupant inserts, removes and moves are streamed (plus a listing of every occupant once a city loads), and `DrawOwnerHooks` brackets every grid and view object draw with its owner. In a test session 78% of all draws were bracketed (the rest are UI, background and loading screens) and 99.97% of bracketed occupants matched the occupant records. Each model instance's S3D key and world transform follow its OwnerBegin. Motion vectors are next |
 | M4 | Asset readers (DBPF, QFS, S3D, FSH, exemplars) done. `replay --scene substitute` draws the game's S3D models (buildings, props, flora, automata) from the server's own copy of the game data in place of the game's draws: meshes kept on the GPU, textures from the FSH files, render state from the S3D materials and draw attributes, night lights from the texture id + 0x8000. On four captures 98.6% to 99.96% of model draws are the server's and all 324 frames compared are bit-identical. Left to the game: cars it repaints with its own vertex colours and highlighted models. The tint the game lays over close flora on stage 1 is a 16x16 alpha texture it makes itself (no package holds it), so the lane keeps the game's stage 1 for those draws. Plain network pieces and lot cell textures are drawn from records the shim reads off each drawable (`NetworkPiece`, `CellTexture`): the record's world-space vertices with the texture from the store, the rest of the state the game's. A cell on a slope is drawn by the terrain, so there only the texture is swapped. On a Big City Tutorial capture 96% of network draws and 91% of cell draws are the server's, the rest being the first frame after a zoom or rotation (the game rebuilds those vertices inside the draw, after the record is read), and all 108 frames compared are bit-identical. Live, `ServerScene=substitute` (or `check`) does the same in `serve`: the shim names the folders SC4 loaded its packages from (`GameFolders`, also in captures, so replays need no `--game`), and the server indexes them on a thread of its own (0.11 s for the vanilla game) and starts substituting at the next frame. Still the game's: animated sprites (0x00ABD1D0, a third of the grid draws) and three other lot models (0x00AA20D0, 0x00AA2808, 0x00AA2EA8, likely foundations and retaining walls). `--scene check` also compares each draw's state and vertices with the game's, and that every game texture stands for one store texture |
 | M6 | Stage 1 done in the draw lane, verified offline and live: `--relight <hour>` for replay, `ServerRelight` live (seen working in the game). The server keeps a light layer next to the back buffer, through SC4's backing-store copies, and relights each frame with sun shadows traced over the orthographic depth, in about 0.13 ms at 1920x1080. Off, the output stays bit-identical. Limits: SC4's lighting baked into BAT textures is only divided out roughly, terrain is shaded per triangle, and night lights are not yet light sources |
+
+## Retained scene
+
+`replay --scene retained` (`RetainedScene.h`) keeps the city's static models (buildings, props, flora) on the server
+and draws them every frame with SC4's camera, instead of taking them from SC4's backing store.
+
+SC4 draws its static view (passes 0 to 2) only when it has to: the whole window after a zoom or rotation, the strip a
+scroll uncovers, the rectangle around something that changed. Each such redraw ends with a copy of colour and depth
+into two buffer regions, and every frame starts by copying them back, shifted by whole pixels while scrolling. The
+retained scene takes the models the scene lane draws in pass 1 out of that pass, so the backing store only holds
+what the scene does not cover (terrain, water, networks, lot textures, overlays, models the lane leaves to the game).
+At the first dynamic owner of each frame, after the restore and the static redraws, it draws every instance on
+screen with the frame's camera, depth tested against the restored depth. The dynamic passes then test against the
+instances as they did against the game's own.
+
+Instances are keyed by occupant and model. They go when the zoom or rotation changes (other models), when SC4 redraws
+a rectangle that holds their whole box without drawing them, and when their occupant is removed or moved, once SC4
+redraws over them (until then SC4 still shows them).
+
+The camera is read from the matrices SC4 loads before the dynamic passes: an orthographic projection and a view that
+turns about world up and tilts. Big City Tutorial at 1920x1080 shows yaw 22.5, 112.5, -157.5 and -67.5 degrees for
+the four rotations, a pitch of 45 degrees at 0.0716, 0.143 and 0.286 metres per pixel and 30 degrees at 2.61 metres
+per pixel. View x world matches SC4's own modelview to the last bit of its translation (0.001 at 10 km).
+
+Against `--scene substitute` on scene-tutorial, cov-night-ui, cov-build-region and net-live, a full view differs in
+0.0002% to 0.5% of the channels, scrolled frames in 0.1% to 0.3%. Most of it is a line of pixels along the foot of
+models: SC4's own shadows (pass 2) are drawn while the models are missing from depth. With those shadows left out
+(`--relight`), a full view differs in 3 channels. The rest are places SC4 itself left stale in its backing store, a
+model it redrew in part with newer lighting, or a removed occupant it still shows.
+
+It also writes motion vectors (previous position minus position now, in pixels) from the depth buffer and both
+cameras, and from the previous transform for instances that moved. Warping the previous frame by them reproduces 97%
+of a 21 pixel scroll exactly. The rest are cars, the UI and animated props.
+
+Time per frame for the retained draw at 1920x1080: 362 instances at 0.072 metres per pixel take 0.10 ms of CPU and
+0.04 ms of GPU, 4,600 at 0.286 take 1.4 ms and 0.10 ms, 15,400 at 2.61 take 3.9 ms and 1.0 ms. Each instance is still
+one draw through the driver's state machine.
