@@ -26,11 +26,13 @@
 // the sun changes or every few seconds, and the map is only rebuilt when
 // either differs.
 //
-// SC4 also darkens terrain and models below its own shadow-height grid
-// (ShadowDepth_, 0x007D6950). Under these shadows that would darken the same
-// slopes twice, so Install makes ShadowDepth_ return 0. The grids themselves
-// must stay, because BAT shadow placement (CalcShadowTerrainRect, 0x007D6CC0)
-// uses them.
+// SC4 also darkens terrain and models below its own shadow-height grid.
+// Models and most lighting calls ask ShadowDepth_ (0x007D6950), but the
+// terrain's vertex colours (GetTerrainVertexColors, 0x007D7F00) read the grid
+// themselves. Under these shadows that would darken the same slopes twice, so
+// Install makes ShadowDepth_ return 0 and makes the vertex colours always take
+// their unshadowed branch. The grids themselves must stay, because BAT shadow
+// placement (CalcShadowTerrainRect, 0x007D6CC0) uses them.
 
 #include "TerrainShadows.h"
 
@@ -72,15 +74,40 @@ namespace nSCD3D11::TerrainShadows {
 		constexpr uint16_t kFlippedFlags = 0x3000;
 
 		constexpr uintptr_t kImageBase = 0x00400000;
-		// ShadowDepth_: PUSH EBX / PUSH ESI / PUSH EDI / MOV EDI,[ESP+0x10] /
-		// FLD [EDI], __thiscall, RET 4, float result on the x87 stack.
-		constexpr uintptr_t kShadowDepthVA = 0x007D6950;
-		constexpr uint8_t kShadowDepthGuard[]{0x53, 0x56, 0x57, 0x8B, 0x7C, 0x24, 0x10, 0xD9, 0x07};
-		// FLDZ / RET 4: never below the shadow.
-		constexpr uint8_t kShadowDepthPatch[]{0xD9, 0xEE, 0xC2, 0x04, 0x00};
 
-		uint8_t *gShadowDepthSite = nullptr;
+		struct CodePatch {
+			uintptr_t address;
+			uint8_t guard[9];
+			size_t guardSize;
+			// Where in the guarded bytes the new bytes go.
+			size_t offset;
+			uint8_t bytes[5];
+			size_t size;
+		};
+
+		CodePatch const kPatches[]{
+			// ShadowDepth_: PUSH EBX / PUSH ESI / PUSH EDI / MOV EDI,[ESP+0x10] / FLD [EDI],
+			// __thiscall, RET 4, float result on the x87 stack. FLDZ / RET 4: never below the shadow.
+			{0x007D6950, {0x53, 0x56, 0x57, 0x8B, 0x7C, 0x24, 0x10, 0xD9, 0x07}, 9, 0, {0xD9, 0xEE, 0xC2, 0x04, 0x00}, 5},
+			// GetTerrainVertexColors: FNSTSW AX / TEST AH,0x41 / JNZ +0x30 skips the bent normal when
+			// the vertex is not below the grid. JMP +0x30 always skips it.
+			{0x007D7FFB, {0xDF, 0xE0, 0xF6, 0xC4, 0x41, 0x75, 0x30}, 7, 5, {0xEB}, 1},
+		};
+
 		bool gShadowDepthPatched = false;
+
+		uint8_t *PatchSite(CodePatch const &patch) {
+			return reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr)) + (patch.address - kImageBase);
+		}
+
+		void WriteCode(uint8_t *site, uint8_t const *bytes, size_t size) {
+			DWORD protection = 0;
+			if (!VirtualProtect(site, size, PAGE_EXECUTE_READWRITE, &protection)) return;
+			std::memcpy(site, bytes, size);
+			DWORD ignored = 0;
+			VirtualProtect(site, size, protection, &ignored);
+			FlushInstructionCache(GetCurrentProcess(), site, size);
+		}
 
 		TerrainShadowMap::HeightField gField;
 		TerrainShadowMap::HeightField gScratch;
@@ -257,37 +284,27 @@ namespace nSCD3D11::TerrainShadows {
 
 	void Install() {
 		if (gShadowDepthPatched || !LiveShadowHooks::Enabled()) return;
-		uint8_t *const site = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr)) + (kShadowDepthVA - kImageBase);
-		if (std::memcmp(site, kShadowDepthGuard, sizeof(kShadowDepthGuard)) != 0) {
-			Log(LogCategory::Initialization,
-			    "terrain shadows: guard failed at 0x%08lX, SC4's terrain self-shading stays on",
-			    static_cast<unsigned long>(kShadowDepthVA));
-			return;
+		// Both sites or neither, so terrain and models never disagree about SC4's shadow.
+		for (CodePatch const &patch: kPatches) {
+			if (std::memcmp(PatchSite(patch), patch.guard, patch.guardSize) != 0) {
+				Log(LogCategory::Initialization,
+				    "terrain shadows: guard failed at 0x%08lX, SC4's terrain self-shading stays on",
+				    static_cast<unsigned long>(patch.address));
+				return;
+			}
 		}
-		DWORD protection = 0;
-		if (!VirtualProtect(site, sizeof(kShadowDepthPatch), PAGE_EXECUTE_READWRITE, &protection)) return;
-		std::memcpy(site, kShadowDepthPatch, sizeof(kShadowDepthPatch));
-		DWORD ignored = 0;
-		VirtualProtect(site, sizeof(kShadowDepthPatch), protection, &ignored);
-		FlushInstructionCache(GetCurrentProcess(), site, sizeof(kShadowDepthPatch));
-		gShadowDepthSite = site;
+		for (CodePatch const &patch: kPatches) WriteCode(PatchSite(patch) + patch.offset, patch.bytes, patch.size);
 		gShadowDepthPatched = true;
 		Log(LogCategory::Initialization, "terrain shadows installed: SC4's own terrain self-shading replaced");
 	}
 
 	void Uninstall() {
 		if (!gShadowDepthPatched) return;
-		if (std::memcmp(gShadowDepthSite, kShadowDepthPatch, sizeof(kShadowDepthPatch)) == 0) {
-			DWORD protection = 0;
-			if (VirtualProtect(gShadowDepthSite, sizeof(kShadowDepthPatch), PAGE_EXECUTE_READWRITE, &protection)) {
-				std::memcpy(gShadowDepthSite, kShadowDepthGuard, sizeof(kShadowDepthPatch));
-				DWORD ignored = 0;
-				VirtualProtect(gShadowDepthSite, sizeof(kShadowDepthPatch), protection, &ignored);
-				FlushInstructionCache(GetCurrentProcess(), gShadowDepthSite, sizeof(kShadowDepthPatch));
-			}
+		for (CodePatch const &patch: kPatches) {
+			uint8_t *const site = PatchSite(patch) + patch.offset;
+			if (std::memcmp(site, patch.bytes, patch.size) == 0) WriteCode(site, patch.guard + patch.offset, patch.size);
 		}
 		gShadowDepthPatched = false;
-		gShadowDepthSite = nullptr;
 		gMapValid = false;
 		gTerrain = nullptr;
 	}
