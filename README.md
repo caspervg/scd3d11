@@ -60,6 +60,8 @@ where it came from.
 | `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
 | `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included). See [ReShade](#reshade) |
+| `Renderer` | `local` | Experimental. `server` draws the game in `SCD3D12Server.exe`, a separate 64-bit Direct3D 12 process in `Plugins\SCD3D12\`, and falls back to `local` if it stops. See [scd3d12/README.md](scd3d12/README.md) |
+| `ServerPresent` | `copy` | Experimental, with `Renderer=server`. `composition` lets the server present on the game's window itself through DirectComposition |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:
 
@@ -144,6 +146,7 @@ These settings add more detail:
 |---------|--------|
 | `DrawStats` | Log a per-second summary of frame times, draws, culled draws, scroll and full redraws and texture churn, plus a line for each frame over 100 ms (`stats` category) |
 | `LogLevel=trace` | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
+| `Record=<file>` | Write every call the game makes to the driver to a file. `SCDReplay.exe` and `SCD3D12Server.exe replay` draw it again outside the game. Files grow fast, a minute can take gigabytes |
 
 The scripts in `scripts/` launch, debug and capture the game with these switches.
 
