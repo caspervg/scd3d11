@@ -492,19 +492,17 @@ namespace nSCDWire {
 				case Op::ContinueVertices:
 					// The reservation's contents arrive with ReleaseVertices.
 					break;
-				case Op::ReleaseVertices: {
-					auto const name = f.Get<uint32_t>();
-					auto const *vertices = blob(f.Get<BlobKey>());
-					if (f.ok && vertices != nullptr) {
-						hooks.Vertices(name, vertices->data(), static_cast<uint32_t>(vertices->size()));
-					}
+				case Op::ReleaseVertices:
+					// Each draw carries the vertices it reads.
 					break;
-				}
 				case Op::DrawPrims: {
 					auto const name = f.Get<uint32_t>();
 					auto const primitive = f.Get<uint32_t>();
 					auto const bytes = f.Get<uint32_t>();
-					if (f.ok && vertexBuffers != nullptr) vertexBuffers->DrawPrims(name, primitive, nullptr, bytes);
+					auto const *vertices = blob(f.Get<BlobKey>());
+					if (!f.ok || vertices == nullptr || vertexBuffers == nullptr) break;
+					hooks.Vertices(name, vertices->data(), static_cast<uint32_t>(vertices->size()));
+					vertexBuffers->DrawPrims(name, primitive, nullptr, bytes);
 					break;
 				}
 				case Op::DrawPrimsIndexed: {
@@ -512,7 +510,9 @@ namespace nSCDWire {
 					auto const primitive = f.Get<uint32_t>();
 					auto const count = f.Get<uint32_t>();
 					auto const *indices = blob(f.Get<BlobKey>());
-					if (!f.ok || indices == nullptr || vertexBuffers == nullptr) break;
+					auto const *vertices = blob(f.Get<BlobKey>());
+					if (!f.ok || indices == nullptr || vertices == nullptr || vertexBuffers == nullptr) break;
+					hooks.Vertices(name, vertices->data(), static_cast<uint32_t>(vertices->size()));
 					scratch.assign(indices->begin(), indices->end());
 					vertexBuffers->DrawPrimsIndexed(name, primitive, count,
 					                                scratch.empty() ? nullptr : reinterpret_cast<uint16_t *>(scratch.data()));

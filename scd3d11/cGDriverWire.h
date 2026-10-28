@@ -190,6 +190,7 @@ namespace nSCD3D11 {
 			writer.End();
 		}
 
+		void RecordReservation(uint32_t name, uint32_t bytes);
 		void RecordBlit(nSCDWire::BlitKind kind, int32_t x, int32_t y, int32_t width, int32_t height,
 		                int32_t sourceWidth, int32_t sourceHeight, uint32_t format, uint32_t type,
 		                void const *pixels, bool colorKeyed, void const *colorKey, uint32_t alpha);
@@ -202,7 +203,7 @@ namespace nSCD3D11 {
 		uint8_t const *vertexPointer = nullptr;
 		int32_t unpackRowLength = 0;
 		// The vertex-buffer extension's current reservation, which the game fills between GetVertices and
-		// ReleaseVertices.
+		// ReleaseVertices and draws from until the next GetVertices.
 		uint8_t const *reservation = nullptr;
 		uint32_t reservationVertices = 0;
 		std::vector<uint8_t> scratch;

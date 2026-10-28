@@ -131,9 +131,9 @@ namespace nSCDWire {
 		// cIGZGDriverVertexBufferExtension
 		GetVertices, // name, count
 		ContinueVertices, // name, count
-		ReleaseVertices, // name, the bytes the game wrote since GetVertices as a blob
-		DrawPrims,
-		DrawPrimsIndexed,
+		ReleaseVertices, // name
+		DrawPrims, // name, primitive, byte size, the vertices it reads as a blob
+		DrawPrimsIndexed, // name, primitive, count, index blob, the vertices up to the highest index as a blob
 		ResetVertexBuffers,
 
 		// cIGZGSnapshotExtension

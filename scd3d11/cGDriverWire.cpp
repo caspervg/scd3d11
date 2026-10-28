@@ -578,7 +578,7 @@ namespace nSCD3D11 {
 	}
 
 	// Vertex-buffer extension. The game writes into the driver's own memory between GetVertices and
-	// ReleaseVertices, so the bytes are recorded at the release.
+	// ReleaseVertices, and the draws that follow read from it.
 
 	char const *cGDriverWire::GetVertexBufferName(uint32_t format) { return driver->GetVertexBufferName(format); }
 	uint32_t cGDriverWire::VertexBufferType(uint32_t name) { return driver->VertexBufferType(name); }
@@ -604,26 +604,37 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriverWire::ReleaseVertices(uint32_t name) {
-		uint32_t const stride = RZVertexFormatStride(driver->VertexBufferType(name));
-		writer.Begin(Op::ReleaseVertices);
-		writer.Put(name);
-		writer.PutBlob(reservation, reservation != nullptr ? reservationVertices * stride : 0);
-		writer.End();
-		reservation = nullptr;
+		Record(Op::ReleaseVertices, name);
 		driver->ReleaseVertices(name);
 	}
 
+	// The game reserves far more than it fills, so each draw carries only the vertices it reads.
+	void cGDriverWire::RecordReservation(uint32_t name, uint32_t bytes) {
+		uint32_t const stride = RZVertexFormatStride(driver->VertexBufferType(name));
+		uint32_t const reserved = reservation != nullptr ? reservationVertices * stride : 0;
+		writer.PutBlob(reservation, (std::min)(bytes, reserved));
+	}
+
 	void cGDriverWire::DrawPrims(uint32_t name, uint32_t primitive, void *data, uint32_t byteSize) {
-		Record(Op::DrawPrims, name, primitive, byteSize);
+		writer.Begin(Op::DrawPrims);
+		writer.Put(name);
+		writer.Put(primitive);
+		writer.Put(byteSize);
+		RecordReservation(name, byteSize);
+		writer.End();
 		driver->DrawPrims(name, primitive, data, byteSize);
 	}
 
 	void cGDriverWire::DrawPrimsIndexed(uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices) {
+		uint32_t highest = 0;
+		for (uint32_t i = 0; indices != nullptr && i < count; ++i) highest = (std::max)(highest, uint32_t{indices[i]});
+		uint32_t const stride = RZVertexFormatStride(driver->VertexBufferType(name));
 		writer.Begin(Op::DrawPrimsIndexed);
 		writer.Put(name);
 		writer.Put(primitive);
 		writer.Put(count);
 		writer.PutBlob(indices, indices != nullptr ? count * static_cast<uint32_t>(sizeof(uint16_t)) : 0);
+		RecordReservation(name, (highest + 1) * stride);
 		writer.End();
 		driver->DrawPrimsIndexed(name, primitive, count, indices);
 	}
