@@ -13,3 +13,6 @@
 [submodule "vendor/wil"]
 	path = vendor/wil
 	url = https://github.com/microsoft/wil.git
+[submodule "vendor/DBPFKit"]
+	path = vendor/DBPFKit
+	url = https://github.com/caspervg/DBPFKit.git
