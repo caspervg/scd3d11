@@ -42,6 +42,9 @@ namespace nSCD3D11::Settings {
 		// ServerPresent=composition: the server presents itself on SC4's window through DirectComposition
 		// instead of handing each frame back to be presented here (ServerPresent=copy).
 		bool serverComposition = false;
+		// ServerRelight=<hour> or <azimuth>,<elevation>: the server relights every frame with that sun
+		// (see SCD3D12Server's --relight). Empty or off draws the game's own light.
+		std::string serverRelight;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.
