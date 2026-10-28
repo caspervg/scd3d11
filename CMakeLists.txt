@@ -25,9 +25,6 @@ if (NOT CMAKE_HOST_WIN32 AND NOT CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR "SCD3D11 targets SimCity 4, a 32-bit Windows application, and must be cross-compiled.")
 endif ()
 
-if (NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-    message(FATAL_ERROR "You're using a compiler that generates 64-bit code. SCD3D11 must be 32-bit.")
-endif ()
 
 # gzcom-dll and sc4-dll-utilities (with the WIL headers it needs), wired up as in
 # sc4-dll-template. They are git submodules.
@@ -39,6 +36,15 @@ foreach (required "${GZCOM_DIR}/include" "${SC4_DLL_UTILITIES_DIR}/include" "${W
         message(FATAL_ERROR "Missing ${required}. Initialize submodules with: git submodule update --init")
     endif ()
 endforeach ()
+
+# A 64-bit configuration builds SCD3D12Server alone. Everything else is 32-bit, like SimCity 4.
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    add_subdirectory(scd3d12)
+    return()
+endif ()
+if (NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(FATAL_ERROR "SCD3D11 must be built with a 32-bit compiler, SCD3D12Server with a 64-bit one.")
+endif ()
 
 file(GLOB GZCOM_SOURCES CONFIGURE_DEPENDS "${GZCOM_DIR}/src/*.cpp")
 list(REMOVE_ITEM GZCOM_SOURCES
