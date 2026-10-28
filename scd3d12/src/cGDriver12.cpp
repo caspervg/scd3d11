@@ -531,7 +531,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		uint64_t uploadCursor = 0;
 
 		ComPtr<ID3D12RootSignature> rootSignature;
-		ComPtr<ID3DBlob> vertexShader, pixelShader, flatVertexShader, flatPixelShader, blitVertexShader, blitPixelShader;
+		ComPtr<ID3DBlob> vertexShader, pixelShader, flatVertexShader, flatPixelShader;
+		ComPtr<ID3DBlob> blitVertexShader, blitPixelShader;
 		std::unordered_map<PipelineKey, ComPtr<ID3D12PipelineState>, PipelineKeyHash> pipelines;
 
 		ComPtr<ID3D12DescriptorHeap> rtvHeap;
@@ -986,7 +987,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			bool const blit = kind >= 2;
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
 			description.pRootSignature = rootSignature.Get();
-			ID3DBlob *const vs = blit ? blitVertexShader.Get() : (kind == 1 ? flatVertexShader.Get() : vertexShader.Get());
+			ID3DBlob *const vs =
+				blit ? blitVertexShader.Get() : (kind == 1 ? flatVertexShader.Get() : vertexShader.Get());
 			ID3DBlob *const ps = blit ? blitPixelShader.Get() : (kind == 1 ? flatPixelShader.Get() : pixelShader.Get());
 			description.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
 			description.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
@@ -1260,9 +1262,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 				if (CacheEntry const *cached = FindCached(key)) address = CachedAddress(*cached);
 			}
 			if (address == 0) {
-				if (!ConvertVertices(format, stride, base + static_cast<size_t>(first) * stride, count, vertexScratch)) {
-					return false;
-				}
+				uint8_t const *const source = base + static_cast<size_t>(first) * stride;
+				if (!ConvertVertices(format, stride, source, count, vertexScratch)) return false;
 				CacheEntry entry;
 				uint8_t *cpu = nullptr;
 				uint64_t &seen = seenVertices[(blob.low ^ blob.high) & (seenVertices.size() - 1)];
@@ -1924,7 +1925,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			d.BindIndices(d.CachedAddress(*cached), drawCount, wide);
 		} else {
 			void const *source = convertPrimitive ? d.drawIndexScratch.data() : indices;
-			drawCount = convertPrimitive ? static_cast<uint32_t>(d.drawIndexScratch.size()) : static_cast<uint32_t>(count);
+			drawCount = static_cast<uint32_t>(convertPrimitive ? d.drawIndexScratch.size() : count);
 			if (!d.UploadIndices(source, drawCount, wide, indexBlob.size != 0 ? &key : nullptr, minimumIndex,
 			                     maximumIndex)) return;
 		}
@@ -2519,8 +2520,11 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		CacheKey const key{indexBlob.low, indexBlob.high, indexBlob.size, CacheKind::Indices, 3, 0, 0, count};
 		CacheEntry const *cached = indexBlob.size != 0 ? d.FindCached(key) : nullptr;
 		uint32_t maximumIndex = 0;
-		if (cached != nullptr) maximumIndex = cached->maximumIndex;
-		else for (uint32_t i = 0; i < count; ++i) maximumIndex = (std::max)(maximumIndex, static_cast<uint32_t>(indices[i]));
+		if (cached != nullptr) {
+			maximumIndex = cached->maximumIndex;
+		} else {
+			for (uint32_t i = 0; i < count; ++i) maximumIndex = (std::max)(maximumIndex, uint32_t{indices[i]});
+		}
 		uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
 		uint32_t const stride = RZVertexFormatStride(format);
 		uint32_t const byteSize = (maximumIndex + 1) * stride;

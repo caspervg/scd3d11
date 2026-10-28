@@ -630,8 +630,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
-		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !flatVertexShader || !inputLayout ||
-		    !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
+		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !flatVertexShader ||
+		    !inputLayout || !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
 		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
 		}
