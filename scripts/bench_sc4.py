@@ -163,7 +163,8 @@ def main() -> int:
         run("GetFrameRate")
     finally:
         # Nothing is ever saved, so a kill is safe if the quit dialog blocks.
-        transcript.append(f"QuitGame 0 0 -> {send('QuitGame 0 0', timeout=10)!r}")
+        # The first argument skips the confirmation dialog, the second saves.
+        transcript.append(f"QuitGame 1 0 -> {send('QuitGame 1 0', timeout=10)!r}")
         try:
             game.wait(10)
         except subprocess.TimeoutExpired:
