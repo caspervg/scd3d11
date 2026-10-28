@@ -139,6 +139,12 @@ namespace nSCDWire {
 		// cIGZGSnapshotExtension
 		CopyColorBuffer,
 
+		// The game's occupants, from its occupant manager's messages: id (the occupant's address in the
+		// game, unique while it lives), type, and the world bounding box as min xyz then max xyz.
+		OccupantInsert,
+		OccupantRemove, // id
+		OccupantMove, // id, bounding box
+
 		Count
 	};
 
@@ -149,6 +155,15 @@ namespace nSCDWire {
 		StretchBltAlpha,
 		BitBltAlphaModulate,
 		StretchBltAlphaModulate,
+	};
+
+	enum class OccupantEventKind : uint8_t { Insert, Remove, Move };
+
+	struct OccupantEvent {
+		OccupantEventKind kind;
+		uint64_t id;
+		int32_t type;
+		float box[6];
 	};
 
 	char const *OpName(Op op);

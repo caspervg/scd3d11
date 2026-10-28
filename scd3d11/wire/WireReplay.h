@@ -28,6 +28,7 @@ namespace nSCDWire {
 		// After each Flush. Return false to stop the replay.
 		virtual bool Frame() { return true; }
 		virtual void CopyColorBuffer(int32_t, int32_t, int32_t, int32_t) {}
+		virtual void Occupant(OccupantEvent const &) {}
 	};
 
 	struct ReplayStats {

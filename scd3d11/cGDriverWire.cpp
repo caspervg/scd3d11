@@ -64,14 +64,34 @@ namespace nSCD3D11 {
 		}
 	}
 
+	namespace {
+		cGDriverWire *gCurrent = nullptr;
+	}
+
 	cGDriverWire::cGDriverWire(cGDriver *driver, nSCDWire::Writer::Sink sink)
 		: driver(driver), writer(std::move(sink)) {
 		driver->AddRef();
+		gCurrent = this;
 	}
 
 	cGDriverWire::~cGDriverWire() {
+		if (gCurrent == this) gCurrent = nullptr;
 		writer.Flush();
 		driver->Release();
+	}
+
+	cGDriverWire *cGDriverWire::Current() { return gCurrent; }
+
+	void cGDriverWire::RecordOccupant(nSCDWire::OccupantEvent const &event) {
+		if (event.kind == nSCDWire::OccupantEventKind::Remove) {
+			Record(Op::OccupantRemove, event.id);
+			return;
+		}
+		writer.Begin(event.kind == nSCDWire::OccupantEventKind::Insert ? Op::OccupantInsert : Op::OccupantMove);
+		writer.Put(event.id);
+		writer.Put(event.type);
+		writer.PutBytes(event.box, sizeof(event.box));
+		writer.End();
 	}
 
 	bool cGDriverWire::QueryInterface(uint32_t riid, void **ppvObj) {

@@ -35,6 +35,10 @@ namespace nSCD3D11 {
 		~cGDriverWire();
 
 		cGDriver &Inner() { return *driver; }
+		// The driver that writes a stream this session, if any. Render thread only, which in SC4 is also the
+		// thread that pumps messages.
+		static cGDriverWire *Current();
+		void RecordOccupant(nSCDWire::OccupantEvent const &event);
 		nSCDWire::Writer &Stream() { return writer; }
 
 		// cIGZUnknown

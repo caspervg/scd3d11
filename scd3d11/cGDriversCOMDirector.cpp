@@ -21,6 +21,7 @@
 #include "cGDriver.h"
 #include "cGDriverWire.h"
 #include "LiveShadowHooks.h"
+#include "OccupantTracker.h"
 #include "Settings.h"
 #include "ShadowRegistry.h"
 #include "TerrainShadows.h"
@@ -47,7 +48,13 @@ namespace nSCD3D11
 			return true;
 		}
 
+		bool PostAppInit() {
+			OccupantTracker::Install();
+			return true;
+		}
+
 		bool PreAppShutdown() {
+			OccupantTracker::Uninstall();
 			TerrainShadows::Uninstall();
 			ShadowRegistry::Uninstall();
 			LiveShadowHooks::Uninstall();

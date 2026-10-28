@@ -531,6 +531,22 @@ namespace nSCDWire {
 					break;
 				}
 
+				case Op::OccupantInsert:
+				case Op::OccupantMove: {
+					OccupantEvent event{op == Op::OccupantInsert ? OccupantEventKind::Insert : OccupantEventKind::Move};
+					event.id = f.Get<uint64_t>();
+					event.type = f.Get<int32_t>();
+					for (float &value: event.box) value = f.Get<float>();
+					if (f.ok) hooks.Occupant(event);
+					break;
+				}
+				case Op::OccupantRemove: {
+					OccupantEvent event{OccupantEventKind::Remove};
+					event.id = f.Get<uint64_t>();
+					if (f.ok) hooks.Occupant(event);
+					break;
+				}
+
 				default:
 					failure = "an op the replay does not handle";
 					break;
