@@ -352,6 +352,16 @@ namespace nSCD3D11 {
 		// calls the same way the server counts frames.
 		RemoteRenderer *remote = nullptr;
 		uint64_t remoteFrame = 0;
+		// The first frame the server draws at the current video mode. Earlier frames are gone with the old
+		// shared textures.
+		uint64_t remoteGenerationFrame = 0;
+		// Copies the server's last finished frame into the back buffer: the one before the frame being
+		// built, so the server draws a frame while the game builds the next.
+		void CopyRemoteFrame() {
+			if (RemoteDrawing() && remoteFrame > remoteGenerationFrame) {
+				remote->CopyFrame(d3dDevice.Get(), d3dContext.Get(), backBufferTexture.Get(), remoteFrame - 1);
+			}
+		}
 		bool remoteFallbackRequested = false;
 		bool RemoteDrawing() const { return remote != nullptr && remote->Active(); }
 		// Without the registry a partial pass only ever sees the casters drawn

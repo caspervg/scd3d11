@@ -304,6 +304,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::SetVideoMode(int32_t newModeIndex, void *windowProcedure, bool showWindow, bool) {
+		remoteGenerationFrame = remoteFrame;
 		if (newModeIndex == -1) {
 			DestroyD3D11Context();
 			currentVideoMode = -1;
@@ -570,7 +571,11 @@ namespace nSCD3D11 {
 		// Every Flush counts as a frame for the watchdog, even one that skips Present.
 		NoteRenderFrame();
 		FlushFrame();
-		if (remote != nullptr) remote->EndFrame(d3dDevice.Get(), d3dContext.Get(), remoteFrame++);
+		// Renderer=server: the shim is done with the frame FlushFrame copied, the one before this one.
+		if (remote != nullptr) {
+			if (remoteFrame > 0) remote->EndFrame(d3dDevice.Get(), d3dContext.Get(), remoteFrame - 1);
+			++remoteFrame;
+		}
 		ReportFrameStats();
 		NoteRenderFrame();
 		NoteRenderPhase("game (between Flush calls)");
@@ -634,7 +639,7 @@ namespace nSCD3D11 {
 		NoteRenderPhase("Flush: ReShade effects");
 		FinishReShadeFrame();
 		// Renderer=server: the server's frame replaces the back buffer, so snapshots read it too.
-		if (RemoteDrawing()) remote->CopyFrame(d3dDevice.Get(), d3dContext.Get(), backBufferTexture.Get(), remoteFrame);
+		CopyRemoteFrame();
 		// The server just went away: everything drawn since it took over was skipped here.
 		if (remote != nullptr && !remote->Active() && !remoteFallbackRequested) {
 			remoteFallbackRequested = true;

@@ -37,6 +37,8 @@ namespace nSCD3D11 {
 	cIGZBuffer *cGDriver::CopyColorBuffer(
 		int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer *buffer) {
 		if (!d3dDevice || !d3dContext || !swapChain || width <= 0 || height <= 0) return nullptr;
+		// Renderer=server: the last frame the game finished, which Flush has not waited for.
+		CopyRemoteFrame();
 
 		int32_t const left = x < 0 ? 0 : x;
 		int32_t const top = y < 0 ? 0 : y;
