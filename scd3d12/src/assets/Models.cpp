@@ -145,10 +145,13 @@ namespace nSCAssets {
 			// The game keeps the threshold's high byte and then 4 bits of it.
 			uint32_t const high = static_cast<uint32_t>(std::lround(mat.alphaThreshold * 65535.0f)) >> 8;
 			m.alphaRef = std::round(high / 255.0f * 15.0f) / 15.0f;
+			m.alphaThreshold = static_cast<uint8_t>(high);
+			m.index = f.matsBlock;
 			// A material whose last texture is 0 has no textures at all.
 			if (!mat.textures.empty() && mat.textures.back().textureID != 0) {
 				S3D::MaterialTexture const &t = mat.textures.front();
 				m.texture = t.textureID;
+				m.textureCount = static_cast<uint8_t>(std::min<size_t>(mat.textures.size(), 255));
 				m.wrapU = t.wrapS;
 				m.wrapV = t.wrapT;
 				m.magFilter = t.magFilter;
