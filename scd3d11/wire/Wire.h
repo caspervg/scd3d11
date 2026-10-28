@@ -151,6 +151,9 @@ namespace nSCDWire {
 		OwnerEnd,
 		// After an OwnerBegin of a cS3DModelInstance (buildings, props, flora, automata): ModelInstance.
 		ModelInstance,
+		// The window's client area changed size between two frames: width, height. Unlike SetVideoMode the
+		// game keeps its textures and buffer regions.
+		Resize,
 
 		Count
 	};

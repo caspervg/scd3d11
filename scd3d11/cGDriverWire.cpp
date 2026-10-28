@@ -378,6 +378,18 @@ namespace nSCD3D11 {
 		Record(Op::Frame);
 		writer.Flush();
 		driver->Flush();
+		// The driver resizes its back buffer inside Flush when the window changed size, so the renderer on
+		// the other end hears about it between this frame and the next.
+		int32_t dimensions[2]{};
+		driver->BackBufferSize(dimensions[0], dimensions[1]);
+		if (dimensions[0] > 0 && dimensions[1] > 0 && (dimensions[0] != recordedWidth || dimensions[1] != recordedHeight)) {
+			if (recordedWidth != 0) {
+				Record(Op::Resize, static_cast<uint32_t>(dimensions[0]), static_cast<uint32_t>(dimensions[1]));
+				writer.Flush();
+			}
+			recordedWidth = dimensions[0];
+			recordedHeight = dimensions[1];
+		}
 	}
 
 	void cGDriverWire::Enable(uint32_t state) {
@@ -501,6 +513,8 @@ namespace nSCD3D11 {
 			driver->GetVideoModeInfo(static_cast<uint32_t>(index), mode);
 		}
 		Record(Op::SetVideoMode, index, show, fourth, mode.width, mode.height, mode.isFullscreen);
+		recordedWidth = static_cast<int32_t>(mode.width);
+		recordedHeight = static_cast<int32_t>(mode.height);
 		Forget(0, kSlotCount);
 	}
 

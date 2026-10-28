@@ -792,6 +792,10 @@ namespace nSCD3D11 {
 
 		// Hands drawing to SCD3D12Server. The renderer must outlive the driver.
 		void SetRemote(RemoteRenderer *renderer) { remote = renderer; }
+		void BackBufferSize(int32_t &width, int32_t &height) const {
+			width = windowWidth;
+			height = windowHeight;
+		}
 
 		// Override SC4's native DirectX driver by presenting its GZCLSID with a
 		// higher version number to GZCOM.

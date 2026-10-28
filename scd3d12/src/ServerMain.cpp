@@ -155,6 +155,7 @@ namespace {
 			driver.VideoMode(show, width, height, fullscreen);
 		}
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override { driver.Vertices(name, data, bytes); }
+		void Resize(uint32_t width, uint32_t height) override { driver.Resize(width, height); }
 		void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
 			driver.OwnerBegin(owner);
 			if (scene != nullptr) scene->OwnerBegin(owner);

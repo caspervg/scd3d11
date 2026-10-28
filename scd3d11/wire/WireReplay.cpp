@@ -580,6 +580,12 @@ namespace nSCDWire {
 					break;
 				}
 				case Op::OwnerEnd: hooks.OwnerEnd(); break;
+				case Op::Resize: {
+					auto const width = f.Get<uint32_t>();
+					auto const height = f.Get<uint32_t>();
+					if (f.ok) hooks.Resize(width, height);
+					break;
+				}
 				case Op::ModelInstance: {
 					auto const model = f.Get<nSCDWire::ModelInstance>();
 					if (f.ok) hooks.ModelInstance(model);

@@ -123,6 +123,7 @@ namespace nSCD3D12 {
 
 		// nSCDWire::ReplayHooks
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
+		void Resize(uint32_t width, uint32_t height) override;
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override;
 		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override;
 		bool Frame() override;

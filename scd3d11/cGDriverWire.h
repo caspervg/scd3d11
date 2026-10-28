@@ -292,6 +292,9 @@ namespace nSCD3D11 {
 		uint32_t vertexStride = 0;
 		uint8_t const *vertexPointer = nullptr;
 		int32_t unpackRowLength = 0;
+		// The back buffer size the stream last told the other end about.
+		int32_t recordedWidth = 0;
+		int32_t recordedHeight = 0;
 		// The vertex-buffer extension's current reservation, which the game fills between GetVertices and
 		// ReleaseVertices and draws from until the next GetVertices.
 		uint8_t const *reservation = nullptr;

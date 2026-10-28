@@ -43,6 +43,12 @@ namespace nSCD3D12 {
 				if (control.presentMode == nSCDWire::kPresentComposition) Compose(width, height);
 			}
 
+			void Resize(uint32_t width, uint32_t height) override {
+				driver.Resize(width, height);
+				Share(width, height);
+				if (control.presentMode == nSCDWire::kPresentComposition) Compose(width, height);
+			}
+
 			void Vertices(uint32_t name, void const *data, uint32_t bytes) override {
 				driver.Vertices(name, data, bytes);
 			}

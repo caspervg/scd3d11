@@ -778,6 +778,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		int32_t windowHeight = 0;
 		Region regions[kRegionCount];
 		uint8_t regionFlags = 0;
+		// Set while Resize rebuilds the targets, so textures and buffer regions survive.
+		bool resizing = false;
 
 		// Relighting. The light layer is drawn alongside the back buffer: SC4's light factor in rgb and
 		// the relight weight in alpha (1 for the city, 0 for UI), premultiplied by that weight. The
@@ -2300,13 +2302,16 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		d.Retire(d.depthBuffer);
 		d.Retire(d.depthScratch);
 		d.depthScratchValid = false;
-		for (Impl::Region &region: d.regions) d.RetireRegion(region);
-		d.regionFlags = 0;
-		for (auto &entry: d.textures) d.ReleaseTexture(entry.second);
-		d.textures.clear();
-		d.boundTextures[0] = d.boundTextures[1] = 0;
-		d.ReleaseTexture(d.blitTexture);
-		d.blitTexture = {};
+		// A new video mode starts over, as SC4 expects. A resize keeps textures and region numbers.
+		if (!d.resizing) {
+			for (Impl::Region &region: d.regions) d.RetireRegion(region);
+			d.regionFlags = 0;
+			for (auto &entry: d.textures) d.ReleaseTexture(entry.second);
+			d.textures.clear();
+			d.boundTextures[0] = d.boundTextures[1] = 0;
+			d.ReleaseTexture(d.blitTexture);
+			d.blitTexture = {};
+		}
 
 		D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
 		D3D12_RESOURCE_DESC description = TextureDescription(kColorFormat, width, height, 1,
@@ -2335,8 +2340,19 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		}
 		d.windowWidth = static_cast<int32_t>(width);
 		d.windowHeight = static_cast<int32_t>(height);
+		if (d.resizing) {
+			for (uint32_t index = 0; index < kRegionCount; ++index) {
+				if ((d.regionFlags & (1u << index)) != 0) d.CreateRegion(index, d.regions[index].type);
+			}
+		}
 		d.BindTargets();
 		d.SetFullViewport();
+	}
+
+	void cGDriver12::Resize(uint32_t width, uint32_t height) {
+		impl->resizing = true;
+		VideoMode(false, width, height, false);
+		impl->resizing = false;
 	}
 
 	// The vertices the next DrawPrims or DrawPrimsIndexed reads, as cGDriverReplayHooks::Vertices hands

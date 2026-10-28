@@ -35,6 +35,8 @@ namespace nSCDWire {
 		virtual void OwnerBegin(DrawOwner const &) {}
 		virtual void OwnerEnd() {}
 		virtual void ModelInstance(nSCDWire::ModelInstance const &) {}
+		// The window changed size: the back buffer and buffer regions follow, textures stay.
+		virtual void Resize(uint32_t, uint32_t) {}
 	};
 
 	struct ReplayStats {
