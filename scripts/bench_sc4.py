@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["psutil"]
 # ///
 """Run SimCity 4 unattended in an isolated user directory and drive it through the game's own command
 listener (-NetCommandGenerator:enabled, HTTP on port 50020).
@@ -14,10 +14,14 @@ Nothing is ever saved. The log, command replies and snapshots land in runtime-ca
 
   uv run scripts/bench_sc4.py "C:/.../City - Senneterre.sc4" Zoom5 "sleep 3" ScrollRight "sleep 6" ScrollRightStop
 
-A command may contain {capture}, which becomes the capture folder (for TakeSnapshot).
+A command may contain {capture}, which becomes the capture folder (for TakeSnapshot). Two commands are the
+script's own: "focus" brings the game to the foreground (SC4 drops to about 20 frames per second without
+it), and "measure <seconds>" does that and then reports the frame rate from GetFrameCount and the CPU time
+of the game's busiest thread (the one that renders) and of SCD3D12Server over that many seconds.
 """
 
 import argparse
+import ctypes
 import os
 import re
 import shutil
@@ -27,6 +31,8 @@ import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+import psutil
 
 REPO = Path(__file__).resolve().parent.parent
 GAME_EXE = Path(r"C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe")
@@ -42,6 +48,75 @@ def send(command: str, timeout: float = 60) -> str | None:
             return response.read().decode("utf-8", "replace").strip()
     except OSError:
         return None
+
+
+def focus(pid: int) -> bool:
+    """Brings the process's largest visible window to the foreground. Windows only lets the foreground
+    thread hand the foreground over, so this thread joins its input queue for the call."""
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    windows: list[tuple[int, int]] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def collect(hwnd, _):
+        owner = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(ctypes.c_void_p(hwnd)):
+            rect = (ctypes.c_long * 4)()
+            user32.GetWindowRect(ctypes.c_void_p(hwnd), rect)
+            windows.append(((rect[2] - rect[0]) * (rect[3] - rect[1]), hwnd))
+        return True
+
+    user32.EnumWindows(collect, None)
+    if not windows:
+        return False
+    window = ctypes.c_void_p(max(windows)[1])
+    foreground_thread = user32.GetWindowThreadProcessId(ctypes.c_void_p(user32.GetForegroundWindow()), None)
+    own_thread = ctypes.windll.kernel32.GetCurrentThreadId()
+    user32.AttachThreadInput(own_thread, foreground_thread, True)
+    user32.ShowWindow(window, 9)  # SW_RESTORE
+    user32.SetForegroundWindow(window)
+    user32.AttachThreadInput(own_thread, foreground_thread, False)
+    return user32.GetForegroundWindow() == window.value
+
+
+def thread_times(pid: int) -> dict[int, float]:
+    return {thread.id: thread.user_time + thread.system_time for thread in psutil.Process(pid).threads()}
+
+
+def server_time(pid: int) -> float:
+    """CPU seconds of the game's own SCD3D12Server, if it runs one."""
+    total = 0.0
+    for process in psutil.Process(pid).children(recursive=True):
+        try:
+            if process.name() == "SCD3D12Server.exe":
+                times = process.cpu_times()
+                total += times.user + times.system
+        except psutil.Error:
+            pass
+    return total
+
+
+def frame_count() -> int:
+    reply = send("GetFrameCount", timeout=10) or ""
+    values = reply.split("Result:")[-1].split()
+    return int(float(values[0])) if values else 0
+
+
+def measure(pid: int, seconds: float) -> str:
+    focused = focus(pid)
+    time.sleep(1)
+    threads, server, frames, start = thread_times(pid), server_time(pid), frame_count(), time.perf_counter()
+    time.sleep(seconds)
+    threads_after, server_after = thread_times(pid), server_time(pid)
+    frames_after, elapsed = frame_count(), time.perf_counter() - start
+    count = max(frames_after - frames, 1)
+    busiest = max(threads_after[tid] - threads.get(tid, 0.0) for tid in threads_after)
+    total = sum(threads_after.values()) - sum(threads.values())
+    return (f"{count / elapsed:.1f} fps ({elapsed * 1000 / count:.2f} ms per frame), render thread "
+            f"{busiest * 1000 / count:.2f} ms CPU per frame ({busiest / elapsed:.0%}), whole game "
+            f"{total / elapsed:.0%}, server {(server_after - server) * 1000 / count:.2f} ms CPU per frame"
+            f"{'' if focused else ', NOT in the foreground'}")
 
 
 def game_running() -> bool:
@@ -167,6 +242,14 @@ def main() -> int:
         for command in args.commands:
             if match := re.fullmatch(r"sleep ([\d.]+)", command, re.IGNORECASE):
                 time.sleep(float(match[1]))
+                continue
+            if command == "focus":
+                transcript.append(f"focus -> {focus(game.pid)}")
+                print(transcript[-1], flush=True)
+                continue
+            if match := re.fullmatch(r"measure ([\d.]+)", command):
+                transcript.append(f"{command} -> {measure(game.pid, float(match[1]))}")
+                print(transcript[-1], flush=True)
                 continue
             run(command.replace("{capture}", str(capture)))
             time.sleep(args.delay)
