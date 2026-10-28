@@ -27,3 +27,19 @@ target_compile_options(SCD3D12Server PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-
 target_link_libraries(SCD3D12Server PRIVATE d3d12 dxgi dxguid d3dcompiler dcomp windowscodecs ole32)
 target_link_options(SCD3D12Server PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/ENTRY:wmainCRTStartup>)
 set_target_properties(SCD3D12Server PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+# DBPFKit reads the formats. It builds as C++23 in its own directory, and only the targets that include its
+# headers need C++23 too. EXCLUDE_FROM_ALL keeps its tests and Catch2 out of the normal build.
+add_subdirectory("${PROJECT_SOURCE_DIR}/vendor/DBPFKit" "${CMAKE_BINARY_DIR}/DBPFKit" EXCLUDE_FROM_ALL)
+
+# Reads SimCity 4's own data: every package in the game's load order, by TGI.
+add_library(scd3d12_assets STATIC
+        src/assets/Dbpf.cpp
+        src/assets/AssetStore.cpp
+)
+target_include_directories(scd3d12_assets PUBLIC src/assets)
+target_link_libraries(scd3d12_assets PRIVATE DBPFKitLib)
+target_compile_features(scd3d12_assets PRIVATE cxx_std_23)
+target_compile_definitions(scd3d12_assets PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(scd3d12_assets PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-8;/MP>)
+
