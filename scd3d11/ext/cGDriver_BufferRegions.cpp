@@ -122,6 +122,8 @@ namespace nSCD3D11 {
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
+		// The server keeps its own copy of the backing store.
+		if (RemoteDrawing()) return true;
 
 		++frameStats.regionReads;
 		if (sourceX != destinationX || sourceY != destinationY) {
@@ -176,6 +178,8 @@ namespace nSCD3D11 {
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
+		// The server keeps its own copy of the backing store.
+		if (RemoteDrawing()) return true;
 
 		++frameStats.regionDraws;
 		if (sourceX != destinationX || sourceY != destinationY) {

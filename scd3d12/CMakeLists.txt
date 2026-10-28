@@ -5,6 +5,8 @@ set(SCD3D11_SOURCE "${PROJECT_SOURCE_DIR}/scd3d11")
 
 add_executable(SCD3D12Server
         src/ServerMain.cpp
+        src/Serve.cpp
+        "${SCD3D11_SOURCE}/wire/SharedRing.cpp"
         src/cGDriver12.cpp
         "${SCD3D11_SOURCE}/wire/ImageFile.cpp"
         "${SCD3D11_SOURCE}/wire/WireReplay.cpp"

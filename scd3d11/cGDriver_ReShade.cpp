@@ -437,6 +437,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 	}
 
 	void cGDriver::RenderSceneEffects(void) {
+		if (RemoteDrawing()) return;
 		RenderLivePropShadows(false);
 		if (gRuntime == nullptr || !IsDeviceReady()) return;
 

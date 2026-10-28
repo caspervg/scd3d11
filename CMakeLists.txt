@@ -111,7 +111,9 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
         scd3d11/cGDriverWire.cpp
+        scd3d11/RemoteRenderer.cpp
         scd3d11/wire/ImageFile.cpp
+        scd3d11/wire/SharedRing.cpp
         scd3d11/wire/WireReplay.cpp
         scd3d11/wire/WireStream.cpp
         scd3d11/cGDriversCOMDirector.cpp
@@ -170,7 +172,7 @@ set(SCD3D11_DRIVER_INCLUDES "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
 target_include_directories(SCD3D11 PRIVATE ${SCD3D11_DRIVER_INCLUDES})
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
-target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version)
+target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version windowscodecs ole32)
 
 # Replays a Record=<file> capture into the driver outside the game and saves frames as PNG.
 add_executable(SCDReplay scd3d11/replay/SCDReplay.cpp ${SCD3D11_DRIVER_SOURCES})
@@ -262,7 +264,7 @@ if (BUILD_TESTING)
     target_include_directories(cGDriverTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
     # Enables the fault injection points the tests use.
     target_compile_definitions(cGDriverTest PRIVATE SCD3D11_TESTING)
-    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version)
+    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version windowscodecs ole32)
     # No usable D3D11 device skips instead of failing.
     set_tests_properties(cGDriverTest PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -270,6 +272,6 @@ if (BUILD_TESTING)
     scd3d11_add_test(WireTest tests/WireTest.cpp ${SCD3D11_DRIVER_SOURCES})
     target_include_directories(WireTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
     target_compile_definitions(WireTest PRIVATE SCD3D11_TESTING)
-    target_link_libraries(WireTest PRIVATE d3d11 d3dcompiler dxgi version)
+    target_link_libraries(WireTest PRIVATE d3d11 d3dcompiler dxgi version windowscodecs ole32)
     set_tests_properties(WireTest PROPERTIES SKIP_RETURN_CODE 77)
 endif ()

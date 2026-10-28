@@ -202,7 +202,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Clear(GLbitfield mask) {
-		if (!d3dContext) {
+		if (!d3dContext || RemoteDrawing()) {
 			return;
 		}
 

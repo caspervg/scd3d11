@@ -171,7 +171,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
-		if (!IsDeviceReady() || deviceLost) return;
+		if (!IsDeviceReady() || deviceLost || RemoteDrawing()) return;
 
 		uint32_t const pixelBytes = TextureSourcePixelBytes(format, type);
 		if (pixelBytes == 0 || pixelBytes > 4) {

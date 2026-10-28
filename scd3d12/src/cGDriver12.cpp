@@ -61,11 +61,12 @@ namespace nSCD3D12 {
 	cGDriver12::cGDriver12() : impl(std::make_unique<Impl>()) {}
 	cGDriver12::~cGDriver12() = default;
 
-	bool cGDriver12::Create(bool useWarp) {
+	bool cGDriver12::Create(bool useWarp, LUID const *adapterLuid) {
 		Impl &d = *impl;
 		if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&d.factory)))) return false;
 		ComPtr<IDXGIAdapter1> adapter;
 		if (useWarp) d.factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter));
+		else if (adapterLuid != nullptr) d.factory->EnumAdapterByLuid(*adapterLuid, IID_PPV_ARGS(&adapter));
 		else d.factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
 		if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d.device)))) return false;
 		D3D12_COMMAND_QUEUE_DESC queue{};

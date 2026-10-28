@@ -98,6 +98,12 @@ namespace nSCD3D11::Settings {
 			return trace || value == "info";
 		}
 
+		// Renderer=server or Renderer=local.
+		bool ParseRenderer(std::string_view value, bool &server) {
+			server = value == "server";
+			return server || value == "local";
+		}
+
 		// Record=<file>. Any non-empty value is a path.
 		bool ParsePath(std::string_view value, std::string &path) {
 			path = value;
@@ -167,6 +173,7 @@ namespace nSCD3D11::Settings {
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
 		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);
 		values.record = Resolve(sources, "Record", ParsePath, values.record);
+		values.server = Resolve(sources, "Renderer", ParseRenderer, values.server);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

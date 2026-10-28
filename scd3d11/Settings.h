@@ -37,6 +37,8 @@ namespace nSCD3D11::Settings {
 		bool traceLog = false;
 		// Record=<file>: write every SimGL call to this file as an SCDW stream (see wire/Wire.h).
 		std::string record;
+		// Renderer=server: draw in SCD3D12Server.exe instead of in the game (Renderer=local).
+		bool server = false;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.

@@ -727,20 +727,34 @@ namespace nSCD3D11 {
 
 namespace nSCD3D11 {
 	bool CreateDriver(uint32_t riid, void **ppvObj) {
-		std::string const &path = Settings::Get().record;
-		if (path.empty()) return cGDriver::FactoryFunctionPtr2(riid, ppvObj);
-
-		std::FILE *file = nullptr;
-		if (fopen_s(&file, path.c_str(), "wb") != 0 || file == nullptr) {
-			Log(LogCategory::Initialization, "record: cannot open %s, not recording", path.c_str());
-			return cGDriver::FactoryFunctionPtr2(riid, ppvObj);
+		Settings::Values const &settings = Settings::Get();
+		std::unique_ptr<RemoteRenderer> remote;
+		if (settings.server) {
+			remote = std::make_unique<RemoteRenderer>();
+			if (!remote->Start()) remote.reset();
 		}
-		Log(LogCategory::Initialization, "record: writing every SimGL call to %s", path.c_str());
-		std::shared_ptr<std::FILE> const output(file, std::fclose);
+		std::shared_ptr<std::FILE> output;
+		if (!settings.record.empty()) {
+			std::FILE *file = nullptr;
+			if (fopen_s(&file, settings.record.c_str(), "wb") == 0 && file != nullptr) {
+				output.reset(file, std::fclose);
+				Log(LogCategory::Initialization, "record: writing every SimGL call to %s", settings.record.c_str());
+			} else {
+				Log(LogCategory::Initialization, "record: cannot open %s, not recording", settings.record.c_str());
+			}
+		}
+		if (remote == nullptr && output == nullptr) return cGDriver::FactoryFunctionPtr2(riid, ppvObj);
+
 		auto *const driver = new cGDriver();
-		auto *const wire = new cGDriverWire(driver, [output](void const *data, size_t size) {
-			return std::fwrite(data, 1, size, output.get()) == size && std::fflush(output.get()) == 0;
+		nSCDWire::Writer::Sink const toServer = remote != nullptr ? remote->Sink() : nSCDWire::Writer::Sink{};
+		if (remote != nullptr) driver->SetRemote(remote.get());
+		auto *const wire = new cGDriverWire(driver, [toServer, output](void const *data, size_t size) {
+			bool ok = true;
+			if (output != nullptr) ok = std::fwrite(data, 1, size, output.get()) == size && std::fflush(output.get()) == 0;
+			if (toServer) ok = toServer(data, size) && ok;
+			return ok;
 		});
+		wire->remote = std::move(remote);
 		if (!wire->QueryInterface(riid, ppvObj)) {
 			delete wire;
 			return false;

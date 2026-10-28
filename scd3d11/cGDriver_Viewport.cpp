@@ -483,7 +483,10 @@ namespace nSCD3D11 {
 			factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
 		}
 		DXGI_ADAPTER_DESC adapterDescription{};
-		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
+		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription)) && remote != nullptr) {
+			remote->SetAdapter(adapterDescription.AdapterLuid);
+		}
+		if (adapter && adapterDescription.Description[0] != 0) {
 			char name[sizeof(adapterDescription.Description)]{};
 			WideCharToMultiByte(CP_UTF8, 0, adapterDescription.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
 			// The user-mode driver version, packed as four 16-bit parts, from most to least significant.
@@ -567,6 +570,7 @@ namespace nSCD3D11 {
 		// Every Flush counts as a frame for the watchdog, even one that skips Present.
 		NoteRenderFrame();
 		FlushFrame();
+		if (remote != nullptr) remote->EndFrame(d3dDevice.Get(), d3dContext.Get(), remoteFrame++);
 		ReportFrameStats();
 		NoteRenderFrame();
 		NoteRenderPhase("game (between Flush calls)");
@@ -629,7 +633,15 @@ namespace nSCD3D11 {
 		bool const vsyncEnabled = Settings::Get().vsync;
 		NoteRenderPhase("Flush: ReShade effects");
 		FinishReShadeFrame();
-		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
+		if (!RemoteDrawing() ||
+		    !remote->CopyFrame(d3dDevice.Get(), d3dContext.Get(), swapChainBuffer.Get(), remoteFrame)) {
+			// The server just went away: everything drawn since it took over was skipped here.
+			if (remote != nullptr && !remote->Active() && !remoteFallbackRequested) {
+				remoteFallbackRequested = true;
+				liveShadowCleanRedrawPending |= 1u << kRedrawServerLost;
+			}
+			d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
+		}
 		NoteRenderPhase("Flush: Present");
 		result = TakeInjectedFault(FAULT_PRESENT);
 		if (SUCCEEDED(result)) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);

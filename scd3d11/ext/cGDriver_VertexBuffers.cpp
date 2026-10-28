@@ -101,6 +101,7 @@ namespace nSCD3D11 {
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
 		++frameStats.draws;
+		if (RemoteDrawing()) return;
 		if (name != 0) return;
 		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
 		// A culled draw still reaches the live shadow bookkeeping below. Only the upload and draw are skipped.
@@ -153,6 +154,7 @@ namespace nSCD3D11 {
 	void cGDriver::DrawPrimsIndexed(
 		uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices) {
 		++frameStats.draws;
+		if (RemoteDrawing()) return;
 		uint64_t const indexBytes = static_cast<uint64_t>(count) * sizeof(uint16_t);
 		if (name != 0 || count == 0 || indices == nullptr || indexBytes > UINT32_MAX) {
 			return;

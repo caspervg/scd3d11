@@ -29,6 +29,7 @@
 #include "D3D11Conversions.h"
 #include "GeometryCache.h"
 #include "sGDMode.h"
+#include "RemoteRenderer.h"
 #include "ViewportCull.h"
 #include "ext/cIGZGBufferRegionExtension.h"
 #include "ext/cIGZGDriverLightingExtension.h"
@@ -57,6 +58,7 @@ namespace nSCD3D11 {
 		kRedrawTerrainChanged,   // a partial pass saw a new terrain shadow map
 		kRedrawCamera,           // zoom or rotation changed
 		kRedrawTranslated,       // a scroll without ShadowRegistry
+		kRedrawServerLost,       // Renderer=server stopped, so the local backing store is stale
 		kLiveShadowRedrawCauses
 	};
 
@@ -346,6 +348,12 @@ namespace nSCD3D11 {
 		// so the next cSC43DRender::Draw can rebuild the backing store cleanly.
 		// A LiveShadowRedrawCause bit mask.
 		uint32_t liveShadowCleanRedrawPending = 0;
+		// Renderer=server: draws go to SCD3D12Server and only state is kept here. remoteFrame counts Flush
+		// calls the same way the server counts frames.
+		RemoteRenderer *remote = nullptr;
+		uint64_t remoteFrame = 0;
+		bool remoteFallbackRequested = false;
+		bool RemoteDrawing() const { return remote != nullptr && remote->Active(); }
 		// Without the registry a partial pass only ever sees the casters drawn
 		// inside its own rectangle, so once a caster has cast a shadow the
 		// partial path can no longer be trusted.
@@ -770,6 +778,9 @@ namespace nSCD3D11 {
 		cGDriver();
 
 		virtual ~cGDriver() override;
+
+		// Hands drawing to SCD3D12Server. The renderer must outlive the driver.
+		void SetRemote(RemoteRenderer *renderer) { remote = renderer; }
 
 		// Override SC4's native DirectX driver by presenting its GZCLSID with a
 		// higher version number to GZCOM.

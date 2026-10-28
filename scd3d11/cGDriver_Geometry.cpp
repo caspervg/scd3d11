@@ -811,6 +811,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	void cGDriver::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
 		++frameStats.draws;
+		if (RemoteDrawing()) return;
 		if (first < 0 || count <= 0) return;
 		// A culled draw skips the upload and the draw, but live shadows still see it below.
 		bool const culled = viewportCullActive &&
@@ -877,6 +878,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
 		++frameStats.draws;
+		if (RemoteDrawing()) return;
 		if (count == 0) return;
 		if (count < 0 || indices == nullptr || (type != 3 && type != 5)) {
 			Log(LogCategory::Unsupported, "invalid indexed draw type %u count %d pointer %p", type, count, indices);

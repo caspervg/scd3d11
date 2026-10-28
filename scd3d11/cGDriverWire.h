@@ -197,6 +197,9 @@ namespace nSCD3D11 {
 
 		cGDriver *driver;
 		nSCDWire::Writer writer;
+		// Renderer=server. Released after the driver, which draws through it.
+		std::unique_ptr<RemoteRenderer> remote;
+		friend bool CreateDriver(uint32_t riid, void **ppvObj);
 
 		uint32_t vertexFormat = 0;
 		uint32_t vertexStride = 0;
