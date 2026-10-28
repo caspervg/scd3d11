@@ -804,7 +804,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
     }
 
     void cGDriver::RenderLivePropShadows(bool staticPass) {
-        if (!LiveShadowHooks::Enabled()) return;
+        // Renderer=server replaces this side's frame, so its shadows would never be seen.
+        if (!LiveShadowHooks::Enabled() || RemoteDrawing()) return;
         LARGE_INTEGER start{};
         QueryPerformanceCounter(&start);
         DrawLivePropShadows(staticPass);
