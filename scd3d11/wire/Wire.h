@@ -149,6 +149,8 @@ namespace nSCDWire {
 		// a drawable can ask to be drawn again in the same pass.
 		OwnerBegin, // DrawOwner
 		OwnerEnd,
+		// After an OwnerBegin of a cS3DModelInstance (buildings, props, flora, automata): ModelInstance.
+		ModelInstance,
 
 		Count
 	};
@@ -190,6 +192,28 @@ namespace nSCDWire {
 		uint16_t reserved;
 	};
 	static_assert(sizeof(DrawOwner) == 24);
+
+	// What a cS3DModelInstance draws, read from the game's own fields as it is drawn.
+	struct ModelInstance {
+		// The S3D model resource (type 0x5AD0E817 for meshes), or all zero when the instance has none.
+		uint32_t type;
+		uint32_t group;
+		uint32_t instance;
+		// The world transform: world = rotation (row major) x (scale x vertex) + translation.
+		uint8_t changeCount;
+		uint8_t parts; // 4 rotation, 1 translation, 2 scale
+		uint16_t reserved;
+		float rotation[9];
+		float translation[3];
+		float scale;
+		// Draw attributes: byte 0 bit 0 highlighted, bit 1 translucent, bit 2 self-lit shade in the RGB at 4
+		// to 12, bit 3 skipped in the highlight pass. The float at 16 is the opacity.
+		uint8_t attributes[20];
+		// The animation frame, and properties bit 0 for a building under construction.
+		uint16_t frame;
+		uint16_t properties;
+	};
+	static_assert(sizeof(ModelInstance) == 92);
 
 	char const *OpName(Op op);
 }

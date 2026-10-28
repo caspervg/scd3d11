@@ -29,6 +29,15 @@
 //   V3 0x007C3EBB  same               pre-static view objects
 //   V4 0x007C3EFB  same               post-static view objects
 //
+// For cS3DModelInstance drawables (vtable 0x00ABD508, and 0x00ABD018 for the animated ones) a ModelInstance
+// record follows the OwnerBegin. Every thunk of these classes starts with SUB ECX,[ECX-4], so the body's
+// `this` is q = drawable - [drawable-4], minus 0x24 more for the animated class. From q:
+//   q-0x78  cS3DResModel *, vtables 0x00ABD608 and 0x00ABD62C, its key at +0x10 type, +0x14 group, +0x18 instance
+//   q-0x74  the transform: change count, part mask, 9 rotation floats, translation, scale (0x38 bytes)
+//   q-0x24  20 bytes of draw attributes
+//   q-0x0C  the animation frame, q-0x0A the properties
+// These are plain loads of fields the draw itself reads.
+//
 // Each site becomes a call to a stub below plus a NOP. Every patch checks the bytes it replaces and is
 // undone in PreAppShutdown.
 
@@ -83,6 +92,33 @@ namespace nSCD3D11::DrawOwnerHooks {
 			return owner;
 		}
 
+		constexpr uintptr_t kModelInstanceVtable = 0x00ABD508;
+		constexpr uintptr_t kAnimatedModelInstanceVtable = 0x00ABD018;
+		constexpr uintptr_t kResModelVtable = 0x00ABD608;
+		constexpr uintptr_t kResModelPersistVtable = 0x00ABD62C;
+
+		bool ReadModelInstance(void *drawable, uintptr_t vtable, nSCDWire::ModelInstance &model) {
+			if (vtable != kModelInstanceVtable && vtable != kAnimatedModelInstanceVtable) return false;
+			auto const *const p = static_cast<uint8_t const *>(drawable);
+			uint8_t const *q = p - *reinterpret_cast<int32_t const *>(p - 4);
+			if (vtable == kAnimatedModelInstanceVtable) q -= 0x24;
+			model = {};
+			auto const *const resource = *reinterpret_cast<uint8_t const *const *>(q - 0x78);
+			if (resource != nullptr && *reinterpret_cast<uintptr_t const *>(resource) == kResModelVtable &&
+			    *reinterpret_cast<uintptr_t const *>(resource + 4) == kResModelPersistVtable) {
+				model.type = *reinterpret_cast<uint32_t const *>(resource + 0x10);
+				model.group = *reinterpret_cast<uint32_t const *>(resource + 0x14);
+				model.instance = *reinterpret_cast<uint32_t const *>(resource + 0x18);
+			}
+			model.changeCount = q[-0x74];
+			model.parts = q[-0x73];
+			std::memcpy(model.rotation, q - 0x70, sizeof(model.rotation) + sizeof(model.translation) + sizeof(model.scale));
+			std::memcpy(model.attributes, q - 0x24, sizeof(model.attributes));
+			model.frame = *reinterpret_cast<uint16_t const *>(q - 0x0C);
+			model.properties = *reinterpret_cast<uint16_t const *>(q - 0x0A);
+			return true;
+		}
+
 		uint32_t __fastcall DrawGrid(void *drawable, void *, void *context, uint32_t flag) {
 			auto **const vtable = *static_cast<void ***>(drawable);
 			using Draw = uint32_t(__thiscall *)(void *, void *, uint32_t);
@@ -90,7 +126,10 @@ namespace nSCD3D11::DrawOwnerHooks {
 			if (wire == nullptr) return reinterpret_cast<Draw>(vtable[12])(drawable, context, flag);
 			using GetOwner = void *(__thiscall *)(void *);
 			uint64_t const occupant = CanonicalOccupant(reinterpret_cast<GetOwner>(vtable[3])(drawable));
-			wire->RecordOwnerBegin(Describe(drawable, context, nSCDWire::DrawOwnerKind::Grid, occupant));
+			nSCDWire::DrawOwner const owner = Describe(drawable, context, nSCDWire::DrawOwnerKind::Grid, occupant);
+			wire->RecordOwnerBegin(owner);
+			nSCDWire::ModelInstance model;
+			if (ReadModelInstance(drawable, owner.vtable, model)) wire->RecordModelInstance(model);
 			uint32_t const result = reinterpret_cast<Draw>(vtable[12])(drawable, context, flag);
 			wire->RecordOwnerEnd();
 			return result;

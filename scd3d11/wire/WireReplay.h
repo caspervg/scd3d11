@@ -31,6 +31,7 @@ namespace nSCDWire {
 		virtual void Occupant(OccupantEvent const &) {}
 		virtual void OwnerBegin(DrawOwner const &) {}
 		virtual void OwnerEnd() {}
+		virtual void ModelInstance(nSCDWire::ModelInstance const &) {}
 	};
 
 	struct ReplayStats {

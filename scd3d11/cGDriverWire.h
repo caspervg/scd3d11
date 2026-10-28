@@ -41,6 +41,7 @@ namespace nSCD3D11 {
 		void RecordOccupant(nSCDWire::OccupantEvent const &event);
 		void RecordOwnerBegin(nSCDWire::DrawOwner const &owner) { Record(nSCDWire::Op::OwnerBegin, owner); }
 		void RecordOwnerEnd() { Record(nSCDWire::Op::OwnerEnd); }
+		void RecordModelInstance(nSCDWire::ModelInstance const &model) { Record(nSCDWire::Op::ModelInstance, model); }
 		nSCDWire::Writer &Stream() { return writer; }
 
 		// cIGZUnknown

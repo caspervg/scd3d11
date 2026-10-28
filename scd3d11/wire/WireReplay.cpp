@@ -553,6 +553,11 @@ namespace nSCDWire {
 					break;
 				}
 				case Op::OwnerEnd: hooks.OwnerEnd(); break;
+				case Op::ModelInstance: {
+					auto const model = f.Get<nSCDWire::ModelInstance>();
+					if (f.ok) hooks.ModelInstance(model);
+					break;
+				}
 
 				default:
 					failure = "an op the replay does not handle";
