@@ -227,11 +227,14 @@ namespace nSCD3D11 {
 	// terrain vertex buffer.
 	class cGDriverReplayHooks : public nSCDWire::ReplayHooks {
 	public:
-		explicit cGDriverReplayHooks(cGDriver &driver) : driver(driver) {}
+		// A cGDriver, or a cGDriverWire in front of one to record the replay again.
+		template<typename Driver>
+		explicit cGDriverReplayHooks(Driver &driver) : driver(driver), vertexBuffers(driver) {}
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override;
 
 	private:
-		cGDriver &driver;
+		cIGZGDriver &driver;
+		cIGZGDriverVertexBufferExtension &vertexBuffers;
 	};
 }

@@ -11,7 +11,10 @@
 // Replays an SCDW capture (Record=<file>) into SCD3D11's own Direct3D 11 driver, outside the game, and saves
 // chosen frames as PNG. These are the reference images other renderers of the same capture are compared to.
 //
-//   SCDReplay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last]
+//   SCDReplay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--rewrite <file>]
+//
+// --rewrite records the replay again through cGDriverWire, as the game would have recorded it with this
+// build. Replaying that file must give the same images, which checks what the recorder leaves out.
 
 #include "cGDriver.h"
 #include "cGDriverWire.h"
@@ -34,6 +37,7 @@ namespace {
 		uint32_t every = 0;
 		std::set<uint64_t> frames;
 		bool last = false;
+		std::wstring rewrite;
 	};
 
 	struct State {
@@ -91,7 +95,8 @@ namespace {
 
 	struct Hooks : nSCD3D11::cGDriverReplayHooks {
 		State &state;
-		Hooks(nSCD3D11::cGDriver &driver, State &state) : cGDriverReplayHooks(driver), state(state) {}
+		template<typename Driver>
+		Hooks(Driver &driver, State &state) : cGDriverReplayHooks(driver), state(state) {}
 		bool Frame() override {
 			++state.frame;
 			return true;
@@ -113,6 +118,7 @@ namespace {
 					start = end + 1;
 				}
 			} else if (argument == L"--last") options.last = true;
+			else if (argument == L"--rewrite" && hasValue) options.rewrite = argv[++i];
 			else if (options.capture.empty()) options.capture = argument;
 			else return false;
 		}
@@ -123,7 +129,8 @@ namespace {
 int wmain(int argc, wchar_t **argv) {
 	State state;
 	if (!ParseOptions(argc, argv, state.options)) {
-		std::puts("SCDReplay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last]");
+		std::puts("SCDReplay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] "
+		          "[--rewrite <file>]");
 		return 2;
 	}
 	std::FILE *file = nullptr;
@@ -137,11 +144,28 @@ int wmain(int argc, wchar_t **argv) {
 	auto *const driver = new nSCD3D11::cGDriver();
 	driver->AddRef();
 	SCD3D11RegisterFrameCallback(OnFrame, &state);
-	Hooks hooks(*driver, state);
 	nSCDWire::Reader reader([file](void *data, size_t size) { return std::fread(data, 1, size, file) == size; });
 	nSCDWire::ReplayStats stats;
 	char const *error = nullptr;
-	bool const ok = nSCDWire::Replay(reader, *driver, hooks, &stats, &error);
+	bool ok = false;
+	if (state.options.rewrite.empty()) {
+		Hooks hooks(*driver, state);
+		ok = nSCDWire::Replay(reader, *driver, hooks, &stats, &error);
+	} else {
+		std::FILE *output = nullptr;
+		if (_wfopen_s(&output, state.options.rewrite.c_str(), L"wb") != 0 || output == nullptr) {
+			std::puts("cannot write the rewritten capture");
+			return 1;
+		}
+		auto *const wire = new nSCD3D11::cGDriverWire(driver, [output](void const *data, size_t size) {
+			return std::fwrite(data, 1, size, output) == size;
+		});
+		wire->AddRef();
+		Hooks hooks(*wire, state);
+		ok = nSCDWire::Replay(reader, *wire, hooks, &stats, &error);
+		wire->Release();
+		std::fclose(output);
+	}
 	SCD3D11UnregisterFrameCallback(OnFrame, &state);
 
 	if (state.options.last && !state.lastPixels.empty()) {

@@ -786,10 +786,10 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriverReplayHooks::Vertices(uint32_t name, void const *data, uint32_t bytes) {
-		uint32_t const stride = RZVertexFormatStride(driver.VertexBufferType(name));
+		uint32_t const stride = RZVertexFormatStride(vertexBuffers.VertexBufferType(name));
 		if (stride == 0 || bytes == 0 || bytes % stride != 0) return;
-		uint32_t const pointer = driver.GetVertices(static_cast<int32_t>(name), bytes / stride);
+		uint32_t const pointer = vertexBuffers.GetVertices(static_cast<int32_t>(name), bytes / stride);
 		if (pointer != 0) std::memcpy(reinterpret_cast<void *>(static_cast<uintptr_t>(pointer)), data, bytes);
-		driver.ReleaseVertices(name);
+		vertexBuffers.ReleaseVertices(name);
 	}
 }
