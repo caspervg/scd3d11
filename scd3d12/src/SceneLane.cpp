@@ -201,8 +201,8 @@ namespace nSCD3D12 {
 			: driver(driver), store(store), check(check) {}
 
 		// Copies bytes into GPU memory the lane keeps for good. Returns the address, or 0.
-		D3D12_GPU_VIRTUAL_ADDRESS Place(void const *data, uint64_t bytes) {
-			bytes = (bytes + 15) & ~15ull;
+		D3D12_GPU_VIRTUAL_ADDRESS Place(void const *data, uint64_t size) {
+			uint64_t const bytes = (size + 15) & ~15ull;
 			if (chunks.empty() || chunks.back().used + bytes > chunks.back().buffer->GetDesc().Width) {
 				Chunk chunk;
 				D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
@@ -223,8 +223,8 @@ namespace nSCD3D12 {
 			Chunk &chunk = chunks.back();
 			ID3D12Resource *source = nullptr;
 			uint64_t offset = 0;
-			if (!driver.Upload(data, bytes, source, offset)) return 0;
-			driver.CommandList()->CopyBufferRegion(chunk.buffer.Get(), chunk.used, source, offset, bytes);
+			if (!driver.Upload(data, size, source, offset)) return 0;
+			driver.CommandList()->CopyBufferRegion(chunk.buffer.Get(), chunk.used, source, offset, size);
 			Barrier(chunk.buffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kReadable);
 			D3D12_GPU_VIRTUAL_ADDRESS const address = chunk.buffer->GetGPUVirtualAddress() + chunk.used;
 			chunk.used += bytes;
