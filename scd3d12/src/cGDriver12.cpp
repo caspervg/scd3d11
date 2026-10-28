@@ -505,6 +505,9 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		CacheSegment cacheSegments[kCacheSegments];
 		uint32_t activeCacheSegment = 0;
 		std::unordered_map<CacheKey, CacheEntry, CacheKeyHash> cache;
+		// Vertices are cached the second time they are drawn. Animated geometry (the loading screen, some
+		// effects) is new every frame and would only churn the cache. A slot remembers a recent blob.
+		std::vector<uint64_t> seenVertices = std::vector<uint64_t>(1u << 16);
 
 		ComPtr<IDXGIFactory6> factory;
 		ComPtr<ID3D12Device> device;
@@ -1240,7 +1243,10 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 				}
 				CacheEntry entry;
 				uint8_t *cpu = nullptr;
-				if (blob.size != 0 && StoreCached(key, byteSize, entry, cpu)) {
+				uint64_t &seen = seenVertices[(blob.low ^ blob.high) & (seenVertices.size() - 1)];
+				bool const again = blob.size != 0 && seen == blob.low;
+				seen = blob.low;
+				if (again && StoreCached(key, byteSize, entry, cpu)) {
 					std::memcpy(cpu, vertexScratch.data(), byteSize);
 					address = CachedAddress(entry);
 				} else {
