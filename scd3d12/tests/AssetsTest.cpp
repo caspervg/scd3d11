@@ -234,6 +234,17 @@ namespace {
 		assert(LoadModelTexture(store, 0xEA367DAB, 0xBADB57F1, texture));
 		assert(texture.format == TextureFormat::Bc1 && texture.levels[0].width == 256 && texture.levels[0].data.size() == 256 * 256 / 2);
 
+		// A DXT1 texture whose levels are packed without padding: the game uploads 8 levels read at the aligned
+		// offsets, the last one from the name block that follows (first bytes as recorded from the game's upload).
+		assert(LoadModelTexture(store, 0x10EC0000, 0xBADB57F1, texture) && texture.levels.size() == 8);
+		uint64_t const recorded[8] = {0xA0555500A4D4DEBB, 0xAA00FE55B536CE39, 0x7A2000AA9C93C5F8, 0x55FA00003166BDB7,
+		                              0xFF5F55E062ECBDB8, 0xD5EACAEAB5763187, 0xFFFFFFFE63CD59EB, 0x4345303100000070};
+		for (size_t level = 0; level < 8; ++level) {
+			uint64_t first = 0;
+			std::memcpy(&first, texture.levels[level].data.data(), sizeof(first));
+			assert(first == recorded[level] && texture.levels[level].width == std::max(1u, 128u >> level));
+		}
+
 		std::vector<ModelRef> refs;
 		Tgi const condos{kExemplarType, 0x67BDDF0C, 0x021E0000};
 		for (uint32_t zoom = 0; zoom < 5; ++zoom) {
