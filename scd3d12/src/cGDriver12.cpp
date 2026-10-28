@@ -2490,6 +2490,20 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 	void cGDriver12::RestoreDrawState(DrawState const &state) {
 		Impl &d = *impl;
+		// The constants the last draw built stay valid when nothing they are made from changes back.
+		bool constantsChange = d.alphaFunction != state.alphaFunction ||
+		                       memcmp(&d.alphaReference, &state.alphaReference, sizeof(float)) != 0 ||
+		                       d.enabledCapabilities[kGDCapability_AlphaTest] != state.alphaTest ||
+		                       d.lightingEnabled != state.lighting || d.diffuseFromVertex != state.diffuseFromVertex ||
+		                       memcmp(d.globalAmbient, state.globalAmbient, sizeof(d.globalAmbient)) != 0 ||
+		                       memcmp(d.materialAmbient, state.materialAmbient, sizeof(d.materialAmbient)) != 0 ||
+		                       memcmp(d.materialDiffuse, state.materialDiffuse, sizeof(d.materialDiffuse)) != 0;
+		for (uint32_t i = 0; i < 2; ++i) {
+			Impl::TextureStage const &stage = d.textureStages[i];
+			constantsChange = constantsChange || stage.environmentMode != state.stages[i].mode ||
+			                  stage.coordinateSource != state.stages[i].coordinates ||
+			                  memcmp(stage.matrix, state.stages[i].matrix, sizeof(stage.matrix)) != 0;
+		}
 		for (uint32_t i = 0; i < 2; ++i) {
 			DrawState::Stage const &from = state.stages[i];
 			Impl::TextureStage &to = d.textureStages[i];
@@ -2523,7 +2537,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		d.interleavedFormat = state.vertexFormat;
 		d.interleavedStride = state.vertexStride;
 		d.interleavedPointer = state.vertexPointer;
-		d.constantsDirty = true;
+		if (constantsChange) d.constantsDirty = true;
 	}
 
 	ID3D12GraphicsCommandList *cGDriver12::CommandList() const { return impl->list.Get(); }
