@@ -114,8 +114,11 @@ namespace nSCD3D11::LiveShadowHooks {
 		constexpr size_t kLightingShadowDirectionSlot = 0x34 / sizeof(void *);
 		// +0x5C, GetColor(normal) 0x007D7460: float *(this, float result[3], float const normal[3]).
 		constexpr size_t kLightingColourSlot = 0x5C / sizeof(void *);
-		// GetColor turns the normal's x and z by the 2x2 matrix at +0x7C and
-		// dots it with the sun at +0x58 (x, y, z in that turned frame).
+		// GetColor turns the normal's x and z by the 2x2 matrix at +0x7C. With a
+		// colour map loaded, as shipped, it looks the colour up by that turned
+		// normal. Without one it dots the normal with the key light at +0x58
+		// (x, y, z in that turned frame). That key light is not the sun, which
+		// GetShadowDirection reads from +0x64.
 		constexpr ptrdiff_t kLightingSun = 0x58;
 		constexpr ptrdiff_t kLightingTurn = 0x7C;
 		// SetTimeOfDay (0x007D9DF0) writes how far into night the lighting is

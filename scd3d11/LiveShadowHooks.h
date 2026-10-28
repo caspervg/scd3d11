@@ -46,6 +46,8 @@ namespace nSCD3D11::LiveShadowHooks {
 	// The light SC4 gives a world-space normal (cSC4LightingManager::GetColor,
 	// 0x007D7460), which is what it colours terrain vertices with.
 	bool TerrainLight(float const normal[3], float colour[3]);
-	// The world direction towards SC4's own sun in that lighting.
+	// The world direction towards the key light GetColor uses when no colour
+	// map is loaded. With the shipped colour maps this is only a guess at
+	// where the map is brightest.
 	bool LightingSun(float toLight[3]);
 } // namespace nSCD3D11::LiveShadowHooks
