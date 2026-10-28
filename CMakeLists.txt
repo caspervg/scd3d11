@@ -180,6 +180,12 @@ if (BUILD_TESTING)
             scd3d11/VertexFormatUtils.cpp)
     target_link_libraries(D3D11ConversionsTest PRIVATE d3d11)
 
+    scd3d11_add_test(GeometryCacheTest
+            tests/GeometryCacheTest.cpp
+            scd3d11/D3D11Conversions.cpp
+            scd3d11/VertexFormatUtils.cpp)
+    target_link_libraries(GeometryCacheTest PRIVATE d3d11)
+
     scd3d11_add_test(D3D11ShaderCompileTest tests/D3D11ShaderCompileTest.cpp)
     target_compile_definitions(D3D11ShaderCompileTest PRIVATE
             SC4D3D11_GEOMETRY_SOURCE="${PROJECT_SOURCE_DIR}/scd3d11/cGDriver_Geometry.cpp")
