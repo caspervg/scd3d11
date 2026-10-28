@@ -142,6 +142,8 @@ namespace nSCD3D12 {
 		struct Counts {
 			uint64_t brackets = 0, full = 0, partial = 0, fallback = 0, empty = 0;
 			uint64_t drawsSubstituted = 0;
+			// What the game's draws the lane stood in for would have uploaded: vertices and indices.
+			uint64_t bytesNotUploaded = 0;
 			uint64_t fallbackDraws[kReasonCount]{};
 			uint64_t fallbackBrackets[kReasonCount]{};
 			uint64_t stateMismatches[kFieldCount]{};
@@ -153,6 +155,7 @@ namespace nSCD3D12 {
 				fallback += other.fallback;
 				empty += other.empty;
 				drawsSubstituted += other.drawsSubstituted;
+				bytesNotUploaded += other.bytesNotUploaded;
 				for (uint32_t i = 0; i < kReasonCount; ++i) {
 					fallbackDraws[i] += other.fallbackDraws[i];
 					fallbackBrackets[i] += other.fallbackBrackets[i];
@@ -590,6 +593,7 @@ namespace nSCD3D12 {
 		if (reason == kNone) {
 			++bracket.substituted;
 			++d.frame.drawsSubstituted;
+			d.frame.bytesNotUploaded += mesh->vertices.SizeInBytes + mesh->indices.SizeInBytes;
 			return false;
 		}
 		if (bracket.firstFallback == kNone) bracket.firstFallback = reason;
@@ -627,7 +631,8 @@ namespace nSCD3D12 {
 		auto const u = [](uint64_t value) { return static_cast<unsigned long long>(value); };
 		std::printf("scene: %llu model brackets: %llu substituted, %llu partly, %llu left to the game, %llu without draws\n",
 		            u(c.brackets), u(c.full), u(c.partial), u(c.fallback), u(c.empty));
-		std::printf("scene: %llu draws substituted, %llu left to the game\n", u(c.drawsSubstituted), u(c.DrawsFallenBack()));
+		std::printf("scene: %llu draws substituted, %llu left to the game, %.1f MB of geometry uploads saved\n",
+		            u(c.drawsSubstituted), u(c.DrawsFallenBack()), static_cast<double>(c.bytesNotUploaded) / (1 << 20));
 		for (uint32_t i = 1; i < kReasonCount; ++i) {
 			if (c.fallbackDraws[i] != 0 || c.fallbackBrackets[i] != 0) {
 				std::printf("scene:   %-16s %llu draws, %llu whole brackets\n", kReasonNames[i], u(c.fallbackDraws[i]),
