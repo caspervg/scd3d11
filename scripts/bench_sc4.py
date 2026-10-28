@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["psutil"]
+# dependencies = ["pillow", "psutil"]
 # ///
 """Run SimCity 4 unattended in an isolated user directory and drive it through the game's own command
 listener (-NetCommandGenerator:enabled, HTTP on port 50020).
@@ -16,8 +16,9 @@ Nothing is ever saved. The log, command replies and snapshots land in runtime-ca
 
 A command may contain {capture}, which becomes the capture folder (for TakeSnapshot). Two commands are the
 script's own: "focus" brings the game to the foreground (SC4 drops to about 20 frames per second without
-it), and "measure <seconds>" does that and then reports the frame rate from GetFrameCount and the CPU time
-of the game's busiest thread (the one that renders) and of SCD3D12Server over that many seconds.
+it), "screenshot <name>" focuses the game and saves what its window shows on screen as <name>.png in the
+capture folder, and "measure <seconds>" does that and then reports the frame rate from GetFrameCount and
+the CPU time of the game's busiest thread (the one that renders) and of SCD3D12Server over that many seconds.
 """
 
 import argparse
@@ -78,6 +79,25 @@ def focus(pid: int) -> bool:
     user32.SetForegroundWindow(window)
     user32.AttachThreadInput(own_thread, foreground_thread, False)
     return user32.GetForegroundWindow() == window.value
+
+
+def screenshot(pid: int, path: Path) -> bool:
+    """Saves the game window's client area as the screen shows it, which is what the player sees whichever
+    renderer drew it."""
+    from PIL import ImageGrab
+    user32 = ctypes.windll.user32
+    user32.SetProcessDPIAware()
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    focus(pid)
+    time.sleep(0.5)
+    window = ctypes.c_void_p(user32.GetForegroundWindow())
+    rect = (ctypes.c_long * 4)()
+    origin = (ctypes.c_long * 2)()
+    if not user32.GetClientRect(window, rect) or not user32.ClientToScreen(window, origin):
+        return False
+    box = (origin[0], origin[1], origin[0] + rect[2], origin[1] + rect[3])
+    ImageGrab.grab(bbox=box, all_screens=True).save(path)
+    return True
 
 
 def thread_times(pid: int) -> dict[int, float]:
@@ -245,6 +265,10 @@ def main() -> int:
                 continue
             if command == "focus":
                 transcript.append(f"focus -> {focus(game.pid)}")
+                print(transcript[-1], flush=True)
+                continue
+            if match := re.fullmatch(r"screenshot (\S+)", command):
+                transcript.append(f"{command} -> {screenshot(game.pid, capture / (match[1] + '.png'))}")
                 print(transcript[-1], flush=True)
                 continue
             if match := re.fullmatch(r"measure ([\d.]+)", command):
