@@ -82,6 +82,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("city", type=Path)
     parser.add_argument("commands", nargs="*", help='game commands, or "sleep <seconds>"')
+    parser.add_argument("--city-name", help="the name saved in the city, when it differs from the file name")
     parser.add_argument("--delay", type=float, default=3.0, help="seconds after each command")
     parser.add_argument("--size", default="1920x1080")
     parser.add_argument("--dll", type=Path, default=REPO / "cmake-build-release" / "SCD3D11.dll")
@@ -145,9 +146,14 @@ def main() -> int:
         wait_for("the region view", lambda: state() == "1")
         run(f'LoadRegion "{region}"')
         time.sleep(5)
-        run('LoadCity "" any full')
+        # An empty name opens whatever tile comes first, often an empty one, so ask for the city by name.
+        city_name = args.city_name or args.city.stem.removeprefix("City - ")
+        run(f'LoadCity "{city_name}" any full')
         wait_for("the city view", lambda: state() == "2")
         time.sleep(5)
+        loaded = (run("GetCityName") or "").split("Result:")[-1].strip()
+        if city_name not in loaded:
+            raise RuntimeError(f"loaded {loaded!r} instead of {city_name!r}")
         for command in args.commands:
             if match := re.fullmatch(r"sleep ([\d.]+)", command, re.IGNORECASE):
                 time.sleep(float(match[1]))
@@ -156,9 +162,10 @@ def main() -> int:
             time.sleep(args.delay)
         run("GetFrameRate")
     finally:
-        send("QuitGame false false", timeout=10)
+        # Nothing is ever saved, so a kill is safe if the quit dialog blocks.
+        transcript.append(f"QuitGame 0 0 -> {send('QuitGame 0 0', timeout=10)!r}")
         try:
-            game.wait(30)
+            game.wait(10)
         except subprocess.TimeoutExpired:
             game.kill()
         (capture / "commands.txt").write_text("\n".join(transcript) + "\n")
