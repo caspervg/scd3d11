@@ -104,6 +104,12 @@ namespace nSCD3D11::Settings {
 			return server || value == "local";
 		}
 
+		// ServerPresent=composition or ServerPresent=copy.
+		bool ParseServerPresent(std::string_view value, bool &composition) {
+			composition = value == "composition";
+			return composition || value == "copy";
+		}
+
 		// Record=<file>. Any non-empty value is a path.
 		bool ParsePath(std::string_view value, std::string &path) {
 			path = value;
@@ -174,6 +180,7 @@ namespace nSCD3D11::Settings {
 		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);
 		values.record = Resolve(sources, "Record", ParsePath, values.record);
 		values.server = Resolve(sources, "Renderer", ParseRenderer, values.server);
+		values.serverComposition = Resolve(sources, "ServerPresent", ParseServerPresent, values.serverComposition);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

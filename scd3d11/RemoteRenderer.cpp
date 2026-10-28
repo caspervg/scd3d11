@@ -11,6 +11,7 @@
 #include "RemoteRenderer.h"
 
 #include "Diagnostics.h"
+#include "Settings.h"
 
 #include <string>
 
@@ -46,6 +47,8 @@ namespace nSCD3D11 {
 			Log(LogCategory::Initialization, "server: cannot create the shared ring");
 			return false;
 		}
+		ring.Control()->presentMode = Settings::Get().serverComposition ? nSCDWire::kPresentComposition
+		                                                                : nSCDWire::kPresentCopy;
 		// SC4 ignores subfolders of Plugins when it loads DLLs, so the server and its own DLLs live in one.
 		std::wstring folder = ModuleFolder() + L"SCD3D12\\";
 		if (GetFileAttributesW((folder + L"SCD3D12Server.exe").c_str()) == INVALID_FILE_ATTRIBUTES) folder = ModuleFolder();
@@ -186,6 +189,36 @@ namespace nSCD3D11 {
 		target->GetDesc(&destination);
 		if (source.Width != destination.Width || source.Height != destination.Height) return false;
 		context->CopyResource(target, textures[frame % 2].Get());
+		return true;
+	}
+
+	bool RemoteRenderer::Composite(HWND window) {
+		nSCDWire::RingControl *const control = ring.Control();
+		if (!active || control == nullptr || control->presentMode != nSCDWire::kPresentComposition) return false;
+		uint32_t const current = control->compositionGeneration.load(std::memory_order_acquire);
+		if (current == compositionGeneration) return compositionVisual != nullptr;
+		compositionGeneration = current;
+		HANDLE const surface = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(control->compositionSurface));
+		HRESULT result = S_OK;
+		if (!composition) {
+			result = DCompositionCreateDevice2(nullptr, IID_PPV_ARGS(&composition));
+			// Topmost, so the visual covers this side's own swap chain, which stops presenting.
+			if (SUCCEEDED(result)) result = composition->CreateTargetForHwnd(window, TRUE, &compositionTarget);
+			if (SUCCEEDED(result)) result = composition->CreateVisual(&compositionVisual);
+			if (SUCCEEDED(result)) result = compositionTarget->SetRoot(compositionVisual.Get());
+		}
+		compositionSurface.Reset();
+		if (SUCCEEDED(result)) result = composition->CreateSurfaceFromHandle(surface, &compositionSurface);
+		if (SUCCEEDED(result)) result = compositionVisual->SetContent(compositionSurface.Get());
+		if (SUCCEEDED(result)) result = composition->Commit();
+		CloseHandle(surface);
+		if (FAILED(result)) {
+			Log(LogCategory::Initialization, "server: DirectComposition failed (HRESULT 0x%08lX), presenting here",
+			    static_cast<unsigned long>(result));
+			compositionVisual.Reset();
+			return false;
+		}
+		Log(LogCategory::Initialization, "server: presenting through DirectComposition");
 		return true;
 	}
 

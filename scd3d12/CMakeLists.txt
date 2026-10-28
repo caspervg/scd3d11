@@ -24,6 +24,6 @@ target_include_directories(SCD3D12Server PRIVATE
 )
 target_compile_definitions(SCD3D12Server PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(SCD3D12Server PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-8;/MP>)
-target_link_libraries(SCD3D12Server PRIVATE d3d12 dxgi dxguid d3dcompiler windowscodecs ole32)
+target_link_libraries(SCD3D12Server PRIVATE d3d12 dxgi dxguid d3dcompiler dcomp windowscodecs ole32)
 target_link_options(SCD3D12Server PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/ENTRY:wmainCRTStartup>)
 set_target_properties(SCD3D12Server PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

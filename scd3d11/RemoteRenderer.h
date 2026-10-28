@@ -14,6 +14,7 @@
 #include "wire/WireStream.h"
 
 #include <d3d11_4.h>
+#include <dcomp.h>
 #include <wrl/client.h>
 
 #include <cstdint>
@@ -40,6 +41,9 @@ namespace nSCD3D11 {
 		// Waits for the server's frame `frame` and copies it into target. False when it did not come, and
 		// the caller should draw this frame itself.
 		bool CopyFrame(ID3D11Device *device, ID3D11DeviceContext *context, ID3D11Texture2D *target, uint64_t frame);
+		// ServerPresent=composition: shows the server's own swap chain on window. True once it is attached,
+		// and then this side should not present at all.
+		bool Composite(HWND window);
 		// Once per Flush, whether or not CopyFrame ran, so the server can reuse the texture of `frame`.
 		void EndFrame(ID3D11Device *device, ID3D11DeviceContext *context, uint64_t frame);
 
@@ -55,5 +59,10 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> textures[2];
 		Microsoft::WRL::ComPtr<ID3D11Fence> frameFence;
 		Microsoft::WRL::ComPtr<ID3D11Fence> consumedFence;
+		uint32_t compositionGeneration = 0;
+		Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> composition;
+		Microsoft::WRL::ComPtr<IDCompositionTarget> compositionTarget;
+		Microsoft::WRL::ComPtr<IDCompositionVisual2> compositionVisual;
+		Microsoft::WRL::ComPtr<IUnknown> compositionSurface;
 	};
 }

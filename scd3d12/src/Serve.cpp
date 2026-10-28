@@ -17,6 +17,9 @@
 #include "wire/SharedRing.h"
 #include "wire/WireReplay.h"
 
+#include <dcomp.h>
+#include <dxgi1_4.h>
+
 #include <cstdio>
 #include <string>
 
@@ -36,6 +39,7 @@ namespace nSCD3D12 {
 			void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 				driver.VideoMode(show, width, height, fullscreen);
 				Share(width, height);
+				if (control.presentMode == nSCDWire::kPresentComposition) Compose(width, height);
 			}
 
 			void Vertices(uint32_t name, void const *data, uint32_t bytes) override {
@@ -122,6 +126,53 @@ namespace nSCD3D12 {
 				std::fflush(stdout);
 			}
 
+			// ServerPresent=composition: a swap chain of our own, shown on SC4's window through a
+			// DirectComposition surface the shim attaches.
+			void Compose(uint32_t width, uint32_t height) {
+				WaitForCopies();
+				for (auto &buffer: swapBuffers) buffer.Reset();
+				if (swapChain) {
+					if (FAILED(swapChain->ResizeBuffers(2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0))) swapChain.Reset();
+				} else {
+					HANDLE surface = nullptr;
+					ComPtr<IDXGIFactoryMedia> media;
+					DXGI_SWAP_CHAIN_DESC1 description{};
+					description.Width = width;
+					description.Height = height;
+					description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+					description.SampleDesc.Count = 1;
+					description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+					description.BufferCount = 2;
+					description.Scaling = DXGI_SCALING_STRETCH;
+					description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+					description.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+					ComPtr<IDXGISwapChain1> created;
+					HRESULT result = DCompositionCreateSurfaceHandle(COMPOSITIONOBJECT_ALL_ACCESS, nullptr, &surface);
+					if (SUCCEEDED(result)) result = CreateDXGIFactory2(0, IID_PPV_ARGS(&media));
+					if (SUCCEEDED(result)) {
+						result = media->CreateSwapChainForCompositionSurfaceHandle(driver.Queue(), surface, &description,
+						                                                           nullptr, &created);
+					}
+					if (SUCCEEDED(result)) result = created.As(&swapChain);
+					HANDLE theirs = nullptr;
+					if (SUCCEEDED(result) &&
+					    !DuplicateHandle(GetCurrentProcess(), surface, parent, &theirs, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+						result = HRESULT_FROM_WIN32(GetLastError());
+					}
+					if (surface != nullptr) CloseHandle(surface);
+					if (FAILED(result)) {
+						std::printf("composition swap chain failed: 0x%08lX\n", static_cast<unsigned long>(result));
+						swapChain.Reset();
+						return;
+					}
+					control.compositionSurface = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(theirs));
+					control.compositionGeneration.fetch_add(1, std::memory_order_release);
+					std::puts("presenting through DirectComposition");
+				}
+				for (UINT i = 0; swapChain && i < 2; ++i) swapChain->GetBuffer(i, IID_PPV_ARGS(&swapBuffers[i]));
+				std::fflush(stdout);
+			}
+
 			void WaitForCopies() {
 				if (copyFence && copyFence->GetCompletedValue() < copyValue) {
 					copyFence->SetEventOnCompletion(copyValue, copyEvent);
@@ -146,6 +197,17 @@ namespace nSCD3D12 {
 				                          D3D12_RESOURCE_STATE_COPY_DEST};
 				list->ResourceBarrier(2, barriers);
 				list->CopyResource(target, backBuffer);
+				ID3D12Resource *const presented = swapChain ? swapBuffers[swapChain->GetCurrentBackBufferIndex()].Get() : nullptr;
+				D3D12_RESOURCE_BARRIER present{};
+				if (presented != nullptr) {
+					present.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+					present.Transition = {presented, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT,
+					                      D3D12_RESOURCE_STATE_COPY_DEST};
+					list->ResourceBarrier(1, &present);
+					list->CopyResource(presented, backBuffer);
+					std::swap(present.Transition.StateBefore, present.Transition.StateAfter);
+					list->ResourceBarrier(1, &present);
+				}
 				for (auto &barrier: barriers) std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 				list->ResourceBarrier(2, barriers);
 				list->Close();
@@ -155,6 +217,7 @@ namespace nSCD3D12 {
 				if (index >= generationStart + 2) queue->Wait(consumedFence.Get(), index - 1);
 				ID3D12CommandList *const lists[]{list.Get()};
 				queue->ExecuteCommandLists(1, lists);
+				if (presented != nullptr) swapChain->Present(0, 0);
 				queue->Signal(frameFence.Get(), index + 1);
 				frameFence->SetEventOnCompletion(index + 1, frameEvent);
 				queue->Signal(copyFence.Get(), ++copyValue);
@@ -172,6 +235,8 @@ namespace nSCD3D12 {
 			ComPtr<ID3D12CommandAllocator> allocator;
 			ComPtr<ID3D12GraphicsCommandList> list;
 			ComPtr<ID3D12Fence> copyFence;
+			ComPtr<IDXGISwapChain3> swapChain;
+			ComPtr<ID3D12Resource> swapBuffers[2];
 			HANDLE copyEvent = nullptr;
 			uint64_t copyValue = 0;
 		};

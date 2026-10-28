@@ -54,8 +54,16 @@ namespace nSCDWire {
 		std::atomic<uint32_t> adapterSet;
 		// Set by the server once it is ready to read.
 		std::atomic<uint32_t> serverReady;
-		uint32_t reserved[8];
+		// ServerPresent=composition: the server presents its own swap chain on a DirectComposition surface
+		// the shim shows on SC4's window. presentMode is written by the shim before the server starts, the
+		// surface handle (already in the shim's process) and its generation by the server.
+		uint64_t compositionSurface;
+		std::atomic<uint32_t> compositionGeneration;
+		uint32_t presentMode;
+		uint32_t reserved[4];
 	};
+	constexpr uint32_t kPresentCopy = 0;
+	constexpr uint32_t kPresentComposition = 1;
 	static_assert(std::atomic<uint64_t>::is_always_lock_free, "the ring needs lock-free 64-bit counters");
 	static_assert(sizeof(RingControl) == 128, "both processes must agree on the layout");
 

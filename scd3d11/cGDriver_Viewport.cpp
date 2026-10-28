@@ -643,7 +643,9 @@ namespace nSCD3D11 {
 		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
 		NoteRenderPhase("Flush: Present");
 		result = TakeInjectedFault(FAULT_PRESENT);
-		if (SUCCEEDED(result)) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
+		// ServerPresent=composition: the server presents on this window itself.
+		bool const composited = RemoteDrawing() && remote->Composite(static_cast<HWND>(windowHandle));
+		if (SUCCEEDED(result) && !composited) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
 		NoteRenderPhase("Flush: after Present");
 #ifndef NDEBUG
 		LogDebugLayerMessages(d3dDevice.Get());

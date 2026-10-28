@@ -39,6 +39,9 @@ namespace nSCD3D11::Settings {
 		std::string record;
 		// Renderer=server: draw in SCD3D12Server.exe instead of in the game (Renderer=local).
 		bool server = false;
+		// ServerPresent=composition: the server presents itself on SC4's window through DirectComposition
+		// instead of handing each frame back to be presented here (ServerPresent=copy).
+		bool serverComposition = false;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.
