@@ -65,7 +65,10 @@ namespace nSCD3D11 {
 			    GetLastError());
 			return false;
 		}
-		if (job != nullptr) AssignProcessToJobObject(job, info.hProcess);
+		if (job == nullptr || !AssignProcessToJobObject(job, info.hProcess)) {
+			Log(LogCategory::Initialization, "server: cannot tie the server's lifetime to the game (error %lu)",
+			    GetLastError());
+		}
 		ResumeThread(info.hThread);
 		CloseHandle(info.hThread);
 		process = info.hProcess;

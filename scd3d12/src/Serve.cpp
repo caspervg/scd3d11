@@ -184,6 +184,15 @@ namespace nSCD3D12 {
 			return 1;
 		}
 		auto const alive = [parent] { return WaitForSingleObject(parent, 0) == WAIT_TIMEOUT; };
+		// Leave with the game, however this process is blocked (a GPU wait on a fence the game will never
+		// signal, a full or empty ring).
+		CreateThread(nullptr, 0, [](void *process) -> DWORD {
+			WaitForSingleObject(static_cast<HANDLE>(process), INFINITE);
+			std::puts("the game exited");
+			std::fflush(stdout);
+			TerminateProcess(GetCurrentProcess(), 0);
+			return 0;
+		}, parent, 0, nullptr);
 		nSCDWire::SharedRing ring;
 		if (!ring.Open(ringName)) {
 			std::puts("cannot open the shared ring");

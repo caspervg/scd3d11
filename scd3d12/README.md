@@ -43,7 +43,8 @@ The live stream and a recorded capture are the same bytes. Every capture replays
    600 while scrolling. A heavy NAM city is still to be measured.
 3. **Presenting from another process.** Open: a DirectComposition surface from the server shown on SC4's window, and
    Streamline frame generation on such a swap chain.
-4. **Plugin folder scanning.** Open: whether SC4 tries to load DLLs in subfolders of Plugins, which decides where the
-   server and its own DLLs can live.
-5. **Address space.** Open: the cost of mapping the shared ring against what dropping the in-process D3D11 device
-   frees.
+4. **Plugin folder scanning.** Answered: SC4 does not load DLLs from subfolders of Plugins (a test DLL in
+   `Plugins\SCD3D12\` was never loaded). The server and its own DLLs can live there.
+5. **Address space.** Answered: worth it already. Big City Tutorial just after loading, SC4's own process: 884 MB
+   virtual and 468 MB private with local drawing, 858 MB and 314 MB with Renderer=server, the 64 MB ring
+   included. The shim still keeps a full Direct3D 11 device and every texture, so more is to come.
