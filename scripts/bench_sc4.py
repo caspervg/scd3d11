@@ -1,0 +1,172 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""Run SimCity 4 unattended in an isolated user directory and drive it through the game's own command
+listener (-NetCommandGenerator:enabled, HTTP on port 50020).
+
+The test user directory holds only the DLL under test. --mirror-plugins also links in a real plugin
+folder (directories as junctions, big files as hard links, small files copied) without its SCD3D11 and
+autosave files. Plugins that write into their own folders then write into the real one.
+
+Each benchmark city is copied alone into its own region, so LoadCity with an empty name opens it.
+Nothing is ever saved. The log, command replies and snapshots land in runtime-captures/bench-<time>.
+
+  uv run scripts/bench_sc4.py "C:/.../City - Senneterre.sc4" Zoom5 "sleep 3" ScrollRight "sleep 6" ScrollRightStop
+
+A command may contain {capture}, which becomes the capture folder (for TakeSnapshot).
+"""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+GAME_EXE = Path(r"C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe")
+LIVE_PLUGINS = Path(r"C:\Users\caspe\OneDrive - Maplix\SimCity 4\Plugins")
+SKIP = re.compile(r"^(SCD3D11\..*|SC4AutoSave\..*|.*\.(log|csv|bak))$", re.IGNORECASE)
+
+
+def send(command: str, timeout: float = 60) -> str | None:
+    """POST one command. The listener wants it to end with a newline."""
+    request = urllib.request.Request("http://127.0.0.1:50020/", data=(command + "\n").encode("ascii"), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+
+
+def game_running() -> bool:
+    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq SimCity 4.exe", "/NH"], capture_output=True, text=True)
+    return "SimCity 4.exe" in out.stdout
+
+
+def mirror_plugins(source: Path, plugins: Path) -> None:
+    marker = plugins / ".mirrored"
+    if marker.exists():
+        return
+    for item in source.iterdir():
+        if SKIP.match(item.name):
+            continue
+        target = plugins / item.name
+        if item.is_dir():
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(target), str(item)], check=True, capture_output=True)
+        elif item.stat().st_size > 16 << 20:
+            os.link(item, target)
+        else:
+            shutil.copy2(item, target)
+    marker.touch()
+
+
+def prepare_region(user_dir: Path, city: Path) -> str:
+    name = "Bench " + re.sub(r"[^A-Za-z0-9 -]", "_", city.stem.removeprefix("City - "))
+    region = user_dir / "Regions" / name
+    shutil.rmtree(region, ignore_errors=True)
+    region.mkdir(parents=True)
+    shutil.copy2(city.parent / "config.bmp", region)
+    (region / "region.ini").write_text(
+        f"[Regional Settings]\r\nName = {name}\r\nTerrain type = 0\r\nWater Min = 60\r\nWater Max = 100\r\n")
+    shutil.copy2(city, region)
+    return name
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("city", type=Path)
+    parser.add_argument("commands", nargs="*", help='game commands, or "sleep <seconds>"')
+    parser.add_argument("--delay", type=float, default=3.0, help="seconds after each command")
+    parser.add_argument("--size", default="1920x1080")
+    parser.add_argument("--dll", type=Path, default=REPO / "cmake-build-release" / "SCD3D11.dll")
+    parser.add_argument("--ini", default="VSync=off", help="SCD3D11.ini lines, separated by ;")
+    parser.add_argument("--arg", action="append", default=["-DrawStats"], help="extra game argument")
+    parser.add_argument("--mirror-plugins", action="store_true")
+    parser.add_argument("--plugin-source", type=Path, default=LIVE_PLUGINS)
+    parser.add_argument("--user-dir", type=Path, default=Path(os.environ["LOCALAPPDATA"]) / "SCD3D12Bench")
+    parser.add_argument("--timeout", type=float, default=300)
+    args = parser.parse_args()
+
+    if game_running():
+        sys.exit("SimCity 4 is already running")
+    plugins = args.user_dir / "Plugins"
+    plugins.mkdir(parents=True, exist_ok=True)
+    if args.mirror_plugins:
+        mirror_plugins(args.plugin_source, plugins)
+    shutil.copy2(args.dll, plugins / "SCD3D11.dll")
+    (plugins / "SCD3D11.ini").write_text("[SCD3D11]\r\n" + "\r\n".join(args.ini.split(";")) + "\r\n")
+    region = prepare_region(args.user_dir, args.city)
+
+    capture = REPO / "runtime-captures" / f"bench-{datetime.now():%Y%m%d-%H%M%S}"
+    capture.mkdir(parents=True)
+    log = args.user_dir / "Logs" / "SCD3D11.log"
+    log.unlink(missing_ok=True)
+    transcript: list[str] = []
+
+    def run(command: str) -> str | None:
+        reply = send(command)
+        transcript.append(f"{command} -> {reply!r}")
+        print(transcript[-1], flush=True)
+        return reply
+
+    def wait_for(what: str, condition) -> None:
+        deadline = time.monotonic() + args.timeout
+        while time.monotonic() < deadline:
+            if condition():
+                return
+            if game.poll() is not None:
+                raise RuntimeError(f"SimCity 4 exited while waiting for {what}")
+            time.sleep(1)
+        raise RuntimeError(f"timed out waiting for {what}")
+
+    width, height = args.size.split("x")
+    # One exact string: list quoting would escape the quotes around -UserDir, and SC4 would then fall back
+    # to the player's own user directory.
+    command_line = " ".join([f'"{GAME_EXE}"', "-NetCommandGenerator:enabled", "-w", "-Intro:off",
+                             "-CustomResolution:enabled", f"-r{width}x{height}x32", f'-UserDir:"{args.user_dir}\\"',
+                             *args.arg])
+    game = subprocess.Popen(command_line, cwd=GAME_EXE.parent)
+    try:
+        # Replies look like "Command: GetAppState Result: 1 0" over several lines. The first value is the
+        # state: 0 still starting, 1 region view, 2 city view.
+        def state() -> str:
+            reply = send("GetAppState", timeout=10) or ""
+            values = reply.split("Result:")[-1].split()
+            return values[0] if "Result:" in reply and values else ""
+        wait_for("the listener", lambda: state() != "")
+        if not log.exists():
+            raise RuntimeError(f"SC4 is not using {args.user_dir}, quitting before it touches anything else")
+        wait_for("the region view", lambda: state() == "1")
+        run(f'LoadRegion "{region}"')
+        time.sleep(5)
+        run('LoadCity "" any full')
+        wait_for("the city view", lambda: state() == "2")
+        time.sleep(5)
+        for command in args.commands:
+            if match := re.fullmatch(r"sleep ([\d.]+)", command, re.IGNORECASE):
+                time.sleep(float(match[1]))
+                continue
+            run(command.replace("{capture}", str(capture)))
+            time.sleep(args.delay)
+        run("GetFrameRate")
+    finally:
+        send("QuitGame false false", timeout=10)
+        try:
+            game.wait(30)
+        except subprocess.TimeoutExpired:
+            game.kill()
+        (capture / "commands.txt").write_text("\n".join(transcript) + "\n")
+        if log.exists():
+            shutil.copy2(log, capture)
+        print(capture)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
