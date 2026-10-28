@@ -145,6 +145,11 @@ namespace nSCDWire {
 		OccupantRemove, // id
 		OccupantMove, // id, bounding box
 
+		// Which game object the draws between the two belong to (see DrawOwnerHooks). They nest, because
+		// a drawable can ask to be drawn again in the same pass.
+		OwnerBegin, // DrawOwner
+		OwnerEnd,
+
 		Count
 	};
 
@@ -165,6 +170,26 @@ namespace nSCDWire {
 		int32_t type;
 		float box[6];
 	};
+
+	enum class DrawOwnerKind : uint8_t {
+		Grid, // a model the renderer keeps in its grid: buildings, props, flora, networks, automata, lot textures
+		View, // a view object: terrain, water, overlays such as shadows and decals, effects
+	};
+
+	struct DrawOwner {
+		// The occupant, with the same id as the Occupant records, or 0 when the drawable has none.
+		uint64_t occupant;
+		// The drawable or view object itself, unique while it is in the renderer.
+		uint64_t drawable;
+		// The drawable's vtable address in the game, which tells the kind of view object apart.
+		uint32_t vtable;
+		DrawOwnerKind kind;
+		// cSC43DRender's pass, from the draw context: 0 pre-static views, 1 static grid, 2 post-static views,
+		// 3 pre-dynamic views, 4 dynamic grid, 5 post-dynamic views.
+		uint8_t pass;
+		uint16_t reserved;
+	};
+	static_assert(sizeof(DrawOwner) == 24);
 
 	char const *OpName(Op op);
 }

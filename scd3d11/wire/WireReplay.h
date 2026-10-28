@@ -29,6 +29,8 @@ namespace nSCDWire {
 		virtual bool Frame() { return true; }
 		virtual void CopyColorBuffer(int32_t, int32_t, int32_t, int32_t) {}
 		virtual void Occupant(OccupantEvent const &) {}
+		virtual void OwnerBegin(DrawOwner const &) {}
+		virtual void OwnerEnd() {}
 	};
 
 	struct ReplayStats {

@@ -547,6 +547,13 @@ namespace nSCDWire {
 					break;
 				}
 
+				case Op::OwnerBegin: {
+					auto const owner = f.Get<DrawOwner>();
+					if (f.ok) hooks.OwnerBegin(owner);
+					break;
+				}
+				case Op::OwnerEnd: hooks.OwnerEnd(); break;
+
 				default:
 					failure = "an op the replay does not handle";
 					break;

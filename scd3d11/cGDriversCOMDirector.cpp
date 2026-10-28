@@ -20,6 +20,7 @@
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
 #include "cGDriverWire.h"
+#include "DrawOwnerHooks.h"
 #include "LiveShadowHooks.h"
 #include "OccupantTracker.h"
 #include "Settings.h"
@@ -55,6 +56,7 @@ namespace nSCD3D11
 
 		bool PreAppShutdown() {
 			OccupantTracker::Uninstall();
+			DrawOwnerHooks::Uninstall();
 			TerrainShadows::Uninstall();
 			ShadowRegistry::Uninstall();
 			LiveShadowHooks::Uninstall();
@@ -68,6 +70,7 @@ namespace nSCD3D11
 			LiveShadowHooks::Install();
 			if (LiveShadowHooks::Enabled()) ShadowRegistry::Install();
 			TerrainShadows::Install();
+			DrawOwnerHooks::Install();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePreAppInit) {
 					pFramework->AddHook(this);

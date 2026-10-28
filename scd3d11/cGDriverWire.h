@@ -39,6 +39,8 @@ namespace nSCD3D11 {
 		// thread that pumps messages.
 		static cGDriverWire *Current();
 		void RecordOccupant(nSCDWire::OccupantEvent const &event);
+		void RecordOwnerBegin(nSCDWire::DrawOwner const &owner) { Record(nSCDWire::Op::OwnerBegin, owner); }
+		void RecordOwnerEnd() { Record(nSCDWire::Op::OwnerEnd); }
 		nSCDWire::Writer &Stream() { return writer; }
 
 		// cIGZUnknown
