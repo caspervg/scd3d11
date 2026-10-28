@@ -58,6 +58,18 @@ namespace nSCD3D12 {
 		static void WriteCsvHeader(std::FILE *csv);
 		void PrintTotals() const;
 
+		// Offered each mesh the lane stands in for, with the lane's state set on the driver, in place of the lane
+		// drawing it. bounds is the model's box in model space, min then max. Returning true keeps the mesh out
+		// of the frame.
+		class Sink {
+		public:
+			virtual ~Sink() = default;
+			virtual bool TakeMesh(nSCDWire::DrawOwner const &owner, nSCDWire::ModelInstance const &instance,
+			                      float const *bounds, uint32_t mesh, D3D12_VERTEX_BUFFER_VIEW const &vertices,
+			                      D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count) = 0;
+		};
+		void SetSink(Sink *sink);
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> impl;

@@ -139,6 +139,8 @@ namespace nSCD3D12 {
 			Reason reason = kNone;
 			uint32_t group = 0;
 			std::vector<GpuMesh> meshes;
+			// Model space, min then max.
+			float bounds[6]{};
 		};
 
 		struct LoadedTexture {
@@ -166,6 +168,7 @@ namespace nSCD3D12 {
 			uint32_t quadDraws = 0;
 			uint32_t partCursor = 0;
 			nSCDWire::CellTexture cell{};
+			nSCDWire::DrawOwner owner{};
 		};
 
 		struct Counts {
@@ -209,6 +212,7 @@ namespace nSCD3D12 {
 		cGDriver12 &driver;
 		nSCAssets::AssetStore const &store;
 		bool check;
+		Sink *sink = nullptr;
 		uint32_t reported = 0;
 		std::unordered_map<ModelKey, GpuModel, ModelKeyHash> models;
 		// Keyed by group << 32 | instance, one map with the placeholder fallback and one without.
@@ -347,6 +351,8 @@ namespace nSCD3D12 {
 						out.reason = kUnboundTexture;
 					}
 				}
+				std::memcpy(gpu.bounds, model.boundsMin, sizeof(model.boundsMin));
+				std::memcpy(gpu.bounds + 3, model.boundsMax, sizeof(model.boundsMax));
 				++modelsLoaded;
 			}
 			loadSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -740,7 +746,12 @@ namespace nSCD3D12 {
 				driver.SaveDrawState(lane);
 				Compare(game, lane);
 			}
-			driver.DrawTriangles(mesh.vertices, mesh.indices, mesh.count, kS3dFormat);
+			uint32_t const index = static_cast<uint32_t>(&mesh - bracket.model->meshes.data());
+			if (sink == nullptr ||
+			    !sink->TakeMesh(bracket.owner, bracket.instance, bracket.model->bounds, index, mesh.vertices, mesh.indices,
+			                    mesh.count)) {
+				driver.DrawTriangles(mesh.vertices, mesh.indices, mesh.count, kS3dFormat);
+			}
 			driver.RestoreDrawState(game);
 			return kNone;
 		}
@@ -800,8 +811,12 @@ namespace nSCD3D12 {
 	SceneLane::~SceneLane() { impl->driver.SetDrawFilter(nullptr); }
 
 	void SceneLane::OwnerBegin(nSCDWire::DrawOwner const &owner) {
-		impl->stack.emplace_back().gridVtable = owner.kind == nSCDWire::DrawOwnerKind::Grid ? owner.vtable : 0;
+		Bracket &bracket = impl->stack.emplace_back();
+		bracket.gridVtable = owner.kind == nSCDWire::DrawOwnerKind::Grid ? owner.vtable : 0;
+		bracket.owner = owner;
 	}
+
+	void SceneLane::SetSink(Sink *sink) { impl->sink = sink; }
 
 	void SceneLane::OwnerEnd() {
 		if (impl->stack.empty()) return;
