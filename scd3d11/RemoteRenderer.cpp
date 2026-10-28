@@ -46,9 +46,11 @@ namespace nSCD3D11 {
 			Log(LogCategory::Initialization, "server: cannot create the shared ring");
 			return false;
 		}
-		std::wstring const folder = ModuleFolder();
+		// SC4 ignores subfolders of Plugins when it loads DLLs, so the server and its own DLLs live in one.
+		std::wstring folder = ModuleFolder() + L"SCD3D12\\";
+		if (GetFileAttributesW((folder + L"SCD3D12Server.exe").c_str()) == INVALID_FILE_ATTRIBUTES) folder = ModuleFolder();
 		std::wstring const server = folder + L"SCD3D12Server.exe";
-		std::wstring const log = folder + L"..\\Logs\\SCD3D12Server.log";
+		std::wstring const log = ModuleFolder() + L"..\\Logs\\SCD3D12Server.log";
 		std::wstring command = L"\"" + server + L"\" serve --ring " + name + L" --parent " + std::to_wstring(self) +
 		                       L" --log \"" + log + L"\"";
 
