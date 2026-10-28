@@ -11,21 +11,28 @@
 // SCD3D12Server: SimCity 4's renderer as a separate 64-bit process.
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
-//       Renders a Record=<file> capture offline and saves the chosen frames as PNG.
+//                        [--until <frame>] [--scene substitute|check --game <SimCity 4 folder>]
+//       Renders a Record=<file> capture offline and saves the chosen frames as PNG. With --scene substitute the
+//       server draws the game's models from its own copy of the game's data (SceneLane.h) and writes per frame
+//       counts to scene.csv in the output folder. check also compares each such draw with the game's.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server.
 //   SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]
 //       Compares two images channel by channel. Exit code 0 when no channel differs by more than n.
 
+#include "AssetStore.h"
 #include "cGDriver12.h"
+#include "SceneLane.h"
 #include "Serve.h"
 #include "wire/ImageFile.h"
 #include "wire/WireReplay.h"
 
 #include <windows.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -38,6 +45,10 @@ namespace {
 		std::set<uint64_t> frames;
 		bool last = false;
 		bool warp = false;
+		uint64_t until = UINT64_MAX;
+		bool substitute = false;
+		bool check = false;
+		std::wstring game;
 	};
 
 	bool ParseReplay(int argc, wchar_t **argv, ReplayOptions &options) {
@@ -56,10 +67,17 @@ namespace {
 				}
 			} else if (argument == L"--last") options.last = true;
 			else if (argument == L"--warp") options.warp = true;
+			else if (argument == L"--until" && hasValue) options.until = _wtoi64(argv[++i]);
+			else if (argument == L"--scene" && hasValue) {
+				std::wstring const mode = argv[++i];
+				if (mode != L"substitute" && mode != L"check") return false;
+				options.substitute = true;
+				options.check = mode == L"check";
+			} else if (argument == L"--game" && hasValue) options.game = argv[++i];
 			else if (options.capture.empty()) options.capture = argument;
 			else return false;
 		}
-		return !options.capture.empty();
+		return !options.capture.empty() && (!options.substitute || !options.game.empty());
 	}
 
 	// Saves the chosen frames as the replay reaches them. Frame numbers count Flush calls from zero, the
@@ -67,6 +85,8 @@ namespace {
 	struct ReplayFrames : nSCDWire::ReplayHooks {
 		nSCD3D12::cGDriver12 &driver;
 		ReplayOptions const &options;
+		nSCD3D12::SceneLane *scene = nullptr;
+		std::FILE *sceneCsv = nullptr;
 		uint64_t frame = 0;
 		uint64_t saved = 0;
 
@@ -76,15 +96,24 @@ namespace {
 			driver.VideoMode(show, width, height, fullscreen);
 		}
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override { driver.Vertices(name, data, bytes); }
+		void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
+			if (scene != nullptr) scene->OwnerBegin(owner);
+		}
+		void OwnerEnd() override {
+			if (scene != nullptr) scene->OwnerEnd();
+		}
+		void ModelInstance(nSCDWire::ModelInstance const &model) override {
+			if (scene != nullptr) scene->ModelInstance(model);
+		}
 		bool Frame() override {
 			driver.Frame();
+			if (scene != nullptr) scene->EndFrame(frame, sceneCsv);
 			if (options.frames.count(frame) != 0 || (options.every != 0 && frame % options.every == 0)) {
 				wchar_t name[64];
 				swprintf_s(name, L"\\frame%06llu.png", static_cast<unsigned long long>(frame));
 				Save(options.out + name);
 			}
-			++frame;
-			return true;
+			return ++frame <= options.until;
 		}
 		void Save(std::wstring const &path) {
 			std::vector<uint8_t> rgba;
@@ -111,14 +140,28 @@ namespace {
 			return 1;
 		}
 		ReplayFrames hooks(driver, options);
+		nSCAssets::AssetStore store;
+		std::unique_ptr<nSCD3D12::SceneLane> scene;
+		if (options.substitute) {
+			store.AddGameData(options.game);
+			std::printf("scene: %zu packages, %zu entries\n", store.Files().size(), store.Index().size());
+			scene = std::make_unique<nSCD3D12::SceneLane>(driver, store, options.check);
+			hooks.scene = scene.get();
+			_wfopen_s(&hooks.sceneCsv, (options.out + L"\\scene.csv").c_str(), L"w");
+			if (hooks.sceneCsv != nullptr) nSCD3D12::SceneLane::WriteCsvHeader(hooks.sceneCsv);
+		}
+		auto const start = std::chrono::steady_clock::now();
 		nSCDWire::Reader reader([file](void *data, size_t size) { return std::fread(data, 1, size, file) == size; });
 		nSCDWire::ReplayStats stats;
 		char const *error = nullptr;
 		bool const ok = nSCDWire::Replay(reader, driver, hooks, &stats, &error);
 		if (options.last) hooks.Save(options.out + L"\\last.png");
-		std::printf("%s: %llu frames, %llu records, %llu images saved\n", ok ? "done" : error,
+		double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		std::printf("%s: %llu frames, %llu records, %llu images saved, %.1f s\n", ok ? "done" : error,
 		            static_cast<unsigned long long>(stats.frames), static_cast<unsigned long long>(stats.records),
-		            static_cast<unsigned long long>(hooks.saved));
+		            static_cast<unsigned long long>(hooks.saved), seconds);
+		if (scene != nullptr) scene->PrintTotals();
+		if (hooks.sceneCsv != nullptr) std::fclose(hooks.sceneCsv);
 		std::fclose(file);
 		return ok ? 0 : 1;
 	}
@@ -178,6 +221,7 @@ int wmain(int argc, wchar_t **argv) {
 	else if (command == L"compare") result = RunCompare(argc, argv);
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
+		std::puts("                     [--until <frame>] [--scene substitute|check --game <SimCity 4 folder>]");
 		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
