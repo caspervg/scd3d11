@@ -209,15 +209,15 @@ namespace nSCD3D11 {
 		driver->ClearStencil(stencil);
 	}
 	void cGDriverWire::ColorMask(bool enabled) {
-		Record(Op::ColorMask, enabled);
+		RecordState(kColorMaskSlot, Op::ColorMask, enabled);
 		driver->ColorMask(enabled);
 	}
 	void cGDriverWire::DepthFunc(uint32_t function) {
-		Record(Op::DepthFunc, function);
+		RecordState(kDepthFuncSlot, Op::DepthFunc, function);
 		driver->DepthFunc(function);
 	}
 	void cGDriverWire::DepthMask(bool enabled) {
-		Record(Op::DepthMask, enabled);
+		RecordState(kDepthMaskSlot, Op::DepthMask, enabled);
 		driver->DepthMask(enabled);
 	}
 	void cGDriverWire::StencilFunc(uint32_t function, int32_t reference, uint32_t mask) {
@@ -233,15 +233,15 @@ namespace nSCD3D11 {
 		driver->StencilOp(fail, depthFail, pass);
 	}
 	void cGDriverWire::BlendFunc(uint32_t source, uint32_t destination) {
-		Record(Op::BlendFunc, source, destination);
+		RecordState(kBlendFuncSlot, Op::BlendFunc, source, destination);
 		driver->BlendFunc(source, destination);
 	}
 	void cGDriverWire::AlphaFunc(uint32_t function, float reference) {
-		Record(Op::AlphaFunc, function, reference);
+		RecordState(kAlphaFuncSlot, Op::AlphaFunc, function, reference);
 		driver->AlphaFunc(function, reference);
 	}
 	void cGDriverWire::ShadeModel(uint32_t mode) {
-		Record(Op::ShadeModel, mode);
+		RecordState(kShadeModelSlot, Op::ShadeModel, mode);
 		driver->ShadeModel(mode);
 	}
 
@@ -249,6 +249,7 @@ namespace nSCD3D11 {
 
 	void cGDriverWire::BindTexture(uint32_t target, uint32_t texture) {
 		Record(Op::BindTexture, target, texture);
+		Forget(kTextureSlot, 2);
 		driver->BindTexture(target, texture);
 	}
 
@@ -279,7 +280,11 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriverWire::TexEnv(uint32_t target, uint32_t parameter, int32_t value) {
-		Record(Op::TexEnvInt, target, parameter, value);
+		if (target == 0 && parameter == 0) {
+			RecordState(kTexEnvSlot + activeStage, Op::TexEnvInt, target, parameter, value);
+		} else {
+			Record(Op::TexEnvInt, target, parameter, value);
+		}
 		driver->TexEnv(target, parameter, value);
 	}
 	void cGDriverWire::TexEnv(uint32_t target, uint32_t parameter, float const *value) {
@@ -287,7 +292,11 @@ namespace nSCD3D11 {
 		driver->TexEnv(target, parameter, value);
 	}
 	void cGDriverWire::TexParameter(uint32_t target, uint32_t parameter, int32_t value) {
-		Record(Op::TexParameter, target, parameter, value);
+		if (target == 0 && parameter < 4) {
+			RecordState(kTexParameterSlot + activeStage * 4 + parameter, Op::TexParameter, target, parameter, value);
+		} else {
+			Record(Op::TexParameter, target, parameter, value);
+		}
 		driver->TexParameter(target, parameter, value);
 	}
 	void cGDriverWire::Fog(uint32_t parameter, uint32_t value) {
@@ -300,21 +309,26 @@ namespace nSCD3D11 {
 		driver->Fog(parameter, value);
 	}
 	void cGDriverWire::ColorMultiplier(float r, float g, float b) {
-		Record(Op::ColorMultiplier, r, g, b);
+		RecordState(kColorMultiplierSlot, Op::ColorMultiplier, r, g, b);
 		driver->ColorMultiplier(r, g, b);
 	}
 	void cGDriverWire::AlphaMultiplier(float a) {
-		Record(Op::AlphaMultiplier, a);
+		RecordState(kAlphaMultiplierSlot, Op::AlphaMultiplier, a);
+		// Both decide whether diffuse comes from the vertices.
+		Forget(kVertexColorsSlot);
 		driver->AlphaMultiplier(a);
 	}
 	void cGDriverWire::EnableVertexColors(bool ambient, bool diffuse) {
-		Record(Op::EnableVertexColors, ambient, diffuse);
+		RecordState(kVertexColorsSlot, Op::EnableVertexColors, ambient, diffuse);
+		Forget(kAlphaMultiplierSlot);
 		driver->EnableVertexColors(ambient, diffuse);
 	}
 
 	void cGDriverWire::GenTextures(int32_t count, uint32_t *names) {
 		driver->GenTextures(count, names);
 		if (count <= 0 || names == nullptr) return;
+		// A name SetTexture ignored before may be valid now.
+		Forget(kTextureSlot, 2);
 		writer.Begin(Op::GenTextures);
 		writer.Put(count);
 		writer.PutBytes(names, static_cast<size_t>(count) * sizeof(uint32_t));
@@ -323,6 +337,7 @@ namespace nSCD3D11 {
 
 	void cGDriverWire::DeleteTextures(int32_t count, uint32_t const *names) {
 		if (count > 0 && names != nullptr) {
+			Forget(kTextureSlot, 2);
 			writer.Begin(Op::DeleteTextures);
 			writer.Put(count);
 			writer.PutBytes(names, static_cast<size_t>(count) * sizeof(uint32_t));
@@ -342,19 +357,20 @@ namespace nSCD3D11 {
 	// Matrices and switches.
 
 	void cGDriverWire::MatrixMode(uint32_t mode) {
-		Record(Op::MatrixMode, mode);
+		RecordState(kMatrixModeSlot, Op::MatrixMode, mode);
+		if (mode < 2) matrixMode = mode;
 		driver->MatrixMode(mode);
 	}
 	void cGDriverWire::LoadMatrix(float const *matrix) {
 		if (matrix != nullptr) {
-			writer.Begin(Op::LoadMatrix);
-			writer.PutBytes(matrix, 16 * sizeof(float));
-			writer.End();
+			Matrix values;
+			std::memcpy(values.v, matrix, sizeof(values.v));
+			RecordState(kMatrixSlot + matrixMode, Op::LoadMatrix, values);
 		}
 		driver->LoadMatrix(matrix);
 	}
 	void cGDriverWire::LoadIdentity(void) {
-		Record(Op::LoadIdentity);
+		RecordState(kMatrixSlot + matrixMode, Op::LoadIdentity);
 		driver->LoadIdentity();
 	}
 
@@ -365,11 +381,11 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriverWire::Enable(uint32_t state) {
-		Record(Op::Enable, state);
+		RecordSwitch(Op::Enable, state);
 		driver->Enable(state);
 	}
 	void cGDriverWire::Disable(uint32_t state) {
-		Record(Op::Disable, state);
+		RecordSwitch(Op::Disable, state);
 		driver->Disable(state);
 	}
 	bool cGDriverWire::IsEnabled(uint32_t state) { return driver->IsEnabled(state); }
@@ -381,14 +397,22 @@ namespace nSCD3D11 {
 	// Texture stages.
 
 	void cGDriverWire::TexStage(uint32_t stage) {
-		Record(Op::TexStage, stage);
+		RecordState(kTexStageSlot, Op::TexStage, stage);
+		if (stage < 2) activeStage = stage;
 		driver->TexStage(stage);
 	}
 	void cGDriverWire::TexStageCoord(uint32_t source) {
-		Record(Op::TexStageCoord, source);
+		RecordState(kTexStageCoordSlot + activeStage, Op::TexStageCoord, source);
 		driver->TexStageCoord(source);
 	}
 	void cGDriverWire::TexStageMatrix(float const *matrix, uint32_t rows, uint32_t columns, uint32_t flags) {
+		Matrix values{};
+		if (matrix != nullptr) std::memcpy(values.v, matrix, sizeof(values.v));
+		if (Unchanged(kTexStageMatrixSlot + activeStage, Op::TexStageMatrix, matrix != nullptr, rows, columns, flags,
+		              values)) {
+			driver->TexStageMatrix(matrix, rows, columns, flags);
+			return;
+		}
 		writer.Begin(Op::TexStageMatrix);
 		writer.Put(matrix != nullptr);
 		writer.Put(rows);
@@ -419,7 +443,8 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriverWire::SetTexture(uint32_t texture, uint32_t stage) {
-		Record(Op::SetTexture, texture, stage);
+		if (stage < 2) RecordState(kTextureSlot + stage, Op::SetTexture, texture, stage);
+		else Record(Op::SetTexture, texture, stage);
 		driver->SetTexture(texture, stage);
 	}
 	intptr_t cGDriverWire::GetTexture(uint32_t stage) { return driver->GetTexture(stage); }
@@ -428,6 +453,7 @@ namespace nSCD3D11 {
 	                                     uint32_t levels, uint32_t hints) {
 		intptr_t const name = driver->CreateTexture(internalFormat, width, height, levels, hints);
 		Record(Op::CreateTexture, internalFormat, width, height, levels, hints, static_cast<uint32_t>(name));
+		Forget(kTextureSlot, 2);
 		return name;
 	}
 
@@ -454,6 +480,7 @@ namespace nSCD3D11 {
 
 	void cGDriverWire::SetCombiner(cGDCombiner const &combiner, uint32_t stage) {
 		static_assert(sizeof(cGDCombiner) == 10);
+		if (stage < 2) Forget(kTexEnvSlot + stage);
 		writer.Begin(Op::SetCombiner);
 		writer.PutBytes(&combiner, sizeof(combiner));
 		writer.Put(stage);
@@ -474,10 +501,11 @@ namespace nSCD3D11 {
 			driver->GetVideoModeInfo(static_cast<uint32_t>(index), mode);
 		}
 		Record(Op::SetVideoMode, index, show, fourth, mode.width, mode.height, mode.isFullscreen);
+		Forget(0, kSlotCount);
 	}
 
 	void cGDriverWire::PolygonOffset(int32_t offset) {
-		Record(Op::PolygonOffset, offset);
+		RecordState(kPolygonOffsetSlot, Op::PolygonOffset, offset);
 		driver->PolygonOffset(offset);
 	}
 
@@ -568,10 +596,12 @@ namespace nSCD3D11 {
 
 	bool cGDriverWire::Init(void) {
 		Record(Op::Init);
+		Forget(0, kSlotCount);
 		return driver->Init();
 	}
 	bool cGDriverWire::Shutdown(void) {
 		Record(Op::Shutdown);
+		Forget(0, kSlotCount);
 		writer.Flush();
 		return driver->Shutdown();
 	}
@@ -689,43 +719,52 @@ namespace nSCD3D11 {
 
 	void cGDriverWire::EnableLighting(bool enabled) {
 		Record(Op::EnableLighting, enabled);
+		ForgetMultipliers();
 		driver->EnableLighting(enabled);
 	}
 	void cGDriverWire::EnableLight(uint32_t light, bool enabled) {
 		Record(Op::EnableLight, light, enabled);
+		ForgetMultipliers();
 		driver->EnableLight(light, enabled);
 	}
 	void cGDriverWire::LightModelAmbient(float r, float g, float b, float a) {
 		Record(Op::LightModelAmbient, r, g, b, a);
+		ForgetMultipliers();
 		driver->LightModelAmbient(r, g, b, a);
 	}
 	void cGDriverWire::LightColor(uint32_t light, uint32_t parameter, float const *color) {
 		Record(Op::LightColor, light, parameter, color != nullptr, Copy4(color));
+		ForgetMultipliers();
 		driver->LightColor(light, parameter, color);
 	}
 	void cGDriverWire::LightColor(uint32_t light, float const *ambient, float const *diffuse,
 	                              float const *specular) {
 		Record(Op::LightColors, light, ambient != nullptr, Copy4(ambient), diffuse != nullptr, Copy4(diffuse),
 		       specular != nullptr, Copy4(specular));
+		ForgetMultipliers();
 		driver->LightColor(light, ambient, diffuse, specular);
 	}
 	void cGDriverWire::LightPosition(uint32_t light, float const *position) {
 		Record(Op::LightPosition, light, position != nullptr, Copy4(position));
+		ForgetMultipliers();
 		driver->LightPosition(light, position);
 	}
 	void cGDriverWire::LightDirection(uint32_t light, float const *direction) {
 		Record(Op::LightDirection, light, direction != nullptr, Copy4(direction, 3));
+		ForgetMultipliers();
 		driver->LightDirection(light, direction);
 	}
 	void cGDriverWire::MaterialColor(uint32_t parameter, float const *color) {
 		// Parameter 4 is the shininess, a single value.
 		Record(Op::MaterialColor, parameter, color != nullptr, Copy4(color, parameter == 4 ? 1 : 4));
+		ForgetMultipliers();
 		driver->MaterialColor(parameter, color);
 	}
 	void cGDriverWire::MaterialColor(float const *ambient, float const *diffuse, float const *specular,
 	                                 float const *emission, float shininess) {
 		Record(Op::MaterialColors, ambient != nullptr, Copy4(ambient), diffuse != nullptr, Copy4(diffuse),
 		       specular != nullptr, Copy4(specular), emission != nullptr, Copy4(emission), shininess);
+		ForgetMultipliers();
 		driver->MaterialColor(ambient, diffuse, specular, emission, shininess);
 	}
 }
