@@ -32,10 +32,12 @@ set_target_properties(SCD3D12Server PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE
 # headers need C++23 too. EXCLUDE_FROM_ALL keeps its tests and Catch2 out of the normal build.
 add_subdirectory("${PROJECT_SOURCE_DIR}/vendor/DBPFKit" "${CMAKE_BINARY_DIR}/DBPFKit" EXCLUDE_FROM_ALL)
 
-# Reads SimCity 4's own data: every package in the game's load order, by TGI.
+# Reads SimCity 4's own data: every package in the game's load order, and models and textures by TGI.
 add_library(scd3d12_assets STATIC
         src/assets/Dbpf.cpp
         src/assets/AssetStore.cpp
+        src/assets/Models.cpp
+        src/assets/Textures.cpp
 )
 target_include_directories(scd3d12_assets PUBLIC src/assets)
 target_link_libraries(scd3d12_assets PRIVATE DBPFKitLib)
