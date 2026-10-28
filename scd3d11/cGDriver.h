@@ -440,6 +440,13 @@ namespace nSCD3D11 {
 			uint64_t viewportPixels = 0;
 			uint32_t textureCreates = 0;
 			uint32_t textureDeletes = 0;
+			// Bytes a renderer in another process would have to receive, in the game's own formats.
+			// "New" counts only geometry the geometry cache had not seen, the rest could be sent as a key.
+			uint64_t wireVertexBytes = 0;
+			uint64_t wireVertexNewBytes = 0;
+			uint64_t wireIndexBytes = 0;
+			uint64_t wireIndexNewBytes = 0;
+			uint64_t wireTextureBytes = 0;
 			// Live shadows. Static passes run at DrawPostStaticView, full window or one dirty rectangle.
 			uint32_t shadowFullPasses = 0;
 			uint32_t shadowPartialPasses = 0;

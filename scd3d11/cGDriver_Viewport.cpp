@@ -753,6 +753,10 @@ namespace nSCD3D11 {
 			uint64_t scrollCulled = 0;
 			uint64_t textureCreates = 0;
 			uint64_t textureDeletes = 0;
+			uint64_t wireBytes = 0;
+			uint64_t wireNewBytes = 0;
+			uint64_t wireTextureBytes = 0;
+			uint64_t wireMaxFrameBytes = 0;
 			// Live shadow fields summed over the second. shadowStaticMaxMs and shadowWorldCasters are maxima.
 			FrameStats shadows;
 			uint32_t shadowFrames = 0;
@@ -807,6 +811,11 @@ namespace nSCD3D11 {
 		summary.culledDraws += frame.culledDraws;
 		summary.textureCreates += frame.textureCreates;
 		summary.textureDeletes += frame.textureDeletes;
+		uint64_t const frameNewBytes = frame.wireVertexNewBytes + frame.wireIndexNewBytes + frame.wireTextureBytes;
+		summary.wireBytes += frame.wireVertexBytes + frame.wireIndexBytes;
+		summary.wireNewBytes += frame.wireVertexNewBytes + frame.wireIndexNewBytes;
+		summary.wireTextureBytes += frame.wireTextureBytes;
+		summary.wireMaxFrameBytes = (std::max)(summary.wireMaxFrameBytes, frameNewBytes);
 		if (shadowFrame) {
 			FrameStats &sum = summary.shadows;
 			++summary.shadowFrames;
@@ -866,6 +875,11 @@ namespace nSCD3D11 {
 			    static_cast<unsigned long long>(summary.scrollFrames ? summary.scrollCulled / summary.scrollFrames : 0),
 			    summary.fullFrames, static_cast<unsigned long long>(summary.textureCreates),
 			    static_cast<unsigned long long>(summary.textureDeletes));
+			Log(LogCategory::Stats,
+			    "payload: geometry %.1f MB, of which new %.1f MB, textures %.1f MB, largest frame %.2f MB new",
+			    static_cast<double>(summary.wireBytes) / 1.0e6, static_cast<double>(summary.wireNewBytes) / 1.0e6,
+			    static_cast<double>(summary.wireTextureBytes) / 1.0e6,
+			    static_cast<double>(summary.wireMaxFrameBytes) / 1.0e6);
 			FrameStats const &shadow = summary.shadows;
 			if (summary.shadowFrames != 0 || shadow.shadowHashedDraws != 0) {
 				double const renders = shadow.shadowMapRenders != 0 ? shadow.shadowMapRenders : 1.0;

@@ -567,8 +567,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 		// or release boundary, so pointer and size cannot identify contents. Only the terrain vertex
 		// buffer, which the driver owns, can use generation keys instead of hashing.
 		GeometryCacheKey const key = VertexCacheKey(interleavedFormat, interleavedStride, source, count);
+		uint64_t const sourceBytes = static_cast<uint64_t>(count) * RZVertexFormatStride(interleavedFormat);
+		frameStats.wireVertexBytes += sourceBytes;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
+		frameStats.wireVertexNewBytes += sourceBytes;
 
 		try {
 			if (!ConvertVertices(interleavedFormat, interleavedStride, source, count, vertexScratch)) {
@@ -939,25 +942,29 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (culled) return;
 
+		// The game's indices as it handed them over. Primitives D3D11 lacks are converted on the receiving side.
+		uint64_t const sourceIndexBytes = static_cast<uint64_t>(count) * (type == 3 ? sizeof(uint16_t) : sizeof(uint32_t));
+		frameStats.wireIndexBytes += sourceIndexBytes;
+		uint64_t const indexMisses = indexBufferCacheMisses;
+
 		if (!convertPrimitive) {
 			DXGI_FORMAT const indexFormat = type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
-			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
-			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
-			if (indexBytes > UINT32_MAX) return;
-			if (!UploadCachedBuffer(
-				    indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
-				    IndexCacheKey(indexFormat, indices, static_cast<uint32_t>(count)),
-				    static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
-				    dynamicIndexBuffer, dynamicIndexBufferOffset) ||
-			    !BindGeometryPipeline(primitive)) {
-				return;
-			}
+			if (sourceIndexBytes > UINT32_MAX) return;
+			bool const uploaded = UploadCachedBuffer(
+				indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
+				IndexCacheKey(indexFormat, indices, static_cast<uint32_t>(count)),
+				static_cast<uint32_t>(sourceIndexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+				dynamicIndexBuffer, dynamicIndexBufferOffset);
+			if (indexBufferCacheMisses != indexMisses) frameStats.wireIndexNewBytes += sourceIndexBytes;
+			if (!uploaded || !BindGeometryPipeline(primitive)) return;
 			d3dContext->IASetIndexBuffer(dynamicIndexBuffer.Get(), indexFormat, dynamicIndexBufferOffset);
 			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, baseVertex);
 			return;
 		}
 
-		if (!UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
+		bool const uploaded = UploadIndices(drawIndexScratch);
+		if (indexBufferCacheMisses != indexMisses) frameStats.wireIndexNewBytes += sourceIndexBytes;
+		if (!uploaded || !BindGeometryPipeline(0)) {
 			return;
 		}
 		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();

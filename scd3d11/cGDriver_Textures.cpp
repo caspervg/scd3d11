@@ -569,6 +569,11 @@ namespace nSCD3D11 {
             }
         }
 
+		frameStats.wireTextureBytes += IsCompressed(resource.format)
+			                               ? D3D11TextureRowPitch(resource.format, static_cast<uint32_t>(width)) *
+			                                 ((static_cast<uint64_t>(height) + 3) / 4)
+			                               : static_cast<uint64_t>(width) * height *
+			                                 TextureSourcePixelBytes(sourceFormat, sourceType);
 		d3dContext->UpdateSubresource(
 			resource.texture.Get(), D3D11CalcSubresource(level, 0, resource.levels),
 			&box, upload, pitch, 0);
