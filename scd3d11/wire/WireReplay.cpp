@@ -11,6 +11,7 @@
 #include "WireReplay.h"
 
 #include "cGDCombiner.h"
+#include "TextureUploadUtils.h"
 #include "cIGZGDriver.h"
 #include "cIGZGBufferRegionExtension.h"
 #include "cIGZGDriverLightingExtension.h"
@@ -53,6 +54,8 @@ namespace nSCDWire {
 		NameMap textures;
 		NameMap regionNames;
 		std::vector<uint8_t> scratch;
+		// The unpack row length, so image blobs can be checked against what the driver will read.
+		int32_t rowLength = 0;
 		char const *failure = nullptr;
 
 		Op op{};
@@ -66,6 +69,12 @@ namespace nSCDWire {
 				std::vector<uint8_t> const *found = reader.FindBlob(key);
 				if (found == nullptr) failure = "a record refers to a blob the stream never sent";
 				return found;
+			};
+			// An image blob shorter than what the driver reads is skipped rather than read past its end.
+			auto const holdsImage = [](std::vector<uint8_t> const &pixels, uint32_t format, uint32_t type,
+			                           int32_t width, int32_t height, int32_t rows) {
+				uint32_t const needed = nSCD3D11::SourceImageBytes(format, type, width, height, rows);
+				return needed != 0 && pixels.size() >= needed;
 			};
 
 			switch (op) {
@@ -153,13 +162,16 @@ namespace nSCDWire {
 					auto const hasPixels = f.Get<bool>();
 					auto const *pixels = blob(f.Get<BlobKey>());
 					if (!f.ok || pixels == nullptr) break;
+					bool const usable = hasPixels && holdsImage(*pixels, format, type, width, height, rowLength);
 					driver.TexImage2D(target, level, internalFormat, width, height, border, format, type,
-					                  hasPixels && !pixels->empty() ? pixels->data() : nullptr);
+					                  usable ? pixels->data() : nullptr);
 					break;
 				}
 				case Op::PixelStore: {
 					auto const parameter = f.Get<uint32_t>();
-					driver.PixelStore(parameter, f.Get<int32_t>());
+					auto const value = f.Get<int32_t>();
+					if (parameter == 0 && value >= 0) rowLength = value;
+					driver.PixelStore(parameter, value);
 					break;
 				}
 				case Op::TexEnvInt: {
@@ -309,12 +321,14 @@ namespace nSCDWire {
 					auto const height = f.Get<int32_t>();
 					auto const format = f.Get<uint32_t>();
 					auto const type = f.Get<uint32_t>();
-					auto const rowLength = f.Get<uint32_t>();
+					auto const rows = f.Get<uint32_t>();
 					auto const hasPixels = f.Get<bool>();
 					auto const *pixels = blob(f.Get<BlobKey>());
 					if (!f.ok || pixels == nullptr) break;
-					driver.LoadTextureLevel(textures(texture), level, x, y, width, height, format, type, rowLength,
-					                        hasPixels && !pixels->empty() ? pixels->data() : nullptr);
+					bool const usable =
+						hasPixels && holdsImage(*pixels, format, type, width, height, static_cast<int32_t>(rows));
+					driver.LoadTextureLevel(textures(texture), level, x, y, width, height, format, type, rows,
+					                        usable ? pixels->data() : nullptr);
 					break;
 				}
 				case Op::SetCombiner: {
@@ -351,7 +365,10 @@ namespace nSCDWire {
 					auto const key = f.Get<uint32_t>();
 					auto const alpha = f.Get<uint32_t>();
 					auto const *pixels = blob(f.Get<BlobKey>());
-					if (!f.ok || pixels == nullptr || pixels->empty()) break;
+					if (!f.ok || pixels == nullptr ||
+					    !holdsImage(*pixels, format, type, sourceWidth, sourceHeight, rowLength)) {
+						break;
+					}
 					void const *data = pixels->data();
 					switch (kind) {
 						case BlitKind::BitBlt:
