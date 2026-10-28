@@ -10,15 +10,20 @@
 
 #include "ImageFile.h"
 
+#include <utility>
 #include <wincodec.h>
 #include <wrl/client.h>
 
 using Microsoft::WRL::ComPtr;
 
 namespace nSCDWire {
-	bool SavePng(wchar_t const *path, uint32_t width, uint32_t height, uint8_t const *bgra) {
-		std::vector<uint8_t> opaque(bgra, bgra + static_cast<size_t>(width) * height * 4);
-		for (size_t i = 3; i < opaque.size(); i += 4) opaque[i] = 255;
+	bool SavePng(wchar_t const *path, uint32_t width, uint32_t height, uint8_t const *rgba) {
+		// WIC's PNG encoder takes BGRA.
+		std::vector<uint8_t> opaque(rgba, rgba + static_cast<size_t>(width) * height * 4);
+		for (size_t i = 0; i < opaque.size(); i += 4) {
+			std::swap(opaque[i], opaque[i + 2]);
+			opaque[i + 3] = 255;
+		}
 
 		ComPtr<IWICImagingFactory> factory;
 		ComPtr<IWICStream> stream;
@@ -44,7 +49,7 @@ namespace nSCDWire {
 		return SUCCEEDED(result);
 	}
 
-	bool LoadPng(wchar_t const *path, uint32_t &width, uint32_t &height, std::vector<uint8_t> &bgra) {
+	bool LoadPng(wchar_t const *path, uint32_t &width, uint32_t &height, std::vector<uint8_t> &rgba) {
 		ComPtr<IWICImagingFactory> factory;
 		ComPtr<IWICBitmapDecoder> decoder;
 		ComPtr<IWICBitmapFrameDecode> frame;
@@ -63,9 +68,10 @@ namespace nSCDWire {
 		}
 		if (SUCCEEDED(result)) result = converter->GetSize(&width, &height);
 		if (SUCCEEDED(result)) {
-			bgra.resize(static_cast<size_t>(width) * height * 4);
-			result = converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(bgra.size()), bgra.data());
+			rgba.resize(static_cast<size_t>(width) * height * 4);
+			result = converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(rgba.size()), rgba.data());
 		}
+		for (size_t i = 0; SUCCEEDED(result) && i < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
 		return SUCCEEDED(result);
 	}
 }
