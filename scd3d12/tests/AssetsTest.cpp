@@ -219,9 +219,8 @@ namespace {
 		std::printf("  %zu models (%zu failed, %zu meshes), %zu textures (%zu failed), %.0f ms\n", models, modelFailures, meshes, textures,
 		            textureFailures, Since(t0));
 		for (auto const &[code, count] : codes) std::printf("  FSH code %02X: %zu\n", code, count);
-		// Known misses, all in DBPFKit: two models with 1,440 vertex blocks (0E0C0000 and 0E0D0000) pass its limit of
-		// 1,000, 24 textures use the 8-bit palette code 0x7B it does not decode, and one 2x2 DXT1 texture
-		// (696F6000) yields no level because it skips DXT levels smaller than 4x4.
+		// Known misses: two models with 1,440 vertex blocks (0E0C0000 and 0E0D0000) pass DBPFKit's limit of 1,000, and
+		// 24 textures use the 8-bit palette code 0x7B, which is not decoded.
 		assert(models > 40000 && modelFailures <= 2);
 		assert(textures > 40000 && textureFailures <= 25);
 

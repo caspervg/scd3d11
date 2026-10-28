@@ -40,11 +40,12 @@ namespace nSCAssets {
 		TextureFormat format = TextureFormat::Rgba8;
 		// The FSH bitmap code of the image.
 		uint8_t code = 0;
-		// Level 0 first.
+		// Level 0 first, down to 1x1 for the game's own textures. A DXT level below 4x4 holds one whole block.
 		std::vector<TextureLevel> levels;
 	};
 
-	// One image (`element`) of an FSH record with its mipmaps.
+	// One image (`element`) of an FSH record with every level the game uploads for it, read the way the game
+	// reads them (see Textures.cpp).
 	bool DecodeTexture(std::span<uint8_t const> bytes, Texture &texture, uint32_t element = 0, std::string *error = nullptr);
 
 	// The texture an S3D material names, found the way the game looks it up (OpenSC4 graphics-formats §4.1):
