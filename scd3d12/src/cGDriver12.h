@@ -74,6 +74,51 @@ namespace nSCD3D12 {
 		// buffer without relighting.
 		ID3D12Resource *Output() const;
 
+		// For the scene lane (SceneLane.h), which draws some of the game's models from its own copies.
+
+		// Asked before each DrawArrays (indices null, vertices from first) and DrawElements (first 0, indexType 3
+		// for 16-bit or 5 for 32-bit indices). The vertices are the InterleavedArrays ones in the DrawState.
+		// Returning false drops the game's draw.
+		class DrawFilter {
+		public:
+			virtual ~DrawFilter() = default;
+			virtual bool AllowDraw(uint32_t primitive, int32_t first, uint32_t count, uint32_t indexType,
+			                       void const *indices) = 0;
+		};
+		void SetDrawFilter(DrawFilter *filter);
+
+		// The state an S3D material sets, which the scene lane saves, compares and puts back around its draws.
+		struct DrawState {
+			struct Stage {
+				bool enabled;
+				uint32_t texture;
+				uint8_t magFilter, minFilter, wrapU, wrapV, mode;
+				uint32_t coordinates;
+				float matrix[16];
+			};
+			Stage stages[2];
+			uint8_t activeStage;
+			bool alphaTest, depthTest, cullFace, blend;
+			bool colorWrite, depthWrite;
+			uint8_t depthFunction, sourceBlend, destinationBlend, alphaFunction;
+			float alphaReference;
+			bool lighting, diffuseFromVertex;
+			float globalAmbient[4], materialAmbient[4], materialDiffuse[4];
+			uint32_t vertexFormat, vertexStride;
+			uint8_t const *vertexPointer;
+		};
+		void SaveDrawState(DrawState &state) const;
+		void RestoreDrawState(DrawState const &state);
+
+		// The command list being recorded, and memory in this frame's upload space for copies into the
+		// caller's own resources.
+		ID3D12GraphicsCommandList *CommandList() const;
+		bool Upload(void const *data, uint64_t bytes, ID3D12Resource *&resource, uint64_t &offset);
+		// A triangle list from the caller's buffers (D3D11Vertex layout, 16-bit indices) with the current state.
+		// format is the SimGL vertex format the vertices came from.
+		void DrawTriangles(D3D12_VERTEX_BUFFER_VIEW const &vertices, D3D12_INDEX_BUFFER_VIEW const &indices,
+		                   uint32_t count, uint32_t format);
+
 		// nSCDWire::ReplayHooks
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override;

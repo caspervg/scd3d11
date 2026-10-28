@@ -54,6 +54,11 @@ namespace nSCAssets {
 		uint8_t srcBlend = 0, dstBlend = 0;
 		// The alpha test reference as the game quantises it: the threshold's high byte to 4 bits.
 		float alphaRef = 0;
+		// The threshold's high byte, which the game scales for a fading instance before quantising.
+		uint8_t alphaThreshold = 0;
+		// Textures the material binds (0 to 2), and its index in the model's MATS chunk.
+		uint8_t textureCount = 0;
+		uint16_t index = 0;
 		// The FSH instance of the first texture, 0 for none. See LoadModelTexture for the lookup.
 		uint32_t texture = 0;
 		// Texture parameters: 0 nearest, 1 linear, 2 clamp, 3 repeat, 4 to 7 the mipmapped filters.

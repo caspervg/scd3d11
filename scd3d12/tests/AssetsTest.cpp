@@ -219,9 +219,8 @@ namespace {
 		std::printf("  %zu models (%zu failed, %zu meshes), %zu textures (%zu failed), %.0f ms\n", models, modelFailures, meshes, textures,
 		            textureFailures, Since(t0));
 		for (auto const &[code, count] : codes) std::printf("  FSH code %02X: %zu\n", code, count);
-		// Known misses, all in DBPFKit: two models with 1,440 vertex blocks (0E0C0000 and 0E0D0000) pass its limit of
-		// 1,000, 24 textures use the 8-bit palette code 0x7B it does not decode, and one 2x2 DXT1 texture
-		// (696F6000) yields no level because it skips DXT levels smaller than 4x4.
+		// Known misses: two models with 1,440 vertex blocks (0E0C0000 and 0E0D0000) pass DBPFKit's limit of 1,000, and
+		// 24 textures use the 8-bit palette code 0x7B, which is not decoded.
 		assert(models > 40000 && modelFailures <= 2);
 		assert(textures > 40000 && textureFailures <= 25);
 
@@ -234,6 +233,17 @@ namespace {
 		assert(model.meshes[2].material.texture == 0xEA367DAB && model.meshes[2].material.flags == 0x1AA);
 		assert(LoadModelTexture(store, 0xEA367DAB, 0xBADB57F1, texture));
 		assert(texture.format == TextureFormat::Bc1 && texture.levels[0].width == 256 && texture.levels[0].data.size() == 256 * 256 / 2);
+
+		// A DXT1 texture whose levels are packed without padding: the game uploads 8 levels read at the aligned
+		// offsets, the last one from the name block that follows (first bytes as recorded from the game's upload).
+		assert(LoadModelTexture(store, 0x10EC0000, 0xBADB57F1, texture) && texture.levels.size() == 8);
+		uint64_t const recorded[8] = {0xA0555500A4D4DEBB, 0xAA00FE55B536CE39, 0x7A2000AA9C93C5F8, 0x55FA00003166BDB7,
+		                              0xFF5F55E062ECBDB8, 0xD5EACAEAB5763187, 0xFFFFFFFE63CD59EB, 0x4345303100000070};
+		for (size_t level = 0; level < 8; ++level) {
+			uint64_t first = 0;
+			std::memcpy(&first, texture.levels[level].data.data(), sizeof(first));
+			assert(first == recorded[level] && texture.levels[level].width == std::max(1u, 128u >> level));
+		}
 
 		std::vector<ModelRef> refs;
 		Tgi const condos{kExemplarType, 0x67BDDF0C, 0x021E0000};
