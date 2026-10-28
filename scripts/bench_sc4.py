@@ -87,7 +87,7 @@ def main() -> int:
     parser.add_argument("--size", default="1920x1080")
     parser.add_argument("--dll", type=Path, default=REPO / "cmake-build-release" / "SCD3D11.dll")
     parser.add_argument("--server", type=Path, default=REPO / "cmake-build-server-release" / "SCD3D12Server.exe",
-                        help="copied next to the DLL, for Renderer=server")
+                        help="copied into Plugins/SCD3D12, for Renderer=server")
     parser.add_argument("--ini", default="VSync=off", help="SCD3D11.ini lines, separated by ;")
     parser.add_argument("--arg", action="append", default=["-DrawStats"], help="extra game argument")
     parser.add_argument("--mirror-plugins", action="store_true")
@@ -103,8 +103,10 @@ def main() -> int:
     if args.mirror_plugins:
         mirror_plugins(args.plugin_source, plugins)
     shutil.copy2(args.dll, plugins / "SCD3D11.dll")
+    (plugins / "SCD3D12Server.exe").unlink(missing_ok=True)
     if args.server.exists():
-        shutil.copy2(args.server, plugins / "SCD3D12Server.exe")
+        (plugins / "SCD3D12").mkdir(exist_ok=True)
+        shutil.copy2(args.server, plugins / "SCD3D12" / "SCD3D12Server.exe")
     (plugins / "SCD3D11.ini").write_text("[SCD3D11]\r\n" + "\r\n".join(args.ini.split(";")) + "\r\n")
     region = prepare_region(args.user_dir, args.city)
 
