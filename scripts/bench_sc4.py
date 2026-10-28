@@ -86,6 +86,8 @@ def main() -> int:
     parser.add_argument("--delay", type=float, default=3.0, help="seconds after each command")
     parser.add_argument("--size", default="1920x1080")
     parser.add_argument("--dll", type=Path, default=REPO / "cmake-build-release" / "SCD3D11.dll")
+    parser.add_argument("--server", type=Path, default=REPO / "cmake-build-server-release" / "SCD3D12Server.exe",
+                        help="copied next to the DLL, for Renderer=server")
     parser.add_argument("--ini", default="VSync=off", help="SCD3D11.ini lines, separated by ;")
     parser.add_argument("--arg", action="append", default=["-DrawStats"], help="extra game argument")
     parser.add_argument("--mirror-plugins", action="store_true")
@@ -101,13 +103,17 @@ def main() -> int:
     if args.mirror_plugins:
         mirror_plugins(args.plugin_source, plugins)
     shutil.copy2(args.dll, plugins / "SCD3D11.dll")
+    if args.server.exists():
+        shutil.copy2(args.server, plugins / "SCD3D12Server.exe")
     (plugins / "SCD3D11.ini").write_text("[SCD3D11]\r\n" + "\r\n".join(args.ini.split(";")) + "\r\n")
     region = prepare_region(args.user_dir, args.city)
 
     capture = REPO / "runtime-captures" / f"bench-{datetime.now():%Y%m%d-%H%M%S}"
     capture.mkdir(parents=True)
     log = args.user_dir / "Logs" / "SCD3D11.log"
+    server_log = args.user_dir / "Logs" / "SCD3D12Server.log"
     log.unlink(missing_ok=True)
+    server_log.unlink(missing_ok=True)
     transcript: list[str] = []
 
     def run(command: str) -> str | None:
@@ -170,8 +176,9 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             game.kill()
         (capture / "commands.txt").write_text("\n".join(transcript) + "\n")
-        if log.exists():
-            shutil.copy2(log, capture)
+        for path in (log, server_log):
+            if path.exists():
+                shutil.copy2(path, capture)
         print(capture)
     return 0
 
