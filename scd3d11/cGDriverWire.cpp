@@ -39,23 +39,6 @@ namespace nSCD3D11 {
 			return result;
 		}
 
-		// Bytes the driver reads from an image the game hands over: compressed sources (formats 7 to 10) in
-		// whole 4x4 blocks, the rest a pixel at a time, with rows rowLength pixels apart when it is set.
-		uint32_t ImageBytes(uint32_t format, uint32_t type, int32_t width, int32_t height, int32_t rowLength) {
-			if (width <= 0 || height <= 0) return 0;
-			uint64_t const sourceWidth = rowLength > width ? static_cast<uint64_t>(rowLength) : width;
-			uint64_t bytes = 0;
-			if (format >= 7 && format <= 10) {
-				uint64_t const block = format <= 8 ? 8 : 16;
-				uint64_t const rows = (static_cast<uint64_t>(height) + 3) / 4;
-				bytes = (sourceWidth + 3) / 4 * block * (rows - 1) + (static_cast<uint64_t>(width) + 3) / 4 * block;
-			} else {
-				uint64_t const pixel = TextureSourcePixelBytes(format, type);
-				bytes = pixel * (sourceWidth * (static_cast<uint64_t>(height) - 1) + width);
-			}
-			return bytes > UINT32_MAX ? 0 : static_cast<uint32_t>(bytes);
-		}
-
 		// Bytes of `count` vertices `stride` apart, the last one only as long as the format.
 		uint32_t SpanBytes(uint32_t format, uint32_t stride, uint32_t count) {
 			if (count == 0) return 0;
@@ -282,7 +265,8 @@ namespace nSCD3D11 {
 		writer.Put(format);
 		writer.Put(type);
 		writer.Put(pixels != nullptr);
-		writer.PutBlob(pixels, pixels != nullptr ? ImageBytes(format, type, width, height, unpackRowLength) : 0);
+		writer.PutBlob(pixels,
+		               pixels != nullptr ? SourceImageBytes(format, type, width, height, unpackRowLength) : 0);
 		writer.End();
 		driver->TexImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
 	}
@@ -462,7 +446,7 @@ namespace nSCD3D11 {
 		writer.Put(rowLength);
 		writer.Put(pixels != nullptr);
 		writer.PutBlob(pixels, pixels != nullptr
-			                       ? ImageBytes(format, type, width, height, static_cast<int32_t>(rowLength))
+			                       ? SourceImageBytes(format, type, width, height, static_cast<int32_t>(rowLength))
 			                       : 0);
 		writer.End();
 		driver->LoadTextureLevel(texture, level, x, y, width, height, format, type, rowLength, pixels);
@@ -503,8 +487,9 @@ namespace nSCD3D11 {
 		uint32_t const pixelBytes = TextureSourcePixelBytes(format, type);
 		uint32_t key = 0;
 		if (colorKeyed && colorKey != nullptr && pixelBytes <= 4) std::memcpy(&key, colorKey, pixelBytes);
-		uint64_t const bytes = sourceWidth > 0 && sourceHeight > 0 && pixels != nullptr && pixelBytes <= 4
-			                       ? static_cast<uint64_t>(sourceWidth) * sourceHeight * pixelBytes
+		// The driver reads rows the unpack row length apart, as it does for texture uploads.
+		uint32_t const bytes = pixels != nullptr && pixelBytes <= 4
+			                       ? SourceImageBytes(format, type, sourceWidth, sourceHeight, unpackRowLength)
 			                       : 0;
 		writer.Begin(Op::Blit);
 		writer.Put(kind);
@@ -519,7 +504,7 @@ namespace nSCD3D11 {
 		writer.Put(colorKeyed && colorKey != nullptr);
 		writer.Put(key);
 		writer.Put(alpha);
-		writer.PutBlob(pixels, bytes > UINT32_MAX ? 0 : static_cast<uint32_t>(bytes));
+		writer.PutBlob(pixels, bytes);
 		writer.End();
 	}
 

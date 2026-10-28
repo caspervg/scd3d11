@@ -130,4 +130,19 @@ namespace nSCD3D11 {
 		       ((x + width) % 4 == 0 || x + width == mipWidth) &&
 		       ((y + height) % 4 == 0 || y + height == mipHeight);
 	}
+
+	uint32_t SourceImageBytes(uint32_t format, uint32_t type, int32_t width, int32_t height, int32_t rowLength) {
+		if (width <= 0 || height <= 0) return 0;
+		uint64_t const sourceWidth = rowLength > width ? static_cast<uint64_t>(rowLength) : width;
+		uint64_t bytes = 0;
+		if (format >= 7 && format <= 10) {
+			uint64_t const block = format <= 8 ? 8 : 16;
+			uint64_t const rows = (static_cast<uint64_t>(height) + 3) / 4;
+			bytes = (sourceWidth + 3) / 4 * block * (rows - 1) + (static_cast<uint64_t>(width) + 3) / 4 * block;
+		} else {
+			uint64_t const pixel = TextureSourcePixelBytes(format, type);
+			bytes = pixel * (sourceWidth * (static_cast<uint64_t>(height) - 1) + width);
+		}
+		return bytes > UINT32_MAX ? 0 : static_cast<uint32_t>(bytes);
+	}
 }
