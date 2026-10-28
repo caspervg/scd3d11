@@ -633,15 +633,14 @@ namespace nSCD3D11 {
 		bool const vsyncEnabled = Settings::Get().vsync;
 		NoteRenderPhase("Flush: ReShade effects");
 		FinishReShadeFrame();
-		if (!RemoteDrawing() ||
-		    !remote->CopyFrame(d3dDevice.Get(), d3dContext.Get(), swapChainBuffer.Get(), remoteFrame)) {
-			// The server just went away: everything drawn since it took over was skipped here.
-			if (remote != nullptr && !remote->Active() && !remoteFallbackRequested) {
-				remoteFallbackRequested = true;
-				liveShadowCleanRedrawPending |= 1u << kRedrawServerLost;
-			}
-			d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
+		// Renderer=server: the server's frame replaces the back buffer, so snapshots read it too.
+		if (RemoteDrawing()) remote->CopyFrame(d3dDevice.Get(), d3dContext.Get(), backBufferTexture.Get(), remoteFrame);
+		// The server just went away: everything drawn since it took over was skipped here.
+		if (remote != nullptr && !remote->Active() && !remoteFallbackRequested) {
+			remoteFallbackRequested = true;
+			liveShadowCleanRedrawPending |= 1u << kRedrawServerLost;
 		}
+		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
 		NoteRenderPhase("Flush: Present");
 		result = TakeInjectedFault(FAULT_PRESENT);
 		if (SUCCEEDED(result)) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
