@@ -45,3 +45,14 @@ target_compile_features(scd3d12_assets PRIVATE cxx_std_23)
 target_compile_definitions(scd3d12_assets PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(scd3d12_assets PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-8;/MP>)
 
+# Indexes folders, dumps entries and exports models and textures, for checking the readers on real data.
+add_executable(SCD3D12Assets
+        tools/AssetsTool.cpp
+        "${SCD3D11_SOURCE}/wire/ImageFile.cpp"
+)
+target_include_directories(SCD3D12Assets PRIVATE "${SCD3D11_SOURCE}/wire")
+target_compile_definitions(SCD3D12Assets PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+target_compile_options(SCD3D12Assets PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-8;/MP>)
+target_link_libraries(SCD3D12Assets PRIVATE scd3d12_assets windowscodecs ole32)
+set_target_properties(SCD3D12Assets PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
