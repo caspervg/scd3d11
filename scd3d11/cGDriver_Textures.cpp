@@ -100,8 +100,8 @@ namespace nSCD3D11 {
 
 	// No CPU copy of texture contents is kept: in a 32-bit process shadowing every texture doubled
 	// the texture address-space footprint and caused out-of-memory crashes on heavily modded games.
-	// After device loss textures come back with their names and sizes but blank contents until the
-	// game re-uploads them.
+	// After device loss textures come back with their names and sizes but blank contents.
+	// RecoverFromDeviceLoss then asks the game to upload them again.
 	HRESULT cGDriver::RecreateTextureResources() {
 		uint32_t recreated = 0;
 		for (auto &entry: textures) {

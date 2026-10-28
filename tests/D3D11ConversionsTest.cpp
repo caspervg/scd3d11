@@ -132,6 +132,10 @@ int main() {
             if (FAILED(device->CreateBlendState(&description, &state))) return 2;
         }
     }
-    assert(nSCD3D11::D3D11StencilOperation(2) == D3D11_STENCIL_OP_INCR_SAT);
+    assert(nSCD3D11::D3D11StencilOperation(0) == D3D11_STENCIL_OP_ZERO);
+    assert(nSCD3D11::D3D11StencilOperation(1) == D3D11_STENCIL_OP_KEEP);
+    assert(nSCD3D11::D3D11StencilOperation(2) == D3D11_STENCIL_OP_REPLACE);
+    assert(nSCD3D11::D3D11StencilOperation(5) == D3D11_STENCIL_OP_INVERT);
+    assert(nSCD3D11::D3D11StencilOperation(6) == 0);
     return 0;
 }

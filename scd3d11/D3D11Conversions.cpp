@@ -310,7 +310,9 @@ namespace nSCD3D11 {
     }
 
     D3D11_STENCIL_OP D3D11StencilOperation(uint32_t operation) {
+        // SC4's codes, in the order the DX7 driver's table at 0x00AC450C maps them.
         static D3D11_STENCIL_OP const operations[] = {
+            D3D11_STENCIL_OP_ZERO,
             D3D11_STENCIL_OP_KEEP,
             D3D11_STENCIL_OP_REPLACE,
             D3D11_STENCIL_OP_INCR_SAT,
