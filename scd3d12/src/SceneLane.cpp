@@ -106,6 +106,8 @@ namespace nSCD3D12 {
 		// A flat cell's strip of four as a list, in the order the strip's triangles have.
 		constexpr uint16_t kStripIndices[6] = {0, 1, 2, 2, 1, 3};
 		constexpr uint32_t kNightOffset = 0x8000;
+		// The stage 1 coordinate source of the flora tint: positions.
+		constexpr uint32_t kTintCoordinates = 16;
 		constexpr uint64_t kChunkBytes = 8ull << 20;
 		constexpr D3D12_RESOURCE_STATES kReadable =
 			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
@@ -647,7 +649,11 @@ namespace nSCD3D12 {
 
 			// Night lights: the game decides per instance and shows it by putting the night texture on stage 1.
 			cGDriver12::DrawState::Stage const &second = game.stages[1];
-			bool const lit = second.enabled;
+			// Close up the game lays a tint over flora on stage 1: a 16x16 DXT3 alpha texture it makes itself
+			// (no package holds it), projected from the vertex positions (coordinates 16) at 1/50 per metre.
+			// The lane keeps the game's stage 1 for it as it is.
+			bool const tint = second.enabled && second.mode == 2 && second.coordinates == kTintCoordinates;
+			bool const lit = second.enabled && !tint;
 			if (lit && (second.mode != 2 || second.coordinates != 0 || material.texture == 0)) return kSecondStage;
 
 			uint32_t day = 0, night = 0;
@@ -704,9 +710,11 @@ namespace nSCD3D12 {
 			else driver.BlendFunc(material.srcBlend, material.dstBlend);
 
 			driver.TexStage(1);
-			set(kGDCapability_Texture2D, lit);
-			driver.TexStageCoord(0);
-			driver.TexStageMatrix(nullptr, 3, 2, 1);
+			if (!tint) {
+				set(kGDCapability_Texture2D, lit);
+				driver.TexStageCoord(0);
+				driver.TexStageMatrix(nullptr, 3, 2, 1);
+			}
 			if (lit) {
 				driver.SetTexture(night, 1);
 				driver.TexParameter(0, 0, 0);
