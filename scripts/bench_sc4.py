@@ -137,7 +137,9 @@ def main() -> int:
     width, height = args.size.split("x")
     # One exact string: list quoting would escape the quotes around -UserDir, and SC4 would then fall back
     # to the player's own user directory.
-    command_line = " ".join([f'"{GAME_EXE}"', "-NetCommandGenerator:enabled", "-w", "-Intro:off",
+    # --arg=-f asks for exclusive fullscreen instead of a window.
+    window = "-f" if "-f" in args.arg else "-w"
+    command_line = " ".join([f'"{GAME_EXE}"', "-NetCommandGenerator:enabled", window, "-Intro:off",
                              "-CustomResolution:enabled", f"-r{width}x{height}x32", f'-UserDir:"{args.user_dir}\\"',
                              *args.arg])
     game = subprocess.Popen(command_line, cwd=GAME_EXE.parent)
