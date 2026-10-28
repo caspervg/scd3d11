@@ -56,3 +56,9 @@ target_compile_options(SCD3D12Assets PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-
 target_link_libraries(SCD3D12Assets PRIVATE scd3d12_assets windowscodecs ole32)
 set_target_properties(SCD3D12Assets PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
+# Checks the asset readers. Pass the game folder (and a Plugins folder) to run it on real data.
+add_executable(AssetsTest tests/AssetsTest.cpp)
+target_compile_definitions(AssetsTest PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(AssetsTest PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-8;/MP>)
+target_link_libraries(AssetsTest PRIVATE scd3d12_assets)
+set_target_properties(AssetsTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
