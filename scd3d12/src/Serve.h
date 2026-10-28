@@ -10,11 +10,14 @@
 
 #pragma once
 
+#include "cGDriver12.h"
+
 #include <string>
 
 #include <windows.h>
 
 namespace nSCD3D12 {
-	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits.
-	int RunServe(std::wstring const &ringName, DWORD parentId);
+	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits. A non-null
+	// relight relights every frame with that sun.
+	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight);
 }

@@ -11,9 +11,13 @@
 // SCD3D12Server: SimCity 4's renderer as a separate 64-bit process.
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
+//                        [--relight <sun>]
 //       Renders a Record=<file> capture offline and saves the chosen frames as PNG.
-//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>]
+//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server.
+//
+//   --relight relights every frame with another sun: an hour of the day from 0 to 24, or
+//   <azimuth>,<elevation> in degrees (see cGDriver12::Sun).
 //   SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]
 //       Compares two images channel by channel. Exit code 0 when no channel differs by more than n.
 
@@ -24,6 +28,8 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -31,6 +37,53 @@
 #include <vector>
 
 namespace {
+	using Sun = nSCD3D12::cGDriver12::Sun;
+
+	float SmoothStep(float edge0, float edge1, float x) {
+		float const t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+		return t * t * (3.0f - 2.0f * t);
+	}
+
+	// The sun's colour and the sky's light for the sun's elevation: white and high at noon, warm and low
+	// near the horizon. Below it a dim blue moon takes over, opposite the sun.
+	void LightSun(Sun &sun) {
+		float const day = SmoothStep(-6.0f, 12.0f, sun.elevation);
+		float const warmth = 1.0f - SmoothStep(5.0f, 35.0f, sun.elevation);
+		float const strength = 0.68f * SmoothStep(-2.0f, 6.0f, sun.elevation);
+		float const white[3]{1.0f, 0.97f, 0.92f}, warm[3]{1.0f, 0.55f, 0.28f};
+		float const sky[3]{0.50f, 0.54f, 0.62f}, night[3]{0.09f, 0.11f, 0.21f}, moon[3]{0.12f, 0.14f, 0.22f};
+		bool const moonlit = sun.elevation < -2.0f;
+		for (int i = 0; i < 3; ++i) {
+			sun.color[i] = moonlit ? moon[i] : strength * (white[i] + (warm[i] - white[i]) * warmth);
+			sun.ambient[i] = night[i] + (sky[i] - night[i]) * day;
+		}
+		if (moonlit) {
+			sun.azimuth += 180.0f;
+			sun.elevation = 35.0f;
+		}
+	}
+
+	// --relight: an hour of the day, or <azimuth>,<elevation> in degrees. The sun rises in front of the
+	// camera at 6, stands at SC4's own sun's left at noon, 70 degrees up, and sets behind the scene at 18.
+	bool ParseSun(std::wstring const &text, Sun &sun) {
+		wchar_t *end = nullptr;
+		float const first = std::wcstof(text.c_str(), &end);
+		if (end == text.c_str()) return false;
+		if (*end == L',') {
+			wchar_t const *const second = end + 1;
+			sun.azimuth = first;
+			sun.elevation = std::wcstof(second, &end);
+			if (end == second || *end != 0) return false;
+		} else if (*end == 0 && first >= 0.0f && first <= 24.0f) {
+			sun.azimuth = (first - 12.0f) * 15.0f;
+			sun.elevation = 70.0f * std::sin((first - 6.0f) / 12.0f * 3.14159265f);
+		} else {
+			return false;
+		}
+		LightSun(sun);
+		return true;
+	}
+
 	struct ReplayOptions {
 		std::wstring capture;
 		std::wstring out = L".";
@@ -38,6 +91,8 @@ namespace {
 		std::set<uint64_t> frames;
 		bool last = false;
 		bool warp = false;
+		bool relight = false;
+		Sun sun;
 	};
 
 	bool ParseReplay(int argc, wchar_t **argv, ReplayOptions &options) {
@@ -56,6 +111,10 @@ namespace {
 				}
 			} else if (argument == L"--last") options.last = true;
 			else if (argument == L"--warp") options.warp = true;
+			else if (argument == L"--relight" && hasValue) {
+				options.relight = true;
+				if (!ParseSun(argv[++i], options.sun)) return false;
+			}
 			else if (options.capture.empty()) options.capture = argument;
 			else return false;
 		}
@@ -76,6 +135,8 @@ namespace {
 			driver.VideoMode(show, width, height, fullscreen);
 		}
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override { driver.Vertices(name, data, bytes); }
+		void OwnerBegin(nSCDWire::DrawOwner const &owner) override { driver.OwnerBegin(owner); }
+		void OwnerEnd() override { driver.OwnerEnd(); }
 		bool Frame() override {
 			driver.Frame();
 			if (options.frames.count(frame) != 0 || (options.every != 0 && frame % options.every == 0)) {
@@ -105,6 +166,7 @@ namespace {
 		}
 		CreateDirectoryW(options.out.c_str(), nullptr);
 		nSCD3D12::cGDriver12 driver;
+		if (options.relight) driver.Relight(options.sun);
 		if (!driver.Create(options.warp)) {
 			std::puts("cannot create a Direct3D 12 device");
 			std::fclose(file);
@@ -126,17 +188,20 @@ namespace {
 	int RunServeCommand(int argc, wchar_t **argv) {
 		std::wstring ring;
 		DWORD parent = 0;
+		Sun sun;
+		bool relight = false;
 		for (int i = 2; i + 1 < argc; i += 2) {
 			std::wstring const argument = argv[i];
 			if (argument == L"--ring") ring = argv[i + 1];
 			else if (argument == L"--parent") parent = static_cast<DWORD>(_wtoi(argv[i + 1]));
+			else if (argument == L"--relight") relight = ParseSun(argv[i + 1], sun);
 			else if (argument == L"--log") {
 				std::FILE *log = nullptr;
 				_wfreopen_s(&log, argv[i + 1], L"w", stdout);
 			}
 		}
 		if (ring.empty() || parent == 0) return 2;
-		return nSCD3D12::RunServe(ring, parent);
+		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr);
 	}
 
 	int RunCompare(int argc, wchar_t **argv) {
@@ -177,8 +242,9 @@ int wmain(int argc, wchar_t **argv) {
 	else if (command == L"serve") result = RunServeCommand(argc, argv);
 	else if (command == L"compare") result = RunCompare(argc, argv);
 	if (result == 2) {
-		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
-		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>]");
+		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]"
+		          " [--relight <hour or azimuth,elevation>]");
+		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
 	CoUninitialize();

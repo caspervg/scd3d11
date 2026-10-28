@@ -46,21 +46,40 @@ namespace nSCD3D12 {
 		cGDriver12();
 		~cGDriver12();
 
+		// The sun the lighting pass relights the city with. SC4 turns its own sun with the camera, and so
+		// does this one: directions are relative to the view.
+		struct Sun {
+			// Degrees about world up, from the screen's left (where SC4's own sun stands) towards the far
+			// side of the scene.
+			float azimuth = 0.0f;
+			// Degrees above the horizon.
+			float elevation = 45.0f;
+			float color[3]{};
+			float ambient[3]{};
+		};
+
+		// Turns relighting on, before Create. Each frame is then relit with sun into a frame of its own,
+		// and the back buffer stays SC4's. Without it the back buffer is published as SC4 drew it.
+		void Relight(Sun const &sun);
+
 		// Creates the device. useWarp picks the software rasterizer (tests and machines without a GPU).
 		// A non-null adapter picks that GPU, so textures can be shared with a device on the same one.
 		bool Create(bool useWarp, LUID const *adapter = nullptr);
 
-		// The current back buffer as tightly packed RGBA rows, after waiting for the GPU.
+		// The frame Output() holds as tightly packed RGBA rows, after waiting for the GPU.
 		bool ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height);
 		ID3D12Device *Device() const;
 		ID3D12CommandQueue *Queue() const;
-		// The persistent back buffer every frame is drawn into, in the RENDER_TARGET state between calls.
-		ID3D12Resource *BackBuffer() const;
+		// The frame to publish, in the RENDER_TARGET state between calls: the relit frame, or the back
+		// buffer without relighting.
+		ID3D12Resource *Output() const;
 
 		// nSCDWire::ReplayHooks
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override;
 		bool Frame() override;
+		void OwnerBegin(nSCDWire::DrawOwner const &owner) override;
+		void OwnerEnd() override;
 
 		// cIGZUnknown. Lifetime is owned by the server, so reference counting is nominal.
 		bool QueryInterface(uint32_t riid, void **ppvObj) override;

@@ -46,6 +46,9 @@ namespace nSCD3D12 {
 				driver.Vertices(name, data, bytes);
 			}
 
+			void OwnerBegin(nSCDWire::DrawOwner const &owner) override { driver.OwnerBegin(owner); }
+			void OwnerEnd() override { driver.OwnerEnd(); }
+
 			bool Frame() override {
 				driver.Frame();
 				uint64_t const index = frame++;
@@ -183,20 +186,20 @@ namespace nSCD3D12 {
 			// Copies frame `index` into its shared texture once the shim is done with the frame that used it
 			// before, then tells the shim it is there.
 			void Publish(uint64_t index) {
-				ID3D12Resource *const backBuffer = driver.BackBuffer();
-				if (backBuffer == nullptr) return;
+				ID3D12Resource *const output = driver.Output();
+				if (output == nullptr) return;
 				WaitForCopies();
 				allocator->Reset();
 				list->Reset(allocator.Get(), nullptr);
 				ID3D12Resource *const target = textures[index % 2].Get();
 				D3D12_RESOURCE_BARRIER barriers[2]{};
 				barriers[0].Type = barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				barriers[0].Transition = {backBuffer, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+				barriers[0].Transition = {output, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
 				                          D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
 				barriers[1].Transition = {target, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COMMON,
 				                          D3D12_RESOURCE_STATE_COPY_DEST};
 				list->ResourceBarrier(2, barriers);
-				list->CopyResource(target, backBuffer);
+				list->CopyResource(target, output);
 				ID3D12Resource *const presented = swapChain ? swapBuffers[swapChain->GetCurrentBackBufferIndex()].Get() : nullptr;
 				D3D12_RESOURCE_BARRIER present{};
 				if (presented != nullptr) {
@@ -204,7 +207,7 @@ namespace nSCD3D12 {
 					present.Transition = {presented, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT,
 					                      D3D12_RESOURCE_STATE_COPY_DEST};
 					list->ResourceBarrier(1, &present);
-					list->CopyResource(presented, backBuffer);
+					list->CopyResource(presented, output);
 					std::swap(present.Transition.StateBefore, present.Transition.StateAfter);
 					list->ResourceBarrier(1, &present);
 				}
@@ -242,7 +245,7 @@ namespace nSCD3D12 {
 		};
 	}
 
-	int RunServe(std::wstring const &ringName, DWORD parentId) {
+	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight) {
 		HANDLE const parent = OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, FALSE, parentId);
 		if (parent == nullptr) {
 			std::puts("cannot open the game's process");
@@ -272,6 +275,7 @@ namespace nSCD3D12 {
 		}
 		LUID const adapter{control.adapterLow, control.adapterHigh};
 		cGDriver12 driver;
+		if (relight != nullptr) driver.Relight(*relight);
 		if (!driver.Create(false, &adapter)) {
 			std::puts("cannot create a Direct3D 12 device on the game's adapter");
 			return 1;
