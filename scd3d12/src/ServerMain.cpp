@@ -119,6 +119,12 @@ namespace {
 		std::printf("%s: %llu frames, %llu records, %llu images saved\n", ok ? "done" : error,
 		            static_cast<unsigned long long>(stats.frames), static_cast<unsigned long long>(stats.records),
 		            static_cast<unsigned long long>(hooks.saved));
+		for (size_t op = 1; op < static_cast<size_t>(nSCDWire::Op::Count); ++op) {
+			if (stats.opCounts[op] != 0) {
+				std::printf("  %-24s %llu\n", nSCDWire::OpName(static_cast<nSCDWire::Op>(op)),
+				            static_cast<unsigned long long>(stats.opCounts[op]));
+			}
+		}
 		std::fclose(file);
 		return ok ? 0 : 1;
 	}
