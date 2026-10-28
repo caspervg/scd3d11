@@ -48,3 +48,13 @@ The live stream and a recorded capture are the same bytes. Every capture replays
 5. **Address space.** Answered: worth it already. Big City Tutorial just after loading, SC4's own process: 884 MB
    virtual and 468 MB private with local drawing, 858 MB and 314 MB with Renderer=server, the 64 MB ring
    included. The shim still keeps a full Direct3D 11 device and every texture, so more is to come.
+
+## Status
+
+| | State |
+|---|---|
+| M0 | Done. `scripts/bench_sc4.py` runs the game unattended through its HTTP command listener |
+| M1 | Wire format, `Record=<file>`, `SCDReplay.exe` (Direct3D 11 reference images) and `SCD3D12Server.exe replay` done. The Direct3D 12 renderer is being ported |
+| M2 | `Renderer=server` works end to end: the stream goes through a 64 MB shared ring, frames come back through two shared textures and fences, and the shim falls back to drawing locally when the server stops. `ServerPresent=composition` presents from the server through DirectComposition |
+| M3 | Occupant inserts, removes and moves are streamed (plus a listing of every occupant once a city loads), and `DrawOwnerHooks` brackets every grid and view object draw with its owner. In a test session 78% of all draws were bracketed (the rest are UI, background and loading screens) and 99.97% of bracketed occupants matched the occupant records. Motion vectors come with the Direct3D 12 renderer |
+| M4 | Asset readers (DBPF, QFS, S3D, FSH, exemplars) in progress |
