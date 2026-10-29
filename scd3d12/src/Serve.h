@@ -28,4 +28,11 @@ namespace nSCD3D12 {
 	// second.
 	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats,
 	             SceneMode scene = SceneMode::Off, WorldLight::Options const *light = nullptr);
+
+	// Plays a capture into `serve` the way SCD3D11 streams the game, to try the live path offline. It stands in
+	// for the shim: it makes the shared ring, names the adapter, starts this program with serve and the given
+	// arguments, writes the capture into the ring and hands back each frame as copied out. With savePath it
+	// saves frame saveFrame (counting Flush calls from zero) as the shim would show it.
+	int RunFeed(std::wstring const &capture, std::wstring const &serveArguments, uint64_t saveFrame,
+	            std::wstring const &savePath);
 }

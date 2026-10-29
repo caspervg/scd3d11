@@ -49,6 +49,9 @@
 //   list: rays (sun shadows ray traced through the kept models and the terrain), terrain (smooth terrain
 //   normals), lamps (night lights), world (a sun that stands still in the world instead of turning with the
 //   camera), or none (the default) for the relighting of the draw lane alone.
+//   SCD3D12Server feed <capture.scdw> [--save <frame> <image.png>] [serve options]
+//       Plays a capture through the live path: starts serve with the options after the capture and streams the
+//       capture into it through a shared ring, as SCD3D11 does. --save saves that frame as the shim gets it.
 //   SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]
 //       Compares two images channel by channel. Exit code 0 when no channel differs by more than n.
 
@@ -538,6 +541,23 @@ namespace {
 		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats, scene, light ? &features : nullptr);
 	}
 
+	int RunFeedCommand(int argc, wchar_t **argv) {
+		if (argc < 3) return 2;
+		uint64_t saveFrame = 0;
+		std::wstring savePath, arguments;
+		for (int i = 3; i < argc; ++i) {
+			std::wstring const argument = argv[i];
+			if (argument == L"--save" && i + 2 < argc) {
+				saveFrame = _wtoi64(argv[i + 1]);
+				savePath = argv[i + 2];
+				i += 2;
+			} else {
+				arguments += (arguments.empty() ? L"\"" : L" \"") + argument + L"\"";
+			}
+		}
+		return nSCD3D12::RunFeed(argv[2], arguments, saveFrame, savePath);
+	}
+
 	int RunCompare(int argc, wchar_t **argv) {
 		if (argc < 4) return 2;
 		int tolerance = 0;
@@ -575,6 +595,7 @@ int wmain(int argc, wchar_t **argv) {
 	if (command == L"replay") result = RunReplay(argc, argv);
 	else if (command == L"serve") result = RunServeCommand(argc, argv);
 	else if (command == L"compare") result = RunCompare(argc, argv);
+	else if (command == L"feed") result = RunFeedCommand(argc, argv);
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
 		std::puts("                     [--relight <hour or azimuth,elevation> [--light rays,terrain,lamps,world|none]]"
@@ -585,6 +606,7 @@ int wmain(int argc, wchar_t **argv) {
 		          " [--present window|composition|surface [--into <window>]] [--fps <n>]");
 		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun> [--light <features>]]"
 		          " [--stats on] [--scene substitute|check|owned]");
+		std::puts("SCD3D12Server feed <capture.scdw> [--save <frame> <image.png>] [serve options]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
 	CoUninitialize();

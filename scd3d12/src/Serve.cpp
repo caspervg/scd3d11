@@ -17,18 +17,22 @@
 #include "cGDriver12.h"
 #include "OwnedScene.h"
 #include "SceneLane.h"
+#include "wire/ImageFile.h"
 #include "wire/SharedRing.h"
 #include "wire/WireReplay.h"
 
 #include <dcomp.h>
 #include <dxgi1_4.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -429,5 +433,194 @@ namespace nSCD3D12 {
 		std::fflush(stdout);
 		CloseHandle(parent);
 		return ok ? 0 : 1;
+	}
+
+	namespace {
+		// The shim's side of the frames in RunFeed: signals each frame consumed as soon as it is there, and copies
+		// one of them out first when asked.
+		class FeedFrames {
+		public:
+			FeedFrames(nSCDWire::RingControl &control, ID3D12Device *device, uint64_t saveFrame, std::wstring savePath)
+				: control(control), device(device), saveFrame(saveFrame), savePath(std::move(savePath)),
+				  event(CreateEventW(nullptr, FALSE, FALSE, nullptr)) {}
+			~FeedFrames() { CloseHandle(event); }
+
+			void Run(std::atomic<bool> const &done) {
+				while (!done.load(std::memory_order_acquire)) {
+					uint32_t const now = control.frameGeneration.load(std::memory_order_acquire);
+					if (now != generation) Open(now);
+					uint64_t const shown = frames ? frames->GetCompletedValue() : 0;
+					if (shown <= consumed) {
+						// Woken by the next frame, or now and then to look for new fences and the end.
+						if (frames) frames->SetEventOnCompletion(consumed + 1, event);
+						WaitForSingleObject(event, 5);
+						continue;
+					}
+					// Frame n is there once the fence reaches n + 1, and stays until it is signalled consumed.
+					if (!savePath.empty() && !saved && shown > saveFrame && consumed <= saveFrame) {
+						Save(textures[saveFrame % 2].Get());
+						saved = true;
+					}
+					uint64_t const upTo = savePath.empty() || saved ? shown : (std::min)(shown, saveFrame);
+					if (upTo > consumed) {
+						consumed = upTo;
+						consumedFence->Signal(consumed);
+					}
+				}
+			}
+
+			bool saved = false;
+
+		private:
+			void Open(uint32_t now) {
+				generation = now;
+				auto const handle = [](uint64_t value) { return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(value)); };
+				frames.Reset();
+				consumedFence.Reset();
+				for (int i = 0; i < 2; ++i) {
+					textures[i].Reset();
+					device->OpenSharedHandle(handle(control.frameTextures[i]), IID_PPV_ARGS(&textures[i]));
+				}
+				device->OpenSharedHandle(handle(control.consumedFence), IID_PPV_ARGS(&consumedFence));
+				device->OpenSharedHandle(handle(control.frameFence), IID_PPV_ARGS(&frames));
+				// New fences start at 0, so the frames already there get signalled consumed again.
+				consumed = 0;
+			}
+
+			void Save(ID3D12Resource *texture) {
+				if (texture == nullptr) return;
+				ComPtr<ID3D12CommandQueue> queue;
+				ComPtr<ID3D12CommandAllocator> allocator;
+				ComPtr<ID3D12GraphicsCommandList> list;
+				ComPtr<ID3D12Fence> fence;
+				ComPtr<ID3D12Resource> readback;
+				D3D12_COMMAND_QUEUE_DESC const queueDescription{D3D12_COMMAND_LIST_TYPE_DIRECT};
+				D3D12_RESOURCE_DESC const description = texture->GetDesc();
+				D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+				uint64_t bytes = 0;
+				device->GetCopyableFootprints(&description, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
+				D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_READBACK};
+				D3D12_RESOURCE_DESC buffer{};
+				buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+				buffer.Width = bytes;
+				buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
+				buffer.SampleDesc.Count = 1;
+				buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+				if (FAILED(device->CreateCommandQueue(&queueDescription, IID_PPV_ARGS(&queue))) ||
+				    FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
+				    FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+				                                     IID_PPV_ARGS(&list))) ||
+				    FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) ||
+				    FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+				                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback)))) {
+					return;
+				}
+				D3D12_TEXTURE_COPY_LOCATION const to{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {footprint}};
+				D3D12_TEXTURE_COPY_LOCATION from{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+				from.SubresourceIndex = 0;
+				list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+				list->Close();
+				ID3D12CommandList *const lists[]{list.Get()};
+				queue->ExecuteCommandLists(1, lists);
+				queue->Signal(fence.Get(), 1);
+				HANDLE const event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+				fence->SetEventOnCompletion(1, event);
+				WaitForSingleObject(event, INFINITE);
+				CloseHandle(event);
+				uint8_t *mapped = nullptr;
+				if (FAILED(readback->Map(0, nullptr, reinterpret_cast<void **>(&mapped)))) return;
+				uint32_t const width = static_cast<uint32_t>(description.Width), height = description.Height;
+				std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
+				for (uint32_t y = 0; y < height; ++y) {
+					std::memcpy(rgba.data() + static_cast<size_t>(y) * width * 4,
+					            mapped + footprint.Offset + static_cast<size_t>(y) * footprint.Footprint.RowPitch, width * 4);
+				}
+				readback->Unmap(0, nullptr);
+				bool const ok = nSCDWire::SavePng(savePath.c_str(), width, height, rgba.data());
+				std::printf("feed: frame %llu %s\n", static_cast<unsigned long long>(saveFrame), ok ? "saved" : "not saved");
+				std::fflush(stdout);
+			}
+
+			nSCDWire::RingControl &control;
+			ID3D12Device *device;
+			uint64_t saveFrame;
+			std::wstring savePath;
+			uint32_t generation = 0;
+			uint64_t consumed = 0;
+			ComPtr<ID3D12Resource> textures[2];
+			ComPtr<ID3D12Fence> frames, consumedFence;
+			HANDLE event;
+		};
+	}
+
+	int RunFeed(std::wstring const &capture, std::wstring const &serveArguments, uint64_t saveFrame,
+	            std::wstring const &savePath) {
+		std::FILE *file = nullptr;
+		if (_wfopen_s(&file, capture.c_str(), L"rb") != 0 || file == nullptr) {
+			std::puts("feed: cannot open the capture");
+			return 1;
+		}
+		ComPtr<IDXGIFactory1> factory;
+		ComPtr<IDXGIAdapter1> adapter;
+		ComPtr<ID3D12Device> device;
+		DXGI_ADAPTER_DESC1 adapterDescription{};
+		if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || FAILED(factory->EnumAdapters1(0, &adapter)) ||
+		    FAILED(adapter->GetDesc1(&adapterDescription)) ||
+		    FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
+			std::puts("feed: no Direct3D 12 device");
+			std::fclose(file);
+			return 1;
+		}
+		DWORD const self = GetCurrentProcessId();
+		std::wstring const name = L"Local\\SCD3D12-feed-" + std::to_wstring(self);
+		nSCDWire::SharedRing ring;
+		if (!ring.Create(name, 64ull << 20)) {
+			std::puts("feed: cannot create the shared ring");
+			std::fclose(file);
+			return 1;
+		}
+		nSCDWire::RingControl &control = *ring.Control();
+		control.presentMode = nSCDWire::kPresentCopy;
+		control.adapterLow = adapterDescription.AdapterLuid.LowPart;
+		control.adapterHigh = adapterDescription.AdapterLuid.HighPart;
+		control.adapterSet.store(1, std::memory_order_release);
+
+		wchar_t program[MAX_PATH]{};
+		GetModuleFileNameW(nullptr, program, MAX_PATH);
+		std::wstring command = L"\"" + std::wstring(program) + L"\" serve --ring " + name + L" --parent " +
+		                       std::to_wstring(self) + L" " + serveArguments;
+		STARTUPINFOW startup{sizeof(startup)};
+		PROCESS_INFORMATION info{};
+		if (!CreateProcessW(program, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &info)) {
+			std::puts("feed: cannot start serve");
+			std::fclose(file);
+			return 1;
+		}
+		CloseHandle(info.hThread);
+		auto const alive = [&] { return WaitForSingleObject(info.hProcess, 0) == WAIT_TIMEOUT; };
+
+		std::atomic<bool> done{false};
+		FeedFrames frames(control, device.Get(), saveFrame, savePath);
+		std::thread consumer([&] { frames.Run(done); });
+		auto const start = std::chrono::steady_clock::now();
+		std::vector<uint8_t> chunk(1 << 20);
+		uint64_t total = 0;
+		bool written = true;
+		for (size_t size; written && (size = std::fread(chunk.data(), 1, chunk.size(), file)) != 0;) {
+			written = ring.Write(chunk.data(), size, alive);
+			total += size;
+		}
+		std::fclose(file);
+		ring.Close();
+		WaitForSingleObject(info.hProcess, INFINITE);
+		DWORD code = 1;
+		GetExitCodeProcess(info.hProcess, &code);
+		CloseHandle(info.hProcess);
+		done.store(true, std::memory_order_release);
+		consumer.join();
+		std::printf("feed: %.1f MB in %.1f s, serve %s with %lu\n", static_cast<double>(total) / (1 << 20),
+		            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+		            written ? "exited" : "stopped reading and exited", code);
+		return written && code == 0 && (savePath.empty() || frames.saved) ? 0 : 1;
 	}
 }
