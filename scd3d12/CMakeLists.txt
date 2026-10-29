@@ -11,6 +11,7 @@ add_executable(SCD3D12Server
         src/Dlss.cpp
         src/DlssTest.cpp
         src/OwnedScene.cpp
+        src/WorldLight.cpp
         "${SCD3D11_SOURCE}/wire/SharedRing.cpp"
         src/cGDriver12.cpp
         "${SCD3D11_SOURCE}/wire/ImageFile.cpp"
@@ -55,6 +56,42 @@ add_custom_command(TARGET SCD3D12Server POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${STREAMLINE_RUNTIME} "$<TARGET_FILE_DIR:SCD3D12Server>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${streamline_SOURCE_DIR}/license.txt"
                 "$<TARGET_FILE_DIR:SCD3D12Server>/streamline.license.txt")
+
+# The world light's shaders use ray queries (shader model 6.5), which only DXC compiles. The Windows SDK's dxc.exe
+# turns them into headers at build time, so the server needs no compiler next to it. Without DXC the server
+# builds without them and keeps the screen-space shadow trace.
+set(SCD3D12_PROGRAM_FILES_X86 "ProgramFiles(x86)")
+file(GLOB SCD3D12_SDK_DXC "$ENV{${SCD3D12_PROGRAM_FILES_X86}}/Windows Kits/10/bin/10.*/x64/dxc.exe")
+list(SORT SCD3D12_SDK_DXC COMPARE NATURAL ORDER DESCENDING)
+set(SCD3D12_SDK_BIN)
+if (SCD3D12_SDK_DXC)
+    list(GET SCD3D12_SDK_DXC 0 SCD3D12_SDK_DXC_NEWEST)
+    get_filename_component(SCD3D12_SDK_BIN "${SCD3D12_SDK_DXC_NEWEST}" DIRECTORY)
+endif ()
+find_program(SCD3D12_DXC dxc HINTS ${SCD3D12_SDK_BIN})
+if (SCD3D12_DXC)
+    set(SCD3D12_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+    set(SCD3D12_WORLD_LIGHT_HLSL "${CMAKE_CURRENT_SOURCE_DIR}/src/WorldLight.hlsl")
+    set(SCD3D12_SHADER_HEADERS)
+    foreach (entry FullScreenVS:vs_6_5 TraceSunPS:ps_6_5 EmissiveCS:cs_6_5)
+        string(REPLACE ":" ";" parts "${entry}")
+        list(GET parts 0 name)
+        list(GET parts 1 profile)
+        set(header "${SCD3D12_SHADER_DIR}/${name}.h")
+        add_custom_command(OUTPUT "${header}"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${SCD3D12_SHADER_DIR}"
+                COMMAND "${SCD3D12_DXC}" -nologo -O3 -T ${profile} -E ${name} -Vn k${name} -Fh "${header}"
+                        "${SCD3D12_WORLD_LIGHT_HLSL}"
+                DEPENDS "${SCD3D12_WORLD_LIGHT_HLSL}"
+                COMMENT "DXC ${name}")
+        list(APPEND SCD3D12_SHADER_HEADERS "${header}")
+    endforeach ()
+    target_sources(SCD3D12Server PRIVATE ${SCD3D12_SHADER_HEADERS})
+    target_include_directories(SCD3D12Server PRIVATE "${SCD3D12_SHADER_DIR}")
+    target_compile_definitions(SCD3D12Server PRIVATE SCD3D12_RAY_SHADERS)
+else ()
+    message(STATUS "SCD3D12Server: no dxc.exe, ray traced shadows left out")
+endif ()
 
 # DBPFKit reads the formats. It builds as C++23 in its own directory, and only the targets that include its
 # headers need C++23 too. EXCLUDE_FROM_ALL keeps its tests and Catch2 out of the normal build.
