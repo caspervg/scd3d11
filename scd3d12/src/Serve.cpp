@@ -113,6 +113,7 @@ namespace nSCD3D12 {
 				driver.Frame();
 				if (scene) scene->EndFrame(frame, nullptr);
 				if (owned) owned->EndFrame();
+				control.serverOwnsView.store(owned && owned->Owning() ? 1u : 0u, std::memory_order_release);
 				// Between frames no bracket is open, so the lane can start here.
 				if (!scene && storeReady.load(std::memory_order_acquire)) {
 					scene = std::make_unique<SceneLane>(driver, store, sceneMode == SceneMode::Check);

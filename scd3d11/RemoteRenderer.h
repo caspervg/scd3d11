@@ -46,6 +46,10 @@ namespace nSCD3D11 {
 		bool Composite(HWND window);
 		// Once per Flush, whether or not CopyFrame ran, so the server can reuse the texture of `frame`.
 		void EndFrame(ID3D11Device *device, ID3D11DeviceContext *context, uint64_t frame);
+		// Whether the server draws the static view itself, as of the last frame it read.
+		bool ServerOwnsView() const {
+			return active && ring.Control() != nullptr && ring.Control()->serverOwnsView.load(std::memory_order_acquire) != 0;
+		}
 
 	private:
 		bool ServerAlive() const;

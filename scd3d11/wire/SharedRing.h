@@ -60,7 +60,10 @@ namespace nSCDWire {
 		uint64_t compositionSurface;
 		std::atomic<uint32_t> compositionGeneration;
 		uint32_t presentMode;
-		uint32_t reserved[4];
+		// Set by the server while it draws the static view itself (ServerScene=owned), so the shim may leave out the
+		// game's own draws of what the server keeps (ServerSkipModels).
+		std::atomic<uint32_t> serverOwnsView;
+		uint32_t reserved[3];
 	};
 	constexpr uint32_t kPresentCopy = 0;
 	constexpr uint32_t kPresentComposition = 1;

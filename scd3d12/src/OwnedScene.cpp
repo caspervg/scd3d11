@@ -2258,6 +2258,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		d.driver.SetCapture(this, d.owning);
 	}
 
+	bool OwnedScene::Owning() const { return impl->owning; }
+
 	void OwnedScene::SetJitter(float x, float y) {
 		impl->jitter[0] = x;
 		impl->jitter[1] = y;

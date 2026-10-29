@@ -792,6 +792,7 @@ namespace nSCD3D11 {
 
 		// Hands drawing to SCD3D12Server. The renderer must outlive the driver.
 		void SetRemote(RemoteRenderer *renderer) { remote = renderer; }
+		bool RemoteOwnsView() const { return RemoteDrawing() && remote->ServerOwnsView(); }
 		void BackBufferSize(int32_t &width, int32_t &height) const {
 			width = windowWidth;
 			height = windowHeight;

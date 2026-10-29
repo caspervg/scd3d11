@@ -72,6 +72,8 @@ namespace nSCD3D12 {
 		void VideoMode();
 		// After the driver submitted the frame.
 		void EndFrame();
+		// Whether the next frame's static view is the scene's own.
+		bool Owning() const;
 		void PrintTotals() const;
 
 		// What a temporal upscaler or frame generator needs of the owned view, for each frame the scene drew.
