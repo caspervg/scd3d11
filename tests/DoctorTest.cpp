@@ -162,5 +162,19 @@ int main() {
 		assert(Has(findings, Severity::Note, "Overlays in the game: Steam overlay"));
 		assert(Has(findings, Severity::Warning, "SC4 Painter draws its ground fills"));
 	}
+	{
+		// Plugin versions that predate SCD3D11 support. Equal and newer versions, and DLLs without a
+		// version resource, pass.
+		Environment environment = Clean();
+		environment.modules = {{"C:\\SC4\\Plugins\\SC4GraphicsOptions.dll", "SC4GraphicsOptions", "1.3.0.0"},
+		                       {"C:\\SC4\\Plugins\\SC4CPUOptions.dll", "SC4CPUOptions", "1.1.0.0"},
+		                       {"C:\\SC4\\Plugins\\SC4RenderServices.dll", "SC4RenderServices", ""}};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Warning, "SC4GraphicsOptions 1.3.0.0 is older than 1.4.1"));
+		assert(!Has(findings, Severity::Warning, "SC4CPUOptions"));
+		assert(!Has(findings, Severity::Warning, "SC4RenderServices"));
+		environment.modules[0].version = "1.10.0.0";
+		assert(!Has(Diagnose(environment), Severity::Warning, "older than"));
+	}
 	return 0;
 }
