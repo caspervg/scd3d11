@@ -72,9 +72,24 @@ namespace nSCD3D11::Doctor {
 		std::optional<Size> gameSize;
 		bool gameFullScreen = false;
 		bool gameVersion641 = true;
+		// What SCD3D11 did when SC4 asked for a full-screen size the screen lacks. Empty when it did not.
+		std::string screenModeWarning;
+		// Where Windows lives, whose own DLLs are never a plugin's duplicate.
+		std::string windowsFolder;
 	};
 
 	std::vector<Finding> Diagnose(Environment const &environment);
+
+	// Whether the screen offers a size for full screen. True when the list of sizes is unknown.
+	bool ScreenOffers(std::vector<Size> const &modes, uint32_t width, uint32_t height);
+	// The largest sizes the screen offers, for a message.
+	std::string LargestSizes(std::vector<Size> modes);
+
+	// Called at the end of cGDriver::Init, just before SC4 picks its screen mode. Full screen without a
+	// size from -r or SC4GraphicsOptions gets the screen's own size. A size or colour depth the screen lacks
+	// would make SC4 close without a word, so it gets the screen's own size too and the report says why.
+	// When SC4 does not take the new size, a message box says why first, since no game window exists yet.
+	void CheckRequestedScreenMode();
 
 	// A DLL some check is about, whose version is always worth logging.
 	bool IsWatched(std::string const &path);

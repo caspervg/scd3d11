@@ -134,6 +134,16 @@ namespace nSCD3D11::Doctor {
 			return nullptr;
 		}
 
+		// Full screen switches the monitor to the requested size, which only works for sizes the monitor
+		// offers.
+		void CheckFullScreenSize(Environment const &environment, uint32_t width, uint32_t height, char const *source,
+		                         std::vector<Finding> &findings) {
+			if (ScreenOffers(environment.displayModes, width, height)) return;
+			findings.push_back({Severity::Warning, Format(
+				"%s asks for full screen at %ux%u, a size this screen does not offer, so SC4 closes without a "
+				"message. The screen offers %s.", source, width, height, LargestSizes(environment.displayModes).c_str())});
+		}
+
 		std::string Value(std::map<std::string, std::string> const &ini, char const *key) {
 			auto const found = ini.find(Lower(key));
 			return found == ini.end() ? std::string() : found->second;
@@ -147,22 +157,12 @@ namespace nSCD3D11::Doctor {
 		void CheckDriver(Environment const &environment, std::vector<Switch> const &switches,
 		                 std::vector<Finding> &findings) {
 			if (!environment.driverIsSCD3D11.has_value() || *environment.driverIsSCD3D11) return;
-			std::string reason = "Another plugin may have picked a different driver.";
-			for (Switch const &entry : switches) {
-				std::string const value = Lower(entry.value);
-				if (entry.name == "d" && value != "directx" && value != "dx") {
-					reason = Format("%s picks it. Remove that switch.", entry.token.c_str());
-				}
-			}
-			if (environment.graphicsOptions) {
-				std::string const driver = Value(*environment.graphicsOptions, "Driver");
-				if (!driver.empty() && Lower(driver) != "directx") {
 			// SC4's own drivers live in the game exe and are told apart by class ID.
 			constexpr uint32_t kDirectX = 0xBADB6906, kOpenGL = 0xC4554841, kSoftware = 0x7ACA35C6;
 			uint32_t const driverClass = environment.activeDriverClass;
 			std::string name = environment.activeDriverModule.empty() ? std::string("another driver")
 			                                                          : FileName(environment.activeDriverModule);
-					reason = Format("SC4GraphicsOptions.ini has Driver=%s. Set it to DirectX.", driver.c_str());
+			std::string reason = "Another plugin may have picked a different driver.";
 			if (environment.activeDriverBuiltIn) {
 				name = driverClass == kSoftware ? "SC4's own software driver"
 				       : driverClass == kOpenGL ? "SC4's own OpenGL driver"
@@ -174,6 +174,16 @@ namespace nSCD3D11::Doctor {
 					reason = "SCD3D11 could not start Direct3D 11. The lines above in this log say why.";
 				}
 			}
+			for (Switch const &entry : switches) {
+				std::string const value = Lower(entry.value);
+				if (entry.name == "d" && value != "directx" && value != "dx") {
+					reason = Format("%s picks it. Remove that switch.", entry.token.c_str());
+				}
+			}
+			if (environment.graphicsOptions) {
+				std::string const driver = Value(*environment.graphicsOptions, "Driver");
+				if (!driver.empty() && Lower(driver) != "directx") {
+					reason = Format("SC4GraphicsOptions.ini has Driver=%s. Set it to DirectX.", driver.c_str());
 				}
 			}
 			findings.push_back({Severity::Problem, Format("SimCity 4 is drawing with %s, not SCD3D11. %s",
@@ -220,6 +230,13 @@ namespace nSCD3D11::Doctor {
 				findings.push_back({Severity::Warning,
 				                    "SC4GraphicsOptions.ini asks for 16-bit colour, and SCD3D11 only has 32-bit "
 				                    "screen modes. Set ColorDepth=32."});
+			}
+			if (Lower(mode) == "fullscreen") {
+				unsigned width = 0, height = 0;
+				if (sscanf_s(Value(ini, "WindowWidth").c_str(), "%u", &width) == 1 &&
+				    sscanf_s(Value(ini, "WindowHeight").c_str(), "%u", &height) == 1) {
+					CheckFullScreenSize(environment, width, height, "SC4GraphicsOptions.ini", findings);
+				}
 			}
 			if (Lower(forceDraw) == "true" || forceDraw == "1") {
 				findings.push_back({Severity::Note,
@@ -290,6 +307,8 @@ namespace nSCD3D11::Doctor {
 					if (StartsWith(entry.token, "-r:") || StartsWith(entry.token, "-R:")) {
 						findings.push_back({Severity::Warning, Format(
 							"SC4 ignores %s. Write it without the colon: -r%s", entry.token.c_str(), entry.value.c_str())});
+						// Already explained, so the size SC4 ended up with is not compared with it.
+						resolution.reset();
 					} else if (!resolution) {
 						findings.push_back({Severity::Warning, Format(
 							"SC4 ignores %s. It expects -r<width>x<height>x32, for example -r1920x1080x32.",
@@ -307,8 +326,6 @@ namespace nSCD3D11::Doctor {
 						"%s no longer does anything. Live shadows are -LiveShadows:on, and -NetworkShadowMasks:on "
 						"keeps the flat network shadows.", entry.token.c_str())});
 				} else if (!IsKnown(entry.name)) {
-						// Already explained, so the size SC4 ended up with is not compared with it.
-						resolution.reset();
 					bool scvk = false;
 					for (char const *name : kScvkSwitches) scvk |= Lower(name) == entry.name;
 					char const *const closest = Closest(entry.name);
@@ -343,16 +360,11 @@ namespace nSCD3D11::Doctor {
 				findings.push_back({Severity::Warning, Format("A %ux%u window is larger than the %ux%u screen.", width,
 				                                              height, environment.screen.width, environment.screen.height)});
 			}
+			if (fullScreen) CheckFullScreenSize(environment, width, height, resolutionToken.c_str(), findings);
 			if (!environment.gameSize ||
 			    (environment.gameSize->width == width && environment.gameSize->height == height)) return;
-			std::string hint;
-			bool const listed = std::any_of(environment.displayModes.begin(), environment.displayModes.end(),
-			                                [&](Size mode) { return mode.width == width && mode.height == height; });
-			if (environment.gameFullScreen && !listed) {
-				hint = Format(" This screen has no %ux%u mode. Pick one Windows lists under display resolution.", width, height);
-			} else if (!customResolution) {
-				hint = " Sizes other than SC4's standard ones also need -CustomResolution:enabled.";
-			}
+			std::string const hint =
+				customResolution ? "" : " Sizes other than SC4's standard ones also need -CustomResolution:enabled.";
 			findings.push_back({Severity::Warning, Format("SC4 runs at %ux%u, not the %ux%u that %s asks for.%s",
 			                                              environment.gameSize->width, environment.gameSize->height,
 			                                              width, height, resolutionToken.c_str(), hint.c_str())});
@@ -507,6 +519,9 @@ namespace nSCD3D11::Doctor {
 			if (!other.empty()) {
 				findings.push_back({Severity::Note, "Windows compatibility settings on SimCity 4.exe: " + other});
 			}
+			if (!environment.screenModeWarning.empty()) {
+				findings.push_back({Severity::Warning, environment.screenModeWarning});
+			}
 			if (!environment.gameVersion641) {
 				findings.push_back({Severity::Warning, "This is not SimCity 4 version 1.1.641. Live shadows and the "
 				                                       "other SCD3D11 features that patch the game stay off."});
@@ -527,6 +542,22 @@ namespace nSCD3D11::Doctor {
 
 	bool IsNewer(std::string const &version, std::string const &than) {
 		return OlderThan(than, version.c_str());
+	}
+
+	bool ScreenOffers(std::vector<Size> const &modes, uint32_t width, uint32_t height) {
+		return modes.empty() ||
+		       std::any_of(modes.begin(), modes.end(), [&](Size mode) { return mode.width == width && mode.height == height; });
+	}
+
+	std::string LargestSizes(std::vector<Size> modes) {
+		std::sort(modes.begin(), modes.end(), [](Size a, Size b) {
+			return uint64_t(a.width) * a.height > uint64_t(b.width) * b.height;
+		});
+		std::string text;
+		for (size_t index = 0; index < modes.size() && index < 8; ++index) {
+			text += (text.empty() ? "" : ", ") + std::to_string(modes[index].width) + "x" + std::to_string(modes[index].height);
+		}
+		return text;
 	}
 
 	bool IsWatched(std::string const &path) {

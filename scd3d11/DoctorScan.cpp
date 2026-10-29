@@ -20,6 +20,7 @@
 #include "cIGZGDriver.h"
 #include <cGZDisplayMetrics.h>
 #include <cIGZCmdLine.h>
+#include <cIGZFrameWork.h>
 #include <cIGZGraphicSystem.h>
 #include <cIGZGraphicSystem2.h>
 #include <cIGZMessage2.h>
@@ -27,8 +28,8 @@
 #include <cIGZMessageTarget2.h>
 #include <cRZBaseString.h>
 
-#include <exception>
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -41,6 +42,9 @@
 
 namespace nSCD3D11::Doctor {
 	namespace {
+		// Set when CheckRequestedScreenMode replaced a full-screen size the screen lacks, for the report.
+		std::string gScreenModeWarning;
+
 		std::string Utf8(std::wstring_view text) {
 			if (text.empty()) return {};
 			int const size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0,
@@ -134,16 +138,29 @@ namespace nSCD3D11::Doctor {
 				HMODULE const owner = ModuleAt(*reinterpret_cast<void **>(driver));
 				environment.driverIsSCD3D11 = owner != nullptr && owner == ModuleAt(reinterpret_cast<void *>(&Run));
 				environment.activeDriverModule = Utf8(ModulePath(owner));
+				environment.activeDriverClass = driver->GetGZCLSID();
+				environment.activeDriverBuiltIn = owner != nullptr && owner == GetModuleHandleW(nullptr);
 			}
 			cIGZGraphicSystemPtr graphics;
 			if (graphics) {
 				cGZDisplayMetrics metrics{};
-				environment.activeDriverClass = driver->GetGZCLSID();
-				environment.activeDriverBuiltIn = owner != nullptr && owner == GetModuleHandleW(nullptr);
 				graphics->GetGameMetrics(metrics);
 				if (metrics.width != 0) environment.gameSize = Size{metrics.width, metrics.height};
 				environment.gameFullScreen = graphics->IsFullScreenMode();
 			}
+		}
+
+		// The sizes Windows offers in 32-bit colour, the same list SCD3D11 gives SC4 for full screen.
+		std::vector<Size> DisplayModes() {
+			DEVMODEW mode{};
+			mode.dmSize = sizeof(mode);
+			std::set<std::pair<uint32_t, uint32_t>> sizes;
+			for (DWORD index = 0; EnumDisplaySettingsW(nullptr, index, &mode); ++index) {
+				if (mode.dmBitsPerPel >= 24) sizes.emplace(mode.dmPelsWidth, mode.dmPelsHeight);
+			}
+			std::vector<Size> modes;
+			for (auto const &[width, height] : sizes) modes.push_back(Size{width, height});
+			return modes;
 		}
 
 		Environment Collect(cIGZCmdLine *commandLine) {
@@ -177,16 +194,13 @@ namespace nSCD3D11::Doctor {
 			if (GetEnvironmentVariableW(L"__COMPAT_LAYER", layer, 512) < 512) environment.compatibilityLayer = Utf8(layer);
 			environment.graphicsOptions = ReadGraphicsOptions();
 
-			DEVMODEW mode{};
-			mode.dmSize = sizeof(mode);
-			std::set<std::pair<uint32_t, uint32_t>> sizes;
-			for (DWORD index = 0; EnumDisplaySettingsW(nullptr, index, &mode); ++index) {
-				if (mode.dmBitsPerPel >= 24) sizes.emplace(mode.dmPelsWidth, mode.dmPelsHeight);
-			}
-			for (auto const &[width, height] : sizes) environment.displayModes.push_back(Size{width, height});
+			environment.displayModes = DisplayModes();
+			environment.screenModeWarning = gScreenModeWarning;
 			environment.screen = Size{static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN)),
 			                          static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN))};
 			environment.gameVersion641 = IsGameVersion641();
+			wchar_t windowsFolder[MAX_PATH]{};
+			if (GetWindowsDirectoryW(windowsFolder, MAX_PATH) != 0) environment.windowsFolder = Utf8(windowsFolder);
 			ReadDriver(environment);
 			return environment;
 		}
@@ -199,8 +213,6 @@ namespace nSCD3D11::Doctor {
 		class ProblemDialog final : public cIGZMessageTarget2 {
 		public:
 			bool QueryInterface(uint32_t riid, void **object) override {
-			wchar_t windowsFolder[MAX_PATH]{};
-			if (GetWindowsDirectoryW(windowsFolder, MAX_PATH) != 0) environment.windowsFolder = Utf8(windowsFolder);
 				if (riid != GZIID_cIGZUnknown && riid != static_cast<uint32_t>(GZCLSID::kcIGZMessageTarget2)) {
 					*object = nullptr;
 					return false;
@@ -330,6 +342,11 @@ namespace nSCD3D11::Doctor {
 			}
 		}
 
+		std::string Label(Module const &module) {
+			if (module.product.empty() && module.version.empty()) return "no version info";
+			return module.product + (module.product.empty() || module.version.empty() ? "" : " ") + module.version;
+		}
+
 		// The driver, the screen and the DLLs the checks know about, with their versions, so every log
 		// says what a player runs. Doctor=on adds every other DLL and setting the checks looked at.
 		void LogInventory(Environment const &environment, bool everything) {
@@ -342,11 +359,6 @@ namespace nSCD3D11::Doctor {
 			Log(LogCategory::Doctor, "driver in use: %s", environment.activeDriverModule.empty()
 				                                              ? "unknown" : environment.activeDriverModule.c_str());
 			if (environment.gameSize) {
-		std::string Label(Module const &module) {
-			if (module.product.empty() && module.version.empty()) return "no version info";
-			return module.product + (module.product.empty() || module.version.empty() ? "" : " ") + module.version;
-		}
-
 				Log(LogCategory::Doctor, "game screen: %ux%u %s", environment.gameSize->width,
 				    environment.gameSize->height, environment.gameFullScreen ? "full screen" : "windowed");
 			}
@@ -363,6 +375,65 @@ namespace nSCD3D11::Doctor {
 				}
 			}
 		}
+	}
+
+	void CheckRequestedScreenMode() {
+		cIGZGraphicSystemPtr graphics;
+		if (!graphics) return;
+		cGZDisplayMetrics requested{};
+		graphics->GetGameMetrics(requested);
+		bool const fullScreen = graphics->IsFullScreenMode();
+		Log(LogCategory::Doctor, "SC4 asks for %ux%u in %u-bit colour, %s", requested.width, requested.height,
+		    requested.bitDepth, fullScreen ? "full screen" : "in a window");
+		if (!fullScreen) return;
+
+		// A size from -r or SC4GraphicsOptions is the player's choice. Without one, SC4 uses the size it
+		// saved last time, 1024x768 at first, where the screen's own size is what a player expects.
+		bool sizeGiven = GetModuleHandleW(L"SC4GraphicsOptions.dll") != nullptr;
+		cIGZFrameWork *const framework = RZGetFrameWork();
+		cIGZCmdLine *const commandLine = framework != nullptr ? framework->CommandLine() : nullptr;
+		for (uint32_t index = 1; commandLine != nullptr && index < commandLine->argc(); ++index) {
+			char const *const argument = commandLine->argv(static_cast<int32_t>(index));
+			sizeGiven |= argument != nullptr && (argument[0] == '-') && (argument[1] == 'r' || argument[1] == 'R') &&
+			             (isdigit(static_cast<unsigned char>(argument[2])) || argument[2] == ':');
+		}
+		std::vector<Size> const modes = DisplayModes();
+		bool const offered = requested.bitDepth == 32 && ScreenOffers(modes, requested.width, requested.height);
+		if (offered && sizeGiven) return;
+
+		DEVMODEW current{};
+		current.dmSize = sizeof(current);
+		if (!EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &current)) return;
+		cGZDisplayMetrics wanted = requested;
+		wanted.width = current.dmPelsWidth;
+		wanted.height = current.dmPelsHeight;
+		wanted.bitDepth = 32;
+		if (wanted.width == requested.width && wanted.height == requested.height && requested.bitDepth == 32) return;
+		bool const changed = graphics->PreInitSetDesiredGameResolution(wanted);
+
+		char text[1024];
+		if (offered) {
+			Log(LogCategory::Doctor, "full screen without a size: %s the screen's own %ux%u instead of SC4's saved %ux%u",
+			    changed ? "using" : "could not switch to", wanted.width, wanted.height, requested.width, requested.height);
+			return;
+		}
+		if (changed) {
+			sprintf_s(text, "SimCity 4 asked for full screen at %ux%u in %u-bit colour, which this screen does not offer. "
+			          "SCD3D11 used the screen's own %ux%u instead, where SC4 would have closed without a message. The "
+			          "screen offers %s. Change -r on the command line, or WindowWidth, WindowHeight and ColorDepth in "
+			          "SC4GraphicsOptions.ini.", requested.width, requested.height, requested.bitDepth, wanted.width,
+			          wanted.height, LargestSizes(modes).c_str());
+			Log(LogCategory::Doctor, "full screen at %ux%u is not offered, using %ux%u instead (the report below says more)",
+			    requested.width, requested.height, wanted.width, wanted.height);
+			gScreenModeWarning = text;
+			return;
+		}
+		sprintf_s(text, "SimCity 4 asks for full screen at %ux%u in %u-bit colour, which this screen does not offer, so "
+		          "the game closes without a message. The screen offers %s. Change -r on the command line, or "
+		          "WindowWidth, WindowHeight and ColorDepth in SC4GraphicsOptions.ini.", requested.width,
+		          requested.height, requested.bitDepth, LargestSizes(modes).c_str());
+		Log(LogCategory::Doctor, "problem: %s", text);
+		if (Settings::Get().doctorDialog) MessageBoxA(nullptr, text, "SCD3D11", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
 	}
 
 	void Run(cIGZCmdLine *commandLine) {
