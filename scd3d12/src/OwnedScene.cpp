@@ -659,8 +659,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::unordered_map<uint64_t, std::vector<uint64_t> > gridByOccupant;
 		std::unordered_map<ModelKey, Model, ModelKeyHash> models;
 		std::unordered_map<uint64_t, std::vector<ModelKey> > modelsByOccupant;
-		// Counts every change to the models, for KeptModels::Changes.
+		// Counts every change to the models, for KeptModels::Changes. A model SC4 draws again the same (each strip
+		// of a scroll) is no change: retaken holds the meshes it had before.
 		uint64_t modelChanges = 0;
+		std::vector<uint32_t> retaken;
 
 		// Exemplars: which models each occupant shows, and the zoom (0 to 4) and rotation SC4 drew the last composite
 		// with, found from the models it picked. With checking on, each composite also counts how many of the models
@@ -2576,7 +2578,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				model.key = key;
 				d.modelsByOccupant[occupant].push_back(key);
 			}
+			float previousWorld[16];
+			std::memcpy(previousWorld, model.world, sizeof(previousWorld));
 			WorldMatrix(instance, model.world);
+			if (added || std::memcmp(previousWorld, model.world, sizeof(previousWorld)) != 0) ++d.modelChanges;
 			Extent const before = model.extent;
 			model.extent = {};
 			for (int corner = 0; corner < 8; ++corner) {
@@ -2593,6 +2598,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			model.camera = 0;
 			model.orphan = false;
 			for (uint32_t group: model.meshes) d.Release(group);
+			d.retaken.swap(model.meshes);
 			model.meshes.clear();
 			d.modelsThisFrame.push_back(key);
 			if (added || std::memcmp(&before, &model.extent, sizeof(before)) != 0) {
@@ -2615,7 +2621,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		d.driver.SaveDrawState(kept.drawState);
 		kept.drawState.vertexPointer = nullptr;
 		for (uint32_t stage = 0; stage < 2; ++stage) kept.drawState.stages[stage].texture = kept.state.textures[stage];
-		++d.modelChanges;
+		// ponytail: a model drawn again with fewer meshes goes unnoticed. SC4 draws every mesh of a model each time.
+		size_t const at = d.capturing->meshes.size() - 1;
+		if (at >= d.retaken.size() || d.retaken[at] != group) ++d.modelChanges;
 		++d.totals.captured[kModel];
 		return true;
 	}
