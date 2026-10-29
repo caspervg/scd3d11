@@ -52,6 +52,9 @@ namespace nSCD3D11::Settings {
 		// ServerSkipModels=on: with ServerScene=owned, the game's static model draws are left out while the server
 		// draws the static view, and only their ModelInstance records are sent.
 		bool serverSkipModels = false;
+		// FreeCamera=on: drag with the middle mouse button to turn and tilt the city view, scroll for smooth zoom,
+		// hold ALT for the classic angle (see FreeCamera.h). Works with every renderer.
+		bool freeCamera = false;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.

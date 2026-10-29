@@ -25,6 +25,7 @@
 #include "cGDriverWire.h"
 #include "Diagnostics.h"
 #include "DrawOwnerHooks.h"
+#include "FreeCamera.h"
 #include "LiveShadowHooks.h"
 #include "OccupantTracker.h"
 #include "Settings.h"
@@ -86,12 +87,14 @@ namespace nSCD3D11
 
 		bool PostAppInit() {
 			OccupantTracker::Install();
+			FreeCamera::Install();
 			RecordGameFolders();
 			return true;
 		}
 
 		bool PreAppShutdown() {
 			OccupantTracker::Uninstall();
+			FreeCamera::Uninstall();
 			DrawOwnerHooks::Uninstall();
 			TerrainShadows::Uninstall();
 			ShadowRegistry::Uninstall();

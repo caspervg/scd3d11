@@ -118,6 +118,9 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/wire/WireStream.cpp
         scd3d11/cGDriversCOMDirector.cpp
         scd3d11/DrawOwnerHooks.cpp
+        scd3d11/FreeCamera.cpp
+        scd3d11/camera/Camera.cpp
+        scd3d11/camera/ModernCameraControl.cpp
         scd3d11/LiveShadowHooks.cpp
         scd3d11/OccupantTracker.cpp
         scd3d11/ShadowRegistry.cpp
