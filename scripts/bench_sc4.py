@@ -21,7 +21,8 @@ capture folder, and "measure <seconds>" does that and then reports the frame rat
 the CPU time of the game's busiest thread (the one that renders) and of SCD3D12Server over that many seconds,
 and the game's private memory at the end. Mouse and keys go to the game's window as window messages, in client
 pixels: "mdrag <x0> <y0> <x1> <y1>" drags with the middle button, "wheel <x> <y> <notches>" scrolls (positive
-zooms in), "click <x> <y>" clicks the left button and "key <letter>" presses a key.
+zooms in), "click <x> <y>" clicks the left button and "key <letter>" presses a key. "dragmeasure <seconds> <x0> <y0>
+<x1> <y1>" drags with the middle button that slowly and measures while it does.
 """
 
 import argparse
@@ -32,6 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime
@@ -132,14 +134,15 @@ def mouse(pid: int, command: str) -> bool:
         return False
     post = lambda message, w, x, y: user32.PostMessageW(window, message, w, (y & 0xFFFF) << 16 | (x & 0xFFFF))
     words = command.split()
-    if words[0] == "mdrag":
+    if words[0] in ("mdrag", "dragmeasure"):
+        seconds = float(words.pop(1)) if words[0] == "dragmeasure" else 0.9
         x0, y0, x1, y1 = map(int, words[1:5])
         post(0x200, 0, x0, y0)  # WM_MOUSEMOVE
         time.sleep(0.1)
         post(0x207, 0x10, x0, y0)  # WM_MBUTTONDOWN with MK_MBUTTON
-        steps = 30
+        steps = max(30, int(seconds / 0.03))
         for i in range(1, steps + 1):
-            time.sleep(0.03)
+            time.sleep(seconds / steps)
             post(0x200, 0x10, x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps)
         time.sleep(0.1)
         post(0x208, 0, x1, y1)  # WM_MBUTTONUP
@@ -341,6 +344,15 @@ def main() -> int:
                 continue
             if re.fullmatch(r"(mdrag|wheel|click|key) .+", command):
                 transcript.append(f"{command} -> {mouse(game.pid, command)}")
+                print(transcript[-1], flush=True)
+                time.sleep(1)
+                continue
+            if match := re.fullmatch(r"dragmeasure ([\d.]+) .+", command):
+                # The drag runs alongside, starting a little before the measurement and ending after it.
+                drag = threading.Thread(target=mouse, args=(game.pid, command))
+                drag.start()
+                transcript.append(f"{command} -> {measure(game.pid, float(match[1]) - 2.0)}")
+                drag.join()
                 print(transcript[-1], flush=True)
                 time.sleep(1)
                 continue
