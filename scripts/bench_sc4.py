@@ -19,11 +19,14 @@ script's own: "focus" brings the game to the foreground (SC4 drops to about 20 f
 it), "screenshot <name>" focuses the game and saves what its window shows on screen as <name>.png in the
 capture folder, and "measure <seconds>" does that and then reports the frame rate from GetFrameCount and
 the CPU time of the game's busiest thread (the one that renders) and of SCD3D12Server over that many seconds,
-and the game's private memory at the end.
+and the game's private memory at the end. Mouse and keys go to the game's window as window messages, in client
+pixels: "mdrag <x0> <y0> <x1> <y1>" drags with the middle button, "wheel <x> <y> <notches>" scrolls (positive
+zooms in), "click <x> <y>" clicks the left button and "key <letter>" presses a key.
 """
 
 import argparse
 import ctypes
+import ctypes.wintypes
 import os
 import re
 import shutil
@@ -98,6 +101,69 @@ def screenshot(pid: int, path: Path) -> bool:
         return False
     box = (origin[0], origin[1], origin[0] + rect[2], origin[1] + rect[3])
     ImageGrab.grab(bbox=box, all_screens=True).save(path)
+    return True
+
+
+def game_window(pid: int) -> int:
+    """The process's largest visible window."""
+    user32 = ctypes.windll.user32
+    windows: list[tuple[int, int]] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def collect(hwnd, _):
+        owner = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(ctypes.c_void_p(hwnd)):
+            rect = (ctypes.c_long * 4)()
+            user32.GetWindowRect(ctypes.c_void_p(hwnd), rect)
+            windows.append(((rect[2] - rect[0]) * (rect[3] - rect[1]), hwnd))
+        return True
+
+    user32.EnumWindows(collect, None)
+    return max(windows)[1] if windows else 0
+
+
+def mouse(pid: int, command: str) -> bool:
+    """Posts mouse and key messages to the game's window, as the player's input would arrive."""
+    user32 = ctypes.windll.user32
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    window = game_window(pid)
+    if not window:
+        return False
+    post = lambda message, w, x, y: user32.PostMessageW(window, message, w, (y & 0xFFFF) << 16 | (x & 0xFFFF))
+    words = command.split()
+    if words[0] == "mdrag":
+        x0, y0, x1, y1 = map(int, words[1:5])
+        post(0x200, 0, x0, y0)  # WM_MOUSEMOVE
+        time.sleep(0.1)
+        post(0x207, 0x10, x0, y0)  # WM_MBUTTONDOWN with MK_MBUTTON
+        steps = 30
+        for i in range(1, steps + 1):
+            time.sleep(0.03)
+            post(0x200, 0x10, x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps)
+        time.sleep(0.1)
+        post(0x208, 0, x1, y1)  # WM_MBUTTONUP
+    elif words[0] == "wheel":
+        x, y, notches = int(words[1]), int(words[2]), int(words[3])
+        point = ctypes.wintypes.POINT(x, y)
+        user32.ClientToScreen(ctypes.c_void_p(window), ctypes.byref(point))
+        for _ in range(abs(notches)):
+            # WM_MOUSEWHEEL carries screen coordinates.
+            post(0x20A, ((120 if notches > 0 else -120) & 0xFFFF) << 16, point.x, point.y)
+            time.sleep(0.05)
+    elif words[0] == "click":
+        x, y = int(words[1]), int(words[2])
+        post(0x200, 0, x, y)
+        time.sleep(0.2)
+        post(0x201, 1, x, y)  # WM_LBUTTONDOWN
+        time.sleep(0.05)
+        post(0x202, 0, x, y)  # WM_LBUTTONUP
+    elif words[0] == "key":
+        code = ord(words[1].upper())
+        post(0x100, code, 0, 0)  # WM_KEYDOWN
+        post(0x102, ord(words[1]), 0, 0)  # WM_CHAR
+        time.sleep(0.05)
+        post(0x101, code, 0, 0)  # WM_KEYUP
     return True
 
 
@@ -272,6 +338,11 @@ def main() -> int:
             if match := re.fullmatch(r"screenshot (\S+)", command):
                 transcript.append(f"{command} -> {screenshot(game.pid, capture / (match[1] + '.png'))}")
                 print(transcript[-1], flush=True)
+                continue
+            if re.fullmatch(r"(mdrag|wheel|click|key) .+", command):
+                transcript.append(f"{command} -> {mouse(game.pid, command)}")
+                print(transcript[-1], flush=True)
+                time.sleep(1)
                 continue
             if match := re.fullmatch(r"measure ([\d.]+)", command):
                 transcript.append(f"{command} -> {measure(game.pid, float(match[1]))}")
