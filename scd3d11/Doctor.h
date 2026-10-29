@@ -72,6 +72,9 @@ namespace nSCD3D11::Doctor {
 
 	std::vector<Finding> Diagnose(Environment const &environment);
 
+	// A DLL some check is about, whose version is always worth logging.
+	bool IsWatched(std::string const &path);
+
 	// Gathers the environment and logs the findings. With Doctor=on it also logs every DLL and
 	// relevant INI value it saw. Called once SC4 has set up its graphics.
 	void Run(cIGZCmdLine *commandLine);

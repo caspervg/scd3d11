@@ -177,11 +177,14 @@ namespace nSCD3D11::Doctor {
 			return environment;
 		}
 
-		// Doctor=on: everything the checks looked at, for a support thread.
-		void LogInventory(Environment const &environment) {
-			Log(LogCategory::Doctor, "command line as Windows passed it: %s", environment.rawCommandLine.c_str());
-			if (!environment.compatibilityLayer.empty()) {
-				Log(LogCategory::Doctor, "compatibility layers: %s", environment.compatibilityLayer.c_str());
+		// The driver, the screen and the DLLs the checks know about, with their versions, so every log
+		// says what a player runs. Doctor=on adds every other DLL and setting the checks looked at.
+		void LogInventory(Environment const &environment, bool everything) {
+			if (everything) {
+				Log(LogCategory::Doctor, "command line as Windows passed it: %s", environment.rawCommandLine.c_str());
+				if (!environment.compatibilityLayer.empty()) {
+					Log(LogCategory::Doctor, "compatibility layers: %s", environment.compatibilityLayer.c_str());
+				}
 			}
 			Log(LogCategory::Doctor, "driver in use: %s", environment.activeDriverModule.empty()
 				                                              ? "unknown" : environment.activeDriverModule.c_str());
@@ -190,6 +193,7 @@ namespace nSCD3D11::Doctor {
 				    environment.gameSize->height, environment.gameFullScreen ? "full screen" : "windowed");
 			}
 			for (Module const &module : environment.modules) {
+				if (!everything && !IsWatched(module.path)) continue;
 				Log(LogCategory::Doctor, "loaded: %s (%s %s)", module.path.c_str(),
 				    module.product.empty() ? "no version info" : module.product.c_str(), module.version.c_str());
 			}
@@ -197,7 +201,7 @@ namespace nSCD3D11::Doctor {
 				Log(LogCategory::Doctor, "in Apps: %s (%s %s)", file.path.c_str(),
 				    file.product.empty() ? "no version info" : file.product.c_str(), file.version.c_str());
 			}
-			if (environment.graphicsOptions) {
+			if (everything && environment.graphicsOptions) {
 				for (auto const &[key, value] : *environment.graphicsOptions) {
 					Log(LogCategory::Doctor, "SC4GraphicsOptions.ini %s=%s", key.c_str(), value.c_str());
 				}
@@ -208,7 +212,7 @@ namespace nSCD3D11::Doctor {
 	void Run(cIGZCmdLine *commandLine) {
 		try {
 			Environment const environment = Collect(commandLine);
-			if (Settings::Get().doctor) LogInventory(environment);
+			LogInventory(environment, Settings::Get().doctor);
 			std::vector<Finding> const findings = Diagnose(environment);
 			unsigned counts[3]{};
 			for (Finding const &finding : findings) {
