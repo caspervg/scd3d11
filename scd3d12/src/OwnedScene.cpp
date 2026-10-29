@@ -574,7 +574,7 @@ namespace nSCD3D12 {
 		};
 
 		struct Totals {
-			uint64_t composites = 0, skipped = 0, viewChanges = 0;
+			uint64_t composites = 0, skipped = 0, viewChanges = 0, strayViews = 0;
 			uint64_t captured[5]{};
 			uint64_t screenDraws = 0, uncaptured = 0;
 			uint64_t draws = 0, instances = 0, culled = 0;
@@ -1907,8 +1907,20 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2);
 			}
 			if (camera.known && !SameView(now, camera)) {
-				++totals.viewChanges;
-				KillAll(true);
+				// SC4 redraws the whole window for a new view. Without that the screen still shows the old view
+				// (a few frames now and then load another camera and draw nothing static), so it is kept.
+				bool whole = false;
+				for (Redraw const &redraw: redraws) {
+					int32_t const *const v = redraw.viewport;
+					whole |= v[0] == 0 && v[1] == 0 && v[2] == now.width && v[3] == now.height;
+				}
+				if (!whole) {
+					++totals.strayViews;
+					now = camera;
+				} else {
+					++totals.viewChanges;
+					KillAll(true);
+				}
 			}
 			if (!camera.known || std::memcmp(now.view, camera.view, sizeof(now.view)) != 0 ||
 			    std::memcmp(now.projection, camera.projection, sizeof(now.projection)) != 0) {
@@ -2459,9 +2471,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::printf("owned: removed %llu models, %llu grid pieces, %llu terrain pieces, %llu view pieces; terrain cells "
 		            "kept %llu times, changed %llu times\n",
 		            u(t.removed[0]), u(t.removed[1]), u(t.removed[2]), u(t.removed[3]), u(t.cellsKept), u(t.cellsChanged));
-		std::printf("owned: %llu frames composited (%llu skipped, %llu new views), %.1f draws and %.1f instances per frame, "
-		            "%.1f MB written in place, %llu buckets built again\n",
-		            u(t.composites), u(t.skipped), u(t.viewChanges),
+		std::printf("owned: %llu frames composited (%llu skipped, %llu new views, %llu other cameras without a redraw), %.1f "
+		            "draws and %.1f instances per frame, %.1f MB written in place, %llu buckets built again\n",
+		            u(t.composites), u(t.skipped), u(t.viewChanges), u(t.strayViews),
 		            t.composites ? static_cast<double>(t.draws) / t.composites : 0.0,
 		            t.composites ? static_cast<double>(t.instances) / t.composites : 0.0,
 		            static_cast<double>(t.appendedBytes) / (1 << 20), u(t.rebuilds));
