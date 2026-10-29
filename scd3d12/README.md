@@ -208,7 +208,7 @@ wrong side: picking them from the occupants' exemplars is not done yet.
 post-dynamic view object), the depth buffer, a motion target (previous position minus position now, in pixels, RG16F,
 camera motion only), the cameras of this frame and the previous one without jitter, and render and output sizes.
 `OwnedScene::SetJitter(x, y)` moves every owned draw by a fraction of a pixel (replay: `--jitter <x>,<y>`), and
-`SaveInputs` writes the colour and motion as images (replay saves them for the chosen frames). Gaps: the dynamic
+`SaveInputs` writes the colour and motion as images (replay saves them for the chosen frames). `UpscalerCamera` hands the same to DLSS (`UpscalerInputs`, the HUD-less colour included): `replay --scene owned --dlss dlaa` runs DLAA on the owned view with its Halton jitter, 0.45 ms of GPU per frame on scene-tutorial. Gaps: the dynamic
 passes are not jittered, moving instances get no motion of their own, and the render size is the output size until
 the city is drawn to a target of its own.
 
