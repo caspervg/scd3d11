@@ -39,6 +39,8 @@ namespace nSCD3D11::Settings {
 		bool doctor = false;
 		// DoctorDialog=off: keep the doctor's problems out of SC4's own dialog, in the log only.
 		bool doctorDialog = true;
+		// UpdateCheck=off: do not ask GitHub, at most once a day, whether a newer SCD3D11 is out.
+		bool updateCheck = true;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.

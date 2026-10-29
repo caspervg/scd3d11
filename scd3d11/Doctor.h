@@ -14,6 +14,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class cIGZCmdLine;
@@ -74,6 +75,11 @@ namespace nSCD3D11::Doctor {
 
 	// A DLL some check is about, whose version is always worth logging.
 	bool IsWatched(std::string const &path);
+
+	// The version in a GitHub "latest release" reply, without the v of its tag. Empty when there is none.
+	std::string ReleaseVersion(std::string_view json);
+	// Whether a dotted version is newer than another. Missing parts count as 0.
+	bool IsNewer(std::string const &version, std::string const &than);
 
 	// Gathers the environment and logs the findings. With Doctor=on it also logs every DLL and
 	// relevant INI value it saw. Called once SC4 has set up its graphics.

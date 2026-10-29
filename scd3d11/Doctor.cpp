@@ -110,7 +110,7 @@ namespace nSCD3D11::Doctor {
 			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog",
 			// SCD3D11
 			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull",
-			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog",
+			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck",
 			// SC4CPUOptions and SC4DBPFLoading
 			"ParallelCull", "SimTickCap", "SimTickStats", "ModelSlice", "OverlayIndex", "StartupDBPFLoadTrace",
 		};
@@ -492,6 +492,21 @@ namespace nSCD3D11::Doctor {
 				                                       "other SCD3D11 features that patch the game stay off."});
 			}
 		}
+	}
+
+	std::string ReleaseVersion(std::string_view json) {
+		size_t const key = json.find("\"tag_name\"");
+		if (key == std::string_view::npos) return {};
+		size_t const open = json.find('"', json.find(':', key));
+		size_t const close = open == std::string_view::npos ? open : json.find('"', open + 1);
+		if (close == std::string_view::npos) return {};
+		std::string_view tag = json.substr(open + 1, close - open - 1);
+		if (!tag.empty() && (tag[0] == 'v' || tag[0] == 'V')) tag.remove_prefix(1);
+		return tag.empty() || !std::isdigit(static_cast<unsigned char>(tag[0])) ? std::string() : std::string(tag);
+	}
+
+	bool IsNewer(std::string const &version, std::string const &than) {
+		return OlderThan(than, version.c_str());
 	}
 
 	bool IsWatched(std::string const &path) {

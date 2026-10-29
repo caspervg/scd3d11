@@ -28,10 +28,14 @@
 
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <set>
+#include <thread>
 
 #include <windows.h>
 #include <tlhelp32.h>
+#include <wininet.h>
 
 namespace nSCD3D11::Doctor {
 	namespace {
@@ -203,23 +207,122 @@ namespace nSCD3D11::Doctor {
 			uint32_t Release() override { return 1; }
 
 			bool DoMessage(cIGZMessage2 *message) override {
-				if (shown || message == nullptr || message->GetType() != kSC4MessagePostRegionInit) return true;
-				shown = true;
-				if (problems.empty()) return true;
-				std::string text = problems.size() == 1 ? "SCD3D11 found a problem:\n" : "SCD3D11 found problems:\n";
-				for (std::string const &problem : problems) text += "\n" + problem + "\n";
-				text += "\nSCD3D11.log in the Logs folder has the details. DoctorDialog=off in SCD3D11.ini stops this message.";
+				if (message == nullptr || message->GetType() != kSC4MessagePostRegionInit) return true;
+				std::string text;
+				{
+					std::lock_guard<std::mutex> const lock(mutex);
+					if (shown || (problems.empty() && update.empty())) return true;
+					shown = true;
+					if (!problems.empty()) {
+						text = problems.size() == 1 ? "SCD3D11 found a problem:\n" : "SCD3D11 found problems:\n";
+						for (std::string const &problem : problems) text += "\n" + problem + "\n";
+						text += "\nSCD3D11.log in the Logs folder has the details.\n";
+					}
+					if (!update.empty()) text += (text.empty() ? "" : "\n") + update + "\n";
+				}
+				text += "\nDoctorDialog=off in SCD3D11.ini stops this message.";
 				SC4NotificationDialog::ShowDialog(cRZBaseString(text.c_str()), cRZBaseString("SCD3D11"));
 				return true;
 			}
 
-			std::vector<std::string> problems;
+			void AddProblem(std::string const &problem) {
+				std::lock_guard<std::mutex> const lock(mutex);
+				problems.push_back(problem);
+			}
+
+			// The update check runs on its own thread and may finish after the region opened. Then only
+			// the log has it.
+			void SetUpdate(std::string const &notice) {
+				std::lock_guard<std::mutex> const lock(mutex);
+				update = notice;
+			}
 
 		private:
+			std::mutex mutex;
+			std::vector<std::string> problems;
+			std::string update;
 			bool shown = false;
 		};
 
 		ProblemDialog gProblemDialog;
+
+		constexpr char kLatestReleaseUrl[] = "https://api.github.com/repos/caspervg/scd3d11/releases/latest";
+		constexpr char kReleasesPage[] = "https://github.com/caspervg/scd3d11/releases";
+
+		// The reply to a GET, or nothing when it fails. WinINet is the HTTP library SC4 itself loads, and it
+		// follows the player's Windows proxy settings.
+		std::optional<std::string> Fetch(char const *url, std::string const &agent) {
+			HINTERNET const session = InternetOpenA(agent.c_str(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+			if (session == nullptr) return std::nullopt;
+			DWORD timeout = 3000;
+			for (DWORD option : {INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT}) {
+				InternetSetOptionA(session, option, &timeout, sizeof(timeout));
+			}
+			std::optional<std::string> body;
+			HINTERNET const request = InternetOpenUrlA(
+				session, url, "Accept: application/vnd.github+json\r\n", static_cast<DWORD>(-1),
+				INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI |
+				INTERNET_FLAG_SECURE, 0);
+			if (request != nullptr) {
+				DWORD status = 0, size = sizeof(status);
+				if (HttpQueryInfoA(request, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &size, nullptr) &&
+				    status == 200) {
+					std::string text;
+					char buffer[4096];
+					DWORD read = 0;
+					while (text.size() < (1u << 20) && InternetReadFile(request, buffer, sizeof(buffer), &read) && read != 0) {
+						text.append(buffer, read);
+					}
+					body = std::move(text);
+				}
+				InternetCloseHandle(request);
+			}
+			InternetCloseHandle(session);
+			return body;
+		}
+
+		std::string Today() {
+			SYSTEMTIME time{};
+			GetLocalTime(&time);
+			char text[16];
+			sprintf_s(text, "%04u-%02u-%02u", time.wYear, time.wMonth, time.wDay);
+			return text;
+		}
+
+		// Asks GitHub for the latest release at most once a day. SCD3D11-update.txt in the Logs folder
+		// keeps the day of the last answer and the version it named. Runs on its own thread, so a slow or
+		// missing connection never holds up the game.
+		void CheckForUpdate() {
+			try {
+				std::string const installed = Describe(ModulePath(ModuleAt(reinterpret_cast<void *>(&Run)))).version;
+				if (installed.empty() || installed == "0.0.0.0") {
+					Log(LogCategory::Doctor, "update check: skipped for a development build");
+					return;
+				}
+				std::filesystem::path const stamp = LogDirectory() / L"SCD3D11-update.txt";
+				std::string day, latest;
+				std::ifstream(stamp) >> day >> latest;
+				if (day != Today() || latest.empty()) {
+					std::optional<std::string> const reply = Fetch(kLatestReleaseUrl, "SCD3D11/" + installed);
+					latest = reply ? ReleaseVersion(*reply) : std::string();
+					if (latest.empty()) {
+						Log(LogCategory::Doctor, "update check: GitHub could not be reached, trying again next start");
+						return;
+					}
+					std::ofstream(stamp) << Today() << ' ' << latest << '\n';
+				}
+				if (!IsNewer(latest, installed)) {
+					Log(LogCategory::Doctor, "update check: this is the latest release (%s)", latest.c_str());
+					return;
+				}
+				std::string const notice = "SCD3D11 " + latest + " is out, this is " + installed + ". Get it from " +
+				                           kReleasesPage + ".";
+				Log(LogCategory::Doctor, "update check: %s", notice.c_str());
+				gProblemDialog.SetUpdate(notice);
+			} catch (std::exception const &error) {
+				Log(LogCategory::Doctor, "update check failed: %s", error.what());
+			}
+		}
 
 		// The driver, the screen and the DLLs the checks know about, with their versions, so every log
 		// says what a player runs. Doctor=on adds every other DLL and setting the checks looked at.
@@ -264,14 +367,15 @@ namespace nSCD3D11::Doctor {
 				unsigned const index = static_cast<unsigned>(finding.severity);
 				++counts[index];
 				Log(LogCategory::Doctor, "%s: %s", kLabels[index], finding.text.c_str());
-				if (finding.severity == Severity::Problem) gProblemDialog.problems.push_back(finding.text);
+				if (finding.severity == Severity::Problem) gProblemDialog.AddProblem(finding.text);
 			}
 			cIGZMessageServer2Ptr messageServer;
-			if (Settings::Get().doctorDialog && !gProblemDialog.problems.empty() && messageServer) {
+			if (Settings::Get().doctorDialog && (counts[2] != 0 || Settings::Get().updateCheck) && messageServer) {
 				messageServer->AddNotification(&gProblemDialog, kSC4MessagePostRegionInit);
 			}
 			Log(LogCategory::Doctor, "%u problems, %u warnings, %u notes%s", counts[2], counts[1], counts[0],
 			    Settings::Get().doctor ? "" : " (Doctor=on also lists every DLL it looked at)");
+			if (Settings::Get().updateCheck) std::thread(CheckForUpdate).detach();
 		} catch (std::exception const &error) {
 			Log(LogCategory::Doctor, "could not finish: %s", error.what());
 		}
