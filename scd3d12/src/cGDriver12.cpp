@@ -907,6 +907,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		bool ownersSeen = false;
 		uint32_t ownerDepth = 0;
 		uint8_t ownerPass = 0;
+		// SwapCamera: the projection it replaces, view x inverse(from), and the camera's projection.
+		bool swapCamera = false;
+		float swapFrom[16]{}, swapChange[16]{}, swapProjection[16]{};
 		// The innermost owner is SC4's shadow view object.
 		bool ownerDrawsShadows = false;
 		ComPtr<ID3D12Resource> lightBuffer;
@@ -1618,6 +1621,18 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				normalMatrixDirty = false;
 			}
 			memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
+			if (swapCamera && ownerDepth > 0 && ownerPass >= 3 && matrices[1][0] == swapFrom[0] &&
+			    matrices[1][5] == swapFrom[5] && matrices[1][12] == swapFrom[12] && matrices[1][13] == swapFrom[13]) {
+				for (int c = 0; c < 4; ++c) {
+					for (int row = 0; row < 4; ++row) {
+						constants.modelView[c * 4 + row] = swapChange[row] * matrices[0][c * 4] + swapChange[4 + row] * matrices[0][c * 4 + 1] +
+						                                   swapChange[8 + row] * matrices[0][c * 4 + 2] + swapChange[12 + row] * matrices[0][c * 4 + 3];
+					}
+					constants.projection[c * 4] = swapProjection[c * 4];
+					constants.projection[c * 4 + 1] = swapProjection[c * 4 + 1];
+				}
+				MakeNormalMatrix(constants.modelView, constants.normalMatrix);
+			}
 			constants.alphaFunction = alphaFunction;
 			constants.alphaReference = alphaReference;
 			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
@@ -2729,6 +2744,29 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		Impl &d = *impl;
 		if (d.ownerDepth > 0) --d.ownerDepth;
 	}
+	void cGDriver12::SwapCamera(float const *fromView, float const *fromProjection, float const *view,
+	                            float const *projection) {
+		Impl &d = *impl;
+		d.swapCamera = fromView != nullptr;
+		if (!d.swapCamera) return;
+		float const *const from = fromView;
+		memcpy(d.swapFrom, fromProjection, sizeof(d.swapFrom));
+		memcpy(d.swapProjection, projection, sizeof(d.swapProjection));
+		// view x inverse(from), with from a rotation and a translation.
+		float inverse[16]{};
+		for (int row = 0; row < 3; ++row) {
+			for (int c = 0; c < 3; ++c) inverse[c * 4 + row] = from[row * 4 + c];
+			inverse[12 + row] = -(from[row * 4] * from[12] + from[row * 4 + 1] * from[13] + from[row * 4 + 2] * from[14]);
+		}
+		inverse[15] = 1.0f;
+		for (int c = 0; c < 4; ++c) {
+			for (int row = 0; row < 4; ++row) {
+				d.swapChange[c * 4 + row] = view[row] * inverse[c * 4] + view[4 + row] * inverse[c * 4 + 1] +
+				                            view[8 + row] * inverse[c * 4 + 2] + view[12 + row] * inverse[c * 4 + 3];
+			}
+		}
+	}
+
 	void cGDriver12::Relight(Sun const &sun) {
 		impl->relight = true;
 		impl->sun = sun;

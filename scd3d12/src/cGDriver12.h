@@ -68,6 +68,9 @@ namespace nSCD3D12 {
 		// Turns relighting on, before Create. Each frame is then relit with sun into a frame of its own,
 		// and the back buffer stays SC4's. Without it the back buffer is published as SC4 drew it.
 		void Relight(Sun const &sun);
+		// Draws the dynamic passes (3 to 5) from another camera: a draw whose projection is fromProjection in x and
+		// y gets view x inverse(fromView) x its modelview and the other projection's x and y rows. Null turns it off.
+		void SwapCamera(float const *fromView, float const *fromProjection, float const *view, float const *projection);
 
 		// Creates the device. useWarp picks the software rasterizer (tests and machines without a GPU).
 		// A non-null adapter picks that GPU, so textures can be shared with a device on the same one.
