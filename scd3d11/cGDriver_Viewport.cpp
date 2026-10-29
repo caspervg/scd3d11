@@ -23,6 +23,8 @@
 #include <cstring>
 #include <string>
 
+#include <dxgi1_5.h>
+
 #ifndef NDEBUG
 #include <d3d11sdklayers.h>
 #include <vector>
@@ -30,6 +32,14 @@
 
 namespace nSCD3D11 {
 	namespace {
+		bool TearingSupported() {
+			Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
+			BOOL allowed = FALSE;
+			return SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+			       SUCCEEDED(factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowed, sizeof(allowed))) &&
+			       allowed;
+		}
+
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
 
 		bool BorderlessFullscreenRequested() {
@@ -410,6 +420,8 @@ namespace nSCD3D11 {
 		swapChainFlags = presentationMode == PresentationMode::ExclusiveFullscreen
 			                 ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
 			                 : 0;
+		// VSync=off on a flip model swap chain still waits for the display unless it may tear.
+		if (flipModel && !Settings::Get().vsync && TearingSupported()) swapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 		swapChainDescription.Flags = swapChainFlags;
 
 		UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -467,6 +479,8 @@ namespace nSCD3D11 {
 			Log(LogCategory::SwapChain, "using the legacy swap effect instead");
 			swapChainDescription.BufferCount = 1;
 			swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+			swapChainFlags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+			swapChainDescription.Flags = swapChainFlags;
 			result = createForAvailableRuntime();
 		}
 		if (FAILED(result)) {
@@ -650,7 +664,9 @@ namespace nSCD3D11 {
 		result = TakeInjectedFault(FAULT_PRESENT);
 		// ServerPresent=composition: the server presents on this window itself.
 		bool const composited = RemoteDrawing() && remote->Composite(static_cast<HWND>(windowHandle));
-		if (SUCCEEDED(result) && !composited) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
+		if (SUCCEEDED(result) && !composited) result = swapChain->Present(
+			vsyncEnabled ? 1 : 0,
+			!vsyncEnabled && (swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0 ? DXGI_PRESENT_ALLOW_TEARING : 0);
 		NoteRenderPhase("Flush: after Present");
 #ifndef NDEBUG
 		LogDebugLayerMessages(d3dDevice.Get());
