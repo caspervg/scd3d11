@@ -27,6 +27,11 @@ namespace {
 
 int main() {
 	assert(Diagnose(Clean()).empty());
+	{
+		Environment environment = Clean();
+		environment.screenModeWarning = "SimCity 4 asked for full screen at 1600x768. SCD3D11 used the screen's own 1920x1080 instead.";
+		assert(Has(Diagnose(environment), Severity::Warning, "SCD3D11 used the screen's own 1920x1080"));
+	}
 	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
 	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
 	assert(ReleaseVersion(R"({"url":"x","tag_name": "v0.3.3","name":"SCD3D11 0.3.3"})") == "0.3.3");
@@ -41,6 +46,7 @@ int main() {
 		environment.arguments = {"-CustomResolution:enabled", "-r:1366x768x32"};
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Warning, "without the colon: -r1366x768x32"));
+		assert(!Has(findings, Severity::Warning, "SC4 runs at"));
 	}
 	{
 		Environment environment = Clean();
@@ -50,11 +56,17 @@ int main() {
 		assert(Has(Diagnose(environment), Severity::Warning, "16-bit colour"));
 	}
 	{
-		// SC4 fell back to another size because the screen has no such mode.
+		// Full screen at a size the screen does not offer, listing the largest ones it does.
 		Environment environment = Clean();
 		environment.arguments = {"-f", "-CustomResolution:enabled", "-r1600x900x32"};
 		environment.gameFullScreen = true;
-		assert(Has(Diagnose(environment), Severity::Warning, "This screen has no 1600x900 mode"));
+		assert(Has(Diagnose(environment), Severity::Warning,
+		           "-r1600x900x32 asks for full screen at 1600x900, a size this screen does not offer"));
+		assert(Has(Diagnose(environment), Severity::Warning, "The screen offers 1920x1080, 1366x768."));
+		environment.arguments = {"-w", "-CustomResolution:enabled", "-r1600x900x32"};
+		environment.gameFullScreen = false;
+		assert(!Has(Diagnose(environment), Severity::Warning, "does not offer"));
+		environment.gameFullScreen = true;
 		environment.arguments = {"-f", "-r1366x768x32"};
 		assert(Has(Diagnose(environment), Severity::Warning, "-CustomResolution:enabled"));
 		environment.gameSize = Size{1366, 768};
@@ -74,6 +86,12 @@ int main() {
 		assert(Has(findings, Severity::Problem, "has no WindowHeight"));
 		assert(Has(findings, Severity::Warning, "replaces -r1366x768x32"));
 		assert(Has(findings, Severity::Note, "WindowMode=FullScreen"));
+		(*environment.graphicsOptions)["windowheight"] = "900";
+		(*environment.graphicsOptions)["windowwidth"] = "1600";
+		assert(Has(Diagnose(environment), Severity::Warning, "SC4GraphicsOptions.ini asks for full screen at 1600x900"));
+		environment.graphicsOptions->erase("windowheight");
+		(*environment.graphicsOptions)["windowwidth"] = "1366";
+		findings = Diagnose(environment);
 
 		// Borderless does not read the size, and a bad boolean stops it just like a missing key.
 		(*environment.graphicsOptions)["windowmode"] = "Borderless";
@@ -102,12 +120,24 @@ int main() {
 		assert(Has(Diagnose(environment), Severity::Problem, "Driver=Software. Set it to DirectX"));
 		environment.driverIsSCD3D11.reset();
 		assert(!Has(Diagnose(environment), Severity::Problem, "drawing with"));
+
+		// SC4 remembers software rendering after a hardware driver failed once.
+		environment = Clean();
+		environment.driverIsSCD3D11 = false;
+		environment.activeDriverModule = "C:\\SC4\\Apps\\SimCity 4.exe";
+		environment.activeDriverBuiltIn = true;
+		environment.activeDriverClass = 0x7ACA35C6;
+		assert(Has(Diagnose(environment), Severity::Problem, "SC4's own software driver"));
+		assert(Has(Diagnose(environment), Severity::Problem, "Start once with -d:DirectX"));
+		environment.activeDriverClass = 0xBADB6906;
+		assert(Has(Diagnose(environment), Severity::Problem, "SCD3D11 could not start Direct3D 11"));
 	}
 	{
 		// Mistyped and leftover switches.
 		Environment environment = Clean();
 		environment.arguments = {"-UserDir:C:\\My", "Games\\SC4\\", "-LiveShadow", "-VSync=off", "-NativeShadowMasks",
-		                         "-MaxFPS:60", "-SomeOtherPlugin:on", "-CPUPriority:Realtime", "-intro:off"};
+		                         "-MaxFPS:60", "-SomeOtherPlugin:on", "-CPUPriority:Realtime", "-intro:off",
+		                         "-NetCommandGenerator:enabled"};
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Warning, "Not a switch on the command line: Games\\SC4\\"));
 		assert(Has(findings, Severity::Warning, "Did you mean -LiveShadows?"));
@@ -117,6 +147,7 @@ int main() {
 		assert(Has(findings, Severity::Note, "fine if another plugin reads them: -SomeOtherPlugin:on"));
 		assert(Has(findings, Severity::Warning, "-CPUPriority:High"));
 		assert(!Has(findings, Severity::Note, "-intro:off"));
+		assert(!Has(findings, Severity::Note, "-NetCommandGenerator"));
 	}
 	{
 		Environment environment = Clean();
@@ -151,7 +182,10 @@ int main() {
 		                       {"C:\\SC4\\Plugins\\SC4SingleCPU.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\scvk.dll", "", ""},
 		                       {"C:\\Steam\\GameOverlayRenderer.dll", "", ""},
-		                       {"C:\\SC4\\Plugins\\sc4_painter.dll", "", ""}};
+		                       {"C:\\SC4\\Plugins\\sc4_painter.dll", "", ""},
+		                       {"C:\\SC4\\Apps\\VERSION.dll", "", ""},
+		                       {"C:\\WINDOWS\\system32\\version.dll", "Microsoft Windows", "10.0.26100.1"}};
+		environment.windowsFolder = "C:\\Windows";
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Problem, "compatibility mode (WINXPSP3)"));
 		assert(Has(findings, Severity::Note, "settings on SimCity 4.exe: HIGHDPIAWARE"));
@@ -161,10 +195,12 @@ int main() {
 		assert(Has(findings, Severity::Note, "Apps\\ddraw.dll is dgVoodoo"));
 		assert(Has(findings, Severity::Note, "imgui.dll is left over"));
 		assert(Has(findings, Severity::Warning, "scd3d11.dll is loaded twice"));
+		assert(!Has(findings, Severity::Warning, "version.dll is loaded twice"));
 		assert(Has(findings, Severity::Warning, "memo.3dcamera.dll and sc4-moderncamera.dll all turn the camera"));
 		assert(Has(findings, Severity::Warning, "sc4singlecpu.dll is replaced by SC4CPUOptions"));
 		assert(Has(findings, Severity::Note, "scvk.dll is installed too"));
 		assert(Has(findings, Severity::Note, "Overlays in the game: Steam overlay"));
+		assert(!Has(findings, Severity::Warning, "SCD3D11 used the screen's own"));
 		assert(Has(findings, Severity::Warning, "SC4 Painter draws its ground fills"));
 	}
 	{
