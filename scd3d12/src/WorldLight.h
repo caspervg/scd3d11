@@ -16,24 +16,25 @@
 #include <memory>
 
 namespace nSCD3D12 {
-	class RetainedScene;
+	class KeptModels;
 	class SceneLane;
 
 	// Light from the server's own copy of the city, for the driver's relighting (cGDriver12::LightHooks).
 	//
-	//   camera        read from the matrices SC4 loads before its dynamic passes, as the retained scene does, so
+	//   camera        read from the matrices SC4 loads before its dynamic passes, as the kept scenes do, so
 	//                 every pixel's depth gives its place in the world
 	//   terrain       SC4's terrain draws (view object 0x00AB4480 in pass 0) carry the height field in world
 	//                 space on its 16 metre grid. The heights are kept for the whole city as they arrive, with
 	//                 the diagonal each cell is split along, and give terrain pixels smooth vertex normals
-	//   sun shadows   with the retained scene and a GPU with DXR 1.1: a ray from every city pixel towards the
-	//                 sun through the retained instances (a bottom level structure per mesh, built once) and the
-	//                 terrain. Alpha-tested meshes look up the texel's alpha for each candidate hit
-	//   night lights  the night textures of the retained instances SC4 lit (stage 1, the texture id + 0x8000)
-	//                 are read once per mesh on the GPU for where the mesh glows and how much. Each glowing side
-	//                 of a lit instance becomes a point light, binned into screen tiles for the lighting pass
+	//   sun shadows   with a kept scene (KeptModels: the retained or the owned scene) and a GPU with DXR 1.1: a
+	//                 ray from every city pixel towards the sun through its models (a bottom level structure per
+	//                 mesh, built once) and the terrain. Alpha-tested meshes look up the texel's alpha for each
+	//                 candidate hit
+	//   night lights  the night textures of the kept models SC4 lit (stage 1, the texture id + 0x8000) are read
+	//                 once per mesh on the GPU for where the mesh glows and how much. Each glowing side of a lit
+	//                 instance becomes a point light, binned into screen tiles for the lighting pass
 	//
-	// Without the retained scene there are no models to cast or glow, and only the terrain is lit from the world.
+	// Without a kept scene there are no models to cast or glow, and only the terrain is lit from the world.
 	class WorldLight final : public cGDriver12::LightHooks {
 	public:
 		struct Options {
@@ -45,7 +46,7 @@ namespace nSCD3D12 {
 		~WorldLight() override;
 
 		// The models that cast shadows and glow. Either may be null.
-		void SetScene(RetainedScene const *retained, SceneLane const *lane);
+		void SetScene(KeptModels const *models, SceneLane const *lane);
 		void OwnerBegin(nSCDWire::DrawOwner const &owner);
 		void OwnerEnd();
 		// A new video mode: the driver's textures are gone.

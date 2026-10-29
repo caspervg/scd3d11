@@ -48,7 +48,7 @@ namespace nSCD3D12 {
 	// camera SC4 never drew with can draw it too. Draws with the same state share one pipeline, one set of
 	// constants and textures: models as instances of one mesh, everything else merged per 256 metre tile into
 	// buffers that grow in place.
-	class OwnedScene final : public SceneLane::Sink, public cGDriver12::DrawCapture {
+	class OwnedScene final : public SceneLane::Sink, public cGDriver12::DrawCapture, public KeptModels {
 	public:
 		OwnedScene(cGDriver12 &driver, SceneLane &lane);
 		~OwnedScene() override;
@@ -119,6 +119,12 @@ namespace nSCD3D12 {
 		              D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count) override;
 		bool Capture(cGDriver12::CapturedState const &state, nSCD3D11::D3D11Vertex const *vertices,
 		             uint32_t vertexCount, uint32_t const *indices, uint32_t indexCount, uint32_t format) override;
+
+		// KeptModels: every mesh of every model kept, as SC4 placed it (not the kept view's picks). Textures are
+		// the driver's pins.
+		void VisitMeshes(MeshVisitor &visitor) const override;
+		uint64_t Changes() const override;
+		uint32_t TextureView(uint32_t texture) const override;
 
 	private:
 		struct Impl;

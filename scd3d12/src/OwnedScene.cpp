@@ -467,6 +467,8 @@ namespace nSCD3D12 {
 			D3D12_VERTEX_BUFFER_VIEW vertices{};
 			D3D12_INDEX_BUFFER_VIEW indices{};
 			uint32_t count = 0;
+			// A model mesh's state as the driver held it, for lighting (KeptModels).
+			cGDriver12::DrawState drawState{};
 			std::vector<uint32_t> buckets;
 			// This frame's instances.
 			uint32_t instanceCount = 0, instanceFirst = 0;
@@ -657,6 +659,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::unordered_map<uint64_t, std::vector<uint64_t> > gridByOccupant;
 		std::unordered_map<ModelKey, Model, ModelKeyHash> models;
 		std::unordered_map<uint64_t, std::vector<ModelKey> > modelsByOccupant;
+		// Counts every change to the models, for KeptModels::Changes.
+		uint64_t modelChanges = 0;
 
 		// Exemplars: which models each occupant shows, and the zoom (0 to 4) and rotation SC4 drew the last composite
 		// with, found from the models it picked. With checking on, each composite also counts how many of the models
@@ -1860,6 +1864,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			if (capturing == &found->second) capturing = nullptr;
 			models.erase(found);
+			++modelChanges;
 		}
 
 		void CommitBackground() {
@@ -2605,9 +2610,28 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		if (d.groups[group].rank == (2ull << 48 | d.gridRank)) ++d.gridRank;
 		d.Use(group);
 		d.capturing->meshes.push_back(group);
+		// The state with the group's pins for textures, which outlive the game's names.
+		Group &kept = d.groups[group];
+		d.driver.SaveDrawState(kept.drawState);
+		kept.drawState.vertexPointer = nullptr;
+		for (uint32_t stage = 0; stage < 2; ++stage) kept.drawState.stages[stage].texture = kept.state.textures[stage];
+		++d.modelChanges;
 		++d.totals.captured[kModel];
 		return true;
 	}
+
+	void OwnedScene::VisitMeshes(MeshVisitor &visitor) const {
+		for (auto const &[key, model]: impl->models) {
+			for (uint32_t index: model.meshes) {
+				Group const &group = impl->groups[index];
+				visitor.Mesh(model.world, group.vertices, group.indices, group.count, group.drawState);
+			}
+		}
+	}
+
+	uint64_t OwnedScene::Changes() const { return impl->modelChanges; }
+
+	uint32_t OwnedScene::TextureView(uint32_t texture) const { return impl->driver.PinView(texture); }
 
 	void OwnedScene::PrintTotals() const {
 		Impl const &d = *impl;

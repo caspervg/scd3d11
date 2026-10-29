@@ -96,4 +96,25 @@ namespace nSCD3D12 {
 		struct Impl;
 		std::unique_ptr<Impl> impl;
 	};
+
+	// The models a scene keeps (RetainedScene.h, OwnedScene.h), for lighting from the server's own copy of the city
+	// (WorldLight.h). Their meshes are the lane's, so GeometryBuffer finds them.
+	class KeptModels {
+	public:
+		virtual ~KeptModels() = default;
+		class MeshVisitor {
+		public:
+			virtual ~MeshVisitor() = default;
+			virtual void Mesh(float const *world, D3D12_VERTEX_BUFFER_VIEW const &vertices,
+			                  D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count,
+			                  cGDriver12::DrawState const &state) = 0;
+		};
+		// Every mesh of every model kept: the model's world transform (column major), the mesh's geometry and the
+		// state it is drawn with.
+		virtual void VisitMeshes(MeshVisitor &visitor) const = 0;
+		// Grows whenever what VisitMeshes visits changes.
+		virtual uint64_t Changes() const = 0;
+		// A texture of those states as a slot of the driver's view table, readable by every shader stage. 0 for none.
+		virtual uint32_t TextureView(uint32_t texture) const = 0;
+	};
 }

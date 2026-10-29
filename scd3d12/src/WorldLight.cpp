@@ -10,7 +10,6 @@
 
 #include "WorldLight.h"
 
-#include "RetainedScene.h"
 #include "SceneLane.h"
 
 #include <algorithm>
@@ -181,7 +180,7 @@ namespace nSCD3D12 {
 	struct WorldLight::Impl {
 		cGDriver12 &driver;
 		Options options;
-		RetainedScene const *retained = nullptr;
+		KeptModels const *models = nullptr;
 		SceneLane const *lane = nullptr;
 		ComPtr<ID3D12Device5> device;
 		ComPtr<ID3D12GraphicsCommandList4> list;
@@ -246,7 +245,7 @@ namespace nSCD3D12 {
 		std::vector<HitMesh> hitTable;
 		std::vector<uint32_t> hitTextures;
 		D3D12_GPU_VIRTUAL_ADDRESS hitMeshes = 0;
-		// The retained scene's changes when it was last visited, and whether the next frame visits it anyway.
+		// The scene's changes when it was last visited, and whether the next frame visits it anyway.
 		uint64_t visitedChanges = 0;
 		bool revisit = true;
 		float darkness = 0.0f;
@@ -674,7 +673,7 @@ namespace nSCD3D12 {
 			return true;
 		}
 
-		// One mesh of a retained instance: an instance of its structure in the city's, and for night lights the
+		// One mesh of a kept model: an instance of its structure in the city's, and for night lights the
 		// glow of its night texture.
 		void AddMesh(float const *world, D3D12_VERTEX_BUFFER_VIEW const &vertices, D3D12_INDEX_BUFFER_VIEW const &indices,
 		             uint32_t count, cGDriver12::DrawState const &state) {
@@ -696,7 +695,7 @@ namespace nSCD3D12 {
 			}
 			instance.InstanceMask = kModelsMask;
 			instance.AccelerationStructure = entry.structure;
-			uint32_t const texture = state.stages[0].enabled ? driver.TextureView(state.stages[0].texture) : 0;
+			uint32_t const texture = state.stages[0].enabled ? models->TextureView(state.stages[0].texture) : 0;
 			bool const tested = (state.alphaTest || state.blend) && texture != 0 && Locate(entry, vertices, indices);
 			uint32_t flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
 			if (tested) {
@@ -802,7 +801,7 @@ namespace nSCD3D12 {
 			return scratch[slot]->GetGPUVirtualAddress();
 		}
 
-		// Builds what is new, and when the city changed, the spare structure of the city (every retained mesh and the
+		// Builds what is new, and when the city changed, the spare structure of the city (every kept mesh and the
 		// terrain) for the frames to come. This frame is traced with the current one.
 		void BuildCity() {
 			hitMeshes = 0;
@@ -873,7 +872,7 @@ namespace nSCD3D12 {
 			citySwap = BuildSpareCity(inputs, topInfo, scratchAddress + used, ground);
 			if (!current.ready) return;
 			for (size_t i = 0; i < current.textures.size(); ++i) {
-				current.hits[i].texture = driver.TextureView(current.textures[i]);
+				current.hits[i].texture = models->TextureView(current.textures[i]);
 			}
 			UploadHits(current.hits);
 		}
@@ -926,7 +925,7 @@ namespace nSCD3D12 {
 		// Queues the glow of a lit mesh to be read, or makes its lights once it has been.
 		void Glow(float const *world, MeshEntry &entry, D3D12_VERTEX_BUFFER_VIEW const &vertices,
 		          D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count, uint32_t nightTexture) {
-			uint32_t const texture = driver.TextureView(nightTexture);
+			uint32_t const texture = models->TextureView(nightTexture);
 			if (texture == 0) return;
 			auto [found, fresh] = emitters.try_emplace(EmitterKey{indices.BufferLocation, count, texture});
 			Emitter &emitter = found->second;
@@ -1055,7 +1054,7 @@ namespace nSCD3D12 {
 			totals.lights += lights.size();
 		}
 
-		struct Visitor final : RetainedScene::MeshVisitor {
+		struct Visitor final : KeptModels::MeshVisitor {
 			Impl &world;
 			explicit Visitor(Impl &world) : world(world) {}
 			void Mesh(float const *transform, D3D12_VERTEX_BUFFER_VIEW const &vertices,
@@ -1080,8 +1079,8 @@ namespace nSCD3D12 {
 				frame.terrainSize = kFieldVertices;
 				frame.terrainScale = 1.0f / kCellMetres;
 			}
-			if (raysReady && retained != nullptr) {
-				uint64_t const changes = retained->Changes();
+			if (raysReady && models != nullptr) {
+				uint64_t const changes = models->Changes();
 				if (revisit || changes != visitedChanges) {
 					revisit = false;
 					visitedChanges = changes;
@@ -1094,7 +1093,7 @@ namespace nSCD3D12 {
 					lights.clear();
 					litMeshes = 0;
 					Visitor visitor(*this);
-					retained->VisitMeshes(visitor);
+					models->VisitMeshes(visitor);
 				}
 				totals.litMeshes += litMeshes;
 				if (options.rays) BuildCity();
@@ -1135,8 +1134,8 @@ namespace nSCD3D12 {
 
 	WorldLight::~WorldLight() { impl->driver.SetLightHooks(nullptr); }
 
-	void WorldLight::SetScene(RetainedScene const *retained, SceneLane const *lane) {
-		impl->retained = retained;
+	void WorldLight::SetScene(KeptModels const *models, SceneLane const *lane) {
+		impl->models = models;
 		impl->lane = lane;
 		impl->revisit = true;
 	}

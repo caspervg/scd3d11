@@ -1365,8 +1365,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			if (texture.resource && !pinOf.empty()) {
 				auto const pinned = pinOf.find(texture.resource.Get());
 				if (pinned != pinOf.end() && !pins[pinned->second - 1].orphan) {
-					// The pin keeps the image from here on, ready to be read.
-					Transition(texture.resource.Get(), texture.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+					// The pin keeps the image from here on, ready to be read by any shader (PinView).
+					Transition(texture.resource.Get(), texture.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
 					pins[pinned->second - 1].orphan = true;
 				}
 			}
@@ -3976,6 +3976,19 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		entry.orphan = false;
 		d.pinOf.emplace(texture.resource.Get(), pin);
 		return pin;
+	}
+
+	uint32_t cGDriver12::PinView(uint32_t pin) {
+		Impl &d = *impl;
+		if (pin == 0 || pin > d.pins.size() || !d.pins[pin - 1].resource) return 0;
+		Impl::Pin const &entry = d.pins[pin - 1];
+		if (!entry.orphan) {
+			auto const found = d.textures.find(entry.name);
+			if (found != d.textures.end() && found->second.resource == entry.resource) {
+				d.Transition(entry.resource.Get(), found->second.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+			}
+		}
+		return entry.view;
 	}
 
 	void cGDriver12::UnpinTexture(uint32_t pin) {

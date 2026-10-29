@@ -319,6 +319,7 @@ namespace {
 				owned->SetJitter(options.jitter[0], options.jitter[1]);
 				owned->CheckExemplars();
 				if (Chosen(frame)) owned->SetLook(options.look[0], options.look[1]);
+				if (world != nullptr) world->SetScene(owned.get(), scene.get());
 			}
 		}
 		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {

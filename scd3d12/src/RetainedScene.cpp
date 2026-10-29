@@ -1063,6 +1063,8 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 
 	uint64_t RetainedScene::Changes() const { return impl->changes; }
 
+	uint32_t RetainedScene::TextureView(uint32_t texture) const { return impl->driver.TextureView(texture); }
+
 	void RetainedScene::PrintTotals() const {
 		Impl const &d = *impl;
 		Totals const &t = d.totals;

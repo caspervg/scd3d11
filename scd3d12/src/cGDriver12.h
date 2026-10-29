@@ -192,6 +192,8 @@ namespace nSCD3D12 {
 		// when the name holds no image. Pinning the same image again returns the same pin.
 		uint32_t PinTexture(uint32_t name);
 		void UnpinTexture(uint32_t pin);
+		// A pin's slot in the view heap, made readable by every shader stage as TextureView does. 0 for no pin.
+		uint32_t PinView(uint32_t pin);
 
 		// Draws kept geometry with a kept state, as instances: each instance is a modelview's first three
 		// rows. The projection's depth row comes from the state, the rest from BeginRetained's projection.

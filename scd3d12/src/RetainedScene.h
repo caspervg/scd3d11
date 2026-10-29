@@ -44,7 +44,7 @@ namespace nSCD3D12 {
 	// It also writes a motion vector target: for every pixel, its position in the previous frame minus its
 	// position now, in pixels. Whatever stands still gets it from the depth buffer and the two cameras,
 	// instances that moved from their previous transform.
-	class RetainedScene final : public SceneLane::Sink {
+	class RetainedScene final : public SceneLane::Sink, public KeptModels {
 	public:
 		RetainedScene(cGDriver12 &driver, SceneLane &lane);
 		~RetainedScene() override;
@@ -70,18 +70,10 @@ namespace nSCD3D12 {
 		              float const *bounds, uint32_t mesh, D3D12_VERTEX_BUFFER_VIEW const &vertices,
 		              D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count) override;
 
-		// Every mesh of every instance kept, for lighting from the server's own copy of the city (WorldLight.h):
-		// the instance's world transform (column major), the mesh's geometry and the state it is drawn with.
-		class MeshVisitor {
-		public:
-			virtual ~MeshVisitor() = default;
-			virtual void Mesh(float const *world, D3D12_VERTEX_BUFFER_VIEW const &vertices,
-			                  D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count,
-			                  cGDriver12::DrawState const &state) = 0;
-		};
-		void VisitMeshes(MeshVisitor &visitor) const;
-		// Grows whenever what VisitMeshes visits changes.
-		uint64_t Changes() const;
+		// KeptModels: every mesh of every instance kept, with the game's texture names.
+		void VisitMeshes(MeshVisitor &visitor) const override;
+		uint64_t Changes() const override;
+		uint32_t TextureView(uint32_t texture) const override;
 
 	private:
 		struct Impl;
