@@ -66,8 +66,9 @@ namespace nSCD3D12 {
 		// A non-null adapter picks that GPU, so textures can be shared with a device on the same one.
 		bool Create(bool useWarp, LUID const *adapter = nullptr);
 
-		// The frame Output() holds as tightly packed RGBA rows, after waiting for the GPU.
-		bool ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height);
+		// The frame Output() holds as tightly packed RGBA rows, after waiting for the GPU. Or another RGBA8 texture
+		// on this device, in the RENDER_TARGET state.
+		bool ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height, ID3D12Resource *texture = nullptr);
 		// The GPU time of the frames finished since the last call, and how many there were.
 		void TakeGpuTime(double &milliseconds, uint32_t &frames);
 		ID3D12Device *Device() const;

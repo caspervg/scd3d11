@@ -2394,9 +2394,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		return impl->relight ? impl->litBuffer.Get() : impl->backBuffer.Get();
 	}
 
-	bool cGDriver12::ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height) {
+	bool cGDriver12::ReadBack(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height, ID3D12Resource *texture) {
 		Impl &d = *impl;
-		ID3D12Resource *const output = Output();
+		ID3D12Resource *const output = texture != nullptr ? texture : Output();
 		if (output == nullptr) return false;
 		D3D12_RESOURCE_DESC const description = output->GetDesc();
 		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
@@ -2423,8 +2423,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		if (!d.Submit()) return false;
 		d.WaitIdle();
 
-		width = static_cast<uint32_t>(d.windowWidth);
-		height = static_cast<uint32_t>(d.windowHeight);
+		width = static_cast<uint32_t>(description.Width);
+		height = description.Height;
 		rgba.resize(static_cast<size_t>(width) * height * 4);
 		uint8_t *mapped = nullptr;
 		if (FAILED(readback->Map(0, nullptr, reinterpret_cast<void **>(&mapped)))) return false;

@@ -13,12 +13,19 @@
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
 //                        [--relight <sun>] [--until <frame>]
 //                        [--scene substitute|check|retained [--game <SimCity 4 folder>]]
+//                        [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]
+//                        [--present window|composition|surface [--into <window>]] [--fps <n>]
 //       Renders a Record=<file> capture offline and saves the chosen frames as PNG. With --scene substitute the
 //       server draws the game's models, networks and lot textures from its own copy of the game's data
 //       (SceneLane.h) and writes per frame counts to scene.csv in the output folder. check also compares each
 //       such draw with the game's. The data comes from the folders the capture names, or from --game. retained
 //       substitutes too, keeps the static models and draws them every frame with the game's camera
 //       (RetainedScene.h), and saves the motion vectors of each chosen frame as motion<frame>.png.
+//       --dlss runs NVIDIA DLSS through Streamline (Dlss.h) on the retained scene's frames: DLAA with the instances
+//       drawn jittered, the other modes from a jittered render size copy of each frame (DlssTest.h). The saved
+//       frames are then DLSS's. --present shows the replay in a window of its own through one of three kinds of
+//       swap chain (--into presents into another process's window instead, given by its handle), --frame-generation
+//       adds DLSS frame generation there, and --fps caps the frame rate with Reflex.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
 //                       [--scene substitute|check]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
@@ -32,6 +39,8 @@
 
 #include "AssetStore.h"
 #include "cGDriver12.h"
+#include "Dlss.h"
+#include "DlssTest.h"
 #include "RetainedScene.h"
 #include "SceneLane.h"
 #include "Serve.h"
@@ -112,6 +121,12 @@ namespace {
 		bool check = false;
 		bool retained = false;
 		std::wstring game;
+		nSCD3D12::DlssMode dlss = nSCD3D12::DlssMode::Off;
+		bool frameGeneration = false;
+		bool present = false;
+		nSCD3D12::ReplayWindow::Kind window = nSCD3D12::ReplayWindow::Kind::Window;
+		HWND into = nullptr;
+		uint32_t fps = 0;
 	};
 
 	bool ParseReplay(int argc, wchar_t **argv, ReplayOptions &options) {
@@ -142,6 +157,16 @@ namespace {
 				options.check = mode == L"check";
 				options.retained = mode == L"retained";
 			} else if (argument == L"--game" && hasValue) options.game = argv[++i];
+			else if (argument == L"--dlss" && hasValue) {
+				if (!nSCD3D12::ParseDlssMode(argv[++i], options.dlss)) return false;
+			} else if (argument == L"--frame-generation" && hasValue) {
+				options.frameGeneration = std::wstring(argv[++i]) == L"on";
+			} else if (argument == L"--present" && hasValue) {
+				options.present = true;
+				if (!nSCD3D12::ParseReplayWindowKind(argv[++i], options.window)) return false;
+			} else if (argument == L"--into" && hasValue) {
+				options.into = reinterpret_cast<HWND>(static_cast<uintptr_t>(_wcstoui64(argv[++i], nullptr, 0)));
+			} else if (argument == L"--fps" && hasValue) options.fps = static_cast<uint32_t>(_wtoi(argv[++i]));
 			else if (options.capture.empty()) options.capture = argument;
 			else return false;
 		}
@@ -156,6 +181,11 @@ namespace {
 		nSCAssets::AssetStore store;
 		std::unique_ptr<nSCD3D12::SceneLane> scene;
 		std::unique_ptr<nSCD3D12::RetainedScene> retained;
+		std::unique_ptr<nSCD3D12::Dlss> dlss;
+		std::unique_ptr<nSCD3D12::Downsampler> downsampler;
+		std::unique_ptr<nSCD3D12::ReplayWindow> window;
+		uint32_t renderWidth = 0, renderHeight = 0, outputWidth = 0, outputHeight = 0;
+		uint64_t upscaled = 0;
 		std::FILE *sceneCsv = nullptr;
 		uint64_t frame = 0;
 		uint64_t saved = 0;
@@ -211,11 +241,14 @@ namespace {
 		bool Frame() override {
 			driver.Frame();
 			if (scene != nullptr) scene->EndFrame(frame, sceneCsv);
+			bool generate = false;
+			ID3D12Resource *const shown = Upscale(generate);
+			if (window != nullptr && !window->Present(shown, generate)) return false;
 			bool const chosen = Chosen(frame);
 			if (chosen) {
 				wchar_t name[64];
 				swprintf_s(name, L"\\frame%06llu.png", static_cast<unsigned long long>(frame));
-				Save(options.out + name);
+				Save(options.out + name, shown);
 			}
 			if (retained != nullptr) {
 				wchar_t name[64];
@@ -224,15 +257,64 @@ namespace {
 				retained->EndFrame(chosen ? &path : nullptr);
 				if (Chosen(frame + 1)) retained->KeepMotion();
 			}
+			if (dlss != nullptr) dlss->BeginFrame(frame + 1);
 			return ++frame <= options.until;
+		}
+
+		// The frame the replay shows: DLSS's from the retained scene's frame once there is one, else the driver's.
+		// generate says whether the frame has the inputs frame generation needs.
+		ID3D12Resource *Upscale(bool &generate) {
+			ID3D12Resource *const output = driver.Output();
+			nSCD3D12::UpscalerInputs inputs;
+			if (dlss == nullptr || output == nullptr || retained == nullptr || !retained->UpscalerCamera(inputs)) {
+				return output;
+			}
+			D3D12_RESOURCE_DESC const description = output->GetDesc();
+			inputs.outputWidth = static_cast<uint32_t>(description.Width);
+			inputs.outputHeight = description.Height;
+			if (inputs.outputWidth != outputWidth || inputs.outputHeight != outputHeight) {
+				outputWidth = inputs.outputWidth;
+				outputHeight = inputs.outputHeight;
+				dlss->RenderSize(outputWidth, outputHeight, renderWidth, renderHeight);
+				std::printf("dlss: %ux%u from %ux%u\n", outputWidth, outputHeight, renderWidth, renderHeight);
+				inputs.reset = true;
+			}
+			inputs.renderWidth = renderWidth;
+			inputs.renderHeight = renderHeight;
+			inputs.color = output;
+			inputs.depth = driver.DepthBuffer();
+			generate = true;
+			++upscaled;
+			bool const dlaa = options.dlss == nSCD3D12::DlssMode::Dlaa;
+			if (options.dlss == nSCD3D12::DlssMode::Off || dlaa) {
+				ID3D12Resource *const shown = dlss->Evaluate(inputs);
+				// DLAA jitters the instances the retained scene draws next.
+				if (dlaa) {
+					float x, y;
+					dlss->NextJitter(x, y);
+					retained->SetJitter(x, y);
+				}
+				return shown;
+			}
+			// The retained scene draws at the output size, so a jittered copy at the render size stands in.
+			if (downsampler == nullptr) downsampler = std::make_unique<nSCD3D12::Downsampler>(driver.Device());
+			if (!downsampler->Resize(renderWidth, renderHeight)) return output;
+			dlss->NextJitter(inputs.jitter[0], inputs.jitter[1]);
+			ID3D12Resource *const depth = inputs.depth;
+			inputs.color = downsampler->Color();
+			inputs.depth = downsampler->Depth();
+			inputs.depthState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			return dlss->Evaluate(inputs, [&](ID3D12GraphicsCommandList *list) {
+				downsampler->Record(list, output, depth, inputs.jitter);
+			});
 		}
 		bool Chosen(uint64_t number) const {
 			return options.frames.count(number) != 0 || (options.every != 0 && number % options.every == 0);
 		}
-		void Save(std::wstring const &path) {
+		void Save(std::wstring const &path, ID3D12Resource *texture = nullptr) {
 			std::vector<uint8_t> rgba;
 			uint32_t width = 0, height = 0;
-			if (driver.ReadBack(rgba, width, height) && nSCDWire::SavePng(path.c_str(), width, height, rgba.data())) {
+			if (driver.ReadBack(rgba, width, height, texture) && nSCDWire::SavePng(path.c_str(), width, height, rgba.data())) {
 				++saved;
 			}
 		}
@@ -249,12 +331,27 @@ namespace {
 		CreateDirectoryW(options.out.c_str(), nullptr);
 		nSCD3D12::cGDriver12 driver;
 		if (options.relight) driver.Relight(options.sun);
+		// Streamline starts before the device.
+		std::unique_ptr<nSCD3D12::Dlss> dlss = nSCD3D12::Dlss::Start(options.dlss, options.frameGeneration);
 		if (!driver.Create(options.warp)) {
 			std::puts("cannot create a Direct3D 12 device");
 			std::fclose(file);
 			return 1;
 		}
+		if (dlss != nullptr && !dlss->SetDevice(driver.Device(), driver.Queue())) {
+			std::puts("dlss: not available on this device, drawing without it");
+			dlss.reset();
+		}
 		ReplayFrames hooks(driver, options);
+		if (dlss != nullptr) {
+			dlss->LimitFrameRate(options.fps);
+			dlss->BeginFrame(0);
+		}
+		hooks.dlss = std::move(dlss);
+		if (options.present) {
+			hooks.window = std::make_unique<nSCD3D12::ReplayWindow>(options.window, options.into, driver.Device(),
+			                                                        driver.Queue(), hooks.dlss.get());
+		}
 		if (options.substitute && !options.game.empty()) {
 			hooks.store.AddGameData(options.game);
 			hooks.StartScene();
@@ -278,6 +375,19 @@ namespace {
 		if (hooks.scene != nullptr) hooks.scene->PrintTotals();
 		if (hooks.retained != nullptr) hooks.retained->PrintTotals();
 		else if (options.substitute) std::puts("scene: the capture names no game folders, pass --game");
+		if (hooks.dlss != nullptr) {
+			double milliseconds = 0.0;
+			uint32_t frames = 0;
+			hooks.dlss->TakeGpuTime(milliseconds, frames);
+			std::printf("dlss: %llu frames upscaled, the DLSS pass took %.3f ms of GPU per frame over %u timed\n",
+						static_cast<unsigned long long>(hooks.upscaled), frames != 0 ? milliseconds / frames : 0.0,
+						frames);
+		}
+		if (hooks.window != nullptr) hooks.window->PrintTotals();
+		// Streamline goes before the device it was handed.
+		hooks.window.reset();
+		hooks.downsampler.reset();
+		hooks.dlss.reset();
 		if (hooks.sceneCsv != nullptr) std::fclose(hooks.sceneCsv);
 		std::fclose(file);
 		return ok ? 0 : 1;
@@ -351,6 +461,8 @@ int wmain(int argc, wchar_t **argv) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
 		std::puts("                     [--relight <hour or azimuth,elevation>] [--until <frame>]"
 		          " [--scene substitute|check|retained [--game <SimCity 4 folder>]]");
+		std::puts("                     [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]"
+		          " [--present window|composition|surface [--into <window>]] [--fps <n>]");
 		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]"
 		          " [--scene substitute|check]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
