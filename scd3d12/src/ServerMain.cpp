@@ -37,8 +37,8 @@
 //       turned by yaw degrees about the ground at the middle of the screen, tilted to pitch degrees (0 keeps SC4's)
 //       and zoomed in by zoom, each chosen frame turned yaw step degrees further than the one before. Without it
 //       the capture's own FreeCamera records apply. The dynamic passes are drawn from the free camera too.
-//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
-//                       [--scene substitute|check|owned]
+//   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun> [--light <features>]]
+//                       [--stats on] [--scene substitute|check|owned]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
 //       rate and the CPU and GPU time per frame every second. --scene works as for replay, with the data
 //       from the folders the game names, indexed while the game draws on.
@@ -46,7 +46,7 @@
 //   --relight relights every frame with another sun: an hour of the day from 0 to 24, or
 //   <azimuth>,<elevation> in degrees (see cGDriver12::Sun).
 //   --light says what the server's own copy of the city adds to relighting (WorldLight.h), as a comma separated
-//   list: rays (sun shadows ray traced through the retained scene and the terrain), terrain (smooth terrain
+//   list: rays (sun shadows ray traced through the kept models and the terrain), terrain (smooth terrain
 //   normals), lamps (night lights), world (a sun that stands still in the world instead of turning with the
 //   camera), or none (the default) for the relighting of the draw lane alone.
 //   SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]
@@ -155,22 +155,22 @@ namespace {
 	};
 
 	// --light: the features named, or none.
-	bool ParseLight(std::wstring const &text, ReplayOptions &options) {
-		options.light = {false, false, false};
-		options.worldLight = text != L"none";
+	bool ParseLight(std::wstring const &text, bool &on, nSCD3D12::WorldLight::Options &light, Sun &sun) {
+		light = {false, false, false};
+		on = text != L"none";
 		bool world = false;
-		for (size_t start = 0; options.worldLight && start <= text.size();) {
+		for (size_t start = 0; on && start <= text.size();) {
 			size_t const end = text.find(L',', start);
 			std::wstring const feature = text.substr(start, end - start);
-			if (feature == L"rays") options.light.rays = true;
-			else if (feature == L"terrain") options.light.terrain = true;
-			else if (feature == L"lamps") options.light.lights = true;
+			if (feature == L"rays") light.rays = true;
+			else if (feature == L"terrain") light.terrain = true;
+			else if (feature == L"lamps") light.lights = true;
 			else if (feature == L"world") world = true;
 			else return false;
 			if (end == std::wstring::npos) break;
 			start = end + 1;
 		}
-		options.sun.fixedInWorld = world;
+		sun.fixedInWorld = world;
 		return true;
 	}
 
@@ -197,7 +197,7 @@ namespace {
 				options.sun.fixedInWorld = world;
 			}
 			else if (argument == L"--light" && hasValue) {
-				if (!ParseLight(argv[++i], options)) return false;
+				if (!ParseLight(argv[++i], options.worldLight, options.light, options.sun)) return false;
 			}
 			else if (argument == L"--until" && hasValue) options.until = _wtoi64(argv[++i]);
 			else if (argument == L"--scene" && hasValue) {
@@ -512,6 +512,8 @@ namespace {
 		DWORD parent = 0;
 		Sun sun;
 		bool relight = false;
+		bool light = false;
+		nSCD3D12::WorldLight::Options features;
 		bool stats = false;
 		nSCD3D12::SceneMode scene = nSCD3D12::SceneMode::Off;
 		for (int i = 2; i + 1 < argc; i += 2) {
@@ -519,6 +521,7 @@ namespace {
 			if (argument == L"--ring") ring = argv[i + 1];
 			else if (argument == L"--parent") parent = static_cast<DWORD>(_wtoi(argv[i + 1]));
 			else if (argument == L"--relight") relight = ParseSun(argv[i + 1], sun);
+			else if (argument == L"--light" && !ParseLight(argv[i + 1], light, features, sun)) light = false;
 			else if (argument == L"--stats") stats = std::wstring(argv[i + 1]) == L"on";
 			else if (argument == L"--scene") {
 				std::wstring const mode = argv[i + 1];
@@ -532,7 +535,7 @@ namespace {
 			}
 		}
 		if (ring.empty() || parent == 0) return 2;
-		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats, scene);
+		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats, scene, light ? &features : nullptr);
 	}
 
 	int RunCompare(int argc, wchar_t **argv) {
@@ -580,8 +583,8 @@ int wmain(int argc, wchar_t **argv) {
 		          " [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]] [--view-of <frame>] [--free-camera <yaw>,<pitch>,<zoom>[,<yaw step>]]");
 		std::puts("                     [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]"
 		          " [--present window|composition|surface [--into <window>]] [--fps <n>]");
-		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]"
-		          " [--scene substitute|check|owned]");
+		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun> [--light <features>]]"
+		          " [--stats on] [--scene substitute|check|owned]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
 	CoUninitialize();

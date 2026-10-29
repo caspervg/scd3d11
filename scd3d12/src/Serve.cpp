@@ -37,9 +37,11 @@ namespace nSCD3D12 {
 		class ServeHooks : public nSCDWire::ReplayHooks {
 		public:
 			ServeHooks(cGDriver12 &driver, nSCDWire::RingControl &control, HANDLE parent, HANDLE frameEvent,
-			           bool stats, SceneMode sceneMode)
+			           bool stats, SceneMode sceneMode, WorldLight::Options const *light)
 				: driver(driver), control(control), parent(parent), frameEvent(frameEvent), stats(stats),
-				  sceneMode(sceneMode) {}
+				  sceneMode(sceneMode) {
+				if (light != nullptr) world = std::make_unique<WorldLight>(driver, *light);
+			}
 
 			~ServeHooks() {
 				if (indexer.joinable()) indexer.join();
@@ -82,6 +84,7 @@ namespace nSCD3D12 {
 			void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 				driver.VideoMode(show, width, height, fullscreen);
 				if (owned) owned->VideoMode();
+				if (world) world->VideoMode();
 				Share(width, height);
 				if (control.presentMode == nSCDWire::kPresentComposition) Compose(width, height);
 			}
@@ -98,6 +101,7 @@ namespace nSCD3D12 {
 
 			void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
 				if (owned) owned->OwnerBegin(owner);
+				if (world) world->OwnerBegin(owner);
 				driver.OwnerBegin(owner);
 				if (scene) scene->OwnerBegin(owner);
 			}
@@ -105,6 +109,7 @@ namespace nSCD3D12 {
 				driver.OwnerEnd();
 				if (scene) scene->OwnerEnd();
 				if (owned) owned->OwnerEnd();
+				if (world) world->OwnerEnd();
 			}
 			void Occupant(nSCDWire::OccupantEvent const &event) override {
 				if (owned) owned->Occupant(event);
@@ -125,6 +130,7 @@ namespace nSCD3D12 {
 						owned = std::make_unique<OwnedScene>(driver, *scene);
 						owned->SetFreeCamera(freeCamera);
 					}
+					if (world) world->SetScene(owned.get(), scene.get());
 					std::printf("scene: %s from frame %llu\n", owned ? "owning the static view" : "substituting",
 					            static_cast<unsigned long long>(frame));
 					std::fflush(stdout);
@@ -133,6 +139,12 @@ namespace nSCD3D12 {
 				if (frameFence) Publish(index);
 				if (stats) Report();
 				return true;
+			}
+
+			void PrintTotals() const {
+				if (scene) scene->PrintTotals();
+				if (owned) owned->PrintTotals();
+				if (world) world->PrintTotals();
 			}
 
 		private:
@@ -155,10 +167,7 @@ namespace nSCD3D12 {
 				            static_cast<double>(now - reportStart) / 1000.0,
 				            static_cast<double>(cpu - reportCpu) / 1.0e4 / reportFrames,
 				            gpuFrames != 0 ? gpu / gpuFrames : 0.0);
-				if (scene && ++reports % 10 == 0) {
-					scene->PrintTotals();
-					if (owned) owned->PrintTotals();
-				}
+				if (++reports % 10 == 0) PrintTotals();
 				std::fflush(stdout);
 				reportStart = now;
 				reportCpu = cpu;
@@ -360,6 +369,8 @@ namespace nSCD3D12 {
 			// Declared after the lane it takes meshes from.
 			std::unique_ptr<OwnedScene> owned;
 			nSCDWire::FreeCamera freeCamera{};
+			// Declared after the scenes it reads.
+			std::unique_ptr<WorldLight> world;
 			uint32_t reports = 0;
 			ULONGLONG reportStart = 0;
 			uint64_t reportCpu = 0;
@@ -368,7 +379,7 @@ namespace nSCD3D12 {
 	}
 
 	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats,
-	             SceneMode scene) {
+	             SceneMode scene, WorldLight::Options const *light) {
 		HANDLE const parent = OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, FALSE, parentId);
 		if (parent == nullptr) {
 			std::puts("cannot open the game's process");
@@ -407,13 +418,15 @@ namespace nSCD3D12 {
 		std::puts("serving");
 		std::fflush(stdout);
 
-		ServeHooks hooks(driver, control, parent, ring.FrameEvent(), logStats, scene);
+		ServeHooks hooks(driver, control, parent, ring.FrameEvent(), logStats, scene, relight != nullptr ? light : nullptr);
 		nSCDWire::Reader reader([&](void *data, size_t size) { return ring.Read(data, size, alive); });
 		nSCDWire::ReplayStats stats;
 		char const *error = nullptr;
 		bool const ok = nSCDWire::Replay(reader, driver, hooks, &stats, &error);
 		std::printf("%s after %llu frames, %llu records\n", ok ? "stream ended" : error,
 		            static_cast<unsigned long long>(stats.frames), static_cast<unsigned long long>(stats.records));
+		hooks.PrintTotals();
+		std::fflush(stdout);
 		CloseHandle(parent);
 		return ok ? 0 : 1;
 	}

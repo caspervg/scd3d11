@@ -11,6 +11,7 @@
 #pragma once
 
 #include "cGDriver12.h"
+#include "WorldLight.h"
 
 #include <string>
 
@@ -22,8 +23,9 @@ namespace nSCD3D12 {
 	enum class SceneMode : uint8_t { Off, Substitute, Check, Owned };
 
 	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits. A non-null
-	// relight relights every frame with that sun. With logStats, logs the frame rate and the CPU and GPU time
-	// per frame every second.
+	// relight relights every frame with that sun, and a non-null light adds light from the server's own copy of
+	// the city to it (WorldLight.h). With logStats, logs the frame rate and the CPU and GPU time per frame every
+	// second.
 	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats,
-	             SceneMode scene = SceneMode::Off);
+	             SceneMode scene = SceneMode::Off, WorldLight::Options const *light = nullptr);
 }
