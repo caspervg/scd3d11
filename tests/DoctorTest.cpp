@@ -31,6 +31,9 @@ int main() {
 		Environment environment = Clean();
 		environment.screenModeWarning = "SimCity 4 asked for full screen at 1600x768. SCD3D11 used the screen's own 1920x1080 instead.";
 		assert(Has(Diagnose(environment), Severity::Warning, "SCD3D11 used the screen's own 1920x1080"));
+		environment.arguments = {"-f", "-r1600x768x32"};
+		environment.gameSize = Size{1920, 1080};
+		assert(Diagnose(environment).size() == 1);
 	}
 	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
 	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
