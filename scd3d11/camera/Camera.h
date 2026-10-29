@@ -45,6 +45,14 @@ public:
 	// Called once per frame.
 	void Update();
 
+	// While set when a drag starts, the drag turns and tilts only the view DeferredView gives, and the game's
+	// camera takes it in one step when the drag ends. SCD3D11 sets it while its server draws a view of its own,
+	// so the game does not redraw the city for every mouse move.
+	bool deferDrags = false;
+
+	// The turn of a deferred drag so far, in radians, and the pitch it ends at. False without one.
+	bool DeferredView(float& yawDelta, float& endPitch) const;
+
 	// How much one wheel notch scales the view.
 	float magnificationPerNotch = 1.04f;
 
@@ -80,6 +88,11 @@ private:
 	std::chrono::steady_clock::time_point lastUpdate{};
 
 	bool rotating = false;
+	bool deferring = false;
+	// The deferred turn waits for the next Update, which applies it while the view target is still anchored.
+	bool committing = false;
+	float deferredYaw = 0.0f;
+	float deferredPitch = 0.0f;
 	cS3DVector3 anchorViewTarget{};
 	cS3DVector3 anchorBaseTarget{};
 	float anchorOrthoScale = 0.0f;

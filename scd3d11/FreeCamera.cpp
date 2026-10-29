@@ -17,6 +17,7 @@
 
 #include "camera/Camera.h"
 #include "camera/ModernCameraControl.h"
+#include "cGDriverWire.h"
 #include "Diagnostics.h"
 #include "GameVersion.h"
 #include "Settings.h"
@@ -31,6 +32,8 @@
 #include <cRZBaseSystemService.h>
 #include <SC4UI.h>
 
+#include <cstring>
+
 #include <windows.h>
 
 namespace nSCD3D11::FreeCamera {
@@ -43,6 +46,25 @@ namespace nSCD3D11::FreeCamera {
 
 		Camera gCamera;
 		ModernCameraControl *gControl = nullptr;
+		// What the server was last told to draw from.
+		nSCDWire::FreeCamera gSent{};
+		// The server's free camera turns the other way from the game's yaw.
+		constexpr float kYawSign = -1.0f;
+		constexpr float kDegrees = 180.0f / 3.14159265358979f;
+
+		// While the server draws the static view itself, a drag turns only the server's camera, and the game's
+		// camera follows when the drag ends.
+		void SendDeferredView() {
+			cGDriverWire *const wire = cGDriverWire::Current();
+			gCamera.deferDrags = wire != nullptr && wire->Inner().RemoteOwnsView();
+			if (wire == nullptr) return;
+			nSCDWire::FreeCamera next{};
+			float yaw = 0.0f, pitch = 0.0f;
+			if (gCamera.DeferredView(yaw, pitch)) next = {1, kYawSign * yaw * kDegrees, pitch * kDegrees, 1.0f};
+			if (std::memcmp(&next, &gSent, sizeof(next)) == 0) return;
+			wire->RecordFreeCamera(next);
+			gSent = next;
+		}
 
 		bool InForeground() {
 			DWORD process = 0;
@@ -61,6 +83,7 @@ namespace nSCD3D11::FreeCamera {
 				bool const control = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 				gCamera.SetClassicHold(alt && !control && InForeground());
 				gCamera.Update();
+				SendDeferredView();
 				return true;
 			}
 		};

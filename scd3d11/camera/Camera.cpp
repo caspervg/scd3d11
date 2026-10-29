@@ -134,12 +134,38 @@ void Camera::BeginRotation()
 	anchorBaseTarget = cameraControl->baseTargetForRotation;
 	anchorOrthoScale = cameraControl->orthoScale;
 	rotating = true;
+	deferring = deferDrags && !classicHold;
+	committing = false;
+	deferredYaw = deferredPitch = 0.0f;
 }
 
 void Camera::EndRotation()
 {
+	if (deferring && rotating)
+	{
+		pendingYaw += deferredYaw;
+		pendingPitch += deferredPitch;
+		deferredYaw = deferredPitch = 0.0f;
+		deferring = false;
+		committing = true;
+		return;
+	}
+
 	rotating = false;
+	committing = false;
 	anchorOrthoScale = 0.0f;
+}
+
+bool Camera::DeferredView(float& yawDelta, float& endPitch) const
+{
+	if (!deferring || !rotating || (deferredYaw == 0.0f && deferredPitch == 0.0f))
+	{
+		return false;
+	}
+
+	yawDelta = deferredYaw;
+	endPitch = std::clamp(pitch + deferredPitch, kMinPitch, kMaxPitch);
+	return true;
 }
 
 void Camera::PrepareForSave()
@@ -336,6 +362,13 @@ void Camera::Update()
 		return;
 	}
 
+	if (deferring && rotating)
+	{
+		deferredYaw += pendingYaw;
+		deferredPitch = std::clamp(pitch + deferredPitch + pendingPitch, kMinPitch, kMaxPitch) - pitch;
+		pendingYaw = pendingPitch = 0.0f;
+	}
+
 	if (pendingYaw != 0.0f || pendingPitch != 0.0f || frameZoom != 0.0f)
 	{
 		if (cISC43DRender* renderer = SC4CameraControl::GetActiveRenderer())
@@ -344,6 +377,11 @@ void Camera::Update()
 		}
 
 		pendingYaw = pendingPitch = frameZoom = 0.0f;
+	}
+
+	if (committing)
+	{
+		EndRotation();
 	}
 }
 
