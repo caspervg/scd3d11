@@ -206,6 +206,10 @@ namespace nSCD3D12 {
 		std::vector<uint64_t> drawnIn = std::vector<uint64_t>(kFieldVertices * kFieldVertices);
 		std::vector<uint32_t> drawnThisFrame;
 		std::vector<uint8_t> diagonals = std::vector<uint8_t>((kFieldVertices - 1) * (kFieldVertices - 1));
+		// Each cell's four corners (x then z) as its own triangles last gave them. Where a lot is cut into a slope,
+		// SC4 draws the lot's cells and the slope around them with corners of their own at the same grid point:
+		// the vertex heights keep the higher one, which lifts the lot by up to a few metres.
+		std::vector<float> corners = std::vector<float>((kFieldVertices - 1) * (kFieldVertices - 1) * 4, kUnknownHeight);
 		bool terrainChanged = false;
 		uint64_t terrainUpdated = 0;
 		ComPtr<ID3D12Resource> field;
@@ -536,6 +540,13 @@ namespace nSCD3D12 {
 					diagonal = split;
 					terrainChanged = true;
 				}
+				float *const cell = corners.data() + (static_cast<size_t>(z0) * (kFieldVertices - 1) + x0) * 4;
+				for (uint32_t k = 0; k < 3; ++k) {
+					float &corner = cell[(gx[k] - x0) + 2 * (gz[k] - z0)];
+					if (corner == y[k]) continue;
+					corner = y[k];
+					terrainChanged = true;
+				}
 			}
 		}
 
@@ -713,22 +724,30 @@ namespace nSCD3D12 {
 		// The terrain's structure from the known cells, split the way SC4 splits them, made ready to build into the
 		// spare of the two terrain buffers: its inputs are copied, the build itself is left to BuildCity.
 		bool PrepareTerrain(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC &build, uint64_t &scratchBytes) {
-			std::vector<float> positions(static_cast<size_t>(kFieldVertices) * kFieldVertices * 3);
-			for (uint32_t z = 0; z < kFieldVertices; ++z) {
-				for (uint32_t x = 0; x < kFieldVertices; ++x) {
-					float *const p = positions.data() + (static_cast<size_t>(z) * kFieldVertices + x) * 3;
-					p[0] = static_cast<float>(x) * kCellMetres;
-					p[1] = (std::max)(heights[static_cast<size_t>(z) * kFieldVertices + x], -1000.0f);
-					p[2] = static_cast<float>(z) * kCellMetres;
-				}
-			}
+			// Four vertices per cell: its own corners where its triangles were drawn at full detail, else the
+			// vertex heights.
+			constexpr uint32_t kCells = kFieldVertices - 1;
+			std::vector<float> positions(static_cast<size_t>(kCells) * kCells * 4 * 3);
 			std::vector<uint32_t> indices;
-			for (uint32_t z = 0; z + 1 < kFieldVertices; ++z) {
-				for (uint32_t x = 0; x + 1 < kFieldVertices; ++x) {
-					uint32_t const a = z * kFieldVertices + x, b = a + 1, c = a + kFieldVertices, d = c + 1;
-					if (heights[a] <= kUnknownHeight || heights[b] <= kUnknownHeight || heights[c] <= kUnknownHeight ||
-					    heights[d] <= kUnknownHeight) continue;
-					if (diagonals[static_cast<size_t>(z) * (kFieldVertices - 1) + x] == 2) {
+			for (uint32_t z = 0; z < kCells; ++z) {
+				for (uint32_t x = 0; x < kCells; ++x) {
+					size_t const cell = static_cast<size_t>(z) * kCells + x;
+					float const *const own = corners.data() + cell * 4;
+					bool const whole = own[0] > kUnknownHeight && own[1] > kUnknownHeight && own[2] > kUnknownHeight &&
+					                   own[3] > kUnknownHeight;
+					bool known = true;
+					for (uint32_t k = 0; k < 4; ++k) {
+						uint32_t const cx = x + (k & 1), cz = z + (k >> 1);
+						float const height = whole ? own[k] : heights[static_cast<size_t>(cz) * kFieldVertices + cx];
+						known = known && height > kUnknownHeight;
+						float *const p = positions.data() + (cell * 4 + k) * 3;
+						p[0] = static_cast<float>(cx) * kCellMetres;
+						p[1] = height;
+						p[2] = static_cast<float>(cz) * kCellMetres;
+					}
+					if (!known) continue;
+					uint32_t const a = static_cast<uint32_t>(cell * 4), b = a + 1, c = a + 2, d = a + 3;
+					if (diagonals[cell] == 2) {
 						indices.insert(indices.end(), {a, b, c, b, d, c});
 					} else {
 						indices.insert(indices.end(), {a, b, d, a, d, c});
@@ -758,7 +777,7 @@ namespace nSCD3D12 {
 			terrainGeometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 			terrainGeometry.Triangles.VertexBuffer = {terrainInputs->GetGPUVirtualAddress(), 12};
 			terrainGeometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-			terrainGeometry.Triangles.VertexCount = kFieldVertices * kFieldVertices;
+			terrainGeometry.Triangles.VertexCount = kCells * kCells * 4;
 			terrainGeometry.Triangles.IndexBuffer = terrainInputs->GetGPUVirtualAddress() + positionBytes;
 			terrainGeometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
 			terrainGeometry.Triangles.IndexCount = static_cast<UINT>(indices.size());
