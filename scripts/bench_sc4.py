@@ -18,7 +18,8 @@ A command may contain {capture}, which becomes the capture folder (for TakeSnaps
 script's own: "focus" brings the game to the foreground (SC4 drops to about 20 frames per second without
 it), "screenshot <name>" focuses the game and saves what its window shows on screen as <name>.png in the
 capture folder, and "measure <seconds>" does that and then reports the frame rate from GetFrameCount and
-the CPU time of the game's busiest thread (the one that renders) and of SCD3D12Server over that many seconds.
+the CPU time of the game's busiest thread (the one that renders) and of SCD3D12Server over that many seconds,
+and the game's private memory at the end.
 """
 
 import argparse
@@ -133,10 +134,11 @@ def measure(pid: int, seconds: float) -> str:
     count = max(frames_after - frames, 1)
     busiest = max(threads_after[tid] - threads.get(tid, 0.0) for tid in threads_after)
     total = sum(threads_after.values()) - sum(threads.values())
+    private = psutil.Process(pid).memory_info().private >> 20
     return (f"{count / elapsed:.1f} fps ({elapsed * 1000 / count:.2f} ms per frame), render thread "
             f"{busiest * 1000 / count:.2f} ms CPU per frame ({busiest / elapsed:.0%}), whole game "
-            f"{total / elapsed:.0%}, server {(server_after - server) * 1000 / count:.2f} ms CPU per frame"
-            f"{'' if focused else ', NOT in the foreground'}")
+            f"{total / elapsed:.0%}, server {(server_after - server) * 1000 / count:.2f} ms CPU per frame, "
+            f"game private memory {private} MB{'' if focused else ', NOT in the foreground'}")
 
 
 def game_running() -> bool:
