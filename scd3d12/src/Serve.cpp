@@ -74,6 +74,10 @@ namespace nSCD3D12 {
 			void OccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values) override {
 				if (owned) owned->OccupantExemplar(occupant, values);
 			}
+			void FreeCamera(nSCDWire::FreeCamera const &camera) override {
+				freeCamera = camera;
+				if (owned) owned->SetFreeCamera(camera);
+			}
 
 			void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 				driver.VideoMode(show, width, height, fullscreen);
@@ -117,7 +121,10 @@ namespace nSCD3D12 {
 				// Between frames no bracket is open, so the lane can start here.
 				if (!scene && storeReady.load(std::memory_order_acquire)) {
 					scene = std::make_unique<SceneLane>(driver, store, sceneMode == SceneMode::Check);
-					if (sceneMode == SceneMode::Owned) owned = std::make_unique<OwnedScene>(driver, *scene);
+					if (sceneMode == SceneMode::Owned) {
+						owned = std::make_unique<OwnedScene>(driver, *scene);
+						owned->SetFreeCamera(freeCamera);
+					}
 					std::printf("scene: %s from frame %llu\n", owned ? "owning the static view" : "substituting",
 					            static_cast<unsigned long long>(frame));
 					std::fflush(stdout);
@@ -352,6 +359,7 @@ namespace nSCD3D12 {
 			std::unique_ptr<SceneLane> scene;
 			// Declared after the lane it takes meshes from.
 			std::unique_ptr<OwnedScene> owned;
+			nSCDWire::FreeCamera freeCamera{};
 			uint32_t reports = 0;
 			ULONGLONG reportStart = 0;
 			uint64_t reportCpu = 0;
