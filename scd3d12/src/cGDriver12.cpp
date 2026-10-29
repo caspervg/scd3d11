@@ -142,6 +142,38 @@ PSInput VSMain(VSInput input)
 	return output;
 }
 
+#ifdef SCD3D12_INSTANCED
+cbuffer RetainedFrame : register(b1)
+{
+	column_major float4x4 frameProjection;
+};
+
+// A kept draw (see cGDriver12::DrawRetained): each instance brings its modelview's first three rows. The frame's
+// projection places it on screen and the draw's own projection gives its depth, which SC4 nudges per layer.
+PSInput VSInstanced(VSInput input, float4 row0 : INSTANCE0, float4 row1 : INSTANCE1, float4 row2 : INSTANCE2)
+{
+	PSInput output;
+	float4 position = float4(input.position, 1.0f);
+	float4 viewPosition = float4(dot(row0, position), dot(row1, position), dot(row2, position), 1.0f);
+	output.position = mul(frameProjection, viewPosition);
+	output.position.z = dot(projection[2], viewPosition);
+	output.position.z = (output.position.z + output.position.w) * 0.5f;
+	output.normal = float3(dot(row0.xyz, input.normal), dot(row1.xyz, input.normal), dot(row2.xyz, input.normal));
+	output.color = input.color;
+	output.viewPosition = viewPosition.xyz;
+	float4 source0 = (stage0.parameters1.w & 0xfffffff8) == 0x10
+		? viewPosition
+		: float4(stage0.parameters1.w == 1 ? input.texCoord1 : input.texCoord0, 0.0f, 1.0f);
+	float4 source1 = (stage1.parameters1.w & 0xfffffff8) == 0x10
+		? viewPosition
+		: float4(stage1.parameters1.w == 1 ? input.texCoord1 : input.texCoord0, 0.0f, 1.0f);
+	output.texCoord0 = mul(textureMatrix0, source0).xy;
+	output.texCoord1 = mul(textureMatrix1, source1).xy;
+	output.fogDistance = abs(viewPosition.z);
+	return output;
+}
+#endif
+
 float4 CombinerArgument(uint packed, float4 textureColor, float4 previous, float4 constantColor, float4 primary)
 {
 	uint source = packed & 15;
@@ -754,6 +786,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 
 		ComPtr<ID3D12RootSignature> rootSignature;
 		ComPtr<ID3DBlob> vertexShader, pixelShader, flatVertexShader, flatPixelShader;
+		// The owned scene's: VSInstanced, smooth and flat.
+		ComPtr<ID3DBlob> instancedVertexShaders[2];
 		ComPtr<ID3DBlob> blitVertexShader, blitPixelShader;
 		std::unordered_map<PipelineKey, ComPtr<ID3D12PipelineState>, PipelineKeyHash> pipelines;
 
@@ -889,6 +923,27 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		float clearDepth = 1.0f;
 		uint8_t clearStencil = 0;
 		DrawFilter *drawFilter = nullptr;
+
+		// The owned scene's capture, and the triangle lists it is handed.
+		DrawCapture *capture = nullptr;
+		bool skipRegionCopies = false;
+		std::vector<D3D11Vertex> captureVertices;
+		std::vector<uint32_t> captureSource, captureIndices;
+
+		// Textures the owned scene keeps: a reference to the image and a view of its own, so the image stays
+		// usable after the game deletes the name or gives it a new image. Pin n is pins[n - 1].
+		struct Pin {
+			ComPtr<ID3D12Resource> resource;
+			uint32_t view = 0;
+			uint32_t references = 0;
+			// The name that still holds the image, and its state is the texture's. Once the game lets go of it
+			// the pin keeps it readable on its own.
+			uint32_t name = 0;
+			bool orphan = false;
+		};
+		std::vector<Pin> pins;
+		std::vector<uint32_t> freePins;
+		std::unordered_map<ID3D12Resource *, uint32_t> pinOf;
 
 		Impl() {
 			for (float *matrix: matrices) matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
@@ -1208,6 +1263,14 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		}
 
 		void ReleaseTexture(Texture &texture) {
+			if (texture.resource && !pinOf.empty()) {
+				auto const pinned = pinOf.find(texture.resource.Get());
+				if (pinned != pinOf.end() && !pins[pinned->second - 1].orphan) {
+					// The pin keeps the image from here on, ready to be read.
+					Transition(texture.resource.Get(), texture.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+					pins[pinned->second - 1].orphan = true;
+				}
+			}
 			if (texture.view != 0) frames[frameIndex].freedViews.push_back(texture.view);
 			texture.view = 0;
 			Retire(texture.resource);
@@ -1286,8 +1349,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			bool const blit = kind >= 2;
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
 			description.pRootSignature = rootSignature.Get();
-			ID3DBlob *const vs =
-				blit ? blitVertexShader.Get() : (kind == 1 ? flatVertexShader.Get() : vertexShader.Get());
+			// Bit 52: an owned scene draw, with instances.
+			bool const instanced = !blit && ((bits >> 52) & 1);
+			ID3DBlob *vs = blit ? blitVertexShader.Get() : (kind == 1 ? flatVertexShader.Get() : vertexShader.Get());
+			if (instanced) vs = instancedVertexShaders[kind].Get();
 			ID3DBlob *ps = blit ? blitPixelShader.Get() : (kind == 1 ? flatPixelShader.Get() : pixelShader.Get());
 			if (relight) ps = blit ? blitGBufferPixelShader.Get() : gbufferPixelShaders[kind][(bits >> 6) & 1].Get();
 			description.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
@@ -1304,6 +1369,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 				{"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(D3D11Vertex, texCoord[1]),
 				 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+				{"INSTANCE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+				{"INSTANCE", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+				{"INSTANCE", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
 			};
 			D3D12_INPUT_ELEMENT_DESC const blitElements[] = {
 				{"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(BlitVertex, position),
@@ -1312,7 +1380,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 			};
 			description.InputLayout = blit ? D3D12_INPUT_LAYOUT_DESC{blitElements, 2}
-			                               : D3D12_INPUT_LAYOUT_DESC{geometryElements, 5};
+			                               : D3D12_INPUT_LAYOUT_DESC{geometryElements, instanced ? 8u : 5u};
 
 			D3D12_RENDER_TARGET_BLEND_DESC &target = description.BlendState.RenderTarget[0];
 			target.LogicOp = D3D12_LOGIC_OP_NOOP;
@@ -1444,6 +1512,86 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			}
 		}
 
+		// The constants of a geometry draw from the SimGL state, as cGDriver::UpdateConstants makes them.
+		void FillConstants(DriverConstants &constants, uint32_t flagInputs) {
+			constants.flags = flagInputs;
+			memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
+			memcpy(constants.projection, matrices[1], sizeof(constants.projection));
+			if (normalMatrixDirty) {
+				MakeNormalMatrix(matrices[0], normalMatrix);
+				normalMatrixDirty = false;
+			}
+			memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
+			constants.alphaFunction = alphaFunction;
+			constants.alphaReference = alphaReference;
+			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
+			memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
+			memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
+			memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
+			memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
+			memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+			memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
+			memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
+			memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
+			memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
+			constants.materialParameters[0] = materialShininess;
+			for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
+				TextureStage const &source = textureStages[stageIndex];
+				DriverConstants::StageConstants &destination = constants.stages[stageIndex];
+				memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
+				destination.modes[0] = source.environmentMode;
+				destination.modes[1] = source.rgbMode;
+				destination.modes[2] = source.alphaMode;
+				destination.modes[3] = source.rgbScale;
+				destination.parameters0[0] = source.alphaScale;
+				for (uint32_t parameter = 0; parameter < 3; ++parameter) {
+					destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
+					destination.parameters1[parameter] = source.alphaParameters[parameter];
+				}
+				destination.parameters1[3] = source.coordinateSource;
+			}
+			if (flagInputs & 4) {
+				if (ambientVertexColors) constants.flags |= 32;
+				if (diffuseFromVertex) constants.flags |= 64;
+				for (uint32_t light = 0; light < 8; ++light)
+					if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
+			}
+			if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
+			memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
+			constants.fogParameters[0] = fogDensity;
+			constants.fogParameters[1] = fogStart;
+			constants.fogParameters[2] = fogEnd;
+			constants.fogParameters[3] = static_cast<float>(fogMode);
+			memcpy(constants.textureFactor, textureFactor, sizeof(constants.textureFactor));
+		}
+
+		// The geometry pipeline for the SimGL state.
+		PipelineKey GeometryKey(D3D12_PRIMITIVE_TOPOLOGY_TYPE type, uint64_t cut) const {
+			bool const stencil = enabledCapabilities[kGDCapability_StencilTest];
+			PipelineKey key;
+			key.bits = static_cast<uint64_t>(shadeModel == 0 ? 1 : 0) |
+			           (static_cast<uint64_t>(type) << 2) |
+			           (cut << 4) |
+			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_Blend]) << 6) |
+			           (static_cast<uint64_t>(sourceBlend) << 7) |
+			           (static_cast<uint64_t>(destinationBlend) << 11) |
+			           (static_cast<uint64_t>(colorWriteEnabled) << 15) |
+			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_DepthTest]) << 16) |
+			           (static_cast<uint64_t>(depthWriteEnabled) << 17) |
+			           (static_cast<uint64_t>(depthFunction) << 18) |
+			           (static_cast<uint64_t>(stencil) << 21) |
+			           (static_cast<uint64_t>(stencilReadMask) << 22) |
+			           (static_cast<uint64_t>(stencilWriteMask) << 30) |
+			           (static_cast<uint64_t>(stencilFunction) << 38) |
+			           (static_cast<uint64_t>(stencilFailOperation) << 41) |
+			           (static_cast<uint64_t>(stencilDepthFailOperation) << 44) |
+			           (static_cast<uint64_t>(stencilPassOperation) << 47) |
+			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_CullFace]) << 50) |
+			           (static_cast<uint64_t>(relight && DrawsCity()) << 51);
+			key.depthBias = polygonOffset;
+			return key;
+		}
+
 		// cGDriver::BindGeometryPipeline. primitive is a SimGL primitive D3D draws natively, indexBits 16 or
 		// 32 for indexed draws (strips then cut at the largest index, as in Direct3D 11) or 0.
 		bool BindGeometry(uint32_t primitive, uint32_t indexBits) {
@@ -1471,55 +1619,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 
 			if (constantsDirty || flagInputs != constantsFlagInputs || constantsAddress == 0) {
 				DriverConstants constants{};
-				constants.flags = flagInputs;
-				memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
-				memcpy(constants.projection, matrices[1], sizeof(constants.projection));
-				if (normalMatrixDirty) {
-					MakeNormalMatrix(matrices[0], normalMatrix);
-					normalMatrixDirty = false;
-				}
-				memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
-				constants.alphaFunction = alphaFunction;
-				constants.alphaReference = alphaReference;
-				if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
-				memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
-				memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
-				memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
-				memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
-				memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
-				memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
-				memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
-				memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
-				memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
-				constants.materialParameters[0] = materialShininess;
-				for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
-					TextureStage const &source = textureStages[stageIndex];
-					DriverConstants::StageConstants &destination = constants.stages[stageIndex];
-					memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
-					destination.modes[0] = source.environmentMode;
-					destination.modes[1] = source.rgbMode;
-					destination.modes[2] = source.alphaMode;
-					destination.modes[3] = source.rgbScale;
-					destination.parameters0[0] = source.alphaScale;
-					for (uint32_t parameter = 0; parameter < 3; ++parameter) {
-						destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
-						destination.parameters1[parameter] = source.alphaParameters[parameter];
-					}
-					destination.parameters1[3] = source.coordinateSource;
-				}
-				if (lit) {
-					if (ambientVertexColors) constants.flags |= 32;
-					if (diffuseFromVertex) constants.flags |= 64;
-					for (uint32_t light = 0; light < 8; ++light)
-						if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
-				}
-				if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
-				memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
-				constants.fogParameters[0] = fogDensity;
-				constants.fogParameters[1] = fogStart;
-				constants.fogParameters[2] = fogEnd;
-				constants.fogParameters[3] = static_cast<float>(fogMode);
-				memcpy(constants.textureFactor, textureFactor, sizeof(constants.textureFactor));
+				FillConstants(constants, flagInputs);
 
 				if (constantsAddress == 0 || memcmp(&constantsCache, &constants, sizeof(constants)) != 0) {
 					Allocation const allocation =
@@ -1542,27 +1642,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE
 				: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 			uint64_t const cut = strip && indexBits != 0 ? (indexBits == 16 ? 1 : 2) : 0;
-			PipelineKey key;
-			key.bits = static_cast<uint64_t>(shadeModel == 0 ? 1 : 0) |
-			           (static_cast<uint64_t>(type) << 2) |
-			           (cut << 4) |
-			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_Blend]) << 6) |
-			           (static_cast<uint64_t>(sourceBlend) << 7) |
-			           (static_cast<uint64_t>(destinationBlend) << 11) |
-			           (static_cast<uint64_t>(colorWriteEnabled) << 15) |
-			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_DepthTest]) << 16) |
-			           (static_cast<uint64_t>(depthWriteEnabled) << 17) |
-			           (static_cast<uint64_t>(depthFunction) << 18) |
-			           (static_cast<uint64_t>(stencil) << 21) |
-			           (static_cast<uint64_t>(stencilReadMask) << 22) |
-			           (static_cast<uint64_t>(stencilWriteMask) << 30) |
-			           (static_cast<uint64_t>(stencilFunction) << 38) |
-			           (static_cast<uint64_t>(stencilFailOperation) << 41) |
-			           (static_cast<uint64_t>(stencilDepthFailOperation) << 44) |
-			           (static_cast<uint64_t>(stencilPassOperation) << 47) |
-			           (static_cast<uint64_t>(enabledCapabilities[kGDCapability_CullFace]) << 50) |
-			           (static_cast<uint64_t>(relight && DrawsCity()) << 51);
-			key.depthBias = polygonOffset;
+			PipelineKey const key = GeometryKey(type, cut);
 			if (!SetPipeline(key)) return false;
 			if (stencilReference != appliedStencilReference) {
 				list->OMSetStencilRef(static_cast<UINT>(stencilReference));
@@ -1575,6 +1655,93 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				depthScratchValid = false;
 			}
 			return true;
+		}
+
+		// The owned scene's capture
+
+		// What BindGeometry would bind for a triangle list of vertices in format, without touching the GPU.
+		bool CaptureState(uint32_t format, CapturedState &state) {
+			if (!backBuffer || (relight && ownerDrawsShadows && ownerDepth > 0)) return false;
+			uint32_t flagInputs = 0;
+			for (uint32_t stage = 0; stage < 2; ++stage) {
+				state.textures[stage] = state.samplers[stage] = 0;
+				if (!textureStageEnabled[stage]) continue;
+				auto const found = textures.find(boundTextures[stage]);
+				if (found == textures.end() || !found->second.resource) continue;
+				state.textures[stage] = boundTextures[stage];
+				state.samplers[stage] = SamplerIndex(textureStages[stage]);
+				flagInputs |= 1u << stage;
+			}
+			if (lightingEnabled) flagInputs |= 4;
+			if (lightingEnabled && RZVertexFormatNumElements(format, kGDElementType_Normal) != 0) flagInputs |= 128;
+			DriverConstants constants{};
+			FillConstants(constants, flagInputs);
+			std::memcpy(state.constants, &constants, sizeof(constants));
+			PipelineKey const key = GeometryKey(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, 0);
+			state.pipeline = key.bits;
+			state.depthBias = key.depthBias;
+			state.stencilReference = stencilReference;
+			return true;
+		}
+
+		// Hands a draw to the capture as a triangle list: vertices from base (count of them, or up to the largest
+		// index), indices of indexType 3 (16-bit) or 5 (32-bit), or in order when indices is null. True when
+		// the capture took it.
+		bool CaptureDraw(uint8_t const *base, uint32_t format, uint32_t stride, uint32_t count, uint32_t primitive,
+		                 void const *indices, uint32_t indexCount, uint32_t indexType) {
+			if (base == nullptr || stride == 0) return false;
+			uint32_t const sourceCount = indices != nullptr ? indexCount : count;
+			std::vector<uint32_t> &source = captureSource;
+			source.resize(sourceCount);
+			// Strips are cut at the largest index, as Direct3D does.
+			uint32_t const restart = primitive == 1 && indices != nullptr ? (indexType == 3 ? 0xFFFF : UINT32_MAX) : UINT32_MAX;
+			if (indices == nullptr) {
+				for (uint32_t i = 0; i < sourceCount; ++i) source[i] = i;
+			} else if (indexType == 3) {
+				auto const *from = static_cast<uint16_t const *>(indices);
+				for (uint32_t i = 0; i < sourceCount; ++i) source[i] = from[i];
+			} else if (indexType == 5) {
+				std::memcpy(source.data(), indices, sourceCount * sizeof(uint32_t));
+			} else {
+				return false;
+			}
+			std::vector<uint32_t> &list = captureIndices;
+			list.clear();
+			if (primitive == 0) {
+				list.assign(source.begin(), source.end() - sourceCount % 3);
+			} else if (primitive == 1) {
+				// Each triangle of a strip starts at its first vertex, so flat shading keeps its colour.
+				uint32_t run = 0;
+				for (uint32_t i = 0; i < sourceCount; ++i) {
+					if (source[i] == restart) {
+						run = 0;
+						continue;
+					}
+					if (++run < 3) continue;
+					uint32_t const a = source[i - 2], b = source[i - 1], c = source[i];
+					if ((run & 1) != 0) list.insert(list.end(), {a, b, c});
+					else list.insert(list.end(), {a, c, b});
+				}
+			} else if (primitive == 2 || primitive == 6 || primitive == 7) {
+				if (!ConvertPrimitiveIndices(primitive, source, list)) return false;
+			} else {
+				return false;
+			}
+			if (list.empty()) return true;
+			uint32_t low = UINT32_MAX, high = 0;
+			for (uint32_t index: list) {
+				low = (std::min)(low, index);
+				high = (std::max)(high, index);
+			}
+			if (indices == nullptr && high >= count) return false;
+			for (uint32_t &index: list) index -= low;
+			if (!ConvertVertices(format, stride, base + static_cast<size_t>(low) * stride, high - low + 1, captureVertices)) {
+				return false;
+			}
+			CapturedState state;
+			if (!CaptureState(format, state)) return true;
+			return capture->Capture(state, captureVertices.data(), high - low + 1, list.data(),
+			                        static_cast<uint32_t>(list.size()), format);
 		}
 
 		// Whether the next draw is part of the city, which relighting may change.
@@ -2212,7 +2379,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			{D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0, 0, 0},
 			{D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 1, 0, 0},
 		};
-		D3D12_ROOT_PARAMETER parameters[5]{};
+		D3D12_ROOT_PARAMETER parameters[6]{};
 		parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 		parameters[0].Descriptor = {0, 0};
 		parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -2221,8 +2388,12 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			parameters[1 + i].DescriptorTable = {1, &ranges[i]};
 			parameters[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 		}
+		// The owned scene's frame projection, for VSInstanced.
+		parameters[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+		parameters[5].Constants = {1, 0, 16};
+		parameters[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 		D3D12_ROOT_SIGNATURE_DESC const signature{
-			5, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+			6, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
 		};
 		ComPtr<ID3DBlob> serialized, errors;
 		if (FAILED(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &errors)) ||
@@ -2245,6 +2416,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			return SUCCEEDED(result);
 		};
 		D3D_SHADER_MACRO const flatMacros[] = {{"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+		D3D_SHADER_MACRO const instancedMacros[2][3] = {
+			{{"SCD3D12_INSTANCED", "1"}, {nullptr, nullptr}, {nullptr, nullptr}},
+			{{"SCD3D12_INSTANCED", "1"}, {"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}},
+		};
 		if (!compile(kShaderSource, sizeof(kShaderSource) - 1, nullptr, "VSMain", "vs_5_0", compileFlags, d.vertexShader) ||
 		    !compile(kShaderSource, sizeof(kShaderSource) - 1, nullptr, "PSMain", "ps_5_0", compileFlags, d.pixelShader) ||
 		    !compile(kShaderSource, sizeof(kShaderSource) - 1, flatMacros, "PSMain", "ps_5_0", compileFlags,
@@ -2252,6 +2427,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		    // Compiled with the same modes as its pixel shader, so their registers line up.
 		    !compile(kShaderSource, sizeof(kShaderSource) - 1, flatMacros, "VSMain", "vs_5_0", compileFlags,
 		             d.flatVertexShader) ||
+		    !compile(kShaderSource, sizeof(kShaderSource) - 1, instancedMacros[0], "VSInstanced", "vs_5_0", compileFlags,
+		             d.instancedVertexShaders[0]) ||
+		    !compile(kShaderSource, sizeof(kShaderSource) - 1, instancedMacros[1], "VSInstanced", "vs_5_0", compileFlags,
+		             d.instancedVertexShaders[1]) ||
 		    !compile(kBlitShaderSource, sizeof(kBlitShaderSource) - 1, nullptr, "VSMain", "vs_5_0",
 		             D3DCOMPILE_ENABLE_STRICTNESS, d.blitVertexShader) ||
 		    !compile(kBlitShaderSource, sizeof(kBlitShaderSource) - 1, nullptr, "PSMain", "ps_5_0",
@@ -2481,6 +2660,11 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		if (d.drawFilter != nullptr && !d.drawFilter->AllowDraw(primitive, first, static_cast<uint32_t>(count), 0, nullptr)) {
 			return;
 		}
+		if (d.capture != nullptr && d.interleavedPointer != nullptr &&
+		    d.CaptureDraw(d.interleavedPointer + static_cast<size_t>(first) * d.interleavedStride, d.interleavedFormat,
+		                  d.interleavedStride, static_cast<uint32_t>(count), primitive, nullptr, 0, 0)) {
+			return;
+		}
 		if (!d.UploadVertices(d.interleavedPointer, d.interleavedFormat, d.interleavedStride,
 		                      static_cast<uint32_t>(first), static_cast<uint32_t>(count), blob)) return;
 		if (D3D11Topology(primitive) != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
@@ -2508,6 +2692,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		nSCDWire::BlobKey const indexBlob = std::exchange(d.drawIndices, {});
 		if (count <= 0 || indices == nullptr || (type != 3 && type != 5) || !d.backBuffer) return;
 		if (d.drawFilter != nullptr && !d.drawFilter->AllowDraw(primitive, 0, static_cast<uint32_t>(count), type, indices)) {
+			return;
+		}
+		if (d.capture != nullptr && d.CaptureDraw(d.interleavedPointer, d.interleavedFormat, d.interleavedStride, 0,
+		                                           primitive, indices, static_cast<uint32_t>(count), type)) {
 			return;
 		}
 		bool const convertPrimitive = D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
@@ -3136,6 +3324,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		uint32_t const stride = RZVertexFormatStride(format);
 		if (name != 0 || !d.backBuffer || !d.ExtensionHolds(byteSize)) return;
 		if (D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) return;
+		if (d.capture != nullptr &&
+		    d.CaptureDraw(d.extensionVertices.data(), format, stride, byteSize / stride, primitive, nullptr, 0, 0)) {
+			return;
+		}
 		if (!d.UploadVertices(d.extensionVertices.data(), format, stride, 0, byteSize / stride, blob)) return;
 		uint32_t const previousFormat = d.interleavedFormat;
 		d.interleavedFormat = format;
@@ -3160,6 +3352,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		uint32_t const stride = RZVertexFormatStride(format);
 		uint32_t const byteSize = (maximumIndex + 1) * stride;
 		if (!d.ExtensionHolds(byteSize) || D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) return;
+		if (d.capture != nullptr &&
+		    d.CaptureDraw(d.extensionVertices.data(), format, stride, byteSize / stride, primitive, indices, count, 3)) {
+			return;
+		}
 		if (!d.UploadVertices(d.extensionVertices.data(), format, stride, 0, byteSize / stride, vertexBlob)) return;
 		if (cached != nullptr) d.BindIndices(d.CachedAddress(*cached), count, false);
 		else if (!d.UploadIndices(indices, count, false, indexBlob.size != 0 ? &key : nullptr, 0, maximumIndex)) return;
@@ -3199,6 +3395,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	bool cGDriver12::ReadBufferRegion(uint32_t region, int32_t destinationX, int32_t destinationY, int32_t width,
 	                                  int32_t height, int32_t sourceX, int32_t sourceY) {
 		Impl &d = *impl;
+		// The owned scene draws the whole static view itself and needs no backing store.
+		if (d.skipRegionCopies) return true;
 		if (!d.RegionArgumentsFit(region, destinationX, destinationY, width, height, sourceX, sourceY)) return false;
 		Impl::Region &target = d.regions[region - 1];
 		D3D12_BOX const box{
@@ -3223,6 +3421,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	bool cGDriver12::DrawBufferRegion(uint32_t region, int32_t sourceX, int32_t sourceY, int32_t width, int32_t height,
 	                                  int32_t destinationX, int32_t destinationY) {
 		Impl &d = *impl;
+		// The owned scene draws the whole static view itself and needs no backing store.
+		if (d.skipRegionCopies) return true;
 		if (!d.RegionArgumentsFit(region, destinationX, destinationY, width, height, sourceX, sourceY)) return false;
 		Impl::Region &source = d.regions[region - 1];
 		D3D12_BOX const box{
@@ -3427,8 +3627,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 
 	ID3D12GraphicsCommandList *cGDriver12::CommandList() const { return impl->list.Get(); }
 
-	bool cGDriver12::Upload(void const *data, uint64_t bytes, ID3D12Resource *&resource, uint64_t &offset) {
-		Impl::Allocation const allocation = impl->Upload(data, bytes, 16);
+	bool cGDriver12::Upload(void const *data, uint64_t bytes, ID3D12Resource *&resource, uint64_t &offset,
+	                        uint64_t alignment) {
+		Impl::Allocation const allocation = impl->Upload(data, bytes, alignment);
 		resource = allocation.resource;
 		offset = allocation.offset;
 		return allocation.cpu != nullptr;
@@ -3465,6 +3666,124 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 
 	int32_t cGDriver12::GetPolygonOffset() const { return impl->polygonOffset; }
 	ID3D12Resource *cGDriver12::DepthBuffer() const { return impl->depthBuffer.Get(); }
+	ID3D12Resource *cGDriver12::BackBuffer() const { return impl->backBuffer.Get(); }
 	D3D12_CPU_DESCRIPTOR_HANDLE cGDriver12::DepthView() const { return impl->DepthStencilView(); }
 	void cGDriver12::Rebind() { impl->BindFrame(); }
+
+	// The owned scene's hooks.
+
+	static_assert(sizeof(DriverConstants) == cGDriver12::kConstantBytes);
+	static_assert(offsetof(DriverConstants, modelView) == cGDriver12::kModelViewOffset);
+	static_assert(offsetof(DriverConstants, projection) == cGDriver12::kProjectionOffset);
+	static_assert(offsetof(DriverConstants, textureMatrices) == cGDriver12::kTextureMatrixOffset);
+	static_assert(offsetof(DriverConstants, stages) == cGDriver12::kStageOffset);
+	static_assert(sizeof(DriverConstants::StageConstants) == cGDriver12::kStageBytes);
+	static_assert(offsetof(DriverConstants::StageConstants, parameters1) + 12 == cGDriver12::kCoordinateSourceOffset);
+
+	void cGDriver12::SetCapture(DrawCapture *capture, bool ownsStaticView) {
+		impl->capture = capture;
+		impl->skipRegionCopies = capture != nullptr && ownsStaticView;
+	}
+
+	void cGDriver12::ClearTargets() {
+		Impl &d = *impl;
+		if (!d.backBuffer) return;
+		float const black[4]{0.0f, 0.0f, 0.0f, 1.0f}, noCity[4]{};
+		d.list->ClearRenderTargetView(d.RenderTargetView(), black, 0, nullptr);
+		if (d.relight) d.list->ClearRenderTargetView(d.RenderTargetView(1), noCity, 0, nullptr);
+		d.list->ClearDepthStencilView(d.DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0,
+		                              nullptr);
+		d.depthScratchValid = false;
+	}
+
+	bool cGDriver12::CaptureState(uint32_t format, CapturedState &state) { return impl->CaptureState(format, state); }
+
+	uint32_t cGDriver12::PinTexture(uint32_t name) {
+		Impl &d = *impl;
+		auto const found = d.textures.find(name);
+		if (found == d.textures.end() || !found->second.resource) return 0;
+		Impl::Texture const &texture = found->second;
+		auto const pinned = d.pinOf.find(texture.resource.Get());
+		if (pinned != d.pinOf.end()) {
+			++d.pins[pinned->second - 1].references;
+			return pinned->second;
+		}
+		uint32_t const view = d.CreateView(texture.resource.Get(), texture.format, texture.levels);
+		if (view == 0) return 0;
+		uint32_t pin;
+		if (!d.freePins.empty()) {
+			pin = d.freePins.back();
+			d.freePins.pop_back();
+		} else {
+			d.pins.emplace_back();
+			pin = static_cast<uint32_t>(d.pins.size());
+		}
+		Impl::Pin &entry = d.pins[pin - 1];
+		entry.resource = texture.resource;
+		entry.view = view;
+		entry.references = 1;
+		entry.name = name;
+		entry.orphan = false;
+		d.pinOf.emplace(texture.resource.Get(), pin);
+		return pin;
+	}
+
+	void cGDriver12::UnpinTexture(uint32_t pin) {
+		Impl &d = *impl;
+		if (pin == 0 || pin > d.pins.size()) return;
+		Impl::Pin &entry = d.pins[pin - 1];
+		if (entry.references == 0 || --entry.references != 0) return;
+		d.pinOf.erase(entry.resource.Get());
+		d.frames[d.frameIndex].freedViews.push_back(entry.view);
+		d.Retire(entry.resource);
+		entry = {};
+		d.freePins.push_back(pin);
+	}
+
+	void cGDriver12::BeginRetained(float const *projection) {
+		Impl &d = *impl;
+		d.list->SetGraphicsRoot32BitConstants(5, 16, projection, 0);
+		D3D12_VIEWPORT const full{0.0f, 0.0f, static_cast<float>(d.windowWidth), static_cast<float>(d.windowHeight), 0.0f, 1.0f};
+		D3D12_RECT const all{0, 0, d.windowWidth, d.windowHeight};
+		d.list->RSSetViewports(1, &full);
+		d.list->RSSetScissorRects(1, &all);
+	}
+
+	void cGDriver12::DrawRetained(RetainedDraw const &draw) {
+		Impl &d = *impl;
+		if (draw.indexCount == 0) return;
+		uint32_t views[2]{};
+		for (uint32_t stage = 0; stage < 2; ++stage) {
+			uint32_t const pin = draw.pins[stage];
+			if (pin == 0 || pin > d.pins.size()) continue;
+			Impl::Pin &entry = d.pins[pin - 1];
+			views[stage] = entry.view;
+			if (entry.orphan) continue;
+			// Still the game's texture: its state is tracked there.
+			auto const found = d.textures.find(entry.name);
+			if (found != d.textures.end() && found->second.resource == entry.resource) {
+				d.Transition(entry.resource.Get(), found->second.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			}
+		}
+		PipelineKey key;
+		key.bits = draw.pipeline | 1ull << 52;
+		key.depthBias = draw.depthBias;
+		if (!d.SetPipeline(key)) return;
+		if (draw.stencilReference != d.appliedStencilReference) {
+			d.list->OMSetStencilRef(static_cast<UINT>(draw.stencilReference));
+			d.appliedStencilReference = draw.stencilReference;
+		}
+		d.SetConstants(draw.constants);
+		for (uint32_t stage = 0; stage < 2; ++stage) d.SetStage(stage, views[stage], draw.samplers[stage]);
+		d.SetTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		D3D12_VERTEX_BUFFER_VIEW const buffers[2]{draw.vertices, draw.instances};
+		d.list->IASetVertexBuffers(0, 2, buffers);
+		d.list->IASetIndexBuffer(&draw.indices);
+		d.list->DrawIndexedInstanced(draw.indexCount, draw.instances.SizeInBytes / draw.instances.StrideInBytes,
+		                             draw.startIndex, 0, 0);
+		d.depthScratchValid = false;
+		if (d.relight) d.cityDrawn = true;
+	}
+
+	void cGDriver12::EndRetained() { impl->ApplyViewport(); }
 }

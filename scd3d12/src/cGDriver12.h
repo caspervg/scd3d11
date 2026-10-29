@@ -26,6 +26,10 @@
 #include <memory>
 #include <vector>
 
+namespace nSCD3D11 {
+	struct D3D11Vertex;
+}
+
 namespace nSCD3D12 {
 	// SimCity 4's SimGL driver interface on Direct3D 12, in the 64-bit server. It renders what
 	// SCD3D11's cGDriver renders, from the same calls, into an offscreen back buffer the server reads
@@ -116,7 +120,8 @@ namespace nSCD3D12 {
 		// The command list being recorded, and memory in this frame's upload space for copies into the
 		// caller's own resources.
 		ID3D12GraphicsCommandList *CommandList() const;
-		bool Upload(void const *data, uint64_t bytes, ID3D12Resource *&resource, uint64_t &offset);
+		// alignment 256 makes it usable as constants.
+		bool Upload(void const *data, uint64_t bytes, ID3D12Resource *&resource, uint64_t &offset, uint64_t alignment = 16);
 		// A triangle list from the caller's buffers (D3D11Vertex layout, 16-bit indices) with the current state.
 		// format is the SimGL vertex format the vertices came from.
 		void DrawTriangles(D3D12_VERTEX_BUFFER_VIEW const &vertices, D3D12_INDEX_BUFFER_VIEW const &indices,
@@ -136,10 +141,71 @@ namespace nSCD3D12 {
 		int32_t GetPolygonOffset() const;
 		// The depth buffer, in the DEPTH_WRITE state between calls, and its view.
 		ID3D12Resource *DepthBuffer() const;
+		// What the game draws into, in the RENDER_TARGET state between calls.
+		ID3D12Resource *BackBuffer() const;
 		D3D12_CPU_DESCRIPTOR_HANDLE DepthView() const;
 		// Binds the driver's heaps, root signature, targets, viewport and scissor again after commands of the
 		// caller's own.
 		void Rebind();
+
+		// For the owned scene (OwnedScene.h), which keeps every static draw and draws all of it each frame.
+
+		// Everything a draw needs on the GPU apart from its geometry: the pipeline, the constants both shaders
+		// read, the textures and samplers.
+		static constexpr uint32_t kConstantBytes = 1088;
+		// Where the matrices and each stage's coordinate source sit in the constants.
+		static constexpr uint32_t kModelViewOffset = 0, kProjectionOffset = 64, kTextureMatrixOffset = 816,
+		                          kStageOffset = 944, kStageBytes = 48, kCoordinateSourceOffset = 44;
+		struct CapturedState {
+			uint64_t pipeline;
+			int32_t depthBias;
+			int32_t stencilReference;
+			// Driver texture names, 0 for none.
+			uint32_t textures[2];
+			uint32_t samplers[2];
+			alignas(16) uint8_t constants[kConstantBytes];
+		};
+
+		// Handed every draw instead of drawing it while set. vertices and indices are a triangle list,
+		// format the SimGL vertex format the vertices came from. Returning false draws it as usual.
+		class DrawCapture {
+		public:
+			virtual ~DrawCapture() = default;
+			virtual bool Capture(CapturedState const &state, nSCD3D11::D3D11Vertex const *vertices,
+			                     uint32_t vertexCount, uint32_t const *indices, uint32_t indexCount,
+			                     uint32_t format) = 0;
+		};
+		// With ownsStaticView, buffer region copies are skipped too: the backing store is not needed.
+		void SetCapture(DrawCapture *capture, bool ownsStaticView);
+		// Clears colour to black and depth, for a frame drawn from scratch.
+		void ClearTargets();
+		// The state a triangle list drawn now would use. False when it would not be drawn.
+		bool CaptureState(uint32_t format, CapturedState &state);
+
+		// Keeps a texture's image alive and viewable after the game deletes or replaces it. Returns a pin, 0
+		// when the name holds no image. Pinning the same image again returns the same pin.
+		uint32_t PinTexture(uint32_t name);
+		void UnpinTexture(uint32_t pin);
+
+		// Draws kept geometry with a kept state, as instances: each instance is a modelview's first three
+		// rows. The projection's depth row comes from the state, the rest from BeginRetained's projection.
+		struct RetainedDraw {
+			uint64_t pipeline;
+			int32_t depthBias;
+			int32_t stencilReference;
+			uint32_t pins[2];
+			uint32_t samplers[2];
+			D3D12_GPU_VIRTUAL_ADDRESS constants;
+			D3D12_VERTEX_BUFFER_VIEW vertices;
+			D3D12_INDEX_BUFFER_VIEW indices;
+			uint32_t indexCount;
+			uint32_t startIndex;
+			D3D12_VERTEX_BUFFER_VIEW instances;
+		};
+		void BeginRetained(float const *projection);
+		void DrawRetained(RetainedDraw const &draw);
+		// Puts back the driver's own bindings and viewport.
+		void EndRetained();
 
 		// nSCDWire::ReplayHooks
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;
