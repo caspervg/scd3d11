@@ -27,6 +27,8 @@ namespace {
 
 int main() {
 	assert(Diagnose(Clean()).empty());
+	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
+	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
 
 	{
 		// The colon form of -r that SC4 silently ignores.
