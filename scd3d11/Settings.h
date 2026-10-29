@@ -37,6 +37,8 @@ namespace nSCD3D11::Settings {
 		bool traceLog = false;
 		// Doctor=on: also log every DLL and plugin setting the doctor looked at.
 		bool doctor = false;
+		// DoctorDialog=off: keep the doctor's problems out of SC4's own dialog, in the log only.
+		bool doctorDialog = true;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.

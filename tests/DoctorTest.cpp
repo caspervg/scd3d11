@@ -66,7 +66,7 @@ int main() {
 			{"enableintrovideo", "false"}, {"pausegameonfocusloss", "false"}, {"driver", "DirectX"},
 			{"windowmode", "FullScreen"}, {"colordepth", "32"}, {"windowwidth", "1366"}};
 		auto findings = Diagnose(environment);
-		assert(Has(findings, Severity::Warning, "has no WindowHeight"));
+		assert(Has(findings, Severity::Problem, "has no WindowHeight"));
 		assert(Has(findings, Severity::Warning, "replaces -r1366x768x32"));
 		assert(Has(findings, Severity::Note, "WindowMode=FullScreen"));
 
@@ -76,8 +76,8 @@ int main() {
 		(*environment.graphicsOptions)["forcedrawonscroll"] = "true";
 		(*environment.graphicsOptions)["colordepth"] = "16";
 		findings = Diagnose(environment);
-		assert(Has(findings, Severity::Warning, "cannot read EnableIntroVideo=off"));
-		assert(!Has(findings, Severity::Warning, "has no WindowHeight"));
+		assert(Has(findings, Severity::Problem, "cannot read EnableIntroVideo=off"));
+		assert(!Has(findings, Severity::Problem, "has no WindowHeight"));
 		assert(Has(findings, Severity::Note, "ForceDrawOnScroll=true"));
 		assert(Has(findings, Severity::Warning, "Set ColorDepth=32"));
 	}
@@ -148,7 +148,7 @@ int main() {
 		                       {"C:\\Steam\\GameOverlayRenderer.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\sc4_painter.dll", "", ""}};
 		auto const findings = Diagnose(environment);
-		assert(Has(findings, Severity::Warning, "compatibility mode (WINXPSP3)"));
+		assert(Has(findings, Severity::Problem, "compatibility mode (WINXPSP3)"));
 		assert(Has(findings, Severity::Note, "settings on SimCity 4.exe: HIGHDPIAWARE"));
 		assert(Has(findings, Severity::Warning, "not SimCity 4 version 1.1.641"));
 		assert(Has(findings, Severity::Note, "ReShade 6.8.0.0 is installed as Apps\\dxgi.dll"));

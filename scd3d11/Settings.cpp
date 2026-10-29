@@ -161,6 +161,7 @@ namespace nSCD3D11::Settings {
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
 		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);
 		values.doctor = Resolve(sources, "Doctor", ParseFlag, values.doctor);
+		values.doctorDialog = Resolve(sources, "DoctorDialog", ParseFlag, values.doctorDialog);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

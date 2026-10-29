@@ -14,11 +14,17 @@
 #include "GameVersion.h"
 #include "Settings.h"
 
+#include <GZCLSIDDefs.h>
 #include <GZServPtrs.h>
+#include <SC4NotificationDialog.h>
 #include <cGZDisplayMetrics.h>
 #include <cIGZCmdLine.h>
 #include <cIGZGraphicSystem.h>
 #include <cIGZGraphicSystem2.h>
+#include <cIGZMessage2.h>
+#include <cIGZMessageServer2.h>
+#include <cIGZMessageTarget2.h>
+#include <cRZBaseString.h>
 
 #include <exception>
 #include <filesystem>
@@ -177,6 +183,44 @@ namespace nSCD3D11::Doctor {
 			return environment;
 		}
 
+		constexpr uint32_t kSC4MessagePostRegionInit = 0xCBB5BB45;
+
+		// Shows the doctor's problems in SC4's own dialog when the region view first opens. Players see it
+		// in any window mode, and the game is not held up while it waits. It lives as long as the game, so
+		// it does not count references.
+		class ProblemDialog final : public cIGZMessageTarget2 {
+		public:
+			bool QueryInterface(uint32_t riid, void **object) override {
+				if (riid != GZIID_cIGZUnknown && riid != static_cast<uint32_t>(GZCLSID::kcIGZMessageTarget2)) {
+					*object = nullptr;
+					return false;
+				}
+				*object = static_cast<cIGZMessageTarget2 *>(this);
+				return true;
+			}
+
+			uint32_t AddRef() override { return 1; }
+			uint32_t Release() override { return 1; }
+
+			bool DoMessage(cIGZMessage2 *message) override {
+				if (shown || message == nullptr || message->GetType() != kSC4MessagePostRegionInit) return true;
+				shown = true;
+				if (problems.empty()) return true;
+				std::string text = problems.size() == 1 ? "SCD3D11 found a problem:\n" : "SCD3D11 found problems:\n";
+				for (std::string const &problem : problems) text += "\n" + problem + "\n";
+				text += "\nSCD3D11.log in the Logs folder has the details. DoctorDialog=off in SCD3D11.ini stops this message.";
+				SC4NotificationDialog::ShowDialog(cRZBaseString(text.c_str()), cRZBaseString("SCD3D11"));
+				return true;
+			}
+
+			std::vector<std::string> problems;
+
+		private:
+			bool shown = false;
+		};
+
+		ProblemDialog gProblemDialog;
+
 		// The driver, the screen and the DLLs the checks know about, with their versions, so every log
 		// says what a player runs. Doctor=on adds every other DLL and setting the checks looked at.
 		void LogInventory(Environment const &environment, bool everything) {
@@ -220,6 +264,11 @@ namespace nSCD3D11::Doctor {
 				unsigned const index = static_cast<unsigned>(finding.severity);
 				++counts[index];
 				Log(LogCategory::Doctor, "%s: %s", kLabels[index], finding.text.c_str());
+				if (finding.severity == Severity::Problem) gProblemDialog.problems.push_back(finding.text);
+			}
+			cIGZMessageServer2Ptr messageServer;
+			if (Settings::Get().doctorDialog && !gProblemDialog.problems.empty() && messageServer) {
+				messageServer->AddNotification(&gProblemDialog, kSC4MessagePostRegionInit);
 			}
 			Log(LogCategory::Doctor, "%u problems, %u warnings, %u notes%s", counts[2], counts[1], counts[0],
 			    Settings::Get().doctor ? "" : " (Doctor=on also lists every DLL it looked at)");

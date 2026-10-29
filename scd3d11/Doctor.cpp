@@ -110,7 +110,7 @@ namespace nSCD3D11::Doctor {
 			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog",
 			// SCD3D11
 			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull",
-			"ReShade", "DrawStats", "LogLevel", "Doctor",
+			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog",
 			// SC4CPUOptions and SC4DBPFLoading
 			"ParallelCull", "SimTickCap", "SimTickStats", "ModelSlice", "OverlayIndex", "StartupDBPFLoadTrace",
 		};
@@ -191,7 +191,7 @@ namespace nSCD3D11::Doctor {
 				bool const boolean = std::string_view(key) == "EnableIntroVideo" ||
 				                     std::string_view(key) == "PauseGameOnFocusLoss";
 				if (value.empty() || (boolean && !IsBoolean(value))) {
-					findings.push_back({Severity::Warning, Format(
+					findings.push_back({Severity::Problem, Format(
 						"SC4GraphicsOptions.ini %s %s. SC4GraphicsOptions stops reading there and uses its "
 						"defaults for the rest, a 1024x768 window.",
 						value.empty() ? "has no" : "cannot read", value.empty() ? key : (std::string(key) + "=" + value).c_str())});
@@ -480,7 +480,7 @@ namespace nSCD3D11::Doctor {
 				(legacy ? old : other) += ((legacy ? old : other).empty() ? "" : " ") + layer;
 			}
 			if (!old.empty()) {
-				findings.push_back({Severity::Warning, Format(
+				findings.push_back({Severity::Problem, Format(
 					"SimCity 4.exe runs in compatibility mode (%s). SCD3D11 is not tested with it. Turn it off under "
 					"Properties, Compatibility of SimCity 4.exe.", old.c_str())});
 			}
