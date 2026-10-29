@@ -12,7 +12,7 @@
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
 //                        [--relight <sun>] [--until <frame>]
-//                        [--scene substitute|check|retained [--game <SimCity 4 folder>]]
+//                        [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]]
 //                        [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]
 //                        [--present window|composition|surface [--into <window>]] [--fps <n>]
 //       Renders a Record=<file> capture offline and saves the chosen frames as PNG. With --scene substitute the
@@ -26,8 +26,12 @@
 //       frames are then DLSS's. --present shows the replay in a window of its own through one of three kinds of
 //       swap chain (--into presents into another process's window instead, given by its handle), --frame-generation
 //       adds DLSS frame generation there, and --fps caps the frame rate with Reflex.
+//       owned keeps the whole static view (OwnedScene.h) and draws it every frame without SC4's backing store,
+//       moved by --jitter <x>,<y> pixels, and saves each chosen frame's city before the UI and its motion as
+//       frame<n>-city.png and frame<n>-motion.png. --look <x>,<y> draws the chosen frames' owned view from a camera
+//       moved that many pixels, to show what is kept where SC4 does not draw now.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
-//                       [--scene substitute|check]
+//                       [--scene substitute|check|owned]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
 //       rate and the CPU and GPU time per frame every second. --scene works as for replay, with the data
 //       from the folders the game names, indexed while the game draws on.
@@ -41,6 +45,7 @@
 #include "cGDriver12.h"
 #include "Dlss.h"
 #include "DlssTest.h"
+#include "OwnedScene.h"
 #include "RetainedScene.h"
 #include "SceneLane.h"
 #include "Serve.h"
@@ -120,6 +125,9 @@ namespace {
 		bool substitute = false;
 		bool check = false;
 		bool retained = false;
+		bool owned = false;
+		float jitter[2]{};
+		float look[2]{};
 		std::wstring game;
 		nSCD3D12::DlssMode dlss = nSCD3D12::DlssMode::Off;
 		bool frameGeneration = false;
@@ -152,10 +160,11 @@ namespace {
 			else if (argument == L"--until" && hasValue) options.until = _wtoi64(argv[++i]);
 			else if (argument == L"--scene" && hasValue) {
 				std::wstring const mode = argv[++i];
-				if (mode != L"substitute" && mode != L"check" && mode != L"retained") return false;
+				if (mode != L"substitute" && mode != L"check" && mode != L"retained" && mode != L"owned") return false;
 				options.substitute = true;
 				options.check = mode == L"check";
 				options.retained = mode == L"retained";
+				options.owned = mode == L"owned";
 			} else if (argument == L"--game" && hasValue) options.game = argv[++i];
 			else if (argument == L"--dlss" && hasValue) {
 				if (!nSCD3D12::ParseDlssMode(argv[++i], options.dlss)) return false;
@@ -167,6 +176,12 @@ namespace {
 			} else if (argument == L"--into" && hasValue) {
 				options.into = reinterpret_cast<HWND>(static_cast<uintptr_t>(_wcstoui64(argv[++i], nullptr, 0)));
 			} else if (argument == L"--fps" && hasValue) options.fps = static_cast<uint32_t>(_wtoi(argv[++i]));
+			else if (argument == L"--look" && hasValue) {
+				if (swscanf_s(argv[++i], L"%f,%f", &options.look[0], &options.look[1]) != 2) return false;
+			}
+			else if (argument == L"--jitter" && hasValue) {
+				if (swscanf_s(argv[++i], L"%f,%f", &options.jitter[0], &options.jitter[1]) != 2) return false;
+			}
 			else if (options.capture.empty()) options.capture = argument;
 			else return false;
 		}
@@ -186,6 +201,7 @@ namespace {
 		std::unique_ptr<nSCD3D12::ReplayWindow> window;
 		uint32_t renderWidth = 0, renderHeight = 0, outputWidth = 0, outputHeight = 0;
 		uint64_t upscaled = 0;
+		std::unique_ptr<nSCD3D12::OwnedScene> owned;
 		std::FILE *sceneCsv = nullptr;
 		uint64_t frame = 0;
 		uint64_t saved = 0;
@@ -195,20 +211,24 @@ namespace {
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 			driver.VideoMode(show, width, height, fullscreen);
 			if (retained != nullptr) retained->VideoMode();
+			if (owned != nullptr) owned->VideoMode();
 		}
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override { driver.Vertices(name, data, bytes); }
 		void Resize(uint32_t width, uint32_t height) override { driver.Resize(width, height); }
 		void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
 			if (retained != nullptr) retained->OwnerBegin(owner);
+			if (owned != nullptr) owned->OwnerBegin(owner);
 			driver.OwnerBegin(owner);
 			if (scene != nullptr) scene->OwnerBegin(owner);
 		}
 		void OwnerEnd() override {
 			driver.OwnerEnd();
 			if (scene != nullptr) scene->OwnerEnd();
+			if (owned != nullptr) owned->OwnerEnd();
 		}
 		void Occupant(nSCDWire::OccupantEvent const &event) override {
 			if (retained != nullptr) retained->Occupant(event);
+			if (owned != nullptr) owned->Occupant(event);
 		}
 		void ModelInstance(nSCDWire::ModelInstance const &model) override {
 			if (scene != nullptr) scene->ModelInstance(model);
@@ -234,6 +254,11 @@ namespace {
 				retained = std::make_unique<nSCD3D12::RetainedScene>(driver, *scene);
 				if (Chosen(frame)) retained->KeepMotion();
 			}
+			if (options.owned) {
+				owned = std::make_unique<nSCD3D12::OwnedScene>(driver, *scene);
+				owned->SetJitter(options.jitter[0], options.jitter[1]);
+				if (Chosen(frame)) owned->SetLook(options.look[0], options.look[1]);
+			}
 		}
 		void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
 			driver.DrawBlobs(vertices, indices);
@@ -256,6 +281,17 @@ namespace {
 				std::wstring const path = options.out + name;
 				retained->EndFrame(chosen ? &path : nullptr);
 				if (Chosen(frame + 1)) retained->KeepMotion();
+			}
+			if (owned != nullptr) {
+				if (chosen) {
+					wchar_t name[64];
+					swprintf_s(name, L"\\frame%06llu-", static_cast<unsigned long long>(frame));
+					owned->SaveInputs(options.out + name);
+				}
+				owned->EndFrame();
+				// Only the chosen frames look elsewhere.
+				bool const next = Chosen(frame + 1);
+				owned->SetLook(next ? options.look[0] : 0.0f, next ? options.look[1] : 0.0f);
 			}
 			if (dlss != nullptr) dlss->BeginFrame(frame + 1);
 			return ++frame <= options.until;
@@ -374,7 +410,8 @@ namespace {
 		}
 		if (hooks.scene != nullptr) hooks.scene->PrintTotals();
 		if (hooks.retained != nullptr) hooks.retained->PrintTotals();
-		else if (options.substitute) std::puts("scene: the capture names no game folders, pass --game");
+		if (hooks.owned != nullptr) hooks.owned->PrintTotals();
+		if (hooks.scene == nullptr && options.substitute) std::puts("scene: the capture names no game folders, pass --game");
 		if (hooks.dlss != nullptr) {
 			double milliseconds = 0.0;
 			uint32_t frames = 0;
@@ -410,6 +447,7 @@ namespace {
 				std::wstring const mode = argv[i + 1];
 				if (mode == L"substitute") scene = nSCD3D12::SceneMode::Substitute;
 				else if (mode == L"check") scene = nSCD3D12::SceneMode::Check;
+				else if (mode == L"owned") scene = nSCD3D12::SceneMode::Owned;
 			}
 			else if (argument == L"--log") {
 				std::FILE *log = nullptr;
@@ -460,11 +498,11 @@ int wmain(int argc, wchar_t **argv) {
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
 		std::puts("                     [--relight <hour or azimuth,elevation>] [--until <frame>]"
-		          " [--scene substitute|check|retained [--game <SimCity 4 folder>]]");
+		          " [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]]");
 		std::puts("                     [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]"
 		          " [--present window|composition|surface [--into <window>]] [--fps <n>]");
 		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]"
-		          " [--scene substitute|check]");
+		          " [--scene substitute|check|owned]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}
 	CoUninitialize();

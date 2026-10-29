@@ -17,8 +17,9 @@
 #include <windows.h>
 
 namespace nSCD3D12 {
-	// --scene: off, substitute (the scene lane draws what it can from the game's data) or check (and compares).
-	enum class SceneMode : uint8_t { Off, Substitute, Check };
+	// --scene: off, substitute (the scene lane draws what it can from the game's data), check (and compares) or
+	// owned (the server keeps the whole static view, OwnedScene.h).
+	enum class SceneMode : uint8_t { Off, Substitute, Check, Owned };
 
 	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits. A non-null
 	// relight relights every frame with that sun. With logStats, logs the frame rate and the CPU and GPU time
