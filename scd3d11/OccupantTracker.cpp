@@ -18,13 +18,20 @@
 #include <cIGZMessage2Standard.h>
 #include <cIGZMessageServer2.h>
 #include <cIGZMessageTarget2.h>
+#include <cIGZVariant.h>
 #include <cISC4App.h>
+#include <cISC4BuildingOccupant.h>
 #include <cISC4City.h>
 #include <cISC4Occupant.h>
+#include <cISC4FloraOccupant.h>
 #include <cISC4OccupantManager.h>
+#include <cISC4PropOccupant.h>
+#include <cISCProperty.h>
+#include <cISCPropertyHolder.h>
 #include <cS3DVector3.h>
 
 #include <cstring>
+#include <vector>
 
 namespace nSCD3D11::OccupantTracker {
 	namespace {
@@ -54,9 +61,85 @@ namespace nSCD3D11::OccupantTracker {
 			return event;
 		}
 
+		constexpr uint32_t kExemplarType = 0x6534284A;
+		constexpr uint32_t kResourceKey = 0x27812820; // RKT0, up to RKT5 at + 5
+		constexpr uint32_t kAlternateResourceKey = 0x27812920;
+		constexpr uint32_t kZoomMask = 0x0ABFC024;
+		constexpr uint32_t kIgnoreOrientation = 0xE83A081D;
+
+		// A property's values as 32-bit words, false when it is absent or holds something else.
+		bool Words(cISCPropertyHolder const *holder, uint32_t id, std::vector<uint32_t> &out) {
+			cISCProperty const *const property = holder->GetProperty(id);
+			cIGZVariant const *const value = property != nullptr ? property->GetPropertyValue() : nullptr;
+			if (value == nullptr) return false;
+			uint16_t const type = value->GetType();
+			if (type == cIGZVariant::Uint32 || type == cIGZVariant::Sint32) {
+				out.assign(1, value->GetValUint32());
+				return true;
+			}
+			if (type != cIGZVariant::Uint32Array && type != cIGZVariant::Sint32Array) return false;
+			auto const *const data = type == cIGZVariant::Uint32Array ? value->RefUint32()
+			                                                           : reinterpret_cast<uint32_t const *>(value->RefSint32());
+			uint32_t const count = value->GetCount();
+			if (data == nullptr && count != 0) return false;
+			out.assign(data, data + count);
+			return true;
+		}
+
+		// Sends which models a building, prop or flora shows, after its Occupant record.
+		void RecordExemplar(cGDriverWire &wire, cIGZUnknown *unknown) {
+			nSCDWire::OccupantExemplar record{};
+			record.id = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(unknown));
+			record.type = kExemplarType;
+			record.zoomMask = UINT32_MAX;
+			cISC4BuildingOccupant *building = nullptr;
+			cISC4PropOccupant *prop = nullptr;
+			cISC4FloraOccupant *flora = nullptr;
+			if (unknown->QueryInterface(GZIID_cISC4BuildingOccupant, reinterpret_cast<void **>(&building))) {
+				record.kind = nSCDWire::OccupantKind::Building;
+				record.instance = building->GetBuildingType();
+				record.orientation = static_cast<uint8_t>(building->GetOrientation() & 3);
+				building->Release();
+			} else if (unknown->QueryInterface(GZIID_cISC4PropOccupant, reinterpret_cast<void **>(&prop))) {
+				record.kind = nSCDWire::OccupantKind::Prop;
+				record.instance = prop->GetPropType();
+				record.orientation = static_cast<uint8_t>(prop->GetOrientation() & 3);
+				record.state = prop->GetState();
+				prop->Release();
+			} else if (unknown->QueryInterface(GZIID_cISC4FloraOccupant, reinterpret_cast<void **>(&flora))) {
+				record.kind = nSCDWire::OccupantKind::Flora;
+				record.instance = flora->GetFloraType();
+				record.orientation = static_cast<uint8_t>(flora->GetOrientation() & 3);
+				record.state = static_cast<uint8_t>(flora->GetState());
+				flora->Release();
+			} else {
+				return;
+			}
+			cISC4Occupant *occupant = nullptr;
+			if (!unknown->QueryInterface(GZIID_cISC4Occupant, reinterpret_cast<void **>(&occupant))) return;
+			cISCPropertyHolder const *const holder = occupant->AsPropertyHolder();
+			static std::vector<uint32_t> values;
+			values.clear();
+			if (holder != nullptr) {
+				for (uint32_t base: {kResourceKey, kAlternateResourceKey}) {
+					for (uint32_t k = 0; k <= 5 && record.property == 0; ++k) {
+						if (Words(holder, base + k, values)) record.property = base + k;
+					}
+				}
+				std::vector<uint32_t> word;
+				if (Words(holder, kZoomMask, word) && !word.empty()) record.zoomMask = word[0];
+				if (Words(holder, kIgnoreOrientation, word) && !word.empty() && word[0] != 0) record.flags |= 1;
+			}
+			occupant->Release();
+			if (record.property == 0) values.clear();
+			record.count = static_cast<uint32_t>(values.size());
+			wire.RecordOccupantExemplar(record, values.data());
+		}
+
 		bool RecordExisting(cISC4Occupant *occupant, void *wire) {
-			static_cast<cGDriverWire *>(wire)->RecordOccupant(
-				Describe(nSCDWire::OccupantEventKind::Insert, occupant, occupant->GetType()));
+			auto &writer = *static_cast<cGDriverWire *>(wire);
+			writer.RecordOccupant(Describe(nSCDWire::OccupantEventKind::Insert, occupant, occupant->GetType()));
+			RecordExemplar(writer, occupant);
 			return true;
 		}
 
@@ -100,7 +183,10 @@ namespace nSCD3D11::OccupantTracker {
 					: nSCDWire::OccupantEventKind::Move,
 					unknown, static_cast<int32_t>(standard->GetData3()));
 				standard->Release();
-				if (unknown != nullptr) wire->RecordOccupant(event);
+				if (unknown != nullptr) {
+					wire->RecordOccupant(event);
+					if (type != kRemove) RecordExemplar(*wire, unknown);
+				}
 				return true;
 			}
 		};

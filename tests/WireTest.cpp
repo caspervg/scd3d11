@@ -343,6 +343,15 @@ namespace {
 		wire->RecordGameFolders(folders);
 		wire->RecordNetworkPiece(piece, parts);
 		wire->RecordCellTexture(cell);
+		nSCDWire::OccupantExemplar occupant{};
+		occupant.id = 0x1234;
+		occupant.instance = 0x5D0D0001;
+		occupant.property = 0x27812824;
+		occupant.kind = nSCDWire::OccupantKind::Prop;
+		occupant.orientation = 3;
+		occupant.count = 3;
+		uint32_t const values[3]{1, 0x10000, 0x27812821};
+		wire->RecordOccupantExemplar(occupant, values);
 
 		std::vector<std::vector<uint8_t>> expected;
 		for (int frame = 0; frame < kFrames; ++frame) {
@@ -381,6 +390,12 @@ namespace {
 				parts.assign(readParts, readParts + read.partCount);
 			}
 			void CellTexture(nSCDWire::CellTexture const &read) override { cell = read; }
+			nSCDWire::OccupantExemplar occupant{};
+			std::vector<uint32_t> values;
+			void OccupantExemplar(nSCDWire::OccupantExemplar const &read, uint32_t const *readValues) override {
+				occupant = read;
+				values.assign(readValues, readValues + read.count);
+			}
 		} hooks(*replayed);
 
 		size_t offset = 0;
@@ -400,6 +415,8 @@ namespace {
 		assert(std::memcmp(&hooks.piece, &piece, sizeof(piece)) == 0);
 		assert(hooks.parts.size() == 2 && std::memcmp(hooks.parts.data(), parts, sizeof(parts)) == 0);
 		assert(std::memcmp(&hooks.cell, &cell, sizeof(cell)) == 0);
+		assert(std::memcmp(&hooks.occupant, &occupant, sizeof(occupant)) == 0);
+		assert(hooks.values == std::vector<uint32_t>(values, values + 3));
 		for (size_t frame = 0; frame < kFrames; ++frame) {
 			assert(hooks.frames[frame].size() == expected[frame].size());
 			size_t differing = 0;

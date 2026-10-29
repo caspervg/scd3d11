@@ -42,6 +42,8 @@ namespace nSCDWire {
 		// parts holds piece.partCount parts.
 		virtual void NetworkPiece(nSCDWire::NetworkPiece const &, NetworkPart const *) {}
 		virtual void CellTexture(nSCDWire::CellTexture const &) {}
+		// values holds occupant.count values.
+		virtual void OccupantExemplar(nSCDWire::OccupantExemplar const &, uint32_t const *) {}
 	};
 
 	struct ReplayStats {

@@ -161,6 +161,9 @@ namespace nSCDWire {
 		NetworkPiece,
 		// After an OwnerBegin of a lot's cell texture (cSC4CellTextureModel): CellTexture.
 		CellTexture,
+		// After the OccupantInsert or OccupantMove of a building, prop or flora, and in the listing:
+		// OccupantExemplar, then its count uint32 values.
+		OccupantExemplar,
 
 		Count
 	};
@@ -284,6 +287,29 @@ namespace nSCDWire {
 		GridVertex vertices[4]; // a triangle strip, for a flat cell
 	};
 	static_assert(sizeof(CellTexture) == 116);
+
+	enum class OccupantKind : uint8_t { Other, Building, Prop, Flora };
+
+	// Which models an occupant shows, read from the occupant's own properties (which hold its exemplar's), so
+	// the renderer can pick them for any zoom and rotation (see nSCAssets::ModelsFromKey).
+	struct OccupantExemplar {
+		uint64_t id;
+		// The exemplar as far as the occupant tells: type 0x6534284A, group 0 (unknown), and the occupant's
+		// building, prop or flora type as the instance.
+		uint32_t type, group, instance;
+		// The resource key property the values come from: RKT0 to RKT5 (0x27812820 to 0x27812825), else their
+		// alternates (0x27812920 to 0x27812925), 0 for none.
+		uint32_t property;
+		// Property 0x0ABFC024, the zooms the occupant shows at (bit n for zoom n), all set when absent.
+		uint32_t zoomMask;
+		OccupantKind kind;
+		uint8_t orientation; // 0 to 3
+		uint8_t state; // a prop's or flora's state, for RKT4 and RKT5
+		uint8_t flags; // bit 0: property 0xE83A081D is set, the model ignores the orientation
+		uint32_t count;
+		uint32_t reserved;
+	};
+	static_assert(sizeof(OccupantExemplar) == 40);
 
 	char const *OpName(Op op);
 }

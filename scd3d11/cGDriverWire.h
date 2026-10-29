@@ -51,6 +51,12 @@ namespace nSCD3D11 {
 			writer.End();
 		}
 		void RecordCellTexture(nSCDWire::CellTexture const &cell) { Record(nSCDWire::Op::CellTexture, cell); }
+		void RecordOccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values) {
+			writer.Begin(nSCDWire::Op::OccupantExemplar);
+			writer.Put(occupant);
+			writer.PutBytes(values, occupant.count * sizeof(uint32_t));
+			writer.End();
+		}
 		// One folder per nSCDWire::GameFolder kind.
 		void RecordGameFolders(std::wstring const *folders) {
 			writer.Begin(nSCDWire::Op::GameFolders);

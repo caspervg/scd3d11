@@ -55,6 +55,7 @@ namespace nSCDWire {
 		NameMap regionNames;
 		std::vector<uint8_t> scratch;
 		std::vector<NetworkPart> networkParts;
+		std::vector<uint32_t> exemplarValues;
 		// The unpack row length, so image blobs can be checked against what the driver will read.
 		int32_t rowLength = 0;
 		char const *failure = nullptr;
@@ -616,6 +617,16 @@ namespace nSCDWire {
 				case Op::CellTexture: {
 					auto const cell = f.Get<nSCDWire::CellTexture>();
 					if (f.ok) hooks.CellTexture(cell);
+					break;
+				}
+				case Op::OccupantExemplar: {
+					auto const occupant = f.Get<nSCDWire::OccupantExemplar>();
+					uint8_t const *values = f.ok ? f.Bytes(static_cast<size_t>(occupant.count) * sizeof(uint32_t)) : nullptr;
+					if (f.ok) {
+						exemplarValues.resize(occupant.count);
+						if (occupant.count != 0) std::memcpy(exemplarValues.data(), values, occupant.count * sizeof(uint32_t));
+						hooks.OccupantExemplar(occupant, exemplarValues.data());
+					}
 					break;
 				}
 
