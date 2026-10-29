@@ -253,6 +253,8 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 		std::vector<std::array<int32_t, 4> > redraws;
 		int32_t lastPass = -1;
 		uint64_t frame = 0;
+		// Counts every change to what VisitMeshes visits.
+		uint64_t changes = 0;
 		bool composited = false;
 		Camera camera, previousCamera;
 		uint32_t cameraId = 0;
@@ -450,6 +452,7 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 			if (!instance.alive) return;
 			instance.alive = false;
 			instance.meshes = {};
+			++changes;
 			byKey.erase(instance.key);
 			auto const found = byOccupant.find(instance.key.occupant);
 			if (found != byOccupant.end()) {
@@ -1033,6 +1036,7 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 		}
 		d.lastMesh = mesh;
 		MeshDraw &draw = d.instances[d.capturing].meshes.emplace_back();
+		++d.changes;
 		draw.vertices = vertices;
 		draw.indices = indices;
 		draw.count = count;
@@ -1047,6 +1051,17 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 		++d.totals.meshesCaptured;
 		return true;
 	}
+
+	void RetainedScene::VisitMeshes(MeshVisitor &visitor) const {
+		for (Instance const &instance: impl->instances) {
+			if (!instance.alive) continue;
+			for (MeshDraw const &mesh: instance.meshes) {
+				visitor.Mesh(instance.world, mesh.vertices, mesh.indices, mesh.count, mesh.state);
+			}
+		}
+	}
+
+	uint64_t RetainedScene::Changes() const { return impl->changes; }
 
 	void RetainedScene::PrintTotals() const {
 		Impl const &d = *impl;

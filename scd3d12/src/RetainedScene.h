@@ -70,6 +70,19 @@ namespace nSCD3D12 {
 		              float const *bounds, uint32_t mesh, D3D12_VERTEX_BUFFER_VIEW const &vertices,
 		              D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count) override;
 
+		// Every mesh of every instance kept, for lighting from the server's own copy of the city (WorldLight.h):
+		// the instance's world transform (column major), the mesh's geometry and the state it is drawn with.
+		class MeshVisitor {
+		public:
+			virtual ~MeshVisitor() = default;
+			virtual void Mesh(float const *world, D3D12_VERTEX_BUFFER_VIEW const &vertices,
+			                  D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count,
+			                  cGDriver12::DrawState const &state) = 0;
+		};
+		void VisitMeshes(MeshVisitor &visitor) const;
+		// Grows whenever what VisitMeshes visits changes.
+		uint64_t Changes() const;
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> impl;
