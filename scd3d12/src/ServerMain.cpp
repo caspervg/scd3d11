@@ -11,7 +11,7 @@
 // SCD3D12Server: SimCity 4's renderer as a separate 64-bit process.
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
-//                        [--relight <sun>] [--until <frame>]
+//                        [--relight <sun> [--light <features>]] [--until <frame>]
 //                        [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]]
 //                        [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]
 //                        [--present window|composition|surface [--into <window>]] [--fps <n>]
@@ -38,6 +38,10 @@
 //
 //   --relight relights every frame with another sun: an hour of the day from 0 to 24, or
 //   <azimuth>,<elevation> in degrees (see cGDriver12::Sun).
+//   --light says what the server's own copy of the city adds to relighting (WorldLight.h), as a comma separated
+//   list: rays (sun shadows ray traced through the retained scene and the terrain), terrain (smooth terrain
+//   normals), lamps (night lights), world (a sun that stands still in the world instead of turning with the
+//   camera), or none (the default) for the relighting of the draw lane alone.
 //   SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]
 //       Compares two images channel by channel. Exit code 0 when no channel differs by more than n.
 
@@ -49,6 +53,7 @@
 #include "RetainedScene.h"
 #include "SceneLane.h"
 #include "Serve.h"
+#include "WorldLight.h"
 #include "wire/ImageFile.h"
 #include "wire/WireReplay.h"
 
@@ -135,7 +140,29 @@ namespace {
 		nSCD3D12::ReplayWindow::Kind window = nSCD3D12::ReplayWindow::Kind::Window;
 		HWND into = nullptr;
 		uint32_t fps = 0;
+		bool worldLight = false;
+		nSCD3D12::WorldLight::Options light;
 	};
+
+	// --light: the features named, or none.
+	bool ParseLight(std::wstring const &text, ReplayOptions &options) {
+		options.light = {false, false, false};
+		options.worldLight = text != L"none";
+		bool world = false;
+		for (size_t start = 0; options.worldLight && start <= text.size();) {
+			size_t const end = text.find(L',', start);
+			std::wstring const feature = text.substr(start, end - start);
+			if (feature == L"rays") options.light.rays = true;
+			else if (feature == L"terrain") options.light.terrain = true;
+			else if (feature == L"lamps") options.light.lights = true;
+			else if (feature == L"world") world = true;
+			else return false;
+			if (end == std::wstring::npos) break;
+			start = end + 1;
+		}
+		options.sun.fixedInWorld = world;
+		return true;
+	}
 
 	bool ParseReplay(int argc, wchar_t **argv, ReplayOptions &options) {
 		for (int i = 2; i < argc; ++i) {
@@ -155,7 +182,12 @@ namespace {
 			else if (argument == L"--warp") options.warp = true;
 			else if (argument == L"--relight" && hasValue) {
 				options.relight = true;
+				bool const world = options.sun.fixedInWorld;
 				if (!ParseSun(argv[++i], options.sun)) return false;
+				options.sun.fixedInWorld = world;
+			}
+			else if (argument == L"--light" && hasValue) {
+				if (!ParseLight(argv[++i], options)) return false;
 			}
 			else if (argument == L"--until" && hasValue) options.until = _wtoi64(argv[++i]);
 			else if (argument == L"--scene" && hasValue) {
@@ -202,6 +234,7 @@ namespace {
 		uint32_t renderWidth = 0, renderHeight = 0, outputWidth = 0, outputHeight = 0;
 		uint64_t upscaled = 0;
 		std::unique_ptr<nSCD3D12::OwnedScene> owned;
+		std::unique_ptr<nSCD3D12::WorldLight> world;
 		std::FILE *sceneCsv = nullptr;
 		uint64_t frame = 0;
 		uint64_t saved = 0;
@@ -212,12 +245,14 @@ namespace {
 			driver.VideoMode(show, width, height, fullscreen);
 			if (retained != nullptr) retained->VideoMode();
 			if (owned != nullptr) owned->VideoMode();
+			if (world != nullptr) world->VideoMode();
 		}
 		void Vertices(uint32_t name, void const *data, uint32_t bytes) override { driver.Vertices(name, data, bytes); }
 		void Resize(uint32_t width, uint32_t height) override { driver.Resize(width, height); }
 		void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
 			if (retained != nullptr) retained->OwnerBegin(owner);
 			if (owned != nullptr) owned->OwnerBegin(owner);
+			if (world != nullptr) world->OwnerBegin(owner);
 			driver.OwnerBegin(owner);
 			if (scene != nullptr) scene->OwnerBegin(owner);
 		}
@@ -225,6 +260,7 @@ namespace {
 			driver.OwnerEnd();
 			if (scene != nullptr) scene->OwnerEnd();
 			if (owned != nullptr) owned->OwnerEnd();
+			if (world != nullptr) world->OwnerEnd();
 		}
 		void Occupant(nSCDWire::OccupantEvent const &event) override {
 			if (retained != nullptr) retained->Occupant(event);
@@ -253,6 +289,7 @@ namespace {
 			if (options.retained) {
 				retained = std::make_unique<nSCD3D12::RetainedScene>(driver, *scene);
 				if (Chosen(frame)) retained->KeepMotion();
+				if (world != nullptr) world->SetScene(retained.get(), scene.get());
 			}
 			if (options.owned) {
 				owned = std::make_unique<nSCD3D12::OwnedScene>(driver, *scene);
@@ -389,6 +426,9 @@ namespace {
 			hooks.window = std::make_unique<nSCD3D12::ReplayWindow>(options.window, options.into, driver.Device(),
 			                                                        driver.Queue(), hooks.dlss.get());
 		}
+		if (options.relight && options.worldLight) {
+			hooks.world = std::make_unique<nSCD3D12::WorldLight>(driver, options.light);
+		}
 		if (options.substitute && !options.game.empty()) {
 			hooks.store.AddGameData(options.game);
 			hooks.StartScene();
@@ -413,6 +453,7 @@ namespace {
 		if (hooks.retained != nullptr) hooks.retained->PrintTotals();
 		if (hooks.owned != nullptr) hooks.owned->PrintTotals();
 		if (hooks.scene == nullptr && options.substitute) std::puts("scene: the capture names no game folders, pass --game");
+		if (hooks.world != nullptr) hooks.world->PrintTotals();
 		if (hooks.dlss != nullptr) {
 			double milliseconds = 0.0;
 			uint32_t frames = 0;
@@ -498,7 +539,9 @@ int wmain(int argc, wchar_t **argv) {
 	else if (command == L"compare") result = RunCompare(argc, argv);
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
-		std::puts("                     [--relight <hour or azimuth,elevation>] [--until <frame>]"
+		std::puts("                     [--relight <hour or azimuth,elevation> [--light rays,terrain,lamps,world|none]]"
+		          " [--until <frame>]");
+		std::puts("                    "
 		          " [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]]");
 		std::puts("                     [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]"
 		          " [--present window|composition|surface [--into <window>]] [--fps <n>]");
