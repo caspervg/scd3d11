@@ -29,6 +29,7 @@
 #include "ThumbnailFocusGuard.h"
 
 #include "Diagnostics.h"
+#include "DrawOwnerHooks.h"
 #include "GameVersion.h"
 
 #include <cstring>
@@ -77,6 +78,7 @@ namespace nSCD3D11::ThumbnailFocusGuard {
 			uintptr_t const caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
 			bool const usable = IsUsableWindow();
 			if (caller == kBeforeRenderReturnVA) {
+				DrawOwnerHooks::DrawAllModels();
 				gMinimizesBeforeRender = gMinimizes;
 				gDeactivationsBeforeRender = gDeactivations;
 				return usable;

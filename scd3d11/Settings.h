@@ -49,6 +49,9 @@ namespace nSCD3D11::Settings {
 		// copy of the game's data (see SCD3D12Server's --scene). check also compares each with the game's. owned
 		// keeps the whole static view on the server and draws it every frame without SC4's backing store.
 		std::string serverScene;
+		// ServerSkipModels=on: with ServerScene=owned, the game's static model draws are left out while the server
+		// draws the static view, and only their ModelInstance records are sent.
+		bool serverSkipModels = false;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.

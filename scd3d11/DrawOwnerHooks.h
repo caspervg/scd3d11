@@ -15,4 +15,6 @@
 namespace nSCD3D11::DrawOwnerHooks {
 	bool Install();
 	void Uninstall();
+	// The game is about to read its own frame (a snapshot, the region thumbnail): draw every model for a while.
+	void DrawAllModels();
 }

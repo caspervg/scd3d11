@@ -215,7 +215,8 @@ namespace nSCDWire {
 		// The world transform: world = rotation (row major) x (scale x vertex) + translation.
 		uint8_t changeCount;
 		uint8_t parts; // 4 rotation, 1 translation, 2 scale
-		uint16_t reserved;
+		// Bit 0: the game left out its draw (ServerSkipModels), so the renderer draws it from this record alone.
+		uint16_t flags;
 		float rotation[9];
 		float translation[3];
 		float scale;

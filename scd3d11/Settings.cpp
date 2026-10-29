@@ -189,6 +189,7 @@ namespace nSCD3D11::Settings {
 		values.serverComposition = Resolve(sources, "ServerPresent", ParseServerPresent, values.serverComposition);
 		values.serverRelight = Resolve(sources, "ServerRelight", ParsePath, values.serverRelight);
 		values.serverScene = Resolve(sources, "ServerScene", ParseServerScene, values.serverScene);
+		values.serverSkipModels = Resolve(sources, "ServerSkipModels", ParseFlag, values.serverSkipModels);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

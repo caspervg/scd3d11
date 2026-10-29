@@ -52,6 +52,11 @@
 // context's zoom differs, so the record carries the context's), q-0xA4 the texture binding, q-0x88
 // the four vertices of a flat cell, q-0x28 whether it is flat.
 //
+// With ServerSkipModels, while the server draws the static view itself, a model instance of the static grid (pass 1)
+// is not drawn: its ModelInstance record goes out with flag 1 and the server draws it from that alone. Draw returns
+// the instance's own result otherwise, and the callers only look for 2 (draw again). For a few seconds after the game
+// reads its own frame (CopyColorBuffer, the region thumbnail) every model is drawn again.
+//
 // Each site becomes a call to a stub below plus a NOP. Every patch checks the bytes it replaces and is
 // undone in PreAppShutdown.
 
@@ -134,6 +139,7 @@ namespace nSCD3D11::DrawOwnerHooks {
 			return true;
 		}
 
+		constexpr uint32_t kS3dType = 0x5AD0E817;
 		constexpr uintptr_t kNetworkPieceVtable = 0x00AA7F10;
 		constexpr uintptr_t kCellTextureVtable = 0x00AA2C30;
 		constexpr ptrdiff_t kContextZoom = 0x14;
@@ -182,6 +188,15 @@ namespace nSCD3D11::DrawOwnerHooks {
 			wire.RecordCellTexture(cell);
 		}
 
+		// Until when the game's own frame must hold every model.
+		ULONGLONG gDrawAllUntil = 0;
+
+		bool SkipModel(cGDriverWire &wire, nSCDWire::DrawOwner const &owner, nSCDWire::ModelInstance const &model) {
+			static bool const enabled = Settings::Get().serverSkipModels;
+			return enabled && owner.pass == 1 && model.type == kS3dType && (model.attributes[0] & 1) == 0 &&
+			       GetTickCount64() >= gDrawAllUntil && wire.Inner().RemoteOwnsView();
+		}
+
 		uint32_t __fastcall DrawGrid(void *drawable, void *, void *context, uint32_t flag) {
 			auto **const vtable = *static_cast<void ***>(drawable);
 			using Draw = uint32_t(__thiscall *)(void *, void *, uint32_t);
@@ -192,8 +207,15 @@ namespace nSCD3D11::DrawOwnerHooks {
 			nSCDWire::DrawOwner const owner = Describe(drawable, context, nSCDWire::DrawOwnerKind::Grid, occupant);
 			wire->RecordOwnerBegin(owner);
 			nSCDWire::ModelInstance model;
-			if (ReadModelInstance(drawable, owner.vtable, model)) wire->RecordModelInstance(model);
-			else if (owner.vtable == kNetworkPieceVtable) RecordNetworkPiece(*wire, drawable, context, flag);
+			if (ReadModelInstance(drawable, owner.vtable, model)) {
+				if (SkipModel(*wire, owner, model)) {
+					model.flags |= 1;
+					wire->RecordModelInstance(model);
+					wire->RecordOwnerEnd();
+					return 0;
+				}
+				wire->RecordModelInstance(model);
+			} else if (owner.vtable == kNetworkPieceVtable) RecordNetworkPiece(*wire, drawable, context, flag);
 			else if (owner.vtable == kCellTextureVtable) RecordCellTexture(*wire, drawable, context, flag);
 			uint32_t const result = reinterpret_cast<Draw>(vtable[12])(drawable, context, flag);
 			wire->RecordOwnerEnd();
@@ -331,4 +353,6 @@ namespace nSCD3D11::DrawOwnerHooks {
 		for (Site &site: gSites) Unpatch(site);
 		gInstalled = false;
 	}
+
+	void DrawAllModels() { gDrawAllUntil = GetTickCount64() + 3000; }
 }

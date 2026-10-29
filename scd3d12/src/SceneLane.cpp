@@ -70,13 +70,14 @@ namespace nSCD3D12 {
 			kTextureMissing, // the store has neither the texture nor the placeholder
 			kGameColors, // the game draws this instance with vertex colours of its own (a car's paint)
 			kNoMatch, // a network or cell draw that is none of the record's triangles
+			kSkipped, // the game skipped the draw and nothing took the lane's
 			kReasonCount
 		};
 
 		char const *const kReasonNames[kReasonCount] = {
 			"none", "no_model_key", "model_missing", "highlighted", "extra_draw", "mesh_mismatch",
 			"two_textures", "unbound_texture", "second_stage", "night_missing", "texture_missing", "game_colors",
-			"no_match",
+			"no_match", "skipped",
 		};
 
 		// The kinds of grid drawable the lane stands in for.
@@ -236,6 +237,8 @@ namespace nSCD3D12 {
 		cGDriver12::DrawFilter *filter = nullptr;
 		bool substituteGrid = true;
 		bool dropDynamic = false;
+		// The shade the game last gave a model that is not self lit, for instances it skipped.
+		float lastShade[3]{1.0f, 1.0f, 1.0f};
 		// For the check: every grid drawable's draws and how many of them the lane stood in for, by vtable.
 		std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> gridDraws;
 
@@ -656,6 +659,7 @@ namespace nSCD3D12 {
 					            static_cast<uint32_t>(&mesh - bracket.model->meshes.data()));
 				}
 			}
+			if ((bracket.attributes & 0x0C) == 0) std::memcpy(lastShade, game.globalAmbient, sizeof(lastShade));
 			Reason const reason = SetMeshState(*bracket.model, mesh, bracket.attributes, bracket.opacity, game);
 			if (reason != kNone) return reason;
 			if (check) {
@@ -765,6 +769,38 @@ namespace nSCD3D12 {
 				driver.TexParameter(0, 3, material.wrapV);
 			}
 			return kNone;
+		}
+
+		// An instance the game did not draw (ServerSkipModels): each mesh is offered to the sink with the state the
+		// lane works out, the shade the game last gave a model (or the instance's own when it is self lit), and no
+		// night lights. Without a sink taking it nothing is drawn, as the transform is not loaded.
+		void DrawSkipped(Bracket &bracket) {
+			GpuModel const &model = *bracket.model;
+			cGDriver12::DrawState game{};
+			driver.SaveDrawState(game);
+			cGDriver12::DrawState unlit = game;
+			unlit.stages[1].enabled = false;
+			float shade[3];
+			std::memcpy(shade, lastShade, sizeof(shade));
+			if (bracket.attributes & 4) std::memcpy(shade, bracket.instance.attributes + 4, sizeof(shade));
+			for (GpuMesh const &mesh: model.meshes) {
+				++bracket.draws;
+				Reason reason = mesh.reason;
+				if (reason == kNone) {
+					driver.ColorMultiplier(shade[0], shade[1], shade[2]);
+					reason = SetMeshState(model, mesh, bracket.attributes, bracket.opacity, unlit);
+				}
+				uint32_t const index = static_cast<uint32_t>(&mesh - model.meshes.data());
+				if (reason == kNone && sink != nullptr &&
+				    sink->TakeMesh(bracket.owner, bracket.instance, model.bounds, index, mesh.vertices, mesh.indices, mesh.count)) {
+					++bracket.substituted;
+					++frame[kModel].drawsSubstituted;
+				} else {
+					if (bracket.firstFallback == kNone) bracket.firstFallback = reason == kNone ? kSkipped : reason;
+					++frame[kModel].fallbackDraws[reason == kNone ? kSkipped : reason];
+				}
+				driver.RestoreDrawState(game);
+			}
 		}
 
 		// Counts where the lane's state differs from what the game set for the same draw. Textures are
@@ -908,6 +944,7 @@ namespace nSCD3D12 {
 		bracket.model = &gpu;
 		bracket.reason = gpu.reason;
 		if (bracket.reason == kNone && (bracket.attributes & 1)) bracket.reason = kHighlighted;
+		if ((model.flags & 1) != 0 && bracket.reason == kNone) impl->DrawSkipped(bracket);
 	}
 
 	bool SceneLane::AllowDraw(uint32_t primitive, int32_t first, uint32_t count, uint32_t indexType,

@@ -12,6 +12,7 @@
 
 #include "cGDCombiner.h"
 #include "Diagnostics.h"
+#include "DrawOwnerHooks.h"
 #include "Settings.h"
 #include "TextureUploadUtils.h"
 #include "VertexFormatUtils.h"
@@ -726,6 +727,7 @@ namespace nSCD3D11 {
 	cIGZBuffer *cGDriverWire::CopyColorBuffer(int32_t x, int32_t y, int32_t width, int32_t height,
 	                                          cIGZBuffer *buffer) {
 		Record(Op::CopyColorBuffer, x, y, width, height);
+		DrawOwnerHooks::DrawAllModels();
 		return driver->CopyColorBuffer(x, y, width, height, buffer);
 	}
 
