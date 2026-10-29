@@ -189,12 +189,13 @@ Time per composite (replay of scene-tutorial at 1920x1080; the retained scene's 
 
 | Metres per pixel | Draws | Instances | CPU median (average) | GPU median (average) | Retained before (CPU, GPU) |
 |---|---|---|---|---|---|
-| 0.072 | 418 | 601 | 0.13 ms (0.13) | 0.67 ms (0.53) | 0.15, 0.04 (models only) |
-| 0.286 | 1,459 | 5,407 | 0.92 ms (5.0) | 0.41 ms (2.3) | 0.97, 0.06 (models only) |
+| 0.072 | 418 | 601 | 0.10 ms (0.10) | 0.67 ms (0.53) | 0.15, 0.04 (models only) |
+| 0.286 | 1,459 | 5,407 | 0.80 ms (3.1) | 0.41 ms (2.3) | 0.97, 0.06 (models only) |
 | 2.613 | 5,504 | 19,969 | 1.06 ms (1.7) | 0.20 ms (0.21) | 3.65, 0.99 (models only) |
 
-The averages at 0.286 come from the scroll, where finding what each strip removed walks every kept item (1.3 ms of
-the average) and new cells are added to the buckets. Live, Big City Tutorial with VSync on, the server spends 1.7 to 9
+The averages at 0.286 come from the scroll, where new cells are added to the buckets and each strip looks for what it
+removed. That search goes through an index of where everything kept lies on screen (64 metre bins, big items in a
+list of their own): 0.75 ms per composite on average, from 1.34 ms when it walked every kept item. Live, Big City Tutorial with VSync on, the server spends 1.7 to 9
 ms of CPU per frame (substitute: about 1 ms) and the composite 1.4 to 2.4 ms of GPU.
 
 Still SC4's: the static draws themselves when it redraws (the server keeps them, but only what SC4 drew exists), the
