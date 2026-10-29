@@ -481,6 +481,8 @@ namespace nSCD3D12 {
 			std::vector<D3D11Vertex> vertices;
 			std::vector<uint32_t> indices;
 			Extent extent;
+			// The rotation part of the view extent is in (the first two rows).
+			float view[12]{};
 			// Where it sits in the bucket's buffer, once it is there.
 			bool placed = false;
 			uint32_t firstVertex = 0, firstIndex = 0;
@@ -1479,6 +1481,7 @@ float4 PointPS(float4 position : SV_POSITION) : SV_TARGET
 			p.serial = serial;
 			p.frame = frame;
 			float lo[3]{1e30f, 1e30f, 1e30f}, hi[3]{-1e30f, -1e30f, -1e30f};
+			std::memcpy(p.view, captureView, sizeof(p.view));
 			for (D3D11Vertex const &v: p.vertices) {
 				p.extent.Add(captureView, v.position);
 				for (int a = 0; a < 3; ++a) {
@@ -1522,6 +1525,18 @@ float4 PointPS(float4 position : SV_POSITION) : SV_TARGET
 			if (buckets[b].dirty) return;
 			buckets[b].dirty = true;
 			dirtyBuckets.push_back(b);
+		}
+
+		// A piece drawn again the same: where it lies on screen follows the view it was drawn with now, which
+		// turned when the camera did.
+		bool Refit(uint32_t index) {
+			Piece &p = pieces[index];
+			if (std::memcmp(p.view, captureView, sizeof(p.view)) == 0) return false;
+			p.extent = {};
+			for (D3D11Vertex const &v: p.vertices) p.extent.Add(captureView, v.position);
+			std::memcpy(p.view, captureView, sizeof(p.view));
+			buckets[p.bucket].extent.Add(p.extent);
+			return true;
 		}
 
 		void RemovePiece(uint32_t index, uint32_t reason) {
@@ -1779,6 +1794,7 @@ float4 PointPS(float4 position : SV_POSITION) : SV_TARGET
 				if (found != viewPieces.end()) {
 					pieces[found->second].serial = serial;
 					pieces[found->second].frame = frame;
+					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent);
 					DropUnused(group);
 				} else {
 					uint32_t const piece = AddPiece(group, std::move(world), std::vector<uint32_t>(indices, indices + indexCount), hash);
@@ -1851,6 +1867,7 @@ float4 PointPS(float4 position : SV_POSITION) : SV_TARGET
 				for (uint32_t piece: cell.pieces) {
 					pieces[piece].serial = serial;
 					pieces[piece].frame = frame;
+					changed |= Refit(piece);
 					cell.extent.Add(pieces[piece].extent);
 				}
 				cell.serial = serial;
@@ -1869,6 +1886,11 @@ float4 PointPS(float4 position : SV_POSITION) : SV_TARGET
 			for (size_t i = 0; same && i < freshGrid.size(); ++i) same = Same(freshGrid[i], pieces[item.pieces[i]]);
 			if (same) {
 				for (Fresh const &fresh: freshGrid) DropUnused(fresh.group);
+				item.extent = {};
+				for (uint32_t piece: item.pieces) {
+					same &= !Refit(piece);
+					item.extent.Add(pieces[piece].extent);
+				}
 			} else {
 				if (!again) {
 					for (uint32_t piece: item.pieces) RemovePiece(piece, 1);
@@ -1939,6 +1961,7 @@ float4 PointPS(float4 position : SV_POSITION) : SV_TARGET
 				if (found != viewPieces.end()) {
 					pieces[found->second].serial = serial;
 					pieces[found->second].frame = frame;
+					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent);
 					DropUnused(fresh.group);
 				} else {
 					uint32_t const piece = AddPiece(fresh.group, std::move(fresh.vertices), std::move(fresh.indices), hash);
