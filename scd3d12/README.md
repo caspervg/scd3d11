@@ -69,6 +69,7 @@ The live stream and a recorded capture are the same bytes. Every capture replays
 | M4 | Asset readers (DBPF, QFS, S3D, FSH, exemplars) done. `replay --scene substitute` draws the game's S3D models (buildings, props, flora, automata) from the server's own copy of the game data in place of the game's draws: meshes kept on the GPU, textures from the FSH files, render state from the S3D materials and draw attributes, night lights from the texture id + 0x8000. On four captures 98.6% to 99.96% of model draws are the server's and all 324 frames compared are bit-identical. Left to the game: cars it repaints with its own vertex colours and highlighted models. The tint the game lays over close flora on stage 1 is a 16x16 alpha texture it makes itself (no package holds it), so the lane keeps the game's stage 1 for those draws. Plain network pieces and lot cell textures are drawn from records the shim reads off each drawable (`NetworkPiece`, `CellTexture`): the record's world-space vertices with the texture from the store, the rest of the state the game's. A cell on a slope is drawn by the terrain, so there only the texture is swapped. On a Big City Tutorial capture 96% of network draws and 91% of cell draws are the server's, the rest being the first frame after a zoom or rotation (the game rebuilds those vertices inside the draw, after the record is read), and all 108 frames compared are bit-identical. Live, `ServerScene=substitute` (or `check`) does the same in `serve`: the shim names the folders SC4 loaded its packages from (`GameFolders`, also in captures, so replays need no `--game`), and the server indexes them on a thread of its own (0.11 s for the vanilla game) and starts substituting at the next frame. Still the game's: animated sprites (0x00ABD1D0, a third of the grid draws) and three other lot models (0x00AA20D0, 0x00AA2808, 0x00AA2EA8, likely foundations and retaining walls). `--scene owned` (`ServerScene=owned` live) keeps the whole static view and draws it every frame without SC4's backing store (see Owned scene), and can pick each occupant's models for a camera SC4 did not draw with from its exemplar (see Models from exemplars). `ServerSkipModels` leaves SC4's own static model draws out. `--scene check` also compares each draw's state and vertices with the game's, and that every game texture stands for one store texture |
 | M5 | DLAA and DLSS through NVIDIA Streamline run on the retained scene in replay, and frame generation in a window the replay presents to. See [Upscaling](#upscaling). Not live yet, and the server does not draw at a lower render size yet |
 | M6 | Stage 1 done in the draw lane, verified offline and live: `--relight <hour>` for replay, `ServerRelight` live (seen working in the game). The server keeps a light layer next to the back buffer, through SC4's backing-store copies, and relights each frame with sun shadows traced over the orthographic depth, in about 0.13 ms at 1920x1080. Off, the output stays bit-identical. Stage 2 done offline on the retained scene (`--light`, see Light): ray traced sun shadows, smooth terrain normals, night lights as light sources and a sun that stands still in the world. Limits: SC4's lighting baked into BAT textures is only divided out roughly, and stage 2 is not wired into `serve` yet |
+| M7 | `FreeCamera=on` turns, tilts and zooms SC4's own camera with the mouse (from sc4-modern-camera), live with every renderer, and `ServerScene=owned` follows it. SC4 picks with that camera, so tools work: a bulldoze click under a turned, tilted and zoomed view removed the road under the cursor. The owned scene can also draw a camera of its own with every occupant's models picked from its exemplar (`FreeCamera` records, `replay --free-camera`). See [Free camera](#free-camera) |
 
 ## Retained scene
 
@@ -322,3 +323,50 @@ scrolling the strips hold few models. So the setting saves little and stays off 
 the city's edge and turning with it on, the view showed SC4's whole-city render (as for the region thumbnail) instead of
 the city, with two more new views than usual. It did not come back in a second run nor in the replay of a capture of
 that run.
+
+## Free camera
+
+`FreeCamera=on` (`FreeCamera.cpp`, `camera/`, from [sc4-modern-camera](https://github.com/caspervg/sc4-modern-camera)):
+drag with the middle mouse button to turn and tilt the city view, scroll for smooth zoom, hold ALT for the classic
+angle. A persistent view input control takes the mouse from city init to city shutdown, a framework tick applies what
+it queued once per game loop, and nothing in the game is patched. It moves SC4's own camera: yaw and pitch overrides
+on the active camera control, a custom magnification within each zoom level, and the zoom limits pinned to the current
+level so the game's own wheel zoom stays out. Past 30 degrees from SC4's own angle buildings lose their sides, so the
+yaw goes back by quarter turns and SC4's rotation makes up for it. Before a save (the region thumbnail) and when the
+city closes the native angles, magnification and zoom limits come back.
+
+As SC4 draws, culls and picks with that camera, every tool keeps working. Live on Big City Tutorial with
+`Renderer=server`, `ServerScene=owned`: turned by a middle drag, tilted and zoomed out, then a bulldoze click removed
+the road piece under the cursor (`runtime-captures/bench-20261029-062740/c-before.png` and `d-after.png` in the
+worktree that made them). At rest the game runs at its usual 20 frames per second, the server at 1.5 to 2.4 ms of CPU
+per frame. `bench_sc4.py` now sends the window mouse and key messages for such runs (`mdrag`, `wheel`, `click`, `key`).
+
+What the owned scene needed for it:
+
+- SC4 often loads another camera for a few frames without drawing anything static (a rotation-0 camera in four frames
+  of exemplar-turn, the camera moving while the free camera turns). Without a redraw of the whole window SC4 still
+  shows the old view, so the owned scene keeps it and draws with the old camera instead of dropping everything.
+- What SC4 draws again the same in a turned view (a road, a terrain cell, a shadow) keeps its geometry but gets its
+  place on screen again, or it was culled with the place it had in the old view.
+- The dynamic passes (automata, effects, highlights) can be drawn from another camera (`cGDriver12::SwapCamera`).
+
+### The owned scene's own camera
+
+A `FreeCamera` record (`wire/FreeCamera.h`) tells the server to draw from a camera of its own, as a change to SC4's:
+turned about world up through the ground at the middle of the screen (found in the kept terrain cells), tilted to a
+pitch and zoomed in by a factor. Every occupant then shows its models for the camera's nearest SC4 zoom and rotation,
+picked from its exemplar record in the state the driver had for the occupant's first mesh. They are picked again when
+that zoom or rotation changes: 11 to 13 ms for the 2,800 occupants of exemplar-turn at 0.143 metres per pixel, 75 ms
+the first time a zoom's models load from the store. Nothing is culled, the dynamic passes follow it, and the server
+draws it in `serve` too. `replay --scene owned --free-camera <yaw>,<pitch>,<zoom>[,<yaw step>]` draws the chosen
+frames from it, each turned yaw step further.
+
+Left: what SC4 never drew is missing (the far side of retaining walls and foundations, which only show their faces
+towards SC4's angle, and whatever lies past SC4's view), and the shim does not send these records yet. Their use would be
+angles SC4 cannot draw and turning without SC4 redrawing the city each frame. Picking under such a camera needs the
+gate 1 hooks: `GetEyeRay` (0x00800340) returns, for its ortho branch, an origin of UnProject(x, y, 1) minus the
+direction, the direction being look-at minus eye scaled to the length at +0x188. `GetViewportRayContainerRect`
+(0x007C20E0) unprojects the point, moves it into the fixed view's coordinates (0x007F6710) and pads it into the quad
+grid rectangle that `cSC43DRender::Pick` takes its candidates from, before it tests each with the eye ray. Called
+with SC4's own screen point of the world point under the free camera's cursor, it would find the same occupant.
+
