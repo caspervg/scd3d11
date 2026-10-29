@@ -2190,6 +2190,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			jittered[12] += 2.0f * jitter[0] / static_cast<float>(now.width);
 			jittered[13] -= 2.0f * jitter[1] / static_cast<float>(now.height);
 			driver.BeginRetained(jittered);
+			driver.RetainedCamera(now.view, now.projection);
 			uint64_t draws = 0, instances = 0;
 			for (uint32_t g: order) {
 				Group &group = groups[g];

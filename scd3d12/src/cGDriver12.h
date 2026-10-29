@@ -212,6 +212,10 @@ namespace nSCD3D12 {
 		void DrawRetained(RetainedDraw const &draw);
 		// Puts back the driver's own bindings and viewport.
 		void EndRetained();
+		// The camera the kept draws were drawn with, for relighting: a view that only turns about world up and
+		// tilts, and the full window's projection. Without it the lighting pass learns the camera from the
+		// game's static draws, which the owned scene keeps from the driver.
+		void RetainedCamera(float const *view, float const *projection);
 
 		// For lighting from the server's own copy of the city (WorldLight.h).
 

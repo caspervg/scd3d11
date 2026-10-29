@@ -1864,8 +1864,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		// model-view is world up in view space. A tilted one (an automaton on a slope) is skipped.
 		void TrackCamera() {
 			if (!DrawsCity() || (ownersSeen && ownerPass != 1) || !enabledCapabilities[kGDCapability_DepthTest]) return;
-			float const *const modelView = matrices[0];
-			float const *const projection = matrices[1];
+			LearnCamera(matrices[0], matrices[1], viewportWidth, viewportHeight);
+		}
+
+		void LearnCamera(float const *modelView, float const *projection, int32_t viewportWidth, int32_t viewportHeight) {
 			float const length = std::sqrt(modelView[5] * modelView[5] + modelView[6] * modelView[6]);
 			if (length < 1.0e-6f || std::fabs(modelView[4]) > 1.0e-3f * length || projection[0] == 0.0f ||
 			    projection[5] == 0.0f || projection[10] == 0.0f || viewportWidth <= 0 || viewportHeight <= 0) {
@@ -4034,4 +4036,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	}
 
 	void cGDriver12::EndRetained() { impl->ApplyViewport(); }
+
+	void cGDriver12::RetainedCamera(float const *view, float const *projection) {
+		Impl &d = *impl;
+		if (d.relight) d.LearnCamera(view, projection, d.windowWidth, d.windowHeight);
+	}
 }
