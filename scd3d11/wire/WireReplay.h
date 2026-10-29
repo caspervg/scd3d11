@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "FreeCamera.h"
 #include "WireStream.h"
 
 #include <cstdint>
@@ -44,6 +45,7 @@ namespace nSCDWire {
 		virtual void CellTexture(nSCDWire::CellTexture const &) {}
 		// values holds occupant.count values.
 		virtual void OccupantExemplar(nSCDWire::OccupantExemplar const &, uint32_t const *) {}
+		virtual void FreeCamera(nSCDWire::FreeCamera const &) {}
 	};
 
 	struct ReplayStats {

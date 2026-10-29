@@ -6,6 +6,7 @@
 #include "cIGZGDriverLightingExtension.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -352,6 +353,8 @@ namespace {
 		occupant.count = 3;
 		uint32_t const values[3]{1, 0x10000, 0x27812821};
 		wire->RecordOccupantExemplar(occupant, values);
+		nSCDWire::FreeCamera const free{1, 45.0f, 60.0f, 1.5f};
+		wire->RecordFreeCamera(free);
 
 		std::vector<std::vector<uint8_t>> expected;
 		for (int frame = 0; frame < kFrames; ++frame) {
@@ -396,6 +399,8 @@ namespace {
 				occupant = read;
 				values.assign(readValues, readValues + read.count);
 			}
+			nSCDWire::FreeCamera free{};
+			void FreeCamera(nSCDWire::FreeCamera const &read) override { free = read; }
 		} hooks(*replayed);
 
 		size_t offset = 0;
@@ -417,6 +422,7 @@ namespace {
 		assert(std::memcmp(&hooks.cell, &cell, sizeof(cell)) == 0);
 		assert(std::memcmp(&hooks.occupant, &occupant, sizeof(occupant)) == 0);
 		assert(hooks.values == std::vector<uint32_t>(values, values + 3));
+		assert(std::memcmp(&hooks.free, &free, sizeof(free)) == 0);
 		for (size_t frame = 0; frame < kFrames; ++frame) {
 			assert(hooks.frames[frame].size() == expected[frame].size());
 			size_t differing = 0;
@@ -435,8 +441,33 @@ namespace {
 	}
 }
 
+// The free camera with nothing changed is SC4's camera, and a quarter turn keeps the pivot in place.
+static void FreeViewStartsFromSc4sCamera() {
+	// SC4's camera at rotation 1 and 45 degrees, from Big City Tutorial.
+	float const yaw = 67.5f * 3.14159265f / 180.0f, pitch = 45.0f * 3.14159265f / 180.0f;
+	float const cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
+	float const view[16]{cy, sp * sy, -sy * cp, 0, 0, cp, sp, 0, sy, -sp * cy, cy * cp, 0, -1415.27f, -669.939f, -10247.3f, 1};
+	float const projection[16]{0.00727497f, 0, 0, 0, 0, 0.0131649f, 0, 0, 0, 0, -0.0001413f, 0, 0, 0, -1.45549f, 1};
+	float origin[3], direction[3];
+	nSCDWire::ScreenMiddleRay(view, projection, origin, direction);
+	float const t = (280.0f - origin[1]) / direction[1];
+	float const pivot[3]{origin[0] + direction[0] * t, 280.0f, origin[2] + direction[2] * t};
+	float out[16], outProjection[16];
+	nSCDWire::FreeView(view, projection, pivot, {1, 0.0f, 0.0f, 1.0f}, out, outProjection);
+	for (int i = 0; i < 16; ++i) assert(std::fabs(out[i] - view[i]) < 0.01f && outProjection[i] == projection[i]);
+	nSCDWire::FreeView(view, projection, pivot, {1, 90.0f, 30.0f, 2.0f}, out, outProjection);
+	assert(std::fabs(std::atan2(out[8], out[0]) * 180.0f / 3.14159265f - 157.5f) < 0.01f);
+	assert(std::fabs(out[6] - 0.5f) < 1e-5f && outProjection[0] == projection[0] * 2.0f);
+	for (int row = 0; row < 3; ++row) {
+		float const before = view[row] * pivot[0] + view[4 + row] * pivot[1] + view[8 + row] * pivot[2] + view[12 + row];
+		float const after = out[row] * pivot[0] + out[4 + row] * pivot[1] + out[8 + row] * pivot[2] + out[12 + row];
+		assert(std::fabs(before - after) < 0.01f);
+	}
+}
+
 // WireTest [stream.scdw] saves the replayed stream when given a file.
 int main(int argc, char **argv) {
+	FreeViewStartsFromSc4sCamera();
 	BlobsAreSentOnceAndForgotten();
 	return ReplayMatchesTheRecordedDriver(argc > 1 ? argv[1] : nullptr);
 }

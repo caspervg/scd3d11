@@ -164,6 +164,8 @@ namespace nSCDWire {
 		// After the OccupantInsert or OccupantMove of a building, prop or flora, and in the listing:
 		// OccupantExemplar, then its count uint32 values.
 		OccupantExemplar,
+		// The player's own camera (FreeCamera.h), whenever it changes.
+		FreeCamera,
 
 		Count
 	};

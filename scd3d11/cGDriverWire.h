@@ -51,6 +51,7 @@ namespace nSCD3D11 {
 			writer.End();
 		}
 		void RecordCellTexture(nSCDWire::CellTexture const &cell) { Record(nSCDWire::Op::CellTexture, cell); }
+		void RecordFreeCamera(nSCDWire::FreeCamera const &camera) { Record(nSCDWire::Op::FreeCamera, camera); }
 		void RecordOccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values) {
 			writer.Begin(nSCDWire::Op::OccupantExemplar);
 			writer.Put(occupant);

@@ -629,6 +629,11 @@ namespace nSCDWire {
 					}
 					break;
 				}
+				case Op::FreeCamera: {
+					auto const camera = f.Get<nSCDWire::FreeCamera>();
+					if (f.ok) hooks.FreeCamera(camera);
+					break;
+				}
 
 				default:
 					failure = "an op the replay does not handle";
