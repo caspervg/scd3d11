@@ -69,7 +69,7 @@ The live stream and a recorded capture are the same bytes. Every capture replays
 | M4 | Asset readers (DBPF, QFS, S3D, FSH, exemplars) done. `replay --scene substitute` draws the game's S3D models (buildings, props, flora, automata) from the server's own copy of the game data in place of the game's draws: meshes kept on the GPU, textures from the FSH files, render state from the S3D materials and draw attributes, night lights from the texture id + 0x8000. On four captures 98.6% to 99.96% of model draws are the server's and all 324 frames compared are bit-identical. Left to the game: cars it repaints with its own vertex colours and highlighted models. The tint the game lays over close flora on stage 1 is a 16x16 alpha texture it makes itself (no package holds it), so the lane keeps the game's stage 1 for those draws. Plain network pieces and lot cell textures are drawn from records the shim reads off each drawable (`NetworkPiece`, `CellTexture`): the record's world-space vertices with the texture from the store, the rest of the state the game's. A cell on a slope is drawn by the terrain, so there only the texture is swapped. On a Big City Tutorial capture 96% of network draws and 91% of cell draws are the server's, the rest being the first frame after a zoom or rotation (the game rebuilds those vertices inside the draw, after the record is read), and all 108 frames compared are bit-identical. Live, `ServerScene=substitute` (or `check`) does the same in `serve`: the shim names the folders SC4 loaded its packages from (`GameFolders`, also in captures, so replays need no `--game`), and the server indexes them on a thread of its own (0.11 s for the vanilla game) and starts substituting at the next frame. Still the game's: animated sprites (0x00ABD1D0, a third of the grid draws) and three other lot models (0x00AA20D0, 0x00AA2808, 0x00AA2EA8, likely foundations and retaining walls). `--scene owned` (`ServerScene=owned` live) keeps the whole static view and draws it every frame without SC4's backing store (see Owned scene), and can pick each occupant's models for a camera SC4 did not draw with from its exemplar (see Models from exemplars). `ServerSkipModels` leaves SC4's own static model draws out. `--scene check` also compares each draw's state and vertices with the game's, and that every game texture stands for one store texture |
 | M5 | DLAA and DLSS through NVIDIA Streamline run on the retained scene in replay, and frame generation in a window the replay presents to. See [Upscaling](#upscaling). Not live yet, and the server does not draw at a lower render size yet |
 | M6 | Stage 1 done in the draw lane, verified offline and live: `--relight <hour>` for replay, `ServerRelight` live (seen working in the game). The server keeps a light layer next to the back buffer, through SC4's backing-store copies, and relights each frame with sun shadows traced over the orthographic depth, in about 0.13 ms at 1920x1080. Off, the output stays bit-identical. Stage 1 also works on the owned scene, which hands the lighting pass its camera. Stage 2 done offline on the retained and the owned scene (`--light`, see Light): ray traced sun shadows, smooth terrain normals, night lights as light sources and a sun that stands still in the world. `serve --light` and the shim's `ServerLight` pass it to the live server, off by default. Through `feed`, which plays a capture into `serve` the way the shim streams the game, the live path's frame matches replay's to the bit with every feature on. Not yet seen in the game. Limits: SC4's lighting baked into BAT textures is only divided out roughly |
-| M7 | `FreeCamera=on` turns, tilts and zooms SC4's own camera with the mouse (from sc4-modern-camera), live with every renderer, and `ServerScene=owned` follows it. SC4 picks with that camera, so tools work: a bulldoze click under a turned, tilted and zoomed view removed the road under the cursor. The owned scene can also draw a camera of its own with every occupant's models picked from its exemplar (`FreeCamera` records, `replay --free-camera`). See [Free camera](#free-camera) |
+| M7 | `FreeCamera=on` turns, tilts and zooms SC4's own camera with the mouse (from sc4-modern-camera), live with every renderer, and `ServerScene=owned` follows it. SC4 picks with that camera, so tools work: a bulldoze click under a turned, tilted and zoomed view removed the road under the cursor. The owned scene can also draw a camera of its own with every occupant's models picked from its exemplar (`FreeCamera` records, `replay --free-camera`), over the whole city's terrain and water, which the shim streams (`TerrainField`). With the server drawing the static view, a drag turns only the server's camera and SC4's camera takes the result on release: 19.4 frames per second during a drag where SC4 redrawing the city each frame managed 6.1. See [Free camera](#free-camera) |
 
 ## Retained scene
 
@@ -397,12 +397,61 @@ the first time a zoom's models load from the store. Nothing is culled, the dynam
 draws it in `serve` too. `replay --scene owned --free-camera <yaw>,<pitch>,<zoom>[,<yaw step>]` draws the chosen
 frames from it, each turned yaw step further.
 
-Left: what SC4 never drew is missing (the far side of retaining walls and foundations, which only show their faces
-towards SC4's angle, and whatever lies past SC4's view), and the shim does not send these records yet. Their use would be
-angles SC4 cannot draw and turning without SC4 redrawing the city each frame. Picking under such a camera needs the
-gate 1 hooks: `GetEyeRay` (0x00800340) returns, for its ortho branch, an origin of UnProject(x, y, 1) minus the
-direction, the direction being look-at minus eye scaled to the length at +0x188. `GetViewportRayContainerRect`
-(0x007C20E0) unprojects the point, moves it into the fixed view's coordinates (0x007F6710) and pads it into the quad
-grid rectangle that `cSC43DRender::Pick` takes its candidates from, before it tests each with the eye ray. Called
-with SC4's own screen point of the world point under the free camera's cursor, it would find the same occupant.
+### The whole terrain
+
+The owned scene only keeps what SC4 drew, so a camera of its own looked past SC4's view into black. The shim now sends
+the whole city's terrain once a city loads and whenever it changes (`TerrainStream.cpp`, a `TerrainField` record and
+one blob of 28 bytes per vertex: 0.47 MB for Big City Tutorial, 1.8 MB for a large city). It reads SC4's own arrays rather than asking cISTETerrain
+vertex by vertex: cSTETerrainView3D keeps the ground and the water surface as two arrays of 0x20 byte vertices
+(`sPoints` 0x00B4C758 and `sWaterPoints` 0x00B4C75C: position, lit colour, texture coordinates), and cSTETerrain's
+vertex records (+0x6C, 0x24 bytes each) hold up to three texture ids and weights at +0x16 (DrawTerrainSurfaceRows,
+0x0075B460). It checks once a second at the end of a frame and sends only what differs.
+
+`TerrainField.cpp` on the server draws it the way SC4 does: a dark untextured base, each texture added over the cells
+that use it with its weight as the vertex alpha, the water surface blended on top. The render states are SC4's own,
+taken from its terrain draws as the owned scene captures them, and the textures come from the store (FSH group
+0x891B0E1A, zoom x 0x100 + id, the water 0x09187300 + zoom). It fills every cell the owned scene holds no terrain for,
+after SC4's background and terrain and before what stands on them, and only when the view is not SC4's (free camera,
+kept view, look elsewhere), so SC4's own view stays as it was. A Big City Tutorial build takes 5 to 13 ms and 2.8 MB
+(66,000 vertices, 14 textures), done again only when the terrain or the zoom changes, and the cells it leaves out are
+worked out again only when the kept cells change. World light (`--light terrain`) takes the same heights and
+diagonals, so it knows the whole city's terrain instead of what was drawn.
+
+Images, in `runtime-captures/m7-terrain/` of the worktree that made them: Big City Tutorial at zoom 4, turned 40
+degrees, tilted to 35 and zoomed out 0.3, `field-on.png` against `field-off.png`, and `field-on-turned.png` turned a
+quarter more. `drag-server.png` is the server's last frame of a drag, `drag-released.png` SC4's view after it.
+
+### Drags the server draws
+
+With the server drawing the static view (`Renderer=server`, `ServerScene=owned`), a middle drag no longer moves
+SC4's camera. `Camera::deferDrags` keeps the drag's turn and pitch apart, the free camera tick sends them as
+`FreeCamera` records, the server draws from them over the kept scene and the terrain field, and on release SC4's
+camera takes the whole turn in one step, with the view target still anchored. Before a save the deferred drag is
+dropped. Big City Tutorial, an 8 second drag (bench `dragmeasure`, the game not in the foreground, so 20 frames per
+second at rest):
+
+| | SC4's camera every frame | Server only |
+|---|---|---|
+| Frame rate during the drag | 6.1 fps | 19.4 fps (the rest rate) |
+| SC4's render thread | 70 to 78 ms CPU per frame | 51 ms (the spin it does at rest) |
+| Server CPU per frame | 158 to 169 ms | 9.2 ms |
+
+In the foreground the earlier recorded run showed 99 frames per second during a server-only drag. The server's turn
+matches SC4's (the sign is set in `FreeCamera.cpp`), but at release the view still jumps a little: the server turns
+about the ground at the middle of the screen, SC4 about its own view target, and at the farthest zoom SC4 also
+refits the city into the view.
+
+Left:
+
+- Lots whose cells SC4 drew as terrain but never drew as lots (the terrain draws a wider band than the screen) stay
+  black. They hold SC4's own draws, which the field leaves alone.
+- A view tilted far from SC4's clips against SC4's depth range: kept draws take their depth row from SC4's projection.
+- The far side of retaining walls and foundations, which only show their faces towards SC4's angle.
+- Picking under a camera only the server drew. With drags committed on release, no click lands on such a view yet.
+  The gate 1 hooks are designed: `GetEyeRay` (0x00800340) returns, for its ortho branch, an origin of
+  UnProject(x, y, 1) minus the direction, the direction being look-at minus eye scaled to the length at +0x188.
+  `GetViewportRayContainerRect` (0x007C20E0) unprojects the point, moves it into the fixed view's coordinates
+  (0x007F6710) and pads it into the quad grid rectangle that `cSC43DRender::Pick` takes its candidates from, before it
+  tests each with the eye ray. Called with SC4's own screen point of the world point under the free camera's cursor,
+  it would find the same occupant.
 
