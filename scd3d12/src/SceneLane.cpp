@@ -235,6 +235,7 @@ namespace nSCD3D12 {
 		std::unordered_map<uint32_t, uint64_t> gameToStore;
 		cGDriver12::DrawFilter *filter = nullptr;
 		bool substituteGrid = true;
+		bool dropDynamic = false;
 		// For the check: every grid drawable's draws and how many of them the lane stood in for, by vtable.
 		std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> gridDraws;
 
@@ -655,6 +656,27 @@ namespace nSCD3D12 {
 					            static_cast<uint32_t>(&mesh - bracket.model->meshes.data()));
 				}
 			}
+			Reason const reason = SetMeshState(*bracket.model, mesh, bracket.attributes, bracket.opacity, game);
+			if (reason != kNone) return reason;
+			if (check) {
+				cGDriver12::DrawState lane{};
+				driver.SaveDrawState(lane);
+				Compare(game, lane);
+			}
+			uint32_t const index = static_cast<uint32_t>(&mesh - bracket.model->meshes.data());
+			if (sink == nullptr ||
+			    !sink->TakeMesh(bracket.owner, bracket.instance, bracket.model->bounds, index, mesh.vertices, mesh.indices,
+			                    mesh.count)) {
+				driver.DrawTriangles(mesh.vertices, mesh.indices, mesh.count, kS3dFormat);
+			}
+			driver.RestoreDrawState(game);
+			return kNone;
+		}
+
+		// Sets the driver's state for a mesh as the game would draw it with these draw attributes, on top of `game`,
+		// the state the driver holds now. Returns the reason when the lane cannot.
+		Reason SetMeshState(GpuModel const &model, GpuMesh const &mesh, uint8_t attributes, float a,
+		                    cGDriver12::DrawState const &game) {
 			nSCAssets::MeshMaterial const &material = mesh.material;
 
 			// Night lights: the game decides per instance and shows it by putting the night texture on stage 1.
@@ -668,14 +690,14 @@ namespace nSCD3D12 {
 
 			uint32_t day = 0, night = 0;
 			if (material.textureCount != 0) {
-				day = Texture(material.texture, bracket.model->group, true);
+				day = Texture(material.texture, model.group, true);
 				if (day == 0) {
 					driver.RestoreDrawState(game);
 					return kTextureMissing;
 				}
 			}
 			if (lit) {
-				night = Texture(material.texture + kNightOffset, bracket.model->group, false);
+				night = Texture(material.texture + kNightOffset, model.group, false);
 				if (night == 0) {
 					driver.RestoreDrawState(game);
 					return kNightMissing;
@@ -683,8 +705,6 @@ namespace nSCD3D12 {
 			}
 
 			uint32_t const flags = material.flags;
-			uint8_t const attributes = bracket.attributes;
-			float const a = bracket.opacity;
 			bool const grey = (attributes & 8) != 0;
 			bool const fade = (attributes & 2) != 0 && !grey;
 			bool depthTest = (flags & nSCAssets::kMaterialDepthTest) != 0;
@@ -744,19 +764,6 @@ namespace nSCD3D12 {
 				driver.TexParameter(0, 2, material.wrapU);
 				driver.TexParameter(0, 3, material.wrapV);
 			}
-
-			if (check) {
-				cGDriver12::DrawState lane{};
-				driver.SaveDrawState(lane);
-				Compare(game, lane);
-			}
-			uint32_t const index = static_cast<uint32_t>(&mesh - bracket.model->meshes.data());
-			if (sink == nullptr ||
-			    !sink->TakeMesh(bracket.owner, bracket.instance, bracket.model->bounds, index, mesh.vertices, mesh.indices,
-			                    mesh.count)) {
-				driver.DrawTriangles(mesh.vertices, mesh.indices, mesh.count, kS3dFormat);
-			}
-			driver.RestoreDrawState(game);
 			return kNone;
 		}
 
@@ -822,6 +829,38 @@ namespace nSCD3D12 {
 
 	void SceneLane::SetSink(Sink *sink) { impl->sink = sink; }
 
+	void SceneLane::DropDynamic(bool on) { impl->dropDynamic = on; }
+
+	nSCAssets::AssetStore const &SceneLane::Store() const { return impl->store; }
+
+	uint32_t SceneLane::LoadModel(nSCAssets::Tgi const &tgi, float *bounds) {
+		nSCDWire::ModelInstance key{};
+		key.type = tgi.type;
+		key.group = tgi.group;
+		key.instance = tgi.instance;
+		GpuModel const &model = impl->Model(key);
+		if (model.reason != kNone) return 0;
+		std::memcpy(bounds, model.bounds, sizeof(model.bounds));
+		return static_cast<uint32_t>(model.meshes.size());
+	}
+
+	bool SceneLane::PrepareMesh(nSCAssets::Tgi const &tgi, uint32_t mesh, uint8_t const *attributes, MeshDraw &out) {
+		nSCDWire::ModelInstance key{};
+		key.type = tgi.type;
+		key.group = tgi.group;
+		key.instance = tgi.instance;
+		GpuModel const &model = impl->Model(key);
+		if (model.reason != kNone || mesh >= model.meshes.size() || model.meshes[mesh].reason != kNone) return false;
+		GpuMesh const &gpu = model.meshes[mesh];
+		float opacity;
+		std::memcpy(&opacity, attributes + 16, sizeof(opacity));
+		cGDriver12::DrawState game{};
+		impl->driver.SaveDrawState(game);
+		if (impl->SetMeshState(model, gpu, attributes[0], opacity, game) != kNone) return false;
+		out = {gpu.vertices, gpu.indices, gpu.count};
+		return true;
+	}
+
 	void SceneLane::SubstituteGrid(bool on) { impl->substituteGrid = on; }
 
 	ID3D12Resource *SceneLane::GeometryBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, uint64_t &offset) const {
@@ -876,6 +915,7 @@ namespace nSCD3D12 {
 		Impl &d = *impl;
 		if (d.stack.empty()) return true;
 		Bracket &bracket = d.stack.back();
+		if (d.dropDynamic && bracket.owner.pass > 2) return false;
 		if (d.check && bracket.gridVtable != 0) {
 			bool const allowed = d.Allow(bracket, primitive, first, count, indexType, indices);
 			auto &[draws, substituted] = d.gridDraws[bracket.gridVtable];

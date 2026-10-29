@@ -18,6 +18,7 @@
 
 namespace nSCAssets {
 	class AssetStore;
+	struct Tgi;
 }
 
 namespace nSCD3D12 {
@@ -75,6 +76,21 @@ namespace nSCD3D12 {
 		// The GPU buffer that holds the lane's geometry at address, and the address's offset in it. Null when the
 		// lane has none there.
 		ID3D12Resource *GeometryBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, uint64_t &offset) const;
+		// On drops every draw of the dynamic passes (3 to 5): automata, effects, animated sprites.
+		void DropDynamic(bool on);
+		nSCAssets::AssetStore const &Store() const;
+		// Puts any S3D model (type 0x5AD0E817) on the GPU, once per key, and gives its box in model space (min then
+		// max). Returns how many meshes it has, 0 when the store has none.
+		uint32_t LoadModel(nSCAssets::Tgi const &model, float *bounds);
+		struct MeshDraw {
+			D3D12_VERTEX_BUFFER_VIEW vertices{};
+			D3D12_INDEX_BUFFER_VIEW indices{};
+			uint32_t count = 0;
+		};
+		// Sets the driver's state for one mesh of a model as the game draws it with these draw attributes (the 20
+		// bytes of ModelInstance::attributes), on top of the state the driver holds, and gives its buffers. False
+		// when the lane would leave such a draw to the game.
+		bool PrepareMesh(nSCAssets::Tgi const &model, uint32_t mesh, uint8_t const *attributes, MeshDraw &out);
 
 	private:
 		struct Impl;
