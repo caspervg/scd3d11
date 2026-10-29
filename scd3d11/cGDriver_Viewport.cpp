@@ -31,6 +31,9 @@
 namespace nSCD3D11 {
 	namespace {
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
+		// SC4's own drivers name their windows GDriverWindow--<name>, and SC4GraphicsOptions 1.4.1 finds the
+		// game window by that prefix and the GDriverClass one to make it borderless.
+		char const *kWindowName = "GDriverWindow--Direct3D11";
 
 		bool BorderlessFullscreenRequested() {
 			return Settings::Get().borderless;
@@ -367,7 +370,7 @@ namespace nSCD3D11 {
 			window = CreateWindowExA(
 				extendedStyle,
 				kWindowClassName,
-				"SimCity 4 (Direct3D 11)",
+				kWindowName,
 				style,
 				windowX,
 				windowY,
