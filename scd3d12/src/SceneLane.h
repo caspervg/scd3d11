@@ -72,6 +72,10 @@ namespace nSCD3D12 {
 		// Off leaves network pieces and lot cells to the game's own draws.
 		void SubstituteGrid(bool on);
 
+		// The GPU buffer that holds the lane's geometry at address, and the address's offset in it. Null when the
+		// lane has none there.
+		ID3D12Resource *GeometryBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, uint64_t &offset) const;
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> impl;

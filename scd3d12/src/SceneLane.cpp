@@ -109,8 +109,11 @@ namespace nSCD3D12 {
 		// The stage 1 coordinate source of the flora tint: positions.
 		constexpr uint32_t kTintCoordinates = 16;
 		constexpr uint64_t kChunkBytes = 8ull << 20;
+		// Shaders read it too: ray tracing structures are built from it and alpha-tested hits look up the texture
+		// coordinates.
 		constexpr D3D12_RESOURCE_STATES kReadable =
-			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
+			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER |
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 		struct ModelKey {
 			nSCAssets::Tgi tgi;
@@ -820,6 +823,17 @@ namespace nSCD3D12 {
 	void SceneLane::SetSink(Sink *sink) { impl->sink = sink; }
 
 	void SceneLane::SubstituteGrid(bool on) { impl->substituteGrid = on; }
+
+	ID3D12Resource *SceneLane::GeometryBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, uint64_t &offset) const {
+		for (Impl::Chunk const &chunk: impl->chunks) {
+			D3D12_GPU_VIRTUAL_ADDRESS const start = chunk.buffer->GetGPUVirtualAddress();
+			if (address >= start && address < start + chunk.buffer->GetDesc().Width) {
+				offset = address - start;
+				return chunk.buffer.Get();
+			}
+		}
+		return nullptr;
+	}
 
 	void SceneLane::OwnerEnd() {
 		if (impl->stack.empty()) return;
