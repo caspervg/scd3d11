@@ -352,8 +352,8 @@ namespace nSCD3D11::Doctor {
 			}
 
 			// Compare what -r asked for with what SC4 ended up with. SC4GraphicsOptions explains any
-			// difference itself.
-			if (!resolution || environment.graphicsOptions) return;
+			// difference itself, and so does SCD3D11 when it replaced a full-screen size.
+			if (!resolution || environment.graphicsOptions || !environment.screenModeWarning.empty()) return;
 			uint32_t const width = (*resolution)[0], height = (*resolution)[1];
 			if (windowed && (width > environment.screen.width || height > environment.screen.height) &&
 			    environment.screen.width != 0) {
