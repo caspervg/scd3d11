@@ -177,6 +177,9 @@ void Camera::PrepareForSave()
 		return;
 	}
 
+	// A deferred drag is dropped: the save needs the native angles now.
+	deferring = false;
+	deferredYaw = deferredPitch = 0.0f;
 	EndRotation();
 	SC4CameraControl::ApplyYawOverride(SC4CameraControl::kDefaultYawRadians);
 	SC4CameraControl::ApplyDefaultPitchOverrides();
