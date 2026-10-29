@@ -69,6 +69,8 @@ namespace nSCD3D12 {
 			                      D3D12_INDEX_BUFFER_VIEW const &indices, uint32_t count) = 0;
 		};
 		void SetSink(Sink *sink);
+		// Off leaves network pieces and lot cells to the game's own draws.
+		void SubstituteGrid(bool on);
 
 	private:
 		struct Impl;

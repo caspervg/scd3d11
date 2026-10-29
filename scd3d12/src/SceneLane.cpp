@@ -231,6 +231,7 @@ namespace nSCD3D12 {
 		// For the check: which store texture each of the game's textures stood for.
 		std::unordered_map<uint32_t, uint64_t> gameToStore;
 		cGDriver12::DrawFilter *filter = nullptr;
+		bool substituteGrid = true;
 		// For the check: every grid drawable's draws and how many of them the lane stood in for, by vtable.
 		std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> gridDraws;
 
@@ -818,6 +819,8 @@ namespace nSCD3D12 {
 
 	void SceneLane::SetSink(Sink *sink) { impl->sink = sink; }
 
+	void SceneLane::SubstituteGrid(bool on) { impl->substituteGrid = on; }
+
 	void SceneLane::OwnerEnd() {
 		if (impl->stack.empty()) return;
 		Bracket const &bracket = impl->stack.back();
@@ -873,6 +876,7 @@ namespace nSCD3D12 {
 	                            uint32_t indexType, void const *indices) {
 		Impl &d = *this;
 		if (bracket.kind != kModel) {
+			if (!substituteGrid) return true;
 			++bracket.draws;
 			Reason const reason = bracket.kind == kNetwork ? d.NetworkDraw(bracket, primitive, first, count, indexType, indices)
 			                                               : d.CellDraw(bracket, primitive, first, count, indexType, indices);
