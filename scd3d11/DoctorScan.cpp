@@ -17,6 +17,7 @@
 #include <GZCLSIDDefs.h>
 #include <GZServPtrs.h>
 #include <SC4NotificationDialog.h>
+#include "cIGZGDriver.h"
 #include <cGZDisplayMetrics.h>
 #include <cIGZCmdLine.h>
 #include <cIGZGraphicSystem.h>
@@ -27,6 +28,7 @@
 #include <cRZBaseString.h>
 
 #include <exception>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -136,6 +138,8 @@ namespace nSCD3D11::Doctor {
 			cIGZGraphicSystemPtr graphics;
 			if (graphics) {
 				cGZDisplayMetrics metrics{};
+				environment.activeDriverClass = driver->GetGZCLSID();
+				environment.activeDriverBuiltIn = owner != nullptr && owner == GetModuleHandleW(nullptr);
 				graphics->GetGameMetrics(metrics);
 				if (metrics.width != 0) environment.gameSize = Size{metrics.width, metrics.height};
 				environment.gameFullScreen = graphics->IsFullScreenMode();
@@ -195,6 +199,8 @@ namespace nSCD3D11::Doctor {
 		class ProblemDialog final : public cIGZMessageTarget2 {
 		public:
 			bool QueryInterface(uint32_t riid, void **object) override {
+			wchar_t windowsFolder[MAX_PATH]{};
+			if (GetWindowsDirectoryW(windowsFolder, MAX_PATH) != 0) environment.windowsFolder = Utf8(windowsFolder);
 				if (riid != GZIID_cIGZUnknown && riid != static_cast<uint32_t>(GZCLSID::kcIGZMessageTarget2)) {
 					*object = nullptr;
 					return false;
@@ -213,14 +219,11 @@ namespace nSCD3D11::Doctor {
 					std::lock_guard<std::mutex> const lock(mutex);
 					if (shown || (problems.empty() && update.empty())) return true;
 					shown = true;
-					if (!problems.empty()) {
-						text = problems.size() == 1 ? "SCD3D11 found a problem:\n" : "SCD3D11 found problems:\n";
-						for (std::string const &problem : problems) text += "\n" + problem + "\n";
-						text += "\nSCD3D11.log in the Logs folder has the details.\n";
-					}
-					if (!update.empty()) text += (text.empty() ? "" : "\n") + update + "\n";
+					// SC4's dialog shows about five lines without scrolling, so this stays compact.
+					for (std::string const &problem : problems) text += problem + "\n";
+					if (!update.empty()) text += update + "\n";
 				}
-				text += "\nDoctorDialog=off in SCD3D11.ini stops this message.";
+				text += "Details in Logs\\SCD3D11.log. DoctorDialog=off hides this.";
 				SC4NotificationDialog::ShowDialog(cRZBaseString(text.c_str()), cRZBaseString("SCD3D11"));
 				return true;
 			}
@@ -315,7 +318,10 @@ namespace nSCD3D11::Doctor {
 					Log(LogCategory::Doctor, "update check: this is the latest release (%s)", latest.c_str());
 					return;
 				}
-				std::string const notice = "SCD3D11 " + latest + " is out, this is " + installed + ". Get it from " +
+				// Version resources have four parts and release tags three.
+				std::string shown = installed;
+				if (std::count(shown.begin(), shown.end(), '.') == 3 && shown.ends_with(".0")) shown.resize(shown.size() - 2);
+				std::string const notice = "SCD3D11 " + latest + " is out, this is " + shown + ". Get it from " +
 				                           kReleasesPage + ".";
 				Log(LogCategory::Doctor, "update check: %s", notice.c_str());
 				gProblemDialog.SetUpdate(notice);
@@ -336,17 +342,20 @@ namespace nSCD3D11::Doctor {
 			Log(LogCategory::Doctor, "driver in use: %s", environment.activeDriverModule.empty()
 				                                              ? "unknown" : environment.activeDriverModule.c_str());
 			if (environment.gameSize) {
+		std::string Label(Module const &module) {
+			if (module.product.empty() && module.version.empty()) return "no version info";
+			return module.product + (module.product.empty() || module.version.empty() ? "" : " ") + module.version;
+		}
+
 				Log(LogCategory::Doctor, "game screen: %ux%u %s", environment.gameSize->width,
 				    environment.gameSize->height, environment.gameFullScreen ? "full screen" : "windowed");
 			}
 			for (Module const &module : environment.modules) {
 				if (!everything && !IsWatched(module.path)) continue;
-				Log(LogCategory::Doctor, "loaded: %s (%s %s)", module.path.c_str(),
-				    module.product.empty() ? "no version info" : module.product.c_str(), module.version.c_str());
+				Log(LogCategory::Doctor, "loaded: %s (%s)", module.path.c_str(), Label(module).c_str());
 			}
 			for (Module const &file : environment.appsFiles) {
-				Log(LogCategory::Doctor, "in Apps: %s (%s %s)", file.path.c_str(),
-				    file.product.empty() ? "no version info" : file.product.c_str(), file.version.c_str());
+				Log(LogCategory::Doctor, "in Apps: %s (%s)", file.path.c_str(), Label(file).c_str());
 			}
 			if (everything && environment.graphicsOptions) {
 				for (auto const &[key, value] : *environment.graphicsOptions) {

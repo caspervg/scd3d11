@@ -107,7 +107,7 @@ namespace nSCD3D11::Doctor {
 			"w", "f", "r", "d", "gp", "Intro", "CustomResolution", "CustomCursors", "AutoZoomChange", "CPUPriority",
 			"CPUCount", "UserDir", "Music", "Radio", "Sound", "Audio", "IME", "Verbose", "ExceptionHandling",
 			"Restart", "AllowMultipleInstances", "Logging", "DebugLevel", "LuaScript", "ForceIdle",
-			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog",
+			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog", "NetCommandGenerator",
 			// SCD3D11
 			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull",
 			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck",
@@ -157,12 +157,25 @@ namespace nSCD3D11::Doctor {
 			if (environment.graphicsOptions) {
 				std::string const driver = Value(*environment.graphicsOptions, "Driver");
 				if (!driver.empty() && Lower(driver) != "directx") {
+			// SC4's own drivers live in the game exe and are told apart by class ID.
+			constexpr uint32_t kDirectX = 0xBADB6906, kOpenGL = 0xC4554841, kSoftware = 0x7ACA35C6;
+			uint32_t const driverClass = environment.activeDriverClass;
+			std::string name = environment.activeDriverModule.empty() ? std::string("another driver")
+			                                                          : FileName(environment.activeDriverModule);
 					reason = Format("SC4GraphicsOptions.ini has Driver=%s. Set it to DirectX.", driver.c_str());
+			if (environment.activeDriverBuiltIn) {
+				name = driverClass == kSoftware ? "SC4's own software driver"
+				       : driverClass == kOpenGL ? "SC4's own OpenGL driver"
+				       : driverClass == kDirectX ? "SC4's own DirectX driver" : "a driver inside SimCity 4.exe";
+				if (driverClass == kSoftware) {
+					reason = "SC4 is set to software rendering, which it also switches to after a hardware driver "
+					         "fails once. Start once with -d:DirectX to go back.";
+				} else if (driverClass == kDirectX) {
+					reason = "SCD3D11 could not start Direct3D 11. The lines above in this log say why.";
 				}
 			}
-			std::string const name = environment.activeDriverModule.empty()
-				                         ? std::string("another driver")
-				                         : FileName(environment.activeDriverModule);
+				}
+			}
 			findings.push_back({Severity::Problem, Format("SimCity 4 is drawing with %s, not SCD3D11. %s",
 			                                              name.c_str(), reason.c_str())});
 		}
@@ -193,7 +206,7 @@ namespace nSCD3D11::Doctor {
 				if (value.empty() || (boolean && !IsBoolean(value))) {
 					findings.push_back({Severity::Problem, Format(
 						"SC4GraphicsOptions.ini %s %s. SC4GraphicsOptions stops reading there and uses its "
-						"defaults for the rest, a 1024x768 window.",
+						"defaults for the rest, which can be a 1024x768 window or a size the screen lacks.",
 						value.empty() ? "has no" : "cannot read", value.empty() ? key : (std::string(key) + "=" + value).c_str())});
 					break;
 				}
@@ -294,6 +307,8 @@ namespace nSCD3D11::Doctor {
 						"%s no longer does anything. Live shadows are -LiveShadows:on, and -NetworkShadowMasks:on "
 						"keeps the flat network shadows.", entry.token.c_str())});
 				} else if (!IsKnown(entry.name)) {
+						// Already explained, so the size SC4 ended up with is not compared with it.
+						resolution.reset();
 					bool scvk = false;
 					for (char const *name : kScvkSwitches) scvk |= Lower(name) == entry.name;
 					char const *const closest = Closest(entry.name);
@@ -410,9 +425,14 @@ namespace nSCD3D11::Doctor {
 				findings.push_back({Severity::Warning, Format("%s all turn the camera. Keep one.", cameras.c_str())});
 			}
 
-			// The same plugin loaded from two folders, usually the game's Plugins and the user's.
+			// The same plugin loaded from two folders, usually the game's Plugins and the user's. A proxy
+			// such as Appsersion.dll loading the Windows original is normal, so Windows' own copies do
+			// not count.
 			std::map<std::string, std::vector<Module const *>> byName;
-			for (Module const &module : environment.modules) byName[FileName(module.path)].push_back(&module);
+			std::string const windows = Lower(environment.windowsFolder);
+			for (Module const &module : environment.modules) {
+				if (windows.empty() || !StartsWith(Folder(module.path), windows)) byName[FileName(module.path)].push_back(&module);
+			}
 			for (auto const &[name, copies] : byName) {
 				std::set<std::string> folders;
 				for (Module const *copy : copies) folders.insert(Folder(copy->path));

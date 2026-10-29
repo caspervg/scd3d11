@@ -66,6 +66,9 @@ namespace nSCD3D11::Doctor {
 		// What SC4 ended up with. Unknown when the graphics system could not be asked.
 		std::optional<bool> driverIsSCD3D11;
 		std::string activeDriverModule;
+		// The driver's GZCOM class ID, and whether it is one of SC4's own inside the game exe.
+		uint32_t activeDriverClass = 0;
+		bool activeDriverBuiltIn = false;
 		std::optional<Size> gameSize;
 		bool gameFullScreen = false;
 		bool gameVersion641 = true;
