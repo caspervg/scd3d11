@@ -51,6 +51,9 @@ namespace nSCD3D12 {
 		void OwnerEnd();
 		// A new video mode: the driver's textures are gone.
 		void VideoMode();
+		// The whole city's terrain from the shim (TerrainField records). Its heights and diagonals stand above the
+		// ones read from SC4's terrain draws.
+		void Terrain(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices);
 		void PrintTotals() const;
 
 		bool BeginLighting(cGDriver12::WorldFrame &frame) override;

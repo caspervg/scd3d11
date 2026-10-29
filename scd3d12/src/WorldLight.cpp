@@ -1169,6 +1169,23 @@ namespace nSCD3D12 {
 		if (!impl->owners.empty()) impl->owners.pop_back();
 	}
 
+	void WorldLight::Terrain(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices) {
+		Impl &d = *impl;
+		if (field.cellWidth != kCellMetres) return;
+		uint32_t const columns = (std::min)(field.verticesX, kFieldVertices), rows = (std::min)(field.verticesZ, kFieldVertices);
+		for (uint32_t z = 0; z < rows; ++z) {
+			for (uint32_t x = 0; x < columns; ++x) {
+				nSCDWire::TerrainVertex const &v = vertices[static_cast<size_t>(z) * field.verticesX + x];
+				size_t const index = static_cast<size_t>(z) * kFieldVertices + x;
+				// Span 0 stands above any height a draw gives.
+				d.heights[index] = v.height;
+				d.spans[index] = 0;
+				if (x + 1 < columns && z + 1 < rows) d.diagonals[static_cast<size_t>(z) * (kFieldVertices - 1) + x] = (v.flags & 1) ? 2 : 1;
+			}
+		}
+		d.terrainChanged = true;
+	}
+
 	void WorldLight::VideoMode() {
 		Impl &d = *impl;
 		// Texture views are gone, and with them what the glow and the hit table point at.

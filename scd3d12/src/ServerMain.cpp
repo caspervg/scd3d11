@@ -303,6 +303,7 @@ namespace {
 		}
 		void TerrainField(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices) override {
 			if (owned != nullptr) owned->TerrainField(field, vertices);
+			if (world != nullptr) world->Terrain(field, vertices);
 		}
 		// Without --game the store reads the folders the game named. The record comes before the city loads.
 		void GameFolders(std::wstring const (&folders)[static_cast<size_t>(nSCDWire::GameFolder::Count)]) override {
