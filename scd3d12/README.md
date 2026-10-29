@@ -68,7 +68,7 @@ The live stream and a recorded capture are the same bytes. Every capture replays
 | M3 | Occupant inserts, removes and moves are streamed (plus a listing of every occupant once a city loads), and `DrawOwnerHooks` brackets every grid and view object draw with its owner. In a test session 78% of all draws were bracketed (the rest are UI, background and loading screens) and 99.97% of bracketed occupants matched the occupant records. Each model instance's S3D key and world transform follow its OwnerBegin. Motion vectors are next |
 | M4 | Asset readers (DBPF, QFS, S3D, FSH, exemplars) done. `replay --scene substitute` draws the game's S3D models (buildings, props, flora, automata) from the server's own copy of the game data in place of the game's draws: meshes kept on the GPU, textures from the FSH files, render state from the S3D materials and draw attributes, night lights from the texture id + 0x8000. On four captures 98.6% to 99.96% of model draws are the server's and all 324 frames compared are bit-identical. Left to the game: cars it repaints with its own vertex colours and highlighted models. The tint the game lays over close flora on stage 1 is a 16x16 alpha texture it makes itself (no package holds it), so the lane keeps the game's stage 1 for those draws. Plain network pieces and lot cell textures are drawn from records the shim reads off each drawable (`NetworkPiece`, `CellTexture`): the record's world-space vertices with the texture from the store, the rest of the state the game's. A cell on a slope is drawn by the terrain, so there only the texture is swapped. On a Big City Tutorial capture 96% of network draws and 91% of cell draws are the server's, the rest being the first frame after a zoom or rotation (the game rebuilds those vertices inside the draw, after the record is read), and all 108 frames compared are bit-identical. Live, `ServerScene=substitute` (or `check`) does the same in `serve`: the shim names the folders SC4 loaded its packages from (`GameFolders`, also in captures, so replays need no `--game`), and the server indexes them on a thread of its own (0.11 s for the vanilla game) and starts substituting at the next frame. Still the game's: animated sprites (0x00ABD1D0, a third of the grid draws) and three other lot models (0x00AA20D0, 0x00AA2808, 0x00AA2EA8, likely foundations and retaining walls). `--scene owned` (`ServerScene=owned` live) keeps the whole static view and draws it every frame without SC4's backing store (see Owned scene), and can pick each occupant's models for a camera SC4 did not draw with from its exemplar (see Models from exemplars). `ServerSkipModels` leaves SC4's own static model draws out. `--scene check` also compares each draw's state and vertices with the game's, and that every game texture stands for one store texture |
 | M5 | DLAA and DLSS through NVIDIA Streamline run on the retained scene in replay, and frame generation in a window the replay presents to. See [Upscaling](#upscaling). Not live yet, and the server does not draw at a lower render size yet |
-| M6 | Stage 1 done in the draw lane, verified offline and live: `--relight <hour>` for replay, `ServerRelight` live (seen working in the game). The server keeps a light layer next to the back buffer, through SC4's backing-store copies, and relights each frame with sun shadows traced over the orthographic depth, in about 0.13 ms at 1920x1080. Off, the output stays bit-identical. Stage 2 done offline on the retained scene (`--light`, see Light): ray traced sun shadows, smooth terrain normals, night lights as light sources and a sun that stands still in the world. Limits: SC4's lighting baked into BAT textures is only divided out roughly, and stage 2 is not wired into `serve` yet |
+| M6 | Stage 1 done in the draw lane, verified offline and live: `--relight <hour>` for replay, `ServerRelight` live (seen working in the game). The server keeps a light layer next to the back buffer, through SC4's backing-store copies, and relights each frame with sun shadows traced over the orthographic depth, in about 0.13 ms at 1920x1080. Off, the output stays bit-identical. Stage 1 also works on the owned scene, which hands the lighting pass its camera. Stage 2 done offline on the retained and the owned scene (`--light`, see Light): ray traced sun shadows, smooth terrain normals, night lights as light sources and a sun that stands still in the world. `serve --light` and the shim's `ServerLight` pass it to the live server, off by default. Through `feed`, which plays a capture into `serve` the way the shim streams the game, the live path's frame matches replay's to the bit with every feature on. Not yet seen in the game. Limits: SC4's lighting baked into BAT textures is only divided out roughly |
 | M7 | `FreeCamera=on` turns, tilts and zooms SC4's own camera with the mouse (from sc4-modern-camera), live with every renderer, and `ServerScene=owned` follows it. SC4 picks with that camera, so tools work: a bulldoze click under a turned, tilted and zoomed view removed the road under the cursor. The owned scene can also draw a camera of its own with every occupant's models picked from its exemplar (`FreeCamera` records, `replay --free-camera`). See [Free camera](#free-camera) |
 
 ## Retained scene
@@ -110,14 +110,17 @@ one draw through the driver's state machine.
 
 ## Light
 
-`replay --scene retained --relight <hour> --light rays,terrain,lamps,world` (`WorldLight.h`) adds light from the
-server's own copy of the city to the relighting of stage 1. Without `--light` it is off and the output stays as before.
+`replay --scene owned|retained --relight <hour> --light rays,terrain,lamps,world` (`WorldLight.h`) adds light from
+the server's own copy of the city to the relighting of stage 1. Without `--light` it is off and the output stays as
+before. Live, `ServerRelight` with `ServerLight=rays,terrain,lamps,world` (and `ServerScene=owned` for rays and lamps)
+passes the same to `serve`.
 
-- `rays`: a ray from every city pixel towards the sun, through the retained instances and the terrain (DXR 1.1 ray
+- `rays`: a ray from every city pixel towards the sun, through the kept models and the terrain (DXR 1.1 ray
   queries in the sunlight pass). Each mesh gets a bottom level structure once, and cut-out meshes test the texel's
-  alpha at each candidate hit. The terrain's structure comes from the heights in SC4's terrain draws (a 16 metre grid),
-  so it only casts from 8 metres off the surface: near the pixel it would shade the ground it stands for. Each pixel
-  of a 4x4 tile aims at another point of the sun's disc, which the relight's blur turns into a soft edge.
+  alpha at each candidate hit. The terrain's structure comes from SC4's terrain draws (a 16 metre grid, each cell with
+  the corners its own triangles give it), and only casts from 8 metres off the surface: networks and models stand on
+  surfaces of their own, near which it would shade the ground. Each pixel of a 4x4 tile aims at another point of the
+  sun's disc, which the relight's blur turns into a soft edge.
 - `terrain`: terrain pixels take smooth normals from those heights instead of the flat ones from depth.
 - `lamps`: the night textures of the lit instances are read once per mesh on the GPU for where the mesh glows and how
   much. Each glowing side becomes a point light, binned into 32 pixel screen tiles. Lamps fade in as the sky darkens.
@@ -125,8 +128,22 @@ server's own copy of the city to the relighting of stage 1. Without `--light` it
 
 The structures of the city and of the terrain are double buffered: a frame is traced with the structure built in an
 earlier frame while the next one is built. Tracing a structure in the command list that built it hung the GPU (an RTX
-5080) now and then. The retained scene counts its changes, so a frame where nothing changed reuses the last frame's
+5080) now and then. The scene counts its changes, so a frame where nothing changed reuses the last frame's
 instances and lights.
+
+Both scenes hand their models over the same way (`KeptModels` in `SceneLane.h`): every mesh with its world transform,
+its buffers in the lane's geometry and the state SC4 drew it with. The owned scene keeps that state per mesh group
+with the driver's pins for textures (`cGDriver12::PinView`), which outlive the game's names. It also hands the
+lighting pass its camera (`cGDriver12::RetainedCamera`): with the static draws kept from the driver, stage 1 had no
+camera and drew no sun shadows. The owned scene skips SC4's backing store copies, and the light layer needs none:
+the owned draws write it as they draw. Models picked for a kept view (`--view-of`) and grid drawables (cars,
+foundations) neither cast nor glow.
+
+Where a lot is cut into a slope, SC4's terrain draws give the lot's cells and the slope around them corners of their
+own at the same grid point. The terrain's heights per grid point keep the higher one (the lowest is the map's edge), so
+the lot was traced under the terrain's structure: on net-live, of 43,000 flat lot cell corners with a known height,
+17,000 lay more than a metre below it and 6,400 more than 4 metres. Each cell now keeps its own corners for the
+structure, and all of them match to 5 cm. The 8 metre gap stays for networks and models.
 
 GPU time of the lighting pass at 1920x1080 on an RTX 5080, full captures (average, with sun at 15:00 and 22:00):
 
@@ -136,12 +153,31 @@ GPU time of the lighting pass at 1920x1080 on an RTX 5080, full captures (averag
 | net-live (7,200 instances, 2,300 lights) | 0.09 ms | 0.17 ms | 0.22 ms | 0.12 to 0.15 ms |
 | cov-night-ui (8,100 instances) | 0.10 ms | 0.18 ms | 0.23 ms | 0.15 to 0.18 ms |
 
-CPU per frame for the world light: 0.01 to 0.06 ms median, 0.05 to 0.26 ms on average, about 50 ms on the frame that
-first builds a city's mesh structures. Rebuilding the city's structure (38 to 245 times per capture) costs under 1.7
+The same on the owned scene, all of `rays,terrain,lamps,world` (other replays shared the GPU, so a few hundredths of a
+millisecond are noise):
+
+| Capture | Stage 1 | at 15:00 | at 22:00 | of which the sunlight trace | World light CPU per frame, median (average, 95th percentile) |
+|---|---|---|---|---|---|
+| scene-tutorial (5,400 instances) | 0.10 ms | 0.19 ms | 0.19 ms | 0.14 to 0.15 ms | 0.013 to 0.015 ms (0.08, 0.13) |
+| net-live (7,200 instances, 2,300 lights) | 0.08 ms | 0.17 ms | 0.19 ms | 0.12 to 0.13 ms | 0.038 to 0.063 ms (0.17 to 0.22, 0.14 to 0.32) |
+| cov-night-ui (8,100 instances, 400 lights) | 0.09 ms | 0.19 ms | 0.21 ms | 0.15 to 0.16 ms | 0.037 to 0.039 ms (0.06 to 0.07, 0.08 to 0.18) |
+
+The owned scene counts a model SC4 draws again unchanged (every strip of a scroll) as no change, which took the 95th
+percentile of the world light's CPU on scene-tutorial from 1.7 to 0.13 ms with the same images. The composite's GPU
+time is the same with the light on (0.15 to 0.18 ms).
+
+CPU per frame for the world light on the retained scene: 0.01 to 0.06 ms median, 0.05 to 0.26 ms on average. Either
+scene spends about 50 ms on the frame that first builds a city's mesh structures. Rebuilding the city's structure (38 to 245 times per capture) costs under 1.7
 ms of GPU at worst. No capture hung at full length with all features, day or night.
 
-Not done yet: `serve` has no switch for it, SC4's own street lamps are not light sources (only the night textures of
-models are), and the terrain heights sit up to 2 metres off some lots, which the 8 metre gap hides.
+`SCD3D12Server feed <capture> [--save <frame> <image.png>] [serve options]` tries the live path offline: it makes the
+shared ring, starts `serve` with the options, writes the capture into the ring and hands each frame back as the shim
+would. net-live through `feed --scene owned --relight 15 --light rays,terrain,lamps,world` gives frame 2000 exactly as
+`replay` does. A capture needs the GameFolders record (net-live has it, scene-tutorial and cov-night-ui do not) for
+`serve` to start its scene.
+
+Not done yet: SC4's own street lamps are not light sources (only the night textures of models are), and the light has
+not been seen in the game.
 
 ## Upscaling
 

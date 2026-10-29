@@ -63,6 +63,7 @@ where it came from.
 | `Renderer` | `local` | Experimental. `server` draws the game in `SCD3D12Server.exe`, a separate 64-bit Direct3D 12 process in `Plugins\SCD3D12\`, and falls back to `local` if it stops. See [scd3d12/README.md](scd3d12/README.md) |
 | `ServerPresent` | `copy` | Experimental, with `Renderer=server`. `composition` lets the server present on the game's window itself through DirectComposition |
 | `ServerRelight` | `off` | Experimental, with `Renderer=server`. Relights the city every frame with another sun: an hour of the day (`8.5`) or an azimuth and elevation in degrees (`30,45`). UI is left as drawn |
+| `ServerLight` | `off` | Experimental, with `ServerRelight`. Adds light from the server's own copy of the city, as a comma separated list: `rays` (ray traced sun shadows), `terrain` (smooth terrain normals), `lamps` (night lights), `world` (a sun that stands still in the world). `rays` and `lamps` need `ServerScene=owned`. Needs a GPU with DXR 1.1 for `rays` and `lamps` |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:
 
