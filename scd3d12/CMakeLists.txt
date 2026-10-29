@@ -11,6 +11,7 @@ add_executable(SCD3D12Server
         src/Dlss.cpp
         src/DlssTest.cpp
         src/OwnedScene.cpp
+        src/TerrainField.cpp
         src/WorldLight.cpp
         "${SCD3D11_SOURCE}/wire/SharedRing.cpp"
         src/cGDriver12.cpp

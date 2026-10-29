@@ -869,6 +869,8 @@ namespace nSCD3D12 {
 
 	nSCAssets::AssetStore const &SceneLane::Store() const { return impl->store; }
 
+	uint32_t SceneLane::StoreTexture(uint32_t group, uint32_t id, uint32_t element) { return impl->Exact(group, id, element); }
+
 	uint32_t SceneLane::LoadModel(nSCAssets::Tgi const &tgi, float *bounds) {
 		nSCDWire::ModelInstance key{};
 		key.type = tgi.type;

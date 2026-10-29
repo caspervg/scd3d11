@@ -84,6 +84,11 @@ namespace nSCD3D12 {
 				freeCamera = camera;
 				if (owned) owned->SetFreeCamera(camera);
 			}
+			void TerrainField(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices) override {
+				terrainField = field;
+				terrainVertices.assign(vertices, vertices + static_cast<size_t>(field.verticesX) * field.verticesZ);
+				if (owned) owned->TerrainField(field, vertices);
+			}
 
 			void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 				driver.VideoMode(show, width, height, fullscreen);
@@ -133,6 +138,7 @@ namespace nSCD3D12 {
 					if (sceneMode == SceneMode::Owned) {
 						owned = std::make_unique<OwnedScene>(driver, *scene);
 						owned->SetFreeCamera(freeCamera);
+						if (!terrainVertices.empty()) owned->TerrainField(terrainField, terrainVertices.data());
 					}
 					if (world) world->SetScene(owned.get(), scene.get());
 					std::printf("scene: %s from frame %llu\n", owned ? "owning the static view" : "substituting",
@@ -373,6 +379,9 @@ namespace nSCD3D12 {
 			// Declared after the lane it takes meshes from.
 			std::unique_ptr<OwnedScene> owned;
 			nSCDWire::FreeCamera freeCamera{};
+			// The last terrain, for an owned scene that starts after it came.
+			nSCDWire::TerrainField terrainField{};
+			std::vector<nSCDWire::TerrainVertex> terrainVertices;
 			// Declared after the scenes it reads.
 			std::unique_ptr<WorldLight> world;
 			uint32_t reports = 0;

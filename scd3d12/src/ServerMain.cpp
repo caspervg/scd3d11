@@ -301,6 +301,9 @@ namespace {
 		void FreeCamera(nSCDWire::FreeCamera const &camera) override {
 			if (owned != nullptr && !options.freeCamera) owned->SetFreeCamera(camera);
 		}
+		void TerrainField(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices) override {
+			if (owned != nullptr) owned->TerrainField(field, vertices);
+		}
 		// Without --game the store reads the folders the game named. The record comes before the city loads.
 		void GameFolders(std::wstring const (&folders)[static_cast<size_t>(nSCDWire::GameFolder::Count)]) override {
 			if (!options.substitute || scene != nullptr) return;

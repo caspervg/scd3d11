@@ -79,6 +79,9 @@ namespace nSCD3D12 {
 		// On drops every draw of the dynamic passes (3 to 5): automata, effects, animated sprites.
 		void DropDynamic(bool on);
 		nSCAssets::AssetStore const &Store() const;
+		// The FSH (group, id) as a driver texture, its image element or else its first, 0 when the store has none.
+		// Loaded once. Changes the active stage's binding, so it runs inside a saved draw state.
+		uint32_t StoreTexture(uint32_t group, uint32_t id, uint32_t element);
 		// Puts any S3D model (type 0x5AD0E817) on the GPU, once per key, and gives its box in model space (min then
 		// max). Returns how many meshes it has, 0 when the store has none.
 		uint32_t LoadModel(nSCAssets::Tgi const &model, float *bounds);

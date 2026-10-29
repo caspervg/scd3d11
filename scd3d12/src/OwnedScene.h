@@ -74,6 +74,9 @@ namespace nSCD3D12 {
 		// shows its models for the camera's nearest SC4 zoom and rotation, picked from its record, and nothing is
 		// culled. Inputs() holds the camera it drew with.
 		void SetFreeCamera(nSCDWire::FreeCamera const &camera);
+		// The whole city's terrain and water (TerrainField.h), drawn in the cells SC4 never drew whenever the view is
+		// not SC4's own: the free camera, a kept view or a look elsewhere.
+		void TerrainField(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices);
 		// A new video mode: the driver's textures are gone.
 		void VideoMode();
 		// After the driver submitted the frame.

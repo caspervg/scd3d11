@@ -30,6 +30,7 @@
 #include "D3D11Conversions.h"
 #include "Dlss.h"
 #include "Models.h"
+#include "TerrainField.h"
 #include "wire/ImageFile.h"
 
 #include <d3dcompiler.h>
@@ -464,6 +465,8 @@ namespace nSCD3D12 {
 			float captureView[16]{};
 			float captureMatrices[2][16]{};
 			bool model = false;
+			// One of the textures SC4 blends over its terrain, which only a cell SC4 drew whole holds.
+			bool blendedTerrain = false;
 			D3D12_VERTEX_BUFFER_VIEW vertices{};
 			D3D12_INDEX_BUFFER_VIEW indices{};
 			uint32_t count = 0;
@@ -654,6 +657,13 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::vector<uint32_t> unused;
 
 		std::unordered_map<uint64_t, Cell> cells;
+		// Changes whenever cells does, for the terrain field.
+		uint64_t cellsVersion = 0;
+		// The whole city's terrain from the shim, drawn where no cell is kept when the view is not SC4's. keptCells
+		// says which cells hold SC4's terrain (2) or only its untextured base (1), as of keptVersion.
+		nSCD3D12::TerrainField terrainField;
+		std::vector<uint8_t> keptCells;
+		uint64_t keptVersion = UINT64_MAX;
 		std::unordered_map<uint64_t, uint32_t> viewPieces;
 		std::unordered_map<uint64_t, GridItem> grid;
 		std::unordered_map<uint64_t, std::vector<uint64_t> > gridByOccupant;
@@ -1155,7 +1165,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			cityCopied = true;
 		}
 
-		Impl(cGDriver12 &driver, SceneLane &lane) : driver(driver), lane(lane), pool(driver), slots(driver) {
+		Impl(cGDriver12 &driver, SceneLane &lane) : driver(driver), lane(lane), pool(driver), slots(driver), terrainField(driver, lane) {
 			ID3D12Device *const device = driver.Device();
 			D3D12_QUERY_HEAP_DESC const heap{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kTimingSlots * 2};
 			D3D12_HEAP_PROPERTIES const readbackHeap{D3D12_HEAP_TYPE_READBACK};
@@ -1675,10 +1685,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			uint32_t const pass = owner->pass;
 			if (owner->kind == nSCDWire::DrawOwnerKind::View && owner->vtable == kTerrainVtable) {
+				bool const blended = terrainField.Learn(captured, pass, vertices, indices, indexCount);
 				std::vector<D3D11Vertex> world;
 				ToWorld(state, vertices, vertexCount, world);
 				Bake(state, world);
 				uint32_t const group = RankedGroup(state, kTerrain, pass);
+				groups[group].blendedTerrain |= blended;
 				++drawOrdinal;
 				// Each triangle goes to the cell under its middle.
 				for (uint32_t i = 0; i + 2 < indexCount; i += 3) {
@@ -1747,6 +1759,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		// A terrain bracket ended: each cell it drew now holds what it drew, and keeps the pieces that did not
 		// change.
 		void ResolveCells() {
+			if (!freshCells.empty()) ++cellsVersion;
 			for (auto &[key, list]: freshCells) {
 				Cell &cell = cells[key];
 				std::vector<uint32_t> kept;
@@ -1938,6 +1951,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 				for (uint32_t piece: it->second.pieces) RemovePiece(piece, 2);
 				it = cells.erase(it);
+				++cellsVersion;
 			}
 			for (auto it = viewPieces.begin(); it != viewPieces.end();) {
 				if (keepFresh && pieces[it->second].frame == frame) {
@@ -2003,6 +2017,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 						if (!gone) break;
 						for (uint32_t piece: found->second.pieces) RemovePiece(piece, 2);
 						cells.erase(found);
+						++cellsVersion;
 						break;
 					}
 					default: {
@@ -2189,6 +2204,24 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			lap(2);
 			float inverseView[16];
 			bool const inverted = Invert(now.view, inverseView);
+			// Where the view is not SC4's, the whole city's terrain fills the cells SC4 never drew.
+			bool fill = false;
+			if (everywhere || looking) {
+				if (keptVersion != cellsVersion && terrainField.CellsX() != 0) {
+					keptVersion = cellsVersion;
+					uint32_t const cellsX = terrainField.CellsX(), cellsZ = terrainField.CellsZ();
+					keptCells.assign(static_cast<size_t>(cellsX) * cellsZ, 0);
+					for (auto const &[key, cell]: cells) {
+						uint32_t const x = static_cast<uint32_t>(key >> 24 & 0xFFFFFF), z = static_cast<uint32_t>(key & 0xFFFFFF);
+						if ((key >> 48) != 0 || cell.pieces.empty() || x >= cellsX || z >= cellsZ) continue;
+						// Cells SC4 hides under a lot hold its untextured base and no blended texture.
+						bool textured = false;
+						for (uint32_t piece: cell.pieces) textured |= pieces[piece].alive && groups[pieces[piece].group].blendedTerrain;
+						keptCells[static_cast<size_t>(z) * cellsX + x] = textured ? 2 : 1;
+					}
+				}
+				fill = terrainField.Prepare(keptCells, keptVersion);
+			}
 			cGDriver12::Transform game{};
 			driver.SaveTransform(game);
 			driver.ClearTargets();
@@ -2199,9 +2232,15 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			driver.BeginRetained(jittered);
 			driver.RetainedCamera(now.view, now.projection);
 			uint64_t draws = 0, instances = 0;
+			D3D12_VERTEX_BUFFER_VIEW const viewInstance{instanceBase, sizeof(InstanceRows), sizeof(InstanceRows)};
 			for (uint32_t g: order) {
 				Group &group = groups[g];
 				if (group.model ? group.instanceCount == 0 : group.buckets.empty()) continue;
+				// After the background SC4 drew without depth test and its terrain, before the rest.
+				if (fill && group.rank >= 2ull << 48) {
+					terrainField.Draw(viewInstance);
+					fill = false;
+				}
 				cGDriver12::RetainedDraw draw{};
 				draw.pipeline = group.state.pipeline;
 				draw.depthBias = group.state.depthBias;
@@ -2254,6 +2293,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					++instances;
 				}
 			}
+			if (fill) terrainField.Draw(viewInstance);
 			driver.EndRetained();
 			lap(3);
 			driver.RestoreTransform(game);
@@ -2394,8 +2434,13 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 
 	void OwnedScene::SetFreeCamera(nSCDWire::FreeCamera const &camera) { impl->freeCamera = camera; }
 
+	void OwnedScene::TerrainField(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices) {
+		impl->terrainField.Set(field, vertices);
+	}
+
 	void OwnedScene::VideoMode() {
 		Impl &d = *impl;
+		d.terrainField.VideoMode();
 		d.KillAll(false);
 		d.bins.clear();
 		d.large.clear();
