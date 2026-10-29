@@ -110,10 +110,10 @@ namespace nSCD3D11::Settings {
 			return composition || value == "copy";
 		}
 
-		// ServerScene=substitute, check or off.
+		// ServerScene=substitute, check, owned or off.
 		bool ParseServerScene(std::string_view value, std::string &mode) {
 			mode = value;
-			return value == "substitute" || value == "check" || value == "off";
+			return value == "substitute" || value == "check" || value == "owned" || value == "off";
 		}
 
 		// Record=<file>. Any non-empty value is a path.

@@ -15,6 +15,7 @@
 
 #include "AssetStore.h"
 #include "cGDriver12.h"
+#include "OwnedScene.h"
 #include "SceneLane.h"
 #include "wire/SharedRing.h"
 #include "wire/WireReplay.h"
@@ -73,6 +74,7 @@ namespace nSCD3D12 {
 
 			void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 				driver.VideoMode(show, width, height, fullscreen);
+				if (owned) owned->VideoMode();
 				Share(width, height);
 				if (control.presentMode == nSCDWire::kPresentComposition) Compose(width, height);
 			}
@@ -88,12 +90,17 @@ namespace nSCD3D12 {
 			}
 
 			void OwnerBegin(nSCDWire::DrawOwner const &owner) override {
+				if (owned) owned->OwnerBegin(owner);
 				driver.OwnerBegin(owner);
 				if (scene) scene->OwnerBegin(owner);
 			}
 			void OwnerEnd() override {
 				driver.OwnerEnd();
 				if (scene) scene->OwnerEnd();
+				if (owned) owned->OwnerEnd();
+			}
+			void Occupant(nSCDWire::OccupantEvent const &event) override {
+				if (owned) owned->Occupant(event);
 			}
 			void DrawBlobs(nSCDWire::BlobKey const &vertices, nSCDWire::BlobKey const &indices) override {
 				driver.DrawBlobs(vertices, indices);
@@ -102,10 +109,13 @@ namespace nSCD3D12 {
 			bool Frame() override {
 				driver.Frame();
 				if (scene) scene->EndFrame(frame, nullptr);
+				if (owned) owned->EndFrame();
 				// Between frames no bracket is open, so the lane can start here.
-				else if (storeReady.load(std::memory_order_acquire)) {
+				if (!scene && storeReady.load(std::memory_order_acquire)) {
 					scene = std::make_unique<SceneLane>(driver, store, sceneMode == SceneMode::Check);
-					std::printf("scene: substituting from frame %llu\n", static_cast<unsigned long long>(frame));
+					if (sceneMode == SceneMode::Owned) owned = std::make_unique<OwnedScene>(driver, *scene);
+					std::printf("scene: %s from frame %llu\n", owned ? "owning the static view" : "substituting",
+					            static_cast<unsigned long long>(frame));
 					std::fflush(stdout);
 				}
 				uint64_t const index = frame++;
@@ -134,7 +144,10 @@ namespace nSCD3D12 {
 				            static_cast<double>(now - reportStart) / 1000.0,
 				            static_cast<double>(cpu - reportCpu) / 1.0e4 / reportFrames,
 				            gpuFrames != 0 ? gpu / gpuFrames : 0.0);
-				if (scene && ++reports % 10 == 0) scene->PrintTotals();
+				if (scene && ++reports % 10 == 0) {
+					scene->PrintTotals();
+					if (owned) owned->PrintTotals();
+				}
 				std::fflush(stdout);
 				reportStart = now;
 				reportCpu = cpu;
@@ -333,6 +346,8 @@ namespace nSCD3D12 {
 			std::thread indexer;
 			// Declared after the store it reads, so it goes first.
 			std::unique_ptr<SceneLane> scene;
+			// Declared after the lane it takes meshes from.
+			std::unique_ptr<OwnedScene> owned;
 			uint32_t reports = 0;
 			ULONGLONG reportStart = 0;
 			uint64_t reportCpu = 0;

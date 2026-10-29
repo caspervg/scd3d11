@@ -46,7 +46,8 @@ namespace nSCD3D11::Settings {
 		// (see SCD3D12Server's --relight). Empty or off draws the game's own light.
 		std::string serverRelight;
 		// ServerScene=substitute: the server draws the city's models, networks and lot textures from its own
-		// copy of the game's data (see SCD3D12Server's --scene). check also compares each with the game's.
+		// copy of the game's data (see SCD3D12Server's --scene). check also compares each with the game's. owned
+		// keeps the whole static view on the server and draws it every frame without SC4's backing store.
 		std::string serverScene;
 	};
 
