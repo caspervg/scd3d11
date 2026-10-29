@@ -29,6 +29,11 @@ int main() {
 	assert(Diagnose(Clean()).empty());
 	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
 	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
+	assert(ReleaseVersion(R"({"url":"x","tag_name": "v0.3.3","name":"SCD3D11 0.3.3"})") == "0.3.3");
+	assert(ReleaseVersion(R"({"message":"Not Found"})").empty());
+	assert(ReleaseVersion(R"({"tag_name":"latest"})").empty());
+	assert(IsNewer("0.3.3", "0.3.2.0") && IsNewer("0.10.0", "0.9.9.0"));
+	assert(!IsNewer("0.3.2", "0.3.2.0") && !IsNewer("0.3.1", "0.3.2.0"));
 
 	{
 		// The colon form of -r that SC4 silently ignores.
