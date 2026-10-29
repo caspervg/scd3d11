@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
+#include <iterator>
 #include <set>
 #include <string_view>
 
@@ -353,7 +354,30 @@ namespace nSCD3D11::Doctor {
 			return module.product.empty() ? std::string("an unknown wrapper") : module.product;
 		}
 
+		// Compares dotted versions part by part. Missing parts count as 0, so 1.4.1.0 equals 1.4.1.
+		bool OlderThan(std::string const &version, char const *minimum) {
+			unsigned have[4]{}, need[4]{};
+			sscanf_s(version.c_str(), "%u.%u.%u.%u", &have[0], &have[1], &have[2], &have[3]);
+			sscanf_s(minimum, "%u.%u.%u.%u", &need[0], &need[1], &need[2], &need[3]);
+			return std::lexicographical_compare(std::begin(have), std::end(have), std::begin(need), std::end(need));
+		}
+
 		void CheckModules(Environment const &environment, std::vector<Finding> &findings) {
+			// The first versions of other plugins that work with this SCD3D11. Only plugins with a version
+			// resource can be checked.
+			struct Minimum { char const *file; char const *name; char const *version; char const *reason; };
+			static constexpr Minimum kMinimums[] = {
+				{"sc4graphicsoptions.dll", "SC4GraphicsOptions", "1.4.1", "the first whose borderless mode finds SCD3D11's window"},
+				{"sc4cpuoptions.dll", "SC4CPUOptions", "1.1.0", "which took over the CPU fixes older SCD3D11 versions made"},
+				{"sc4renderservices.dll", "SC4RenderServices", "0.8.0", "the first that recognises SCD3D11 as the driver"},
+			};
+			for (Minimum const &minimum : kMinimums) {
+				Module const *const module = FindModule(environment, minimum.file);
+				if (module == nullptr || module->version.empty() || !OlderThan(module->version, minimum.version)) continue;
+				findings.push_back({Severity::Warning, Format("%s %s is older than %s, %s. Update it.", minimum.name,
+				                                              module->version.c_str(), minimum.version, minimum.reason)});
+			}
+
 			for (char const *rival : {"scvk.dll", "scgl.dll"}) {
 				if (FindModule(environment, rival) != nullptr) {
 					findings.push_back({Severity::Note, Format(
