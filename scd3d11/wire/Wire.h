@@ -166,6 +166,9 @@ namespace nSCDWire {
 		OccupantExemplar,
 		// The player's own camera (FreeCamera.h), whenever it changes.
 		FreeCamera,
+		// The whole city's terrain and water once a city loads and whenever they change: TerrainField, then the
+		// blob of its TerrainVertex values.
+		TerrainField,
 
 		Count
 	};
@@ -313,6 +316,36 @@ namespace nSCDWire {
 		uint32_t reserved;
 	};
 	static_assert(sizeof(OccupantExemplar) == 40);
+
+	// The terrain as SC4 draws it (cSTETerrainView3D's vertex arrays and cSTETerrain's texture layers), so the
+	// server can draw the parts of the city SC4 never drew. Vertex (i, j) stands at world x = i x cellWidth,
+	// z = j x cellWidth, row by row along x.
+	struct TerrainField {
+		uint32_t verticesX, verticesZ;
+		float cellWidth;
+		// The zoom SC4 loaded its terrain textures for when this was read, 0 to 4.
+		uint32_t zoom;
+		// Texture coordinates of the terrain and the water: u = uv[0] x + uv[1] z + uv[2], v = uv[3] x + uv[4] z + uv[5].
+		// SC4 turns them with its rotation.
+		float uv[6];
+	};
+	static_assert(sizeof(TerrainField) == 40);
+
+	struct TerrainVertex {
+		float height;
+		// The water surface. There is water where it lies above the terrain.
+		float water;
+		uint32_t color; // SC4's lit colour, BGRA, alpha 0
+		uint32_t waterColor; // BGRA, alpha the water's opacity
+		// Up to three textures blended over the vertex, 0 ending the list: the terrain texture id (FSH, group
+		// 0x891B0E1A, instance zoom x 0x100 + id, else id itself) with the image in bits 12 to 15, and its weight.
+		uint16_t texture[3];
+		uint8_t weight[3];
+		// Bit 0: the cell with this corner lowest splits along the diagonal from (1, 0) to (0, 1).
+		uint8_t flags;
+		uint16_t reserved;
+	};
+	static_assert(sizeof(TerrainVertex) == 28);
 
 	char const *OpName(Op op);
 }

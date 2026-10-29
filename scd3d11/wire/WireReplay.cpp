@@ -634,6 +634,15 @@ namespace nSCDWire {
 					if (f.ok) hooks.FreeCamera(camera);
 					break;
 				}
+				case Op::TerrainField: {
+					auto const field = f.Get<nSCDWire::TerrainField>();
+					auto const *const vertices = blob(f.Get<BlobKey>());
+					uint64_t const count = static_cast<uint64_t>(field.verticesX) * field.verticesZ;
+					if (f.ok && vertices != nullptr && vertices->size() == count * sizeof(TerrainVertex)) {
+						hooks.TerrainField(field, reinterpret_cast<TerrainVertex const *>(vertices->data()));
+					}
+					break;
+				}
 
 				default:
 					failure = "an op the replay does not handle";

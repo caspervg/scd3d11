@@ -52,6 +52,12 @@ namespace nSCD3D11 {
 		}
 		void RecordCellTexture(nSCDWire::CellTexture const &cell) { Record(nSCDWire::Op::CellTexture, cell); }
 		void RecordFreeCamera(nSCDWire::FreeCamera const &camera) { Record(nSCDWire::Op::FreeCamera, camera); }
+		void RecordTerrainField(nSCDWire::TerrainField const &field, nSCDWire::TerrainVertex const *vertices) {
+			writer.Begin(nSCDWire::Op::TerrainField);
+			writer.Put(field);
+			writer.PutBlob(vertices, field.verticesX * field.verticesZ * sizeof(nSCDWire::TerrainVertex));
+			writer.End();
+		}
 		void RecordOccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values) {
 			writer.Begin(nSCDWire::Op::OccupantExemplar);
 			writer.Put(occupant);

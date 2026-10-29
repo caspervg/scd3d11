@@ -14,6 +14,7 @@
 #include "Diagnostics.h"
 #include "DrawOwnerHooks.h"
 #include "Settings.h"
+#include "TerrainStream.h"
 #include "TextureUploadUtils.h"
 #include "VertexFormatUtils.h"
 
@@ -376,6 +377,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriverWire::Flush(void) {
+		TerrainStream::Poll(*this);
 		Record(Op::Frame);
 		writer.Flush();
 		driver->Flush();

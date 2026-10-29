@@ -46,6 +46,8 @@ namespace nSCDWire {
 		// values holds occupant.count values.
 		virtual void OccupantExemplar(nSCDWire::OccupantExemplar const &, uint32_t const *) {}
 		virtual void FreeCamera(nSCDWire::FreeCamera const &) {}
+		// vertices holds field.verticesX x field.verticesZ values.
+		virtual void TerrainField(nSCDWire::TerrainField const &, TerrainVertex const *) {}
 	};
 
 	struct ReplayStats {

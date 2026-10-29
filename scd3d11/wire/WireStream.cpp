@@ -178,7 +178,7 @@ namespace nSCDWire {
 			"LightDirection", "MaterialColor", "MaterialColors", "GetVertices", "ContinueVertices",
 			"ReleaseVertices", "DrawPrims", "DrawPrimsIndexed", "ResetVertexBuffers", "CopyColorBuffer",
 			"OccupantInsert", "OccupantRemove", "OccupantMove", "OwnerBegin", "OwnerEnd", "ModelInstance", "Resize",
-			"GameFolders", "NetworkPiece", "CellTexture", "OccupantExemplar", "FreeCamera",
+			"GameFolders", "NetworkPiece", "CellTexture", "OccupantExemplar", "FreeCamera", "TerrainField",
 		};
 		static_assert(sizeof(names) / sizeof(names[0]) == static_cast<size_t>(Op::Count));
 		size_t const index = static_cast<size_t>(op);
