@@ -60,6 +60,9 @@ namespace nSCD3D12 {
 			float elevation = 45.0f;
 			float color[3]{};
 			float ambient[3]{};
+			// The sun stands still in the world instead: the azimuth turns from world +x towards +z. Needs the
+			// light hooks' camera, and turns with the camera as above until it is known.
+			bool fixedInWorld = false;
 		};
 
 		// Turns relighting on, before Create. Each frame is then relit with sun into a frame of its own,
@@ -206,6 +209,57 @@ namespace nSCD3D12 {
 		void DrawRetained(RetainedDraw const &draw);
 		// Puts back the driver's own bindings and viewport.
 		void EndRetained();
+
+		// For lighting from the server's own copy of the city (WorldLight.h).
+
+		// What the lighting pass knows of the world this frame. Matrices are row major.
+		struct WorldFrame {
+			// A pixel (x and y from the top left, depth from 0 to 1, 1) to a world position (divide by w).
+			float pixelToWorld[16];
+			// World directions to view directions, in the upper 3x3.
+			float worldToView[16];
+			float metresPerPixel;
+			// The terrain field the driver was given: vertices per row and column (0 without one) and vertices
+			// per metre. Vertex (i, j) stands at world x = i / scale, z = j / scale.
+			uint32_t terrainSize;
+			float terrainScale;
+			// Night lights: two float4 each, world position and radius, then colour. Tiles: per screen tile of
+			// tileSize pixels, row by row, the offset and count of its entries further on in the same buffer,
+			// each entry a light's index.
+			D3D12_GPU_VIRTUAL_ADDRESS lights;
+			D3D12_GPU_VIRTUAL_ADDRESS tiles;
+			uint32_t lightCount;
+			uint32_t tileSize;
+			uint32_t tilesAcross;
+			uint32_t tileCount;
+		};
+		class LightHooks {
+		public:
+			virtual ~LightHooks() = default;
+			// At the start of the lighting pass, with the command list open. False when the world is not known
+			// this frame, and the pass lights as without hooks.
+			virtual bool BeginLighting(WorldFrame &frame) = 0;
+			// Fills the sunlight target, bound as the only render target over the window, with the lighting
+			// pass's constants and its table of views (colour, light layer, depth, sunlight, terrain field).
+			// False leaves it to the screen-space trace.
+			virtual bool TraceSunlight(D3D12_GPU_VIRTUAL_ADDRESS constants, D3D12_GPU_DESCRIPTOR_HANDLE views) = 0;
+			// Every DrawPrimsIndexed: the vertex buffer extension's vertices (V3F_C4UB_2T2F) and the indices.
+			virtual void IndexedVertices(uint8_t const *vertices, uint32_t bytes, uint32_t stride,
+			                             uint16_t const *indices, uint32_t count) = 0;
+		};
+		void SetLightHooks(LightHooks *hooks);
+		// The relighting sun.
+		Sun const &RelightSun() const;
+		// The shader-visible view heap from its first slot, for tables over all of it.
+		D3D12_GPU_DESCRIPTOR_HANDLE ViewTable() const;
+		// A texture's slot in that heap, 0 when it has none. The texture is made readable by every shader stage
+		// for the rest of the command list, as draws leave it.
+		uint32_t TextureView(uint32_t name);
+		// A raw view of a whole buffer in that heap, kept for good. Returns its slot, 0 when the heap is full.
+		uint32_t CreateBufferView(ID3D12Resource *buffer);
+		// The terrain field the lighting pass reads, a buffer of float4 per vertex (world normal and height, row
+		// by row), null for none. Waits for the GPU.
+		void SetTerrainField(ID3D12Resource *buffer);
 
 		// nSCDWire::ReplayHooks
 		void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override;

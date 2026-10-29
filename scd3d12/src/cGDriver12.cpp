@@ -42,8 +42,13 @@ namespace nSCD3D12 {
 		constexpr uint64_t kUploadChunkBytes = 32ull << 20;
 		// Shader-visible texture views. Slot 0 is the empty view for stages without a texture.
 		constexpr uint32_t kViewSlots = 1u << 18;
-		// With relighting, the lighting pass's views of the back buffer, light layer and depth buffer.
+		// With relighting, the lighting pass's views of the back buffer, light layer, depth buffer, sunlight and
+		// terrain field.
 		constexpr uint32_t kLightingViews = 1;
+		constexpr uint32_t kLightingViewCount = 5;
+		// Timestamps per frame in the lighting pass: its start, after the light hooks' own work, after the
+		// sunlight trace, its end.
+		constexpr uint32_t kLightingTimestamps = 4;
 		constexpr uint32_t kRegionCount = 8;
 		constexpr uint32_t kExtensionCapacity = 32768;
 		// Sampler heap: 32 filter and wrap combinations, then the blit sampler.
@@ -365,11 +370,20 @@ cbuffer LightingConstants : register(b0)
 	float4 sc4Light;  // the ambient and direct light SC4's art is lit with, the largest relight ratio
 	float4 march;     // longest shadow in view units and in pixels, bias, softness
 	float4 occluder;  // thickness: deeper steps belong to something else in front, blur depth tolerance
+	// The world, from the light hooks (cGDriver12::WorldFrame), when world.x is 1.
+	row_major float4x4 pixelToWorld;
+	row_major float4x4 worldToView;
+	float4 world;     // known, metres per pixel
+	float4 terrain;   // terrain field vertices per row (0 without), vertices per metre, height tolerance
+	float4 lights;    // night lights: count, tile size in pixels, tiles across, tiles
 };
 Texture2D<float4> scene : register(t0);
 Texture2D<float4> lightLayer : register(t1);
 Texture2D<float> sceneDepth : register(t2);
 Texture2D<float> sunlight : register(t3);
+StructuredBuffer<float4> terrainField : register(t4);
+StructuredBuffer<float4> nightLights : register(t5);
+StructuredBuffer<uint> lightTiles : register(t6);
 
 float4 VSMain(uint id : SV_VertexID) : SV_POSITION
 {
@@ -427,6 +441,47 @@ float TracePS(float4 position : SV_POSITION) : SV_TARGET
 	return 1.0f - shade;
 }
 
+// The terrain field between its vertices: world normal and height.
+float4 TerrainAt(float2 xz)
+{
+	float2 grid = clamp(xz * terrain.y, 0.0f, terrain.x - 1.001f);
+	uint2 cell = uint2(grid);
+	float2 f = grid - float2(cell);
+	uint row = uint(terrain.x);
+	uint first = cell.y * row + cell.x;
+	return lerp(lerp(terrainField[first], terrainField[first + 1], f.x),
+	            lerp(terrainField[first + row], terrainField[first + row + 1], f.x), f.y);
+}
+
+float3 WorldPosition(float2 position, int2 pixel)
+{
+	float4 at = mul(pixelToWorld, float4(position, sceneDepth.Load(int3(pixel, 0)), 1.0f));
+	return at.xyz / at.w;
+}
+
+// Light from the night lights in the pixel's tile, which fades to nothing at each light's radius.
+float3 NightLight(int2 pixel, float3 at, float3 normal)
+{
+	uint tile = (uint(pixel.y) / uint(lights.y)) * uint(lights.z) + uint(pixel.x) / uint(lights.y);
+	// Root views are not bounds checked: the window can be larger than the camera the tiles were made for.
+	if (uint(pixel.x) / uint(lights.y) >= uint(lights.z) || tile >= uint(lights.w)) return 0.0f;
+	uint first = lightTiles[tile * 2];
+	uint count = min(lightTiles[tile * 2 + 1], 128u);
+	float3 sum = 0.0f;
+	[loop] for (uint i = 0; i < count; ++i)
+	{
+		uint index = min(lightTiles[first + i], uint(lights.x) - 1);
+		float4 place = nightLights[index * 2];
+		float3 toLight = place.xyz - at;
+		float distance2 = dot(toLight, toLight);
+		float fade = saturate(1.0f - distance2 / (place.w * place.w));
+		// Facing the light, softened so a surface edge-on still catches some.
+		float facing = saturate(dot(normal, toLight) * rsqrt(distance2 + 1.0e-4f) * 0.7f + 0.3f);
+		sum += nightLights[index * 2 + 1].rgb * (fade * fade * facing);
+	}
+	return sum;
+}
+
 // Pass 2: the relit frame. The sunlight is averaged over the 4x4 tile around the pixel, from the
 // neighbours that lie on the pixel's own surface.
 float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
@@ -439,6 +494,24 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	float3 across = SurfaceStep(pixel, centre, int2(1, 0));
 	float3 down = SurfaceStep(pixel, centre, int2(0, 1));
 	float3 normal = Normal(across, down);
+	float3 at = 0.0f, worldNormal = 0.0f;
+	if (world.x > 0.0f)
+	{
+		at = WorldPosition(position.xy, pixel);
+		worldNormal = mul(normal, (float3x3)worldToView);
+		// On the terrain (close to its height, and facing about the same way), the terrain's own smooth
+		// normal stands in for the flat one from depth.
+		if (terrain.x > 0.0f)
+		{
+			float4 field = TerrainAt(at.xz);
+			float3 smooth = normalize(field.xyz + float3(0.0f, 1.0e-6f, 0.0f));
+			if (abs(at.y - field.w) < terrain.z && dot(worldNormal, smooth) > 0.8f)
+			{
+				worldNormal = smooth;
+				normal = mul((float3x3)worldToView, smooth);
+			}
+		}
+	}
 	float facing = saturate(dot(normal, sun.xyz));
 	float visibility = 1.0f;
 	if (facing > 0.0f)
@@ -464,6 +537,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	float baked = sc4Light.x + sc4Light.y * saturate(dot(normal, sc4Sun.xyz));
 	float3 factor = max(layer.rgb / layer.a, 1.0f / 255.0f);
 	float3 light = ambient.rgb + sunColor.rgb * facing * visibility;
+	if (lights.x > 0.0f) light += NightLight(pixel, at, worldNormal);
 	float3 ratio = min(light / (baked * factor), sc4Light.z);
 	return float4(saturate(color.rgb * lerp(1.0f, ratio, saturate(layer.a))), color.a);
 }
@@ -521,7 +595,14 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			float sc4Light[4];
 			float march[4];
 			float occluder[4];
+			float pixelToWorld[16];
+			float worldToView[16];
+			float world[4];
+			float terrain[4];
+			float lights[4];
 		};
+		// Off the terrain by more than this (metres) a pixel keeps its normal from depth.
+		constexpr float kTerrainTolerance = 2.0f;
 
 		// The light SC4's art is drawn with: its sun stands at the screen's left, 45 degrees up, and turns
 		// with the camera. The ambient and direct shares light flat ground fully.
@@ -839,7 +920,12 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		ComPtr<ID3D12Resource> lightingTimestampReadback;
 		uint64_t timestampFrequency = 0;
 		std::vector<float> lightingMilliseconds;
+		// The parts of it: the light hooks' work and the sunlight trace.
+		std::vector<float> worldMilliseconds, traceMilliseconds;
 		bool cityDrawn = false;
+		cGDriver12::LightHooks *lightHooks = nullptr;
+		bool lightHooked = false;
+		ComPtr<ID3D12Resource> terrainField;
 
 		// The command list's bindings, so unchanged state is not set again. Forgotten with each new list.
 		ID3D12PipelineState *appliedPipeline = nullptr;
@@ -962,15 +1048,20 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				for (uint32_t index = 0; index < kFrameCount; ++index) ReadTimestamps(index);
 			}
 			if (fenceEvent != nullptr) CloseHandle(fenceEvent);
-			if (!lightingMilliseconds.empty()) {
-				std::vector<float> sorted = lightingMilliseconds;
+			auto const report = [](char const *name, std::vector<float> sorted) {
+				if (sorted.empty()) return;
 				std::sort(sorted.begin(), sorted.end());
 				double total = 0.0;
 				for (float value: sorted) total += value;
-				std::printf("lighting pass, frames that drew the city: %zu frames, %.3f ms on average, median %.3f ms, "
+				std::printf("%s, frames that drew the city: %zu frames, %.3f ms on average, median %.3f ms, "
 				            "95th percentile %.3f ms, slowest %.3f ms\n",
-				            sorted.size(), total / static_cast<double>(sorted.size()), sorted[sorted.size() / 2],
+				            name, sorted.size(), total / static_cast<double>(sorted.size()), sorted[sorted.size() / 2],
 				            sorted[sorted.size() * 95 / 100], sorted.back());
+			};
+			report("lighting pass", lightingMilliseconds);
+			if (lightHooked) {
+				report("  of which the world (structures, lights)", worldMilliseconds);
+				report("  of which the sunlight trace", traceMilliseconds);
 			}
 		}
 
@@ -979,17 +1070,22 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			FrameSlot &slot = frames[index];
 			if (!slot.timed) return;
 			slot.timed = false;
-			D3D12_RANGE const range{index * 16, index * 16 + 16};
+			size_t const bytes = kLightingTimestamps * sizeof(uint64_t);
+			D3D12_RANGE const range{index * bytes, index * bytes + bytes};
 			uint64_t *ticks = nullptr;
 			if (FAILED(lightingTimestampReadback->Map(0, &range, reinterpret_cast<void **>(&ticks)))) return;
-			uint64_t const begin = ticks[index * 2];
-			uint64_t const end = ticks[index * 2 + 1];
+			uint64_t times[kLightingTimestamps];
+			memcpy(times, ticks + index * kLightingTimestamps, sizeof(times));
 			D3D12_RANGE const none{0, 0};
 			lightingTimestampReadback->Unmap(0, &none);
-			if (end > begin && timestampFrequency != 0 && slot.cityFrame) {
-				lightingMilliseconds.push_back(static_cast<float>(
-					static_cast<double>(end - begin) * 1000.0 / static_cast<double>(timestampFrequency)));
-			}
+			if (times[3] <= times[0] || timestampFrequency == 0 || !slot.cityFrame) return;
+			auto const milliseconds = [&](uint32_t from, uint32_t to) {
+				return static_cast<float>(static_cast<double>(times[to] - times[from]) * 1000.0 /
+				                          static_cast<double>(timestampFrequency));
+			};
+			lightingMilliseconds.push_back(milliseconds(0, 3));
+			worldMilliseconds.push_back(milliseconds(0, 1));
+			traceMilliseconds.push_back(milliseconds(1, 2));
 		}
 
 		// Frames and submission
@@ -1608,7 +1704,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				auto const found = textures.find(boundTextures[stage]);
 				if (found == textures.end() || !found->second.resource) continue;
 				Texture &texture = found->second;
-				Transition(texture.resource.Get(), texture.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+				Transition(texture.resource.Get(), texture.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
 				views[stage] = texture.view;
 				samplers[stage] = SamplerIndex(textureStages[stage]);
 				flagInputs |= 1u << stage;
@@ -2101,8 +2197,21 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			}
 		}
 
+		// The same about world axes: the azimuth turns from world +x towards +z, about world up (+y).
+		static void WorldSunDirection(float azimuth, float elevation, float out[3]) {
+			float const a = azimuth * 0.01745329f;
+			float const e = elevation * 0.01745329f;
+			out[0] = std::cos(e) * std::cos(a);
+			out[1] = std::sin(e);
+			out[2] = std::cos(e) * std::sin(a);
+		}
+
 		// Draws the published frame: the back buffer relit from the light layer and the depth buffer.
 		void RecordLighting() {
+			ID3D12DescriptorHeap *const heaps[]{viewHeap.Get(), samplerHeap.Get()};
+			list->SetDescriptorHeaps(2, heaps);
+			uint32_t const query = frameIndex * kLightingTimestamps;
+			list->EndQuery(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query);
 			LightingConstants constants{};
 			if (camera.known) {
 				constants.camera[0] = camera.pixel[0];
@@ -2112,6 +2221,33 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			}
 			SunDirection(sun.azimuth, sun.elevation, constants.sun);
 			SunDirection(0.0f, 45.0f, constants.sc4Sun);
+			cGDriver12::WorldFrame frame{};
+			bool const world = lightHooks != nullptr && camera.known && lightHooks->BeginLighting(frame);
+			if (world) {
+				memcpy(constants.pixelToWorld, frame.pixelToWorld, sizeof(constants.pixelToWorld));
+				memcpy(constants.worldToView, frame.worldToView, sizeof(constants.worldToView));
+				constants.world[0] = 1.0f;
+				constants.world[1] = frame.metresPerPixel;
+				if (frame.terrainSize != 0 && terrainField) {
+					constants.terrain[0] = static_cast<float>(frame.terrainSize);
+					constants.terrain[1] = frame.terrainScale;
+					constants.terrain[2] = kTerrainTolerance;
+				}
+				if (frame.lightCount != 0 && frame.tileSize != 0) {
+					constants.lights[0] = static_cast<float>(frame.lightCount);
+					constants.lights[1] = static_cast<float>(frame.tileSize);
+					constants.lights[2] = static_cast<float>(frame.tilesAcross);
+					constants.lights[3] = static_cast<float>(frame.tileCount);
+				}
+				if (sun.fixedInWorld) {
+					float direction[3];
+					WorldSunDirection(sun.azimuth, sun.elevation, direction);
+					for (int row = 0; row < 3; ++row) {
+						float const *const m = frame.worldToView + row * 4;
+						constants.sun[row] = m[0] * direction[0] + m[1] * direction[1] + m[2] * direction[2];
+					}
+				}
+			}
 			memcpy(constants.sunColor, sun.color, sizeof(sun.color));
 			memcpy(constants.ambient, sun.ambient, sizeof(sun.ambient));
 			constants.sc4Light[0] = kSC4Ambient;
@@ -2125,8 +2261,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			constants.occluder[1] = kShadowBlurTolerance;
 			Allocation const allocation = Upload(&constants, sizeof(constants), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 			if (allocation.cpu == nullptr) return;
-
-			list->EndQuery(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2);
+			list->EndQuery(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1);
 			D3D12_RESOURCE_STATES colorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			D3D12_RESOURCE_STATES lightState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			D3D12_RESOURCE_STATES depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -2137,14 +2272,27 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			D3D12_RECT const all{0, 0, windowWidth, windowHeight};
 			list->RSSetViewports(1, &full);
 			list->RSSetScissorRects(1, &all);
-			list->SetGraphicsRootSignature(lightingRootSignature.Get());
-			list->SetGraphicsRootConstantBufferView(0, allocation.gpu);
-			list->SetGraphicsRootDescriptorTable(1, ViewGpu(kLightingViews));
-			list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			// Without night lights the light buffers are never read, but the root views still want an address.
+			D3D12_GPU_VIRTUAL_ADDRESS const lights = world && frame.lightCount != 0 ? frame.lights : allocation.gpu;
+			D3D12_GPU_VIRTUAL_ADDRESS const tiles = world && frame.lightCount != 0 ? frame.tiles : allocation.gpu;
+			auto const bindLighting = [&] {
+				list->SetGraphicsRootSignature(lightingRootSignature.Get());
+				list->SetGraphicsRootConstantBufferView(0, allocation.gpu);
+				list->SetGraphicsRootDescriptorTable(1, ViewGpu(kLightingViews));
+				list->SetGraphicsRootShaderResourceView(2, lights);
+				list->SetGraphicsRootShaderResourceView(3, tiles);
+				list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			};
+			bindLighting();
 			D3D12_CPU_DESCRIPTOR_HANDLE const sunlight = RenderTargetView(3);
 			list->OMSetRenderTargets(1, &sunlight, FALSE, nullptr);
-			list->SetPipelineState(tracePipeline.Get());
-			list->DrawInstanced(3, 1, 0, 0);
+			if (world && lightHooks->TraceSunlight(allocation.gpu, ViewGpu(kLightingViews))) {
+				bindLighting();
+			} else {
+				list->SetPipelineState(tracePipeline.Get());
+				list->DrawInstanced(3, 1, 0, 0);
+			}
+			list->EndQuery(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 2);
 			D3D12_RESOURCE_STATES sunlightState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			Transition(sunlightBuffer.Get(), sunlightState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 			D3D12_CPU_DESCRIPTOR_HANDLE const output = RenderTargetView(2);
@@ -2155,9 +2303,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			Transition(backBuffer.Get(), colorState, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			Transition(lightBuffer.Get(), lightState, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			Transition(depthBuffer.Get(), depthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-			list->EndQuery(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2 + 1);
-			list->ResolveQueryData(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2, 2,
-			                       lightingTimestampReadback.Get(), frameIndex * 16);
+			list->EndQuery(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 3);
+			list->ResolveQueryData(lightingTimestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, kLightingTimestamps,
+			                       lightingTimestampReadback.Get(), query * sizeof(uint64_t));
 			frames[frameIndex].timed = true;
 			frames[frameIndex].cityFrame = cityDrawn;
 			cityDrawn = false;
@@ -2167,7 +2315,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		// pipeline and timestamps.
 		template<typename Compile>
 		bool CreateLighting(Compile const &compile, UINT compileFlags) {
-			nextView = kLightingViews + 4;
+			nextView = kLightingViews + kLightingViewCount;
 			for (uint32_t kind = 0; kind < 2; ++kind) {
 				for (uint32_t blended = 0; blended < 2; ++blended) {
 					D3D_SHADER_MACRO const macros[] = {
@@ -2192,15 +2340,21 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				return false;
 			}
 
-			// The constants, then the colour, light layer, depth and sunlight views.
-			D3D12_DESCRIPTOR_RANGE const views{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0};
-			D3D12_ROOT_PARAMETER parameters[2]{};
+			// The constants, the colour, light layer, depth, sunlight and terrain field views, then the night lights
+			// and their tiles.
+			D3D12_DESCRIPTOR_RANGE const views{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kLightingViewCount, 0, 0, 0};
+			D3D12_ROOT_PARAMETER parameters[4]{};
 			parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 			parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 			parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 			parameters[1].DescriptorTable = {1, &views};
 			parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-			D3D12_ROOT_SIGNATURE_DESC const signature{2, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+			for (uint32_t i = 0; i < 2; ++i) {
+				parameters[2 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+				parameters[2 + i].Descriptor = {kLightingViewCount + i, 0};
+				parameters[2 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+			}
+			D3D12_ROOT_SIGNATURE_DESC const signature{4, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
 			ComPtr<ID3DBlob> serialized, errors;
 			if (FAILED(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &errors)) ||
 			    FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
@@ -2225,12 +2379,12 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			description.RTVFormats[0] = DXGI_FORMAT_R8_UNORM;
 			if (FAILED(device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&tracePipeline)))) return false;
 
-			D3D12_QUERY_HEAP_DESC const queries{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kFrameCount * 2, 0};
+			D3D12_QUERY_HEAP_DESC const queries{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kFrameCount * kLightingTimestamps, 0};
 			if (FAILED(device->CreateQueryHeap(&queries, IID_PPV_ARGS(&lightingTimestamps)))) return false;
 			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_READBACK};
 			D3D12_RESOURCE_DESC buffer{};
 			buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-			buffer.Width = kFrameCount * 16;
+			buffer.Width = kFrameCount * kLightingTimestamps * sizeof(uint64_t);
 			buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
 			buffer.SampleDesc.Count = 1;
 			buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -2276,7 +2430,18 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			device->CreateShaderResourceView(depthBuffer.Get(), &view, ViewCpu(kLightingViews + 2));
 			view.Format = DXGI_FORMAT_R8_UNORM;
 			device->CreateShaderResourceView(sunlightBuffer.Get(), &view, ViewCpu(kLightingViews + 3));
+			TerrainFieldView();
 			return true;
+		}
+
+		// The lighting pass's view of the terrain field (float4 per vertex), or an empty one.
+		void TerrainFieldView() {
+			D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+			view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+			view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			view.Buffer.StructureByteStride = 16;
+			view.Buffer.NumElements = terrainField ? static_cast<UINT>(terrainField->GetDesc().Width / 16) : 1;
+			device->CreateShaderResourceView(terrainField.Get(), &view, ViewCpu(kLightingViews + 4));
 		}
 	};
 
@@ -3352,6 +3517,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		uint32_t const stride = RZVertexFormatStride(format);
 		uint32_t const byteSize = (maximumIndex + 1) * stride;
 		if (!d.ExtensionHolds(byteSize) || D3D11Topology(primitive) == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) return;
+		if (d.lightHooks != nullptr && primitive == 0) {
+			d.lightHooks->IndexedVertices(d.extensionVertices.data(), byteSize, stride, indices, count);
+		}
 		if (d.capture != nullptr &&
 		    d.CaptureDraw(d.extensionVertices.data(), format, stride, byteSize / stride, primitive, indices, count, 3)) {
 			return;
@@ -3665,6 +3833,48 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	}
 
 	int32_t cGDriver12::GetPolygonOffset() const { return impl->polygonOffset; }
+
+	// The light hooks'.
+
+	void cGDriver12::SetLightHooks(LightHooks *hooks) {
+		impl->lightHooks = hooks;
+		impl->lightHooked = impl->lightHooked || hooks != nullptr;
+	}
+	cGDriver12::Sun const &cGDriver12::RelightSun() const { return impl->sun; }
+	D3D12_GPU_DESCRIPTOR_HANDLE cGDriver12::ViewTable() const { return impl->ViewGpu(0); }
+
+	uint32_t cGDriver12::TextureView(uint32_t name) {
+		Impl &d = *impl;
+		auto const found = d.textures.find(name);
+		if (found == d.textures.end() || !found->second.resource) return 0;
+		auto &texture = found->second;
+		d.Transition(texture.resource.Get(), texture.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+		return texture.view;
+	}
+
+	uint32_t cGDriver12::CreateBufferView(ID3D12Resource *buffer) {
+		Impl &d = *impl;
+		if (buffer == nullptr || d.nextView >= kViewSlots) return 0;
+		uint32_t const slot = d.nextView++;
+		D3D12_SHADER_RESOURCE_VIEW_DESC description{};
+		description.Format = DXGI_FORMAT_R32_TYPELESS;
+		description.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		description.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		description.Buffer.NumElements = static_cast<UINT>(buffer->GetDesc().Width / 4);
+		description.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+		d.device->CreateShaderResourceView(buffer, &description, d.ViewCpu(slot));
+		return slot;
+	}
+
+	void cGDriver12::SetTerrainField(ID3D12Resource *buffer) {
+		Impl &d = *impl;
+		d.terrainField = buffer;
+		// Frames in flight may still read the old view.
+		if (d.relight && d.backBuffer) {
+			d.WaitIdle();
+			d.TerrainFieldView();
+		}
+	}
 	ID3D12Resource *cGDriver12::DepthBuffer() const { return impl->depthBuffer.Get(); }
 	ID3D12Resource *cGDriver12::BackBuffer() const { return impl->backBuffer.Get(); }
 	D3D12_CPU_DESCRIPTOR_HANDLE cGDriver12::DepthView() const { return impl->DepthStencilView(); }
