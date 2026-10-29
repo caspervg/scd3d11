@@ -11,6 +11,7 @@
 #pragma once
 
 #include "SceneLane.h"
+#include "wire/FreeCamera.h"
 
 #include <memory>
 #include <string>
@@ -68,6 +69,11 @@ namespace nSCD3D12 {
 		// Draws the following frames' kept scene from the kept camera, with the models picked for it. Models
 		// without a record stay as SC4 picked them, turned with the rest.
 		void UseKeptView(bool on);
+		// Draws the following frames from the player's own camera (nSCDWire::FreeCamera), told as a change to SC4's
+		// camera about the ground at the middle of the screen, until a camera that is off. Every occupant then
+		// shows its models for the camera's nearest SC4 zoom and rotation, picked from its record, and nothing is
+		// culled. Inputs() holds the camera it drew with.
+		void SetFreeCamera(nSCDWire::FreeCamera const &camera);
 		// A new video mode: the driver's textures are gone.
 		void VideoMode();
 		// After the driver submitted the frame.

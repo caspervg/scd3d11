@@ -545,6 +545,11 @@ namespace nSCD3D12 {
 			// SC4's own modelview, used as it is while the camera has not changed since.
 			float modelView[16]{};
 			std::vector<uint32_t> meshes;
+			// What picking its occupant's models for another view needs later: the camera rotation it was drawn
+			// with, its record and the driver's state for its first mesh.
+			uint32_t rotation = 0;
+			nSCDWire::ModelInstance instance{};
+			cGDriver12::DrawState state{};
 		};
 
 		// The models an occupant shows from the kept camera (OwnedScene::KeepView), picked from its exemplar: each
@@ -660,6 +665,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		struct PickTotals {
 			uint64_t drawn = 0, withRecord = 0, matched = 0, frames = 0;
 			uint64_t picked = 0, pickedMeshes = 0, missing = 0, kept = 0;
+			uint64_t repicks = 0;
+			double repickMilliseconds = 0.0;
 		} pickTotals;
 		std::vector<nSCAssets::ModelRef> refs;
 		// KeepView: the camera, zoom and rotation kept, and the models picked for it per occupant.
@@ -728,7 +735,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			// The transform turned from the capture's rotation to the kept one. The translation stays.
 			float now[9], then[9], turn[9];
 			QuarterTurn(targetRotation, now);
-			QuarterTurn(CameraRotation(captureView), then);
+			QuarterTurn(model.rotation, then);
 			for (int row = 0; row < 3; ++row) {
 				for (int c = 0; c < 3; ++c) {
 					turn[row * 3 + c] = now[row * 3] * then[c * 3] + now[row * 3 + 1] * then[c * 3 + 1] +
@@ -771,6 +778,96 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 			}
 			++pickTotals.picked;
+		}
+
+		// The player's own camera (SetFreeCamera), and whether models are picked for it: when its nearest zoom or
+		// rotation is not SC4's. The picks are then for targetZoom and targetRotation.
+		nSCDWire::FreeCamera freeCamera{};
+		bool freePicks = false;
+		float pivot[3]{};
+		bool pivotKnown = false;
+
+		// The models of SC4's zooms 1 to 6 by metres per pixel: zooms 5 and 6 share theirs.
+		static int32_t ModelZoom(float metresPerPixel) {
+			static constexpr float kMetres[6]{2.613f, 1.307f, 0.653f, 0.286f, 0.143f, 0.072f};
+			int32_t best = 0;
+			for (int32_t zoom = 1; zoom < 6; ++zoom) {
+				if (std::fabs(std::log(metresPerPixel / kMetres[zoom])) < std::fabs(std::log(metresPerPixel / kMetres[best]))) {
+					best = zoom;
+				}
+			}
+			return (std::min)(best, 4);
+		}
+
+		// Picks every occupant's models for a zoom and rotation, or drops the picks when SC4's own are wanted.
+		void Repick(int32_t zoom, uint32_t rotation, bool needed) {
+			if (needed == freePicks && (!needed || (zoom == targetZoom && rotation == targetRotation))) return;
+			auto const start = std::chrono::steady_clock::now();
+			for (auto const &[occupant, list]: picked) {
+				for (PickedModel const &model: list) {
+					for (uint32_t group: model.meshes) Release(group);
+				}
+			}
+			picked.clear();
+			freePicks = needed;
+			targetZoom = zoom;
+			targetRotation = rotation;
+			if (!needed) return;
+			// Each pick in the state the driver had for the occupant's first mesh, as when it is captured.
+			cGDriver12::DrawState saved{};
+			driver.SaveDrawState(saved);
+			for (auto const &[occupant, keys]: modelsByOccupant) {
+				if (keys.empty() || exemplars.count(occupant) == 0) continue;
+				Model const &model = models.find(keys.front())->second;
+				driver.RestoreDrawState(model.state);
+				Pick(model, model.instance);
+			}
+			driver.RestoreDrawState(saved);
+			++pickTotals.repicks;
+			pickTotals.repickMilliseconds +=
+				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+		}
+
+		// The height of the kept terrain at a point: the middle of its 16 metre cell's first layer.
+		bool GroundHeight(float x, float z, float &height) const {
+			int32_t const cx = static_cast<int32_t>(std::floor(x / kCellMetres));
+			int32_t const cz = static_cast<int32_t>(std::floor(z / kCellMetres));
+			auto const found = cells.find((static_cast<uint64_t>(cx) & 0xFFFFFF) << 24 | (static_cast<uint64_t>(cz) & 0xFFFFFF));
+			if (found == cells.end() || found->second.pieces.empty()) return false;
+			Piece const &piece = pieces[found->second.pieces.front()];
+			if (piece.vertices.empty()) return false;
+			float sum = 0.0f;
+			for (D3D11Vertex const &v: piece.vertices) sum += v.position[1];
+			height = sum / static_cast<float>(piece.vertices.size());
+			return true;
+		}
+
+		// Where a ray meets the kept terrain, near enough to turn the camera about: it meets the height of the
+		// cell under where it met the last one, a few times over. Keeps the last point when there is no terrain.
+		void Ground(float const *origin, float const *direction) {
+			float height = pivot[1];
+			if (!pivotKnown) {
+				// A first height: the middle of the first layers of some kept cells.
+				float sum = 0.0f;
+				int count = 0;
+				for (auto const &[key, cell]: cells) {
+					if (cell.pieces.empty() || pieces[cell.pieces.front()].vertices.empty()) continue;
+					sum += pieces[cell.pieces.front()].vertices.front().position[1];
+					if (++count == 64) break;
+				}
+				if (count == 0) return;
+				height = sum / static_cast<float>(count);
+			}
+			if (std::fabs(direction[1]) < 1e-3f) return;
+			for (int i = 0; i < 4; ++i) {
+				float const t = (height - origin[1]) / direction[1];
+				float const x = origin[0] + direction[0] * t, z = origin[2] + direction[2] * t;
+				pivot[0] = x;
+				pivot[1] = height;
+				pivot[2] = z;
+				pivotKnown = true;
+				if (!GroundHeight(x, z, height)) break;
+			}
 		}
 
 		// Where everything kept lies on screen, so a redraw only looks at what is near it: each item in the bin of
@@ -1956,6 +2053,26 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			pool.Flush();
 			lap(1);
 
+			// The player's own camera (SetFreeCamera): SC4's turned, tilted and zoomed about the ground at the middle
+			// of the screen, with every occupant's models for its nearest zoom and rotation. What SC4 redrew was
+			// judged with its own camera above.
+			bool const free = freeCamera.on != 0;
+			if (free) {
+				float origin[3], direction[3];
+				nSCDWire::ScreenMiddleRay(now.view, now.projection, origin, direction);
+				Ground(origin, direction);
+				int32_t const sc4Zoom = ModelZoom(2.0f / (now.projection[0] * static_cast<float>(now.width)));
+				uint32_t const sc4Rotation = CameraRotation(now.view);
+				Camera seen = now;
+				if (pivotKnown) nSCDWire::FreeView(now.view, now.projection, pivot, freeCamera, seen.view, seen.projection);
+				int32_t const zoom = ModelZoom(2.0f / (seen.projection[0] * static_cast<float>(seen.width)));
+				uint32_t const rotation = CameraRotation(seen.view);
+				Repick(zoom, rotation, zoom != sc4Zoom || rotation != sc4Rotation);
+				now = seen;
+			} else {
+				Repick(targetZoom, targetRotation, false);
+			}
+
 			if (orderDirty) {
 				order.clear();
 				for (uint32_t g = 0; g < groups.size(); ++g) {
@@ -1983,19 +2100,23 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				camera = now;
 			}
 			// Instances: every visible model's rows per mesh group, then one record for all world geometry.
+			// The free camera is not culled either, as extents hold SC4's rotation.
+			bool const everywhere = turned || free;
+			bool const usePicks = turned || freePicks;
 			drawList.clear();
 			for (auto &[key, model]: models) {
-				if (turned ? picked.count(key.occupant) != 0 : !OnScreen(ToScreen(model.extent, camera), camera)) {
-					totals.culled += !turned;
+				if (usePicks && picked.count(key.occupant) != 0) continue;
+				if (!everywhere && !OnScreen(ToScreen(model.extent, camera), camera)) {
+					++totals.culled;
 					continue;
 				}
 				float modelView[16];
-				if (model.camera == cameraId && !looking && !turned) std::memcpy(modelView, model.modelView, sizeof(modelView));
+				if (model.camera == cameraId && !looking && !everywhere) std::memcpy(modelView, model.modelView, sizeof(modelView));
 				else Multiply(now.view, model.world, modelView);
 				drawList.push_back({Rows(modelView), &model.meshes});
 				pickTotals.kept += turned;
 			}
-			if (turned) {
+			if (usePicks) {
 				for (auto const &[occupant, list]: picked) {
 					if (modelsByOccupant.count(occupant) == 0) continue;
 					for (PickedModel const &model: list) {
@@ -2087,7 +2208,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				for (uint32_t b: group.buckets) {
 					Bucket const &bucket = buckets[b];
 					if (bucket.chunk == UINT32_MAX || bucket.indexUsed == 0) continue;
-					if (!turned && !OnScreen(ToScreen(bucket.extent, camera), camera)) continue;
+					if (!everywhere && !OnScreen(ToScreen(bucket.extent, camera), camera)) continue;
 					pool.Ready(bucket.chunk);
 					D3D12_GPU_VIRTUAL_ADDRESS const address = pool.Address(bucket.chunk, bucket.offset);
 					draw.vertices = {address, bucket.vertexCapacity * static_cast<UINT>(sizeof(D3D11Vertex)), sizeof(D3D11Vertex)};
@@ -2235,6 +2356,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 	}
 
 	void OwnedScene::UseKeptView(bool on) { impl->useTarget = on; }
+
+	void OwnedScene::SetFreeCamera(nSCDWire::FreeCamera const &camera) { impl->freeCamera = camera; }
 
 	void OwnedScene::VideoMode() {
 		Impl &d = *impl;
@@ -2442,7 +2565,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			d.capturing = &model;
 			d.capturingDrawable = owner.drawable;
-			if (d.target.known && owner.occupant != 0) d.Pick(model, instance);
+			model.rotation = CameraRotation(d.captureView);
+			model.instance = instance;
+			d.driver.SaveDrawState(model.state);
+			if ((d.target.known || d.freePicks) && owner.occupant != 0) d.Pick(model, instance);
 		}
 		d.lastMesh = mesh;
 		uint32_t const group = d.GroupFor(state, d.captureView, &vertices, &indices, count, 2ull << 48 | d.gridRank, kModel << 8 | 1);
@@ -2502,6 +2628,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		if (p.picked != 0) {
 			std::printf("owned: kept view: picked models for %llu occupants, %llu meshes, %llu models the store lacks, %llu "
 			            "model draws without a record\n", u(p.picked), u(p.pickedMeshes), u(p.missing), u(p.kept));
+		}
+		if (p.repicks != 0) {
+			std::printf("owned: free camera: picked every occupant's models anew %llu times, %.1f ms each on average\n",
+			            u(p.repicks), p.repickMilliseconds / static_cast<double>(p.repicks));
 		}
 		for (auto const &[millimetres, z]: d.zooms) {
 			std::printf("owned:   at %.4f metres per pixel: %llu frames, %.0f draws and %.0f instances per frame\n",
