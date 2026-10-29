@@ -45,6 +45,9 @@ namespace nSCD3D11::Settings {
 		// ServerRelight=<hour> or <azimuth>,<elevation>: the server relights every frame with that sun
 		// (see SCD3D12Server's --relight). Empty or off draws the game's own light.
 		std::string serverRelight;
+		// ServerLight=rays,terrain,lamps,world (any of them): with ServerRelight, light from the server's own copy
+		// of the city (see SCD3D12Server's --light). rays and lamps need ServerScene=owned. Empty or off for none.
+		std::string serverLight;
 		// ServerScene=substitute: the server draws the city's models, networks and lot textures from its own
 		// copy of the game's data (see SCD3D12Server's --scene). check also compares each with the game's. owned
 		// keeps the whole static view on the server and draws it every frame without SC4's backing store.
@@ -68,4 +71,6 @@ namespace nSCD3D11::Settings {
 	// (on/off, true/false, enabled/disabled, 1/0, any case), with an empty
 	// value - a bare -Name - meaning on. False when it is none of those.
 	bool ParseFlag(std::string_view value, bool &flag);
+	// Exposed for tests: ServerLight, off or a comma separated list of rays, terrain, lamps and world.
+	bool ParseServerLight(std::string_view value, std::string &features);
 } // namespace nSCD3D11::Settings

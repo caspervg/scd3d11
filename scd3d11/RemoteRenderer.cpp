@@ -57,7 +57,11 @@ namespace nSCD3D11 {
 		std::wstring command = L"\"" + server + L"\" serve --ring " + name + L" --parent " + std::to_wstring(self) +
 		                       L" --log \"" + log + L"\"";
 		std::string const &relight = Settings::Get().serverRelight;
-		if (!relight.empty() && relight != "off") command += L" --relight " + std::wstring(relight.begin(), relight.end());
+		if (!relight.empty() && relight != "off") {
+			command += L" --relight " + std::wstring(relight.begin(), relight.end());
+			std::string const &light = Settings::Get().serverLight;
+			if (!light.empty() && light != "off") command += L" --light " + std::wstring(light.begin(), light.end());
+		}
 		std::string const &scene = Settings::Get().serverScene;
 		if (!scene.empty() && scene != "off") command += L" --scene " + std::wstring(scene.begin(), scene.end());
 		if (DrawStatsEnabled()) command += L" --stats on";

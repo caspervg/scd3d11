@@ -160,6 +160,17 @@ namespace nSCD3D11::Settings {
 		return StringViewUtil::TryParse(value, flag);
 	}
 
+	bool ParseServerLight(std::string_view value, std::string &features) {
+		features = value;
+		if (value == "off") return true;
+		for (size_t start = 0;;) {
+			size_t const end = value.find(',', start);
+			std::string_view const feature = value.substr(start, end - start);
+			if (feature != "rays" && feature != "terrain" && feature != "lamps" && feature != "world") return false;
+			if (end == std::string_view::npos) return true;
+			start = end + 1;
+		}
+	}
 
 	void Load(cIGZCmdLine *commandLine) {
 		// The arguments as SC4 split them, which is what the switches are matched against.
@@ -188,6 +199,7 @@ namespace nSCD3D11::Settings {
 		values.server = Resolve(sources, "Renderer", ParseRenderer, values.server);
 		values.serverComposition = Resolve(sources, "ServerPresent", ParseServerPresent, values.serverComposition);
 		values.serverRelight = Resolve(sources, "ServerRelight", ParsePath, values.serverRelight);
+		values.serverLight = Resolve(sources, "ServerLight", ParseServerLight, values.serverLight);
 		values.serverScene = Resolve(sources, "ServerScene", ParseServerScene, values.serverScene);
 		values.serverSkipModels = Resolve(sources, "ServerSkipModels", ParseFlag, values.serverSkipModels);
 		values.freeCamera = Resolve(sources, "FreeCamera", ParseFlag, values.freeCamera);
