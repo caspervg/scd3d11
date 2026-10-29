@@ -302,9 +302,9 @@ namespace {
 		ID3D12Resource *Upscale(bool &generate) {
 			ID3D12Resource *const output = driver.Output();
 			nSCD3D12::UpscalerInputs inputs;
-			if (dlss == nullptr || output == nullptr || retained == nullptr || !retained->UpscalerCamera(inputs)) {
-				return output;
-			}
+			bool const camera = (retained != nullptr && retained->UpscalerCamera(inputs)) ||
+			                    (owned != nullptr && owned->UpscalerCamera(inputs));
+			if (dlss == nullptr || output == nullptr || !camera) return output;
 			D3D12_RESOURCE_DESC const description = output->GetDesc();
 			inputs.outputWidth = static_cast<uint32_t>(description.Width);
 			inputs.outputHeight = description.Height;
@@ -328,7 +328,8 @@ namespace {
 				if (dlaa) {
 					float x, y;
 					dlss->NextJitter(x, y);
-					retained->SetJitter(x, y);
+					if (retained != nullptr) retained->SetJitter(x, y);
+					if (owned != nullptr) owned->SetJitter(x, y);
 				}
 				return shown;
 			}

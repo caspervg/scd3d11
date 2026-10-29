@@ -28,6 +28,7 @@
 #include "OwnedScene.h"
 
 #include "D3D11Conversions.h"
+#include "Dlss.h"
 #include "wire/ImageFile.h"
 
 #include <d3dcompiler.h>
@@ -713,7 +714,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			return SUCCEEDED(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&motionViews)));
 		}
 
-		// The colour copy and the motion target, at the window's size. Both rest in PIXEL_SHADER_RESOURCE.
+		// The colour copy and the motion target, at the window's size. Both rest in RENDER_TARGET.
 		bool Targets(int32_t width, int32_t height) {
 			if (cityColor && inputs.outputWidth == static_cast<uint32_t>(width) && inputs.outputHeight == static_cast<uint32_t>(height)) {
 				return true;
@@ -722,17 +723,18 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			WaitFor(fenceValue);
 			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
 			D3D12_RESOURCE_DESC description = driver.BackBuffer()->GetDesc();
-			description.Flags = D3D12_RESOURCE_FLAG_NONE;
+			description.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 			cityColor.Reset();
 			motion.Reset();
+			D3D12_CLEAR_VALUE const black{description.Format, {0, 0, 0, 1}};
 			if (FAILED(driver.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
-			                                                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+			                                                    D3D12_RESOURCE_STATE_RENDER_TARGET, &black,
 			                                                    IID_PPV_ARGS(&cityColor)))) return false;
 			description.Format = DXGI_FORMAT_R16G16_FLOAT;
 			description.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 			D3D12_CLEAR_VALUE const clear{DXGI_FORMAT_R16G16_FLOAT, {0, 0, 0, 0}};
 			if (FAILED(driver.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
-			                                                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
+			                                                    D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
 			                                                    IID_PPV_ARGS(&motion)))) return false;
 			driver.Device()->CreateRenderTargetView(motion.Get(), nullptr, motionTargets->GetCPUDescriptorHandleForHeapStart());
 			inputs.outputWidth = inputs.renderWidth = static_cast<uint32_t>(width);
@@ -769,7 +771,6 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			view.Texture2D.MipLevels = 1;
 			driver.Device()->CreateShaderResourceView(depth, &view, motionViews->GetCPUDescriptorHandleForHeapStart());
 			Barrier(depth, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-			Barrier(motion.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			ID3D12DescriptorHeap *const heaps[]{motionViews.Get()};
 			list->SetDescriptorHeaps(1, heaps);
 			list->SetGraphicsRootSignature(motionSignature.Get());
@@ -784,7 +785,6 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			list->SetPipelineState(motionPipeline.Get());
 			list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 			list->DrawInstanced(3, 1, 0, 0);
-			Barrier(motion.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 			Barrier(depth, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 			driver.Rebind();
 		}
@@ -794,9 +794,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			if (!cityColor) return;
 			ID3D12Resource *const back = driver.BackBuffer();
 			Barrier(back, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-			Barrier(cityColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+			Barrier(cityColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
 			driver.CommandList()->CopyResource(cityColor.Get(), back);
-			Barrier(cityColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			Barrier(cityColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			Barrier(back, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			cityCopied = true;
 		}
@@ -1955,6 +1955,20 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 
 	OwnedScene::FrameInputs const &OwnedScene::Inputs() const { return impl->inputs; }
 
+	bool OwnedScene::UpscalerCamera(UpscalerInputs &inputs) const {
+		FrameInputs const &mine = impl->inputs;
+		if (!mine.valid) return false;
+		inputs.motion = mine.motion;
+		inputs.hudless = mine.color;
+		std::memcpy(inputs.jitter, mine.jitter, sizeof(inputs.jitter));
+		std::memcpy(inputs.projection, mine.projection, sizeof(inputs.projection));
+		std::memcpy(inputs.view, mine.view, sizeof(inputs.view));
+		std::memcpy(inputs.previousProjection, mine.previousProjection, sizeof(inputs.previousProjection));
+		std::memcpy(inputs.previousView, mine.previousView, sizeof(inputs.previousView));
+		inputs.reset = std::memcmp(mine.projection, mine.previousProjection, 3 * sizeof(float)) != 0;
+		return true;
+	}
+
 	void OwnedScene::SetLook(float x, float y) {
 		impl->look[0] = x;
 		impl->look[1] = y;
@@ -1995,7 +2009,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			D3D12_RESOURCE_BARRIER barrier{};
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			barrier.Transition = {sources[i], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-			                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE};
+			                      D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
 			list->ResourceBarrier(1, &barrier);
 			D3D12_TEXTURE_COPY_LOCATION const to{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {footprints[i]}};
 			D3D12_TEXTURE_COPY_LOCATION from{sources[i], D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};

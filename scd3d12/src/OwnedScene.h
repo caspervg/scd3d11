@@ -16,6 +16,8 @@
 #include <string>
 
 namespace nSCD3D12 {
+	struct UpscalerInputs;
+
 	// The city's whole static view kept by the server and drawn by it every frame with the game's camera: the
 	// background, terrain and water, lot textures, networks, buildings, props, flora and overlays. SC4's
 	// backing store is not used.
@@ -66,12 +68,12 @@ namespace nSCD3D12 {
 		// a target of its own.
 		struct FrameInputs {
 			bool valid = false;
-			// The city before the UI, in PIXEL_SHADER_RESOURCE.
+			// The city before the UI, in RENDER_TARGET.
 			ID3D12Resource *color = nullptr;
 			// The driver's depth buffer, in DEPTH_WRITE. It holds the city before the UI draws.
 			ID3D12Resource *depth = nullptr;
 			// Where each pixel was in the previous frame minus where it is now, in pixels (RG16F, in
-			// PIXEL_SHADER_RESOURCE). The camera's motion only, without jitter.
+			// RENDER_TARGET). The camera's motion only, without jitter.
 			ID3D12Resource *motion = nullptr;
 			// The sub-pixel offset the owned view was drawn with, in pixels.
 			float jitter[2]{};
@@ -83,6 +85,9 @@ namespace nSCD3D12 {
 		// right and down. A Halton sequence per frame, for example.
 		void SetJitter(float x, float y);
 		FrameInputs const &Inputs() const;
+		// The same for DLSS (Dlss.h): motion vectors, the city before the UI as the HUD-less colour, the camera and
+		// the jitter. False when the frame showed no owned view.
+		bool UpscalerCamera(UpscalerInputs &inputs) const;
 		// Draws what is kept from a camera moved by x, y pixels along the screen, to show what SC4 is not drawing
 		// now. The dynamic passes stay where SC4 put them.
 		void SetLook(float x, float y);
