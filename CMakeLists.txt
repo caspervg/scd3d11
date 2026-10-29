@@ -120,6 +120,8 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
+        scd3d11/Doctor.cpp
+        scd3d11/DoctorScan.cpp
         scd3d11/SCD3D11Service.cpp
         scd3d11/Settings.cpp
         scd3d11/TextureUploadUtils.cpp

@@ -160,6 +160,7 @@ namespace nSCD3D11::Settings {
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
 		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);
+		values.doctor = Resolve(sources, "Doctor", ParseFlag, values.doctor);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

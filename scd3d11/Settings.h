@@ -35,6 +35,8 @@ namespace nSCD3D11::Settings {
 		bool drawStats = false;
 		// LogLevel=trace.
 		bool traceLog = false;
+		// Doctor=on: also log every DLL and plugin setting the doctor looked at.
+		bool doctor = false;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.

@@ -26,6 +26,8 @@ namespace nSCD3D11
 		Window,
 		// DrawStats frame reports.
 		Stats,
+		// Doctor findings about the rest of the installation.
+		Doctor,
 		Count
 	};
 
