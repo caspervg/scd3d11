@@ -74,6 +74,23 @@ namespace nSCD3D12 {
 		// shows its models for the camera's nearest SC4 zoom and rotation, picked from its record, and nothing is
 		// culled. Inputs() holds the camera it drew with.
 		void SetFreeCamera(nSCDWire::FreeCamera const &camera);
+		// The pixel the player points at, from the window's top left. While the free camera is on, the world point
+		// drawn there is read back from the depth buffer, a few frames late.
+		void SetCursor(int32_t x, int32_t y);
+		// What the last frame drew with the free camera, for picking in the game.
+		struct FreeState {
+			bool drawn = false;
+			uint32_t width = 0, height = 0;
+			// Column major, without jitter.
+			float view[16]{}, projection[16]{};
+			// The ground point the camera turns about.
+			float pivot[3]{};
+			// The latest world point read back under cursor, and its depth (1 where nothing was drawn).
+			bool cursorValid = false;
+			int32_t cursor[2]{};
+			float cursorWorld[4]{};
+		};
+		FreeState const &Free() const;
 		// A new video mode: the driver's textures are gone.
 		void VideoMode();
 		// After the driver submitted the frame.

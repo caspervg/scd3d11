@@ -620,6 +620,15 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 	float2 before = float2(clip.x / clip.w + 1.0f, 1.0f - clip.y / clip.w) * 0.5f * size.xy;
 	return before - position.xy;
 }
+
+// The world point at one pixel (size.xy here) and its depth.
+float4 PointPS(float4 position : SV_POSITION) : SV_TARGET
+{
+	float z = depth.Load(int3(size.xy, 0));
+	float2 ndc = float2((size.x + 0.5f) * size.z * 2.0f - 1.0f, 1.0f - (size.y + 0.5f) * size.w * 2.0f);
+	float4 world = mul(current, float4(ndc, z * 2.0f - 1.0f, 1.0f));
+	return float4(world.xyz / world.w, z);
+}
 )";
 
 		enum CaptureKind : uint8_t { kBackground, kTerrain, kView, kGrid, kModel };
@@ -1019,6 +1028,15 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		ComPtr<ID3D12DescriptorHeap> motionTargets, motionViews;
 		ComPtr<ID3D12RootSignature> motionSignature;
 		ComPtr<ID3D12PipelineState> motionPipeline;
+		// The free camera's picking: the cursor, the world point under it per frame in flight, what was drawn.
+		ComPtr<ID3D12PipelineState> pointPipeline;
+		ComPtr<ID3D12Resource> pointTarget, pointReadback;
+		bool pointPending[kTimingSlots]{};
+		uint64_t pointFence[kTimingSlots]{};
+		int32_t pointCursor[kTimingSlots][2]{};
+		int32_t cursor[2]{};
+		bool cursorSet = false;
+		OwnedScene::FreeState free;
 		bool cityCopied = false;
 
 		bool CreateMotion() {
@@ -1053,8 +1071,35 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			description.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
 			description.SampleDesc.Count = 1;
 			if (FAILED(device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&motionPipeline)))) return false;
-			D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
+			// The world point under the cursor: one pixel, copied to a readback slot per frame in flight.
+			ComPtr<ID3DBlob> point;
+			description.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			if (FAILED(D3DCompile(kMotionShader, sizeof(kMotionShader) - 1, "OwnedScene", nullptr, nullptr, "PointPS",
+			                      "ps_5_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &point, &errors))) return false;
+			description.PS = {point->GetBufferPointer(), point->GetBufferSize()};
+			if (FAILED(device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&pointPipeline)))) return false;
+			D3D12_HEAP_PROPERTIES const gpu{D3D12_HEAP_TYPE_DEFAULT}, readback{D3D12_HEAP_TYPE_READBACK};
+			D3D12_RESOURCE_DESC texture{};
+			texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+			texture.Width = texture.Height = texture.DepthOrArraySize = texture.MipLevels = 1;
+			texture.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			texture.SampleDesc.Count = 1;
+			texture.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+			D3D12_RESOURCE_DESC buffer{};
+			buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			buffer.Width = kTimingSlots * 256;
+			buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
+			buffer.SampleDesc.Count = 1;
+			buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			if (FAILED(device->CreateCommittedResource(&gpu, D3D12_HEAP_FLAG_NONE, &texture, D3D12_RESOURCE_STATE_RENDER_TARGET,
+			                                           nullptr, IID_PPV_ARGS(&pointTarget))) ||
+			    FAILED(device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+			                                           nullptr, IID_PPV_ARGS(&pointReadback)))) return false;
+			D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2};
 			if (FAILED(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&motionTargets)))) return false;
+			D3D12_CPU_DESCRIPTOR_HANDLE pointView = motionTargets->GetCPUDescriptorHandleForHeapStart();
+			pointView.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+			device->CreateRenderTargetView(pointTarget.Get(), nullptr, pointView);
 			heap = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
 			return SUCCEEDED(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&motionViews)));
 		}
@@ -1130,8 +1175,55 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			list->SetPipelineState(motionPipeline.Get());
 			list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 			list->DrawInstanced(3, 1, 0, 0);
+			if (free.drawn && cursorSet && cursor[0] >= 0 && cursor[1] >= 0 && cursor[0] < now.width && cursor[1] < now.height) {
+				// The world point under the cursor, into this frame's readback slot.
+				float const at[2]{static_cast<float>(cursor[0]), static_cast<float>(cursor[1])};
+				list->SetGraphicsRoot32BitConstants(0, 2, at, 32);
+				D3D12_VIEWPORT const pixel{0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+				D3D12_RECT const one{0, 0, 1, 1};
+				list->RSSetViewports(1, &pixel);
+				list->RSSetScissorRects(1, &one);
+				D3D12_CPU_DESCRIPTOR_HANDLE view = target;
+				view.ptr += driver.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+				list->OMSetRenderTargets(1, &view, FALSE, nullptr);
+				list->SetPipelineState(pointPipeline.Get());
+				list->DrawInstanced(3, 1, 0, 0);
+				Barrier(pointTarget.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+				uint32_t const slot = static_cast<uint32_t>(frame % kTimingSlots);
+				D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{slot * 256ull, {DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 1, 1, 256}};
+				D3D12_TEXTURE_COPY_LOCATION const to{pointReadback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {footprint}};
+				D3D12_TEXTURE_COPY_LOCATION from{pointTarget.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+				from.SubresourceIndex = 0;
+				list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+				Barrier(pointTarget.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+				pointPending[slot] = true;
+				pointCursor[slot][0] = cursor[0];
+				pointCursor[slot][1] = cursor[1];
+			}
 			Barrier(depth, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 			driver.Rebind();
+		}
+
+		// The newest cursor point the GPU is done with.
+		void ReadCursor() {
+			if (!fence) return;
+			uint64_t const done = fence->GetCompletedValue();
+			uint64_t newest = 0;
+			for (uint32_t slot = 0; slot < kTimingSlots; ++slot) {
+				if (!pointPending[slot] || pointFence[slot] == 0 || pointFence[slot] > done) continue;
+				pointPending[slot] = false;
+				if (pointFence[slot] < newest) continue;
+				newest = pointFence[slot];
+				D3D12_RANGE const range{slot * 256ull, slot * 256ull + 16};
+				float *values = nullptr;
+				if (FAILED(pointReadback->Map(0, &range, reinterpret_cast<void **>(&values)))) continue;
+				std::memcpy(free.cursorWorld, reinterpret_cast<uint8_t *>(values) + slot * 256, sizeof(free.cursorWorld));
+				D3D12_RANGE const none{0, 0};
+				pointReadback->Unmap(0, &none);
+				free.cursor[0] = pointCursor[slot][0];
+				free.cursor[1] = pointCursor[slot][1];
+				free.cursorValid = true;
+			}
 		}
 
 		// The city as it stands once the dynamic passes are done, before the UI draws over it.
@@ -2056,8 +2148,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			// The player's own camera (SetFreeCamera): SC4's turned, tilted and zoomed about the ground at the middle
 			// of the screen, with every occupant's models for its nearest zoom and rotation. What SC4 redrew was
 			// judged with its own camera above.
-			bool const free = freeCamera.on != 0;
-			if (free) {
+			// The dynamic passes are drawn from it too (cGDriver12::SwapCamera).
+			bool const freeOn = freeCamera.on != 0;
+			free.drawn = false;
+			if (freeOn) {
 				float origin[3], direction[3];
 				nSCDWire::ScreenMiddleRay(now.view, now.projection, origin, direction);
 				Ground(origin, direction);
@@ -2068,9 +2162,17 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				int32_t const zoom = ModelZoom(2.0f / (seen.projection[0] * static_cast<float>(seen.width)));
 				uint32_t const rotation = CameraRotation(seen.view);
 				Repick(zoom, rotation, zoom != sc4Zoom || rotation != sc4Rotation);
+				driver.SwapCamera(now.view, now.projection, seen.view, seen.projection);
 				now = seen;
+				free.drawn = true;
+				free.width = static_cast<uint32_t>(now.width);
+				free.height = static_cast<uint32_t>(now.height);
+				std::memcpy(free.view, now.view, sizeof(free.view));
+				std::memcpy(free.projection, now.projection, sizeof(free.projection));
+				std::memcpy(free.pivot, pivot, sizeof(free.pivot));
 			} else {
 				Repick(targetZoom, targetRotation, false);
+				driver.SwapCamera(nullptr, nullptr, nullptr, nullptr);
 			}
 
 			if (orderDirty) {
@@ -2101,7 +2203,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			// Instances: every visible model's rows per mesh group, then one record for all world geometry.
 			// The free camera is not culled either, as extents hold SC4's rotation.
-			bool const everywhere = turned || free;
+			bool const everywhere = turned || freeOn;
 			bool const usePicks = turned || freePicks;
 			drawList.clear();
 			for (auto &[key, model]: models) {
@@ -2359,6 +2461,14 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 
 	void OwnedScene::SetFreeCamera(nSCDWire::FreeCamera const &camera) { impl->freeCamera = camera; }
 
+	void OwnedScene::SetCursor(int32_t x, int32_t y) {
+		impl->cursor[0] = x;
+		impl->cursor[1] = y;
+		impl->cursorSet = true;
+	}
+
+	OwnedScene::FreeState const &OwnedScene::Free() const { return impl->free; }
+
 	void OwnedScene::VideoMode() {
 		Impl &d = *impl;
 		d.KillAll(false);
@@ -2373,7 +2483,11 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		if (d.fence) {
 			d.driver.Queue()->Signal(d.fence.Get(), ++d.fenceValue);
 			d.slotFence[d.frame % kTimingSlots] = d.fenceValue;
+			if (d.pointPending[d.frame % kTimingSlots]) d.pointFence[d.frame % kTimingSlots] = d.fenceValue;
+			d.ReadCursor();
 		}
+		// Composite sets it again for each frame drawn from the free camera.
+		d.driver.SwapCamera(nullptr, nullptr, nullptr, nullptr);
 		d.DropBackground();
 		d.Sweep();
 		// A frame that never reached a dynamic owner is not the city: the next frame draws as the game says.

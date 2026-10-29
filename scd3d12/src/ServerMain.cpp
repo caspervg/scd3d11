@@ -36,7 +36,7 @@
 //       <yaw>,<pitch>,<zoom>[,<yaw step>] draws the chosen frames from the player's own camera (FreeCamera.h): SC4's
 //       turned by yaw degrees about the ground at the middle of the screen, tilted to pitch degrees (0 keeps SC4's)
 //       and zoomed in by zoom, each chosen frame turned yaw step degrees further than the one before. Without it
-//       the capture's own FreeCamera records apply.
+//       the capture's own FreeCamera records apply. The dynamic passes are drawn from the free camera too.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
 //                       [--scene substitute|check|owned]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
@@ -362,7 +362,7 @@ namespace {
 					freeFrames += next;
 				}
 				// The dynamic passes follow SC4's camera, not the kept one, so the frames compared leave them out.
-				scene->DropDynamic(next && (options.viewOf != UINT64_MAX || options.freeCamera));
+				scene->DropDynamic(next && options.viewOf != UINT64_MAX);
 			}
 			if (dlss != nullptr) dlss->BeginFrame(frame + 1);
 			return ++frame <= options.until;
