@@ -16,6 +16,8 @@
 #include <string>
 
 namespace nSCD3D12 {
+	struct UpscalerInputs;
+
 	// The city's static models (buildings, props, flora) kept by the server and drawn by it every frame with the
 	// game's camera, instead of coming out of SC4's backing store.
 	//
@@ -57,6 +59,12 @@ namespace nSCD3D12 {
 		// After the driver submitted the frame. Writes the kept motion vectors as a PNG when path is set.
 		void EndFrame(std::wstring const *motionPath);
 		void PrintTotals() const;
+		// Draws the instances from the next frame on with each pixel's sample this far from its centre, in pixels,
+		// x right and y down, for DLAA. The motion vectors stay without it.
+		void SetJitter(float x, float y);
+		// This frame's motion vectors, camera and jitter, once the instances are drawn. False when the frame
+		// showed no city camera.
+		bool UpscalerCamera(UpscalerInputs &inputs) const;
 
 		bool TakeMesh(nSCDWire::DrawOwner const &owner, nSCDWire::ModelInstance const &instance,
 		              float const *bounds, uint32_t mesh, D3D12_VERTEX_BUFFER_VIEW const &vertices,

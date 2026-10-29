@@ -21,6 +21,7 @@
 
 #include "RetainedScene.h"
 
+#include "Dlss.h"
 #include "wire/ImageFile.h"
 
 #include <d3dcompiler.h>
@@ -255,6 +256,12 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 		bool composited = false;
 		Camera camera, previousCamera;
 		uint32_t cameraId = 0;
+		// For the upscaler: the jitter instances are drawn with, the camera motion was measured from and the
+		// frame that was last drawn with a city camera.
+		float jitter[2]{}, drawnJitter[2]{};
+		Camera motionFrom;
+		bool reset = true;
+		uint64_t cameraFrame = UINT64_MAX;
 		Totals totals;
 		std::map<int32_t, Zoom> zooms;
 		int32_t slotZoom[kSlots]{};
@@ -638,6 +645,16 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 			int32_t const offset = driver.GetPolygonOffset();
 			bool fogNow = fog, stencilNow = stencil;
 			int32_t offsetNow = offset;
+			// The jitter moves what is drawn the other way.
+			if (jitter[0] != 0.0f || jitter[1] != 0.0f) {
+				float projection[16];
+				std::memcpy(projection, now.projection, sizeof(projection));
+				projection[12] -= 2.0f * jitter[0] / static_cast<float>(now.width);
+				projection[13] += 2.0f * jitter[1] / static_cast<float>(now.height);
+				driver.MatrixMode(1);
+				driver.LoadMatrix(projection);
+			}
+			std::memcpy(drawnJitter, jitter, sizeof(jitter));
 			driver.MatrixMode(0);
 			// Bracketed as the static grid, so the driver counts the draws as the city.
 			nSCDWire::DrawOwner owner{};
@@ -718,6 +735,9 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 			for (Instance &instance: instances) {
 				if (instance.alive) std::memcpy(instance.previousWorld, instance.world, sizeof(instance.world));
 			}
+			reset = !previousCamera.known;
+			motionFrom = previousCamera.known ? previousCamera : camera;
+			cameraFrame = frame;
 			previousCamera = camera;
 			float const milliseconds = static_cast<float>(
 				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
@@ -929,6 +949,25 @@ float2 InstancePS(InstanceOutput input) : SV_TARGET
 	}
 
 	void RetainedScene::KeepMotion() { impl->keepMotion = true; }
+
+	void RetainedScene::SetJitter(float x, float y) {
+		impl->jitter[0] = x;
+		impl->jitter[1] = y;
+	}
+
+	bool RetainedScene::UpscalerCamera(UpscalerInputs &inputs) const {
+		Impl const &d = *impl;
+		if (d.cameraFrame != d.frame || !d.motion) return false;
+		inputs.motion = d.motion.Get();
+		inputs.jitter[0] = d.drawnJitter[0];
+		inputs.jitter[1] = d.drawnJitter[1];
+		std::memcpy(inputs.projection, d.camera.projection, sizeof(inputs.projection));
+		std::memcpy(inputs.view, d.camera.view, sizeof(inputs.view));
+		std::memcpy(inputs.previousProjection, d.motionFrom.projection, sizeof(inputs.previousProjection));
+		std::memcpy(inputs.previousView, d.motionFrom.view, sizeof(inputs.previousView));
+		inputs.reset = d.reset;
+		return true;
+	}
 
 	void RetainedScene::EndFrame(std::wstring const *motionPath) {
 		Impl &d = *impl;
