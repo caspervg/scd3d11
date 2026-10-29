@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <windows.h>
 
 namespace nSCD3D11
@@ -32,6 +33,9 @@ namespace nSCD3D11
 	};
 
 	void Log(LogCategory category, char const* format, ...);
+	// The Logs folder of the user directory, next to the Plugins folder holding SCD3D11.dll. Empty when the
+	// module path is unavailable, which puts the log in the working directory.
+	std::filesystem::path LogDirectory();
 	// Only written with LogLevel=trace.
 	void LogTrace(LogCategory category, char const* format, ...);
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result);
