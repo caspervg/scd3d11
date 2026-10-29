@@ -41,9 +41,17 @@ The live stream and a recorded capture are the same bytes. Every capture replays
    20 MB of geometry per second of which 1 MB the cache had not seen, peaks of 90 MB and 9.5 MB, textures up to 57 MB
    per second while loading, the largest single frame 19 MB (while loading). About 220 draws per frame at rest and
    600 while scrolling. A heavy NAM city is still to be measured.
-3. **Presenting from another process.** Half answered: yes. With `ServerPresent=composition` the server's own
-   flip-model swap chain sits on a DirectComposition surface the shim attaches to SC4's window, and the live game
-   showed the server's frames that way. Streamline frame generation on such a swap chain is still to be tried.
+3. **Presenting from another process.** Answered: yes, and frame generation needs a child window instead of
+   composition. With `ServerPresent=composition` the server's own flip-model swap chain sits on a DirectComposition
+   surface the shim attaches to SC4's window, and the live game showed the server's frames that way. DLSS frame
+   generation does not work on composition swap chains. Streamline's factory passes them straight to DXGI, without
+   the hook frame generation sets itself up in, and it has no `IDXGIFactoryMedia` at all. Wrapped afterwards, such a
+   swap chain never gets a generated frame (measured in replay: none on either kind). Frame generation does work on a
+   window swap chain made through Streamline's factory on another process's child window, as long as that process
+   started the server, as SC4 does. Streamline only generates frames while the foreground window belongs to its own
+   process or to its parent. A replay started by a stand-in host and presenting into the host's child window drew 60
+   frames and presented 120 per second under a 120 fps Reflex cap. So live frame generation needs the shim to give
+   the server a child window of SC4's window to present into.
 4. **Plugin folder scanning.** Answered: SC4 does not load DLLs from subfolders of Plugins (a test DLL in
    `Plugins\SCD3D12\` was never loaded). The server and its own DLLs can live there.
 5. **Address space.** Answered: worth it already. Big City Tutorial just after loading, SC4's own process: 884 MB
@@ -59,6 +67,7 @@ The live stream and a recorded capture are the same bytes. Every capture replays
 | M2 | The live game runs drawn by the server. `Renderer=server` works end to end: the stream goes through a 64 MB shared ring, frames come back through two shared textures and fences, and the shim falls back to drawing locally when the server stops (killed mid-session, the game carried on drawing locally at the same frame rate). `ServerPresent=composition` presents from the server through DirectComposition. Coverage captures (night, every zoom and rotation, panels and dialogs, the query tool, demolition with explosions, plopped lots, roads, zones and construction, exclusive fullscreen where the UI and the region view arrive as blits) and a synthetic stream with stencil, fog, lighting, TexImage2D and every blit kind replay bit-identically to SCD3D11 on all 499 frames compared. Big City Tutorial at 1920x1080, scrolling at zoom 3 with VSync off: 313 fps drawn locally, 280 fps with the server and 288 fps with composition (186 and 208 while the shim waited for each frame it had just sent). The game's render thread spends about 3.3 ms per frame either way, the server 1.0 ms of CPU and 0.1 to 0.3 ms of GPU. Repeated state calls stay out of the stream, which halves the records and makes captures a third smaller |
 | M3 | Occupant inserts, removes and moves are streamed (plus a listing of every occupant once a city loads), and `DrawOwnerHooks` brackets every grid and view object draw with its owner. In a test session 78% of all draws were bracketed (the rest are UI, background and loading screens) and 99.97% of bracketed occupants matched the occupant records. Each model instance's S3D key and world transform follow its OwnerBegin. Motion vectors are next |
 | M4 | Asset readers (DBPF, QFS, S3D, FSH, exemplars) done. `replay --scene substitute` draws the game's S3D models (buildings, props, flora, automata) from the server's own copy of the game data in place of the game's draws: meshes kept on the GPU, textures from the FSH files, render state from the S3D materials and draw attributes, night lights from the texture id + 0x8000. On four captures 98.6% to 99.96% of model draws are the server's and all 324 frames compared are bit-identical. Left to the game: cars it repaints with its own vertex colours and highlighted models. The tint the game lays over close flora on stage 1 is a 16x16 alpha texture it makes itself (no package holds it), so the lane keeps the game's stage 1 for those draws. Plain network pieces and lot cell textures are drawn from records the shim reads off each drawable (`NetworkPiece`, `CellTexture`): the record's world-space vertices with the texture from the store, the rest of the state the game's. A cell on a slope is drawn by the terrain, so there only the texture is swapped. On a Big City Tutorial capture 96% of network draws and 91% of cell draws are the server's, the rest being the first frame after a zoom or rotation (the game rebuilds those vertices inside the draw, after the record is read), and all 108 frames compared are bit-identical. Live, `ServerScene=substitute` (or `check`) does the same in `serve`: the shim names the folders SC4 loaded its packages from (`GameFolders`, also in captures, so replays need no `--game`), and the server indexes them on a thread of its own (0.11 s for the vanilla game) and starts substituting at the next frame. Still the game's: animated sprites (0x00ABD1D0, a third of the grid draws) and three other lot models (0x00AA20D0, 0x00AA2808, 0x00AA2EA8, likely foundations and retaining walls). `--scene check` also compares each draw's state and vertices with the game's, and that every game texture stands for one store texture |
+| M5 | DLAA and DLSS through NVIDIA Streamline run on the retained scene in replay, and frame generation in a window the replay presents to. See [Upscaling](#upscaling). Not live yet, and the server does not draw at a lower render size yet |
 | M6 | Stage 1 done in the draw lane, verified offline and live: `--relight <hour>` for replay, `ServerRelight` live (seen working in the game). The server keeps a light layer next to the back buffer, through SC4's backing-store copies, and relights each frame with sun shadows traced over the orthographic depth, in about 0.13 ms at 1920x1080. Off, the output stays bit-identical. Limits: SC4's lighting baked into BAT textures is only divided out roughly, terrain is shaded per triangle, and night lights are not yet light sources |
 
 ## Retained scene
@@ -97,3 +106,35 @@ of a 21 pixel scroll exactly. The rest are cars, the UI and animated props.
 Time per frame for the retained draw at 1920x1080: 362 instances at 0.072 metres per pixel take 0.10 ms of CPU and
 0.04 ms of GPU, 4,600 at 0.286 take 1.4 ms and 0.10 ms, 15,400 at 2.61 take 3.9 ms and 1.0 ms. Each instance is still
 one draw through the driver's state machine.
+
+## Upscaling
+
+`replay --scene retained --dlss dlaa|quality|balanced|performance|ultra` runs NVIDIA DLSS through Streamline
+(`Dlss.h`) on the retained scene's frames. The build copies Streamline's DLLs next to the server, which loads them
+only when asked to and only once their NVIDIA signature checks out. The server hooks nothing: Streamline only sees the
+device, the resources it is handed and, for frame generation, the swap chain. Without `--dlss` the output stays
+bit-identical.
+
+What DLSS needs from a frame is in `UpscalerInputs`: the colour before the UI, depth, motion vectors, the jitter, the
+camera now and in the previous frame, the render size and the output size. The retained scene fills it. For DLAA it
+draws its instances with an 8 phase Halton jitter. The rest of the frame comes out of SC4's backing store without
+jitter, so only the instances get smoothed. The other modes need the server to draw at a lower size, which it does not
+yet. A jittered render size copy of each full frame stands in for that (`DlssTest.h`), to judge quality and cost.
+
+net-live at 1920x1061 on an RTX 5080, four frames per mode, compared with the same frames without DLSS:
+
+| Mode | Render size | PSNR | GPU time of the DLSS pass per frame |
+|---|---|---|---|
+| DLAA | 1920x1061 | 36.4 to 38.8 dB | 0.45 ms |
+| Quality | 1280x707 | 36.4 to 37.9 dB | 0.46 ms |
+| Balanced | 1114x615 | 36.1 to 37.7 dB | 0.45 ms |
+| Performance | 960x531 | 35.5 to 37.3 dB | 0.46 ms |
+| Ultra performance | 640x354 | 35.1 to 36.6 dB | 0.63 ms |
+
+A bilinear upscale from the same render sizes scores 28.5 to 33.8 dB on two of those frames, where DLSS scores 35.1 to
+37.9. For DLAA the difference is mostly the smoothing itself.
+
+`--present window|composition|surface` shows the replay in a window through one of three kinds of swap chain,
+`--frame-generation on` adds DLSS frame generation, `--fps <n>` caps the frame rate through Reflex and `--into
+<window>` presents into another process's window. See gate 3 for what works. Frame generation also stops while the
+window is not in the foreground, without saying so.
