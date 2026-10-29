@@ -29,7 +29,10 @@
 //       owned keeps the whole static view (OwnedScene.h) and draws it every frame without SC4's backing store,
 //       moved by --jitter <x>,<y> pixels, and saves each chosen frame's city before the UI and its motion as
 //       frame<n>-city.png and frame<n>-motion.png. --look <x>,<y> draws the chosen frames' owned view from a camera
-//       moved that many pixels, to show what is kept where SC4 does not draw now.
+//       moved that many pixels, to show what is kept where SC4 does not draw now. --view-of <frame> keeps the camera of
+//       that frame, and the zoom and rotation SC4 drew it with, and draws the chosen frames after it from that camera
+//       with every model picked anew from its occupant's exemplar (OccupantExemplar records) for that view. The
+//       chosen frames then leave out the dynamic passes, which follow SC4's camera.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]
 //                       [--scene substitute|check|owned]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
@@ -133,6 +136,7 @@ namespace {
 		bool owned = false;
 		float jitter[2]{};
 		float look[2]{};
+		uint64_t viewOf = UINT64_MAX;
 		std::wstring game;
 		nSCD3D12::DlssMode dlss = nSCD3D12::DlssMode::Off;
 		bool frameGeneration = false;
@@ -211,6 +215,7 @@ namespace {
 			else if (argument == L"--look" && hasValue) {
 				if (swscanf_s(argv[++i], L"%f,%f", &options.look[0], &options.look[1]) != 2) return false;
 			}
+			else if (argument == L"--view-of" && hasValue) options.viewOf = _wtoi64(argv[++i]);
 			else if (argument == L"--jitter" && hasValue) {
 				if (swscanf_s(argv[++i], L"%f,%f", &options.jitter[0], &options.jitter[1]) != 2) return false;
 			}
@@ -275,6 +280,9 @@ namespace {
 		void CellTexture(nSCDWire::CellTexture const &cell) override {
 			if (scene != nullptr) scene->CellTexture(cell);
 		}
+		void OccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values) override {
+			if (owned != nullptr) owned->OccupantExemplar(occupant, values);
+		}
 		// Without --game the store reads the folders the game named. The record comes before the city loads.
 		void GameFolders(std::wstring const (&folders)[static_cast<size_t>(nSCDWire::GameFolder::Count)]) override {
 			if (!options.substitute || scene != nullptr) return;
@@ -294,6 +302,7 @@ namespace {
 			if (options.owned) {
 				owned = std::make_unique<nSCD3D12::OwnedScene>(driver, *scene);
 				owned->SetJitter(options.jitter[0], options.jitter[1]);
+				owned->CheckExemplars();
 				if (Chosen(frame)) owned->SetLook(options.look[0], options.look[1]);
 			}
 		}
@@ -325,10 +334,14 @@ namespace {
 					swprintf_s(name, L"\\frame%06llu-", static_cast<unsigned long long>(frame));
 					owned->SaveInputs(options.out + name);
 				}
+				if (frame == options.viewOf && !owned->KeepView()) std::puts("owned: frame has no view to keep");
 				owned->EndFrame();
 				// Only the chosen frames look elsewhere.
 				bool const next = Chosen(frame + 1);
 				owned->SetLook(next ? options.look[0] : 0.0f, next ? options.look[1] : 0.0f);
+				owned->UseKeptView(next && options.viewOf < frame + 1);
+				// The dynamic passes follow SC4's camera, not the kept one, so the frames compared leave them out.
+				scene->DropDynamic(next && options.viewOf != UINT64_MAX);
 			}
 			if (dlss != nullptr) dlss->BeginFrame(frame + 1);
 			return ++frame <= options.until;
@@ -542,7 +555,7 @@ int wmain(int argc, wchar_t **argv) {
 		std::puts("                     [--relight <hour or azimuth,elevation> [--light rays,terrain,lamps,world|none]]"
 		          " [--until <frame>]");
 		std::puts("                    "
-		          " [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]]");
+		          " [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]] [--view-of <frame>]");
 		std::puts("                     [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]"
 		          " [--present window|composition|surface [--into <window>]] [--fps <n>]");
 		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun>] [--stats on]"

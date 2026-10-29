@@ -57,6 +57,17 @@ namespace nSCD3D12 {
 		// After them.
 		void OwnerEnd();
 		void Occupant(nSCDWire::OccupantEvent const &event);
+		void OccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values);
+		// Counts, at each composite, how many of the models SC4 drew this frame its occupant's record picks too
+		// (PrintTotals). Needed by KeepView.
+		void CheckExemplars();
+		// Keeps this frame's camera, and the zoom and rotation SC4 drew it with. From then on every model captured
+		// also gets its occupant's models for that view, picked from its record. False when the frame has no
+		// camera or no zoom could be found.
+		bool KeepView();
+		// Draws the following frames' kept scene from the kept camera, with the models picked for it. Models
+		// without a record stay as SC4 picked them, turned with the rest.
+		void UseKeptView(bool on);
 		// A new video mode: the driver's textures are gone.
 		void VideoMode();
 		// After the driver submitted the frame.

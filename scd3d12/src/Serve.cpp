@@ -71,6 +71,9 @@ namespace nSCD3D12 {
 			void CellTexture(nSCDWire::CellTexture const &cell) override {
 				if (scene) scene->CellTexture(cell);
 			}
+			void OccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values) override {
+				if (owned) owned->OccupantExemplar(occupant, values);
+			}
 
 			void VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) override {
 				driver.VideoMode(show, width, height, fullscreen);

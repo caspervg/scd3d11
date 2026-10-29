@@ -29,6 +29,7 @@
 
 #include "D3D11Conversions.h"
 #include "Dlss.h"
+#include "Models.h"
 #include "wire/ImageFile.h"
 
 #include <d3dcompiler.h>
@@ -132,6 +133,20 @@ namespace nSCD3D12 {
 				for (int c = 0; c < 4; ++c) out.rows[row * 4 + c] = m[c * 4 + row];
 			}
 			return out;
+		}
+
+		// The camera's rotation, 0 to 3, from its yaw: -22.5, 67.5, 157.5 and -112.5 degrees.
+		uint32_t CameraRotation(float const *view) {
+			float const yaw = std::atan2(view[8], view[0]) * (180.0f / 3.14159265f);
+			return static_cast<uint32_t>((std::lround((yaw + 22.5f) / 90.0f) % 4 + 4) % 4);
+		}
+
+		// A model's world rotation at camera rotation k, as SC4 sets it: a quarter turn about world up per
+		// rotation, the same translation at every zoom and rotation. Row major.
+		void QuarterTurn(uint32_t k, float *r) {
+			static constexpr float kTurns[4][9] = {
+				{1, 0, 0, 0, 1, 0, 0, 0, 1}, {0, 0, -1, 0, 1, 0, 1, 0, 0}, {-1, 0, 0, 0, 1, 0, 0, 0, -1}, {0, 0, 1, 0, 1, 0, -1, 0, 0}};
+			std::memcpy(r, kTurns[k & 3], sizeof(kTurns[0]));
 		}
 
 		struct Camera {
@@ -532,6 +547,19 @@ namespace nSCD3D12 {
 			std::vector<uint32_t> meshes;
 		};
 
+		// The models an occupant shows from the kept camera (OwnedScene::KeepView), picked from its exemplar: each
+		// with its world transform and one group per mesh.
+		struct PickedModel {
+			float world[16];
+			std::vector<uint32_t> meshes;
+		};
+
+		// An occupant's OccupantExemplar record.
+		struct Exemplar {
+			nSCDWire::OccupantExemplar record;
+			std::vector<uint32_t> values;
+		};
+
 		// Triangles of one state the current bracket drew, not yet given to the scene.
 		struct Fresh {
 			uint32_t group;
@@ -621,6 +649,129 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::unordered_map<uint64_t, std::vector<uint64_t> > gridByOccupant;
 		std::unordered_map<ModelKey, Model, ModelKeyHash> models;
 		std::unordered_map<uint64_t, std::vector<ModelKey> > modelsByOccupant;
+
+		// Exemplars: which models each occupant shows, and the zoom (0 to 4) and rotation SC4 drew the last composite
+		// with, found from the models it picked. With checking on, each composite also counts how many of the models
+		// SC4 drew the exemplar picks too.
+		std::unordered_map<uint64_t, Exemplar> exemplars;
+		bool checking = false;
+		int32_t viewZoom = -1;
+		uint32_t viewRotation = 0;
+		struct PickTotals {
+			uint64_t drawn = 0, withRecord = 0, matched = 0, frames = 0;
+			uint64_t picked = 0, pickedMeshes = 0, missing = 0, kept = 0;
+		} pickTotals;
+		std::vector<nSCAssets::ModelRef> refs;
+		// KeepView: the camera, zoom and rotation kept, and the models picked for it per occupant.
+		Camera target;
+		int32_t targetZoom = -1;
+		uint32_t targetRotation = 0;
+		bool useTarget = false;
+		std::unordered_map<uint64_t, std::vector<PickedModel> > picked;
+
+		// The models an occupant shows at a zoom and model rotation, false without a record.
+		bool Picks(uint64_t occupant, int32_t zoom, uint32_t cameraRotation, std::vector<nSCAssets::ModelRef> &out) {
+			out.clear();
+			auto const found = exemplars.find(occupant);
+			if (found == exemplars.end() || zoom < 0) return false;
+			nSCDWire::OccupantExemplar const &r = found->second.record;
+			if (r.property == 0 || !(r.zoomMask >> zoom & 1)) return true;
+			uint32_t const rotation = nSCAssets::ModelRotation(cameraRotation, r.orientation, (r.flags & 1) != 0);
+			nSCAssets::ModelsFromKey(r.property, found->second.values, static_cast<uint32_t>(zoom), rotation, r.state, out);
+			return true;
+		}
+
+		// Which zoom SC4 drew this frame's new models with: the one whose picks hold the most of them. Counts the
+		// matches when checking.
+		void CheckPicks(uint32_t rotation) {
+			uint64_t votes[5]{}, withRecord = 0;
+			for (ModelKey const &key: modelsThisFrame) {
+				if (exemplars.count(key.occupant) == 0) continue;
+				++withRecord;
+				for (int32_t zoom = 0; zoom < 5; ++zoom) {
+					Picks(key.occupant, zoom, rotation, refs);
+					for (nSCAssets::ModelRef const &ref: refs) {
+						if (ref.tgi.group == key.group && ref.tgi.instance == key.instance) {
+							++votes[zoom];
+							break;
+						}
+					}
+				}
+			}
+			if (withRecord == 0) return;
+			int32_t const best = static_cast<int32_t>(std::max_element(votes, votes + 5) - votes);
+			if (votes[best] != 0) viewZoom = best;
+			viewRotation = rotation;
+			PickTotals &t = pickTotals;
+			++t.frames;
+			t.drawn += modelsThisFrame.size();
+			t.withRecord += withRecord;
+			t.matched += votes[best];
+		}
+
+		void ReleasePicks(uint64_t occupant) {
+			auto const found = picked.find(occupant);
+			if (found == picked.end()) return;
+			for (PickedModel const &model: found->second) {
+				for (uint32_t group: model.meshes) Release(group);
+			}
+			picked.erase(found);
+		}
+
+		// Picks an occupant's models for the kept view, in the state SC4 draws the model being captured with (the
+		// driver holds it): its shade, fog and lighting with each new mesh's material.
+		void Pick(Model const &model, nSCDWire::ModelInstance const &instance) {
+			uint64_t const occupant = model.key.occupant;
+			if (!Picks(occupant, targetZoom, targetRotation, refs)) return;
+			ReleasePicks(occupant);
+			std::vector<PickedModel> &list = picked[occupant];
+			// The transform turned from the capture's rotation to the kept one. The translation stays.
+			float now[9], then[9], turn[9];
+			QuarterTurn(targetRotation, now);
+			QuarterTurn(CameraRotation(captureView), then);
+			for (int row = 0; row < 3; ++row) {
+				for (int c = 0; c < 3; ++c) {
+					turn[row * 3 + c] = now[row * 3] * then[c * 3] + now[row * 3 + 1] * then[c * 3 + 1] +
+					                    now[row * 3 + 2] * then[c * 3 + 2];
+				}
+			}
+			cGDriver12::DrawState saved{};
+			for (nSCAssets::ModelRef const &ref: refs) {
+				float bounds[6];
+				uint32_t const meshes = lane.LoadModel(ref.tgi, bounds);
+				if (meshes == 0) {
+					++pickTotals.missing;
+					continue;
+				}
+				PickedModel &picks = list.emplace_back();
+				std::memcpy(picks.world, model.world, sizeof(picks.world));
+				for (int row = 0; row < 3; ++row) {
+					for (int c = 0; c < 3; ++c) {
+						picks.world[c * 4 + row] = turn[row * 3] * model.world[c * 4] + turn[row * 3 + 1] * model.world[c * 4 + 1] +
+						                           turn[row * 3 + 2] * model.world[c * 4 + 2];
+					}
+					// An RKT4 offset, taken to be in the model's space. Every model SC4 drew in the captures sits at
+					// its occupant's translation, and none of those had an offset.
+					picks.world[12 + row] += picks.world[row] * ref.offset[0] + picks.world[4 + row] * ref.offset[1] +
+					                         picks.world[8 + row] * ref.offset[2];
+				}
+				for (uint32_t mesh = 0; mesh < meshes; ++mesh) {
+					driver.SaveDrawState(saved);
+					SceneLane::MeshDraw draw;
+					cGDriver12::CapturedState state;
+					if (lane.PrepareMesh(ref.tgi, mesh, instance.attributes, draw) && driver.CaptureState(kS3dFormat, state)) {
+						uint32_t const group = GroupFor(state, captureView, &draw.vertices, &draw.indices, draw.count,
+						                                2ull << 48 | gridRank, kModel << 8 | 1);
+						if (groups[group].rank == (2ull << 48 | gridRank)) ++gridRank;
+						Use(group);
+						picks.meshes.push_back(group);
+						++pickTotals.pickedMeshes;
+					}
+					driver.RestoreDrawState(saved);
+				}
+			}
+			++pickTotals.picked;
+		}
 
 		// Where everything kept lies on screen, so a redraw only looks at what is near it: each item in the bin of
 		// its extent's middle, or in the large list when it is bigger than a bin. Entries are not removed when an
@@ -749,6 +900,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::map<int32_t, Zoom> zooms;
 		std::vector<uint8_t> staging;
 		std::vector<InstanceRows> instanceScratch;
+		std::vector<std::pair<InstanceRows, std::vector<uint32_t> const *> > drawList;
 
 		// GPU timing of the composite.
 		ComPtr<ID3D12QueryHeap> queries;
@@ -1581,7 +1733,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			auto const list = modelsByOccupant.find(key.occupant);
 			if (list != modelsByOccupant.end()) {
 				std::erase(list->second, key);
-				if (list->second.empty()) modelsByOccupant.erase(list);
+				if (list->second.empty()) {
+					modelsByOccupant.erase(list);
+					ReleasePicks(key.occupant);
+				}
 			}
 			if (capturing == &found->second) capturing = nullptr;
 			models.erase(found);
@@ -1760,6 +1915,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				++cameraId;
 			}
 			camera = now;
+			if (checking) CheckPicks(CameraRotation(now.view));
 
 			// What SC4 drew this frame normally has this frame's camera, and then its own modelview is used as it
 			// is.
@@ -1807,16 +1963,41 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				now.view[13] += look[1] * metres;
 				camera = now;
 			}
+			// The kept view (KeepView): its camera, and each occupant's models picked for it in place of the ones SC4
+			// picked. Extents hold the capture's rotation, so nothing is culled.
+			bool const turned = useTarget && target.known && target.width == now.width && target.height == now.height;
+			if (turned) {
+				now = target;
+				camera = now;
+			}
 			// Instances: every visible model's rows per mesh group, then one record for all world geometry.
-			for (uint32_t g: order) groups[g].instanceCount = 0;
-			uint32_t instanceTotal = 1;
+			drawList.clear();
 			for (auto &[key, model]: models) {
-				if (!OnScreen(ToScreen(model.extent, camera), camera)) {
-					++totals.culled;
+				if (turned ? picked.count(key.occupant) != 0 : !OnScreen(ToScreen(model.extent, camera), camera)) {
+					totals.culled += !turned;
 					continue;
 				}
-				for (uint32_t group: model.meshes) ++groups[group].instanceCount;
-				instanceTotal += static_cast<uint32_t>(model.meshes.size());
+				float modelView[16];
+				if (model.camera == cameraId && !looking && !turned) std::memcpy(modelView, model.modelView, sizeof(modelView));
+				else Multiply(now.view, model.world, modelView);
+				drawList.push_back({Rows(modelView), &model.meshes});
+				pickTotals.kept += turned;
+			}
+			if (turned) {
+				for (auto const &[occupant, list]: picked) {
+					if (modelsByOccupant.count(occupant) == 0) continue;
+					for (PickedModel const &model: list) {
+						float modelView[16];
+						Multiply(now.view, model.world, modelView);
+						drawList.push_back({Rows(modelView), &model.meshes});
+					}
+				}
+			}
+			for (uint32_t g: order) groups[g].instanceCount = 0;
+			uint32_t instanceTotal = 1;
+			for (auto const &[rows, meshes]: drawList) {
+				for (uint32_t group: *meshes) ++groups[group].instanceCount;
+				instanceTotal += static_cast<uint32_t>(meshes->size());
 			}
 			instanceScratch.resize(instanceTotal);
 			instanceScratch[0] = Rows(now.view);
@@ -1826,13 +2007,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				next += groups[g].instanceCount;
 				groups[g].instanceCount = 0;
 			}
-			for (auto &[key, model]: models) {
-				if (!OnScreen(ToScreen(model.extent, camera), camera)) continue;
-				float modelView[16];
-				if (model.camera == cameraId && !looking) std::memcpy(modelView, model.modelView, sizeof(modelView));
-				else Multiply(now.view, model.world, modelView);
-				InstanceRows const rows = Rows(modelView);
-				for (uint32_t group: model.meshes) {
+			for (auto const &[rows, meshes]: drawList) {
+				for (uint32_t group: *meshes) {
 					Group &g = groups[group];
 					instanceScratch[g.instanceFirst + g.instanceCount++] = rows;
 				}
@@ -1899,7 +2075,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				for (uint32_t b: group.buckets) {
 					Bucket const &bucket = buckets[b];
 					if (bucket.chunk == UINT32_MAX || bucket.indexUsed == 0) continue;
-					if (!OnScreen(ToScreen(bucket.extent, camera), camera)) continue;
+					if (!turned && !OnScreen(ToScreen(bucket.extent, camera), camera)) continue;
 					pool.Ready(bucket.chunk);
 					D3D12_GPU_VIRTUAL_ADDRESS const address = pool.Address(bucket.chunk, bucket.offset);
 					draw.vertices = {address, bucket.vertexCapacity * static_cast<UINT>(sizeof(D3D11Vertex)), sizeof(D3D11Vertex)};
@@ -2016,6 +2192,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 	void OwnedScene::Occupant(nSCDWire::OccupantEvent const &event) {
 		Impl &d = *impl;
 		if (event.kind == nSCDWire::OccupantEventKind::Insert) return;
+		if (event.kind == nSCDWire::OccupantEventKind::Remove) d.exemplars.erase(event.id);
 		auto const models = d.modelsByOccupant.find(event.id);
 		if (models != d.modelsByOccupant.end()) {
 			for (ModelKey const &key: models->second) d.models[key].orphan = true;
@@ -2025,6 +2202,27 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			for (uint64_t drawable: drawables->second) d.grid[drawable].orphan = true;
 		}
 	}
+
+	void OwnedScene::OccupantExemplar(nSCDWire::OccupantExemplar const &occupant, uint32_t const *values) {
+		Exemplar &exemplar = impl->exemplars[occupant.id];
+		exemplar.record = occupant;
+		exemplar.values.assign(values, values + occupant.count);
+	}
+
+	void OwnedScene::CheckExemplars() { impl->checking = true; }
+
+	bool OwnedScene::KeepView() {
+		Impl &d = *impl;
+		if (!d.camera.known || d.viewZoom < 0) return false;
+		d.target = d.camera;
+		d.targetZoom = d.viewZoom;
+		d.targetRotation = d.viewRotation;
+		std::printf("owned: keeping this view: zoom %d, rotation %u, %.4f metres per pixel\n", d.targetZoom, d.targetRotation,
+		            2.0f / (d.camera.projection[0] * static_cast<float>(d.camera.width)));
+		return true;
+	}
+
+	void OwnedScene::UseKeptView(bool on) { impl->useTarget = on; }
 
 	void OwnedScene::VideoMode() {
 		Impl &d = *impl;
@@ -2230,6 +2428,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			d.capturing = &model;
 			d.capturingDrawable = owner.drawable;
+			if (d.target.known && owner.occupant != 0) d.Pick(model, instance);
 		}
 		d.lastMesh = mesh;
 		uint32_t const group = d.GroupFor(state, d.captureView, &vertices, &indices, count, 2ull << 48 | d.gridRank, kModel << 8 | 1);
@@ -2280,6 +2479,16 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		}
 		report("", "CPU", t.cpuMilliseconds);
 		report("", "GPU", t.gpuMilliseconds);
+		auto const &p = d.pickTotals;
+		if (p.frames != 0) {
+			std::printf("owned: exemplars: %llu models SC4 drew over %llu composites, %llu with a record, of which the record "
+			            "picks %llu (%.2f%%) for the frame's zoom and rotation\n", u(p.drawn), u(p.frames), u(p.withRecord),
+			            u(p.matched), p.withRecord ? 100.0 * static_cast<double>(p.matched) / static_cast<double>(p.withRecord) : 0.0);
+		}
+		if (p.picked != 0) {
+			std::printf("owned: kept view: picked models for %llu occupants, %llu meshes, %llu models the store lacks, %llu "
+			            "model draws without a record\n", u(p.picked), u(p.pickedMeshes), u(p.missing), u(p.kept));
+		}
 		for (auto const &[millimetres, z]: d.zooms) {
 			std::printf("owned:   at %.4f metres per pixel: %llu frames, %.0f draws and %.0f instances per frame\n",
 			            millimetres / 1000.0, u(z.frames), static_cast<double>(z.draws) / z.frames,
