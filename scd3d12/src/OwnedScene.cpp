@@ -41,6 +41,7 @@
 #include <deque>
 #include <map>
 #include <unordered_map>
+#include <tuple>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -620,6 +621,101 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::unordered_map<uint64_t, std::vector<uint64_t> > gridByOccupant;
 		std::unordered_map<ModelKey, Model, ModelKeyHash> models;
 		std::unordered_map<uint64_t, std::vector<ModelKey> > modelsByOccupant;
+
+		// Where everything kept lies on screen, so a redraw only looks at what is near it: each item in the bin of
+		// its extent's middle, or in the large list when it is bigger than a bin. Entries are not removed when an
+		// item goes or moves: a lookup that finds the item gone or elsewhere drops the entry then.
+		struct Entry {
+			uint8_t kind; // 0 model, 1 grid, 2 cell, 3 view piece
+			uint64_t key;
+			uint32_t group, instance; // the rest of a model's key
+			bool operator==(Entry const &) const = default;
+			bool operator<(Entry const &other) const {
+				return std::tie(kind, key, group, instance) < std::tie(other.kind, other.key, other.group, other.instance);
+			}
+		};
+		static constexpr float kBinMetres = 64.0f;
+		std::unordered_map<uint64_t, std::vector<Entry> > bins;
+		std::vector<Entry> large;
+		std::vector<Entry> candidates;
+
+		static uint64_t BinKey(int32_t x, int32_t y) {
+			return static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32 | static_cast<uint32_t>(y);
+		}
+
+		// The bin of an extent's middle, or false for an extent too big for one.
+		static bool BinOf(Extent const &e, int32_t &x, int32_t &y) {
+			if (e.Empty() || e.v[2] - e.v[0] > kBinMetres || e.v[3] - e.v[1] > kBinMetres) return false;
+			x = static_cast<int32_t>(std::floor((e.v[0] + e.v[2]) * 0.5f / kBinMetres));
+			y = static_cast<int32_t>(std::floor((e.v[1] + e.v[3]) * 0.5f / kBinMetres));
+			return true;
+		}
+
+		void Index(Entry const &entry, Extent const &extent) {
+			int32_t x, y;
+			std::vector<Entry> &list = BinOf(extent, x, y) ? bins[BinKey(x, y)] : large;
+			list.push_back(entry);
+			// An item indexed again in the same place leaves a copy behind: drop them as the list doubles.
+			if (list.size() >= 64 && (list.size() & (list.size() - 1)) == 0) Unique(list);
+		}
+
+		static void Unique(std::vector<Entry> &list) {
+			std::sort(list.begin(), list.end());
+			list.erase(std::unique(list.begin(), list.end()), list.end());
+		}
+
+		// The item an entry names, by its extent, or null when it is gone.
+		Extent const *Find(Entry const &entry) {
+			switch (entry.kind) {
+				case 0: {
+					auto const found = models.find({entry.key, entry.group, entry.instance});
+					return found == models.end() ? nullptr : &found->second.extent;
+				}
+				case 1: {
+					auto const found = grid.find(entry.key);
+					return found == grid.end() ? nullptr : &found->second.extent;
+				}
+				case 2: {
+					auto const found = cells.find(entry.key);
+					return found == cells.end() ? nullptr : &found->second.extent;
+				}
+				default: {
+					auto const found = viewPieces.find(entry.key);
+					return found == viewPieces.end() ? nullptr : &pieces[found->second].extent;
+				}
+			}
+		}
+
+		// Everything that may lie in a screen rectangle: the bins around it, then the large list. Drops the entries
+		// that no longer say where their item is.
+		void Gather(Rect const &rect) {
+			float const *p = camera.projection, *v = camera.view;
+			float const w = static_cast<float>(camera.width) * 0.5f, h = static_cast<float>(camera.height) * 0.5f;
+			// ToScreen backwards: pixels to the view's rotated x and y.
+			float const x0 = ((rect.left / w - 1.0f) - p[12]) / p[0] - v[12];
+			float const x1 = ((rect.right / w - 1.0f) - p[12]) / p[0] - v[12];
+			float const y0 = ((1.0f - rect.bottom / h) - p[13]) / p[5] - v[13];
+			float const y1 = ((1.0f - rect.top / h) - p[13]) / p[5] - v[13];
+			// An item's middle lies at most half a bin outside what it overlaps.
+			int32_t const bx0 = static_cast<int32_t>(std::floor(x0 / kBinMetres)) - 1;
+			int32_t const bx1 = static_cast<int32_t>(std::floor(x1 / kBinMetres)) + 1;
+			int32_t const by0 = static_cast<int32_t>(std::floor(y0 / kBinMetres)) - 1;
+			int32_t const by1 = static_cast<int32_t>(std::floor(y1 / kBinMetres)) + 1;
+			for (int32_t bx = bx0; bx <= bx1; ++bx) {
+				for (int32_t by = by0; by <= by1; ++by) {
+					auto const found = bins.find(BinKey(bx, by));
+					if (found == bins.end()) continue;
+					Unique(found->second);
+					std::erase_if(found->second, [&](Entry const &entry) {
+						Extent const *const extent = Find(entry);
+						int32_t x, y;
+						if (extent == nullptr || !BinOf(*extent, x, y) || x != bx || y != by) return true;
+						candidates.push_back(entry);
+						return false;
+					});
+				}
+			}
+		}
 
 		// The frame.
 		uint64_t frame = 0;
@@ -1344,7 +1440,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					pieces[found->second].frame = frame;
 					DropUnused(group);
 				} else {
-					viewPieces.emplace(hash, AddPiece(group, std::move(world), std::vector<uint32_t>(indices, indices + indexCount), hash));
+					uint32_t const piece = AddPiece(group, std::move(world), std::vector<uint32_t>(indices, indices + indexCount), hash);
+					viewPieces.emplace(hash, piece);
+					Index({3, hash, 0, 0}, pieces[piece].extent);
 				}
 				++totals.captured[kView];
 				return owning;
@@ -1416,6 +1514,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 				cell.serial = serial;
 				cell.frame = frame;
+				if (changed) Index({2, key, 0, 0}, cell.extent);
 				++(changed ? totals.cellsChanged : totals.cellsKept);
 			}
 			freshCells.clear();
@@ -1446,6 +1545,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				if (owner.occupant != 0) gridByOccupant[owner.occupant].push_back(owner.drawable);
 				item.occupant = owner.occupant;
 			}
+			if (!same) Index({1, owner.drawable, 0, 0}, item.extent);
 			item.serial = serial;
 			item.frame = frame;
 			item.orphan = false;
@@ -1497,7 +1597,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					pieces[found->second].frame = frame;
 					DropUnused(fresh.group);
 				} else {
-					viewPieces.emplace(hash, AddPiece(fresh.group, std::move(fresh.vertices), std::move(fresh.indices), hash));
+					uint32_t const piece = AddPiece(fresh.group, std::move(fresh.vertices), std::move(fresh.indices), hash);
+					viewPieces.emplace(hash, piece);
+					Index({3, hash, 0, 0}, pieces[piece].extent);
 				}
 				++totals.captured[kBackground];
 			}
@@ -1574,55 +1676,63 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				                  static_cast<float>(redraw.viewport[2]), height - static_cast<float>(redraw.viewport[1])},
 				                 redraw.serial});
 			}
-			std::vector<ModelKey> modelKeys;
-			for (auto const &[key, model]: models) {
-				if (model.frame == frame) continue;
-				Rect const r = ToScreen(model.extent, camera);
-				for (auto const &[rect, serial]: rects) {
-					if (model.orphan ? Overlaps(r, rect) : Inside(r, rect)) {
-						modelKeys.push_back(key);
+			// Only what lies near a redraw can be gone.
+			candidates.clear();
+			for (auto const &[rect, serial]: rects) Gather(rect);
+			Unique(large);
+			std::erase_if(large, [&](Entry const &entry) { return Find(entry) == nullptr; });
+			candidates.insert(candidates.end(), large.begin(), large.end());
+			std::sort(candidates.begin(), candidates.end());
+			candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+			for (Entry const &entry: candidates) {
+				Extent const *const extent = Find(entry);
+				if (extent == nullptr) continue;
+				Rect const r = ToScreen(*extent, camera);
+				switch (entry.kind) {
+					case 0: {
+						ModelKey const key{entry.key, entry.group, entry.instance};
+						Model const &model = models.find(key)->second;
+						if (model.frame == frame) break;
+						for (auto const &[rect, serial]: rects) {
+							if (model.orphan ? Overlaps(r, rect) : Inside(r, rect)) {
+								EraseModel(key);
+								++totals.removed[0];
+								break;
+							}
+						}
+						break;
+					}
+					case 1: {
+						GridItem const &item = grid.find(entry.key)->second;
+						if (item.frame == frame) break;
+						for (auto const &[rect, serial]: rects) {
+							if (item.orphan ? Overlaps(r, rect) : Inside(r, rect)) {
+								EraseGrid(entry.key);
+								break;
+							}
+						}
+						break;
+					}
+					case 2: {
+						auto const found = cells.find(entry.key);
+						bool gone = false;
+						for (auto const &[rect, redrawSerial]: rects) gone |= found->second.serial < redrawSerial && Inside(r, rect);
+						if (!gone) break;
+						for (uint32_t piece: found->second.pieces) RemovePiece(piece, 2);
+						cells.erase(found);
+						break;
+					}
+					default: {
+						auto const found = viewPieces.find(entry.key);
+						Piece const &p = pieces[found->second];
+						bool gone = false;
+						for (auto const &[rect, redrawSerial]: rects) gone |= p.serial < redrawSerial && Overlaps(r, rect);
+						if (!gone) break;
+						RemovePiece(found->second, 3);
+						viewPieces.erase(found);
 						break;
 					}
 				}
-			}
-			for (ModelKey const &key: modelKeys) {
-				EraseModel(key);
-				++totals.removed[0];
-			}
-			std::vector<uint64_t> drawables;
-			for (auto const &[drawable, item]: grid) {
-				if (item.frame == frame) continue;
-				Rect const r = ToScreen(item.extent, camera);
-				for (auto const &[rect, serial]: rects) {
-					if (item.orphan ? Overlaps(r, rect) : Inside(r, rect)) {
-						drawables.push_back(drawable);
-						break;
-					}
-				}
-			}
-			for (uint64_t drawable: drawables) EraseGrid(drawable);
-			for (auto it = cells.begin(); it != cells.end();) {
-				Rect const r = ToScreen(it->second.extent, camera);
-				bool gone = false;
-				for (auto const &[rect, redrawSerial]: rects) gone |= it->second.serial < redrawSerial && Inside(r, rect);
-				if (!gone) {
-					++it;
-					continue;
-				}
-				for (uint32_t piece: it->second.pieces) RemovePiece(piece, 2);
-				it = cells.erase(it);
-			}
-			for (auto it = viewPieces.begin(); it != viewPieces.end();) {
-				Piece const &p = pieces[it->second];
-				Rect const r = ToScreen(p.extent, camera);
-				bool gone = false;
-				for (auto const &[rect, redrawSerial]: rects) gone |= p.serial < redrawSerial && Overlaps(r, rect);
-				if (!gone) {
-					++it;
-					continue;
-				}
-				RemovePiece(it->second, 3);
-				it = viewPieces.erase(it);
 			}
 		}
 
@@ -1919,6 +2029,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 	void OwnedScene::VideoMode() {
 		Impl &d = *impl;
 		d.KillAll(false);
+		d.bins.clear();
+		d.large.clear();
 		d.camera = {};
 		d.owning = false;
 	}
@@ -2095,6 +2207,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				d.modelsByOccupant[occupant].push_back(key);
 			}
 			WorldMatrix(instance, model.world);
+			Extent const before = model.extent;
 			model.extent = {};
 			for (int corner = 0; corner < 8; ++corner) {
 				float const local[3]{bounds[(corner & 1) ? 3 : 0], bounds[(corner & 2) ? 4 : 1], bounds[(corner & 4) ? 5 : 2]};
@@ -2112,6 +2225,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			for (uint32_t group: model.meshes) d.Release(group);
 			model.meshes.clear();
 			d.modelsThisFrame.push_back(key);
+			if (added || std::memcmp(&before, &model.extent, sizeof(before)) != 0) {
+				d.Index({0, key.occupant, key.group, key.instance}, model.extent);
+			}
 			d.capturing = &model;
 			d.capturingDrawable = owner.drawable;
 		}
