@@ -59,6 +59,13 @@ namespace nSCD3D11::Doctor {
 		bool inUse = false;
 	};
 
+	// A setting SCD3D11 could not read and ignored. The source is "command line" or "SCD3D11.ini".
+	struct RejectedSetting {
+		std::string name;
+		std::string value;
+		std::string source;
+	};
+
 	// Everything the checks read, gathered in one place so they can be tested without a game.
 	struct Environment {
 		// SC4's arguments as it split them, without the program path.
@@ -111,6 +118,14 @@ namespace nSCD3D11::Doctor {
 		bool gpuSystemDefault = false;
 		uint32_t gpuNumber = 0;
 		std::vector<Monitor> monitors;
+		// The keys in SCD3D11.ini's [SCD3D11] section as written. Why the INI could not be read at all, which
+		// makes SCD3D11 ignore every line of it, and whether it lacks the section.
+		std::vector<std::string> iniKeys;
+		std::string iniError;
+		bool iniWithoutSection = false;
+		std::vector<RejectedSetting> rejectedSettings;
+		// SC4D3D11.log, where SCD3D11 before v0.3 wrote its log, is still there.
+		bool oldLogLeftOver = false;
 	};
 
 	std::vector<Finding> Diagnose(Environment const &environment);

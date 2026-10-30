@@ -132,8 +132,8 @@ namespace nSCD3D11::Doctor {
 			return IsIn(kSettings, name) || IsIn(kKnownSwitches, name);
 		}
 
-		// A name two letters or fewer away.
-		char const *Closest(std::string const &name) {
+		// A name two letters or fewer away, from the settings alone or from every switch.
+		char const *Closest(std::string const &name, bool settingsOnly = false) {
 			if (name.size() < 4) return nullptr;
 			auto const near = [&](char const *known) {
 				std::string const lower = Lower(known);
@@ -142,6 +142,7 @@ namespace nSCD3D11::Doctor {
 			for (char const *known : kSettings) {
 				if (near(known)) return known;
 			}
+			if (settingsOnly) return nullptr;
 			for (char const *known : kKnownSwitches) {
 				if (near(known)) return known;
 			}
@@ -589,6 +590,36 @@ namespace nSCD3D11::Doctor {
 			findings.push_back({Severity::Note, "Monitors: " + list});
 		}
 
+		void CheckSettings(Environment const &environment, std::vector<Finding> &findings) {
+			if (!environment.iniError.empty()) {
+				findings.push_back({Severity::Warning, Format("SCD3D11.ini cannot be read, so SCD3D11 ignores all of it: %s",
+				                                              environment.iniError.c_str())});
+			} else if (environment.iniWithoutSection) {
+				findings.push_back({Severity::Warning, "SCD3D11.ini has no [SCD3D11] section, so SCD3D11 reads none of "
+				                                       "it. Put the settings below a line that says [SCD3D11]."});
+			}
+			for (std::string const &key : environment.iniKeys) {
+				if (IsIn(kSettings, Lower(key))) continue;
+				char const *const closest = Closest(Lower(key), true);
+				findings.push_back({Severity::Warning, closest != nullptr
+					? Format("SCD3D11.ini has %s, which is not a setting. Did you mean %s?", key.c_str(), closest)
+					: Format("SCD3D11.ini has %s, which is not a setting SCD3D11 reads.", key.c_str())});
+			}
+			for (RejectedSetting const &rejected : environment.rejectedSettings) {
+				char const *const name = rejected.name.c_str(), *const value = rejected.value.c_str();
+				findings.push_back({Severity::Warning,
+					rejected.source != "command line"
+						? Format("SCD3D11.ini has %s=%s, which SCD3D11 cannot read, so it uses the default.", name, value)
+					: rejected.value.empty()
+						? Format("-%s needs a value, so SCD3D11 ignores it.", name)
+						: Format("SCD3D11 cannot read -%s:%s, so it ignores it.", name, value)});
+			}
+			if (environment.oldLogLeftOver) {
+				findings.push_back({Severity::Note, "SC4D3D11.log is left over from SCD3D11 before v0.3, which writes "
+				                                    "Logs\\SCD3D11.log instead. It can be deleted."});
+			}
+		}
+
 		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
 			if (!environment.largeAddressAware) {
 				findings.push_back({Severity::Problem, "SimCity 4.exe can use only 2 GB of memory. Large cities and big "
@@ -696,6 +727,7 @@ namespace nSCD3D11::Doctor {
 		CheckModules(environment, findings);
 		CheckGpus(environment, findings);
 		CheckMonitors(environment, findings);
+		CheckSettings(environment, findings);
 		CheckGame(environment, findings);
 		std::stable_sort(findings.begin(), findings.end(),
 		                 [](Finding const &a, Finding const &b) { return a.severity > b.severity; });

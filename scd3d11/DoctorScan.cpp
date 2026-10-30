@@ -14,6 +14,9 @@
 #include "GameVersion.h"
 #include "Settings.h"
 
+#include "FileSystem.h"
+#include "IniReader.h"
+
 #include <GZCLSIDDefs.h>
 #include <GZServPtrs.h>
 #include <SC4NotificationDialog.h>
@@ -301,6 +304,25 @@ namespace nSCD3D11::Doctor {
 			if (system != nullptr) environment.wineHost = system;
 		}
 
+		// SCD3D11.ini read the way Settings reads it.
+		void ReadIni(Environment &environment) {
+			std::filesystem::path const path = FileSystem::GetDllIniFilePath();
+			std::error_code error;
+			if (!std::filesystem::exists(path, error)) return;
+			try {
+				IniReader const reader(path);
+				std::optional<IniSection> const section = reader.get_section_optional("SCD3D11");
+				if (!section) {
+					environment.iniWithoutSection = true;
+					return;
+				}
+				for (auto const &[key, value] : *section) environment.iniKeys.push_back(key);
+				std::sort(environment.iniKeys.begin(), environment.iniKeys.end());
+			} catch (std::exception const &failure) {
+				environment.iniError = failure.what();
+			}
+		}
+
 		Environment Collect(cIGZCmdLine *commandLine) {
 			Environment environment;
 			if (commandLine != nullptr) {
@@ -370,6 +392,14 @@ namespace nSCD3D11::Doctor {
 			environment.monitors = Monitors();
 			environment.largeAddressAware = IsLargeAddressAware();
 			ReadWine(environment);
+			ReadIni(environment);
+			for (Settings::Rejection const &rejection : Settings::Rejected()) {
+				environment.rejectedSettings.push_back({rejection.name, rejection.value, rejection.source});
+			}
+			// Before v0.3 the log went next to the Plugins folder holding SCD3D11.dll.
+			std::filesystem::path const plugins = std::filesystem::path(ModulePath(ModuleAt(reinterpret_cast<void *>(&Run)))).parent_path();
+			std::error_code error;
+			environment.oldLogLeftOver = std::filesystem::exists(plugins.parent_path() / L"SC4D3D11.log", error);
 			return environment;
 		}
 

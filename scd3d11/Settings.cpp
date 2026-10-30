@@ -106,6 +106,8 @@ namespace nSCD3D11::Settings {
 			return ParseNumber(value, 4, 64, megabytes);
 		}
 
+		std::vector<Rejection> gRejected;
+
 		// The setting from the first source whose value parse accepts: the
 		// command line, then the INI. A value it rejects is logged and skipped,
 		// so a mistyped switch leaves the INI's setting in force.
@@ -127,6 +129,7 @@ namespace nSCD3D11::Settings {
 				}
 				Log(LogCategory::Initialization, "setting %s: %s%s%s from the %s is not a valid value, ignored", name,
 				    value->empty() ? "a bare switch" : "'", value->c_str(), value->empty() ? "" : "'", source);
+				gRejected.push_back({name, *value, source});
 			}
 			return fallback;
 		}
@@ -166,6 +169,7 @@ namespace nSCD3D11::Settings {
 			}
 			Log(LogCategory::Initialization, "command line as SC4 reads it: %s", arguments.c_str());
 		}
+		gRejected.clear();
 		std::optional<IniSection> const ini = ReadIni();
 		Sources const sources{commandLine, ini ? &*ini : nullptr};
 		Values values;
@@ -202,5 +206,9 @@ namespace nSCD3D11::Settings {
 
 	Values const &Get() {
 		return gValues;
+	}
+
+	std::vector<Rejection> const &Rejected() {
+		return gRejected;
 	}
 } // namespace nSCD3D11::Settings

@@ -193,6 +193,31 @@ int main() {
 		                                                  "LG 27GL850 (2560x1440 at 144 Hz, SC4 draws here)"));
 	}
 	{
+		// SCD3D11.ini typos, values Settings rejected and a log from before the rename.
+		Environment environment = Clean();
+		environment.iniKeys = {"LiveShadow", "liveshadows", "SomethingElse"};
+		environment.rejectedSettings = {{"VSync", "maybe", "SCD3D11.ini"}, {"GPU", "", "command line"},
+		                                {"LogLevel", "loud", "command line"}};
+		environment.oldLogLeftOver = true;
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Warning, "SCD3D11.ini has LiveShadow, which is not a setting. Did you mean LiveShadows?"));
+		assert(!Has(findings, Severity::Warning, "liveshadows"));
+		assert(Has(findings, Severity::Warning, "SCD3D11.ini has SomethingElse, which is not a setting SCD3D11 reads"));
+		assert(Has(findings, Severity::Warning, "SCD3D11.ini has VSync=maybe, which SCD3D11 cannot read"));
+		assert(Has(findings, Severity::Warning, "-GPU needs a value"));
+		assert(Has(findings, Severity::Warning, "cannot read -LogLevel:loud"));
+		assert(Has(findings, Severity::Note, "SC4D3D11.log is left over"));
+	}
+	{
+		Environment environment = Clean();
+		environment.iniError = "Invalid INI line 4";
+		assert(Has(Diagnose(environment), Severity::Warning, "SCD3D11.ini cannot be read, so SCD3D11 ignores all of it: "
+		                                                     "Invalid INI line 4"));
+		environment.iniError.clear();
+		environment.iniWithoutSection = true;
+		assert(Has(Diagnose(environment), Severity::Warning, "no [SCD3D11] section"));
+	}
+	{
 		// No 4GB patch, Wine, and a ReShade too old for the add-on.
 		Environment environment = Clean();
 		environment.largeAddressAware = false;
