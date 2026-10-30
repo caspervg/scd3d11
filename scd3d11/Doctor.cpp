@@ -565,7 +565,7 @@ namespace nSCD3D11::Doctor {
 			"scd3d11.dll", "sc4graphicsoptions.dll", "sc4cpuoptions.dll", "sc4renderservices.dll", "sc4_painter.dll",
 			"memo.3dcamera.dll", "sc4-moderncamera.dll", "sc4moderncamera.dll", "memo.thumbnail-fix.dll",
 			"sc4disablefpslimits.dll", "scvk.dll", "scgl.dll", "sc4fullscreen32bit.dll", "sc4singlecpu.dll",
-			"sc4cpupriority.dll",
+			"sc4cpupriority.dll", "sc4plopandpaint.dll", "sc4terrainextensions.dll",
 		};
 		std::string const name = FileName(path);
 		return std::any_of(std::begin(kWatched), std::end(kWatched), [&](char const *watched) { return name == watched; });
