@@ -100,18 +100,20 @@ namespace nSCD3D11::Doctor {
 			return row[b.size()];
 		}
 
-		// Switch names SC4 itself and common plugins read, in lower case, with their usual spelling.
-		// SC4's own come from the names in SimCity 4.exe. SCD3D11's must match Settings::Load.
+		// SCD3D11's settings, read from the command line and SCD3D11.ini. They must match Settings::Load.
+		constexpr char const *kSettings[] = {
+			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull", "ReShade",
+			"DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize",
+		};
+
+		// Other switch names SC4 itself and common plugins read, with their usual spelling. SC4's own come
+		// from the names in SimCity 4.exe.
 		constexpr char const *kKnownSwitches[] = {
 			// SimCity 4
 			"w", "f", "r", "d", "l", "gp", "Intro", "CustomResolution", "CustomCursors", "AutoZoomChange", "CPUPriority",
 			"CPUCount", "UserDir", "Music", "Radio", "Sound", "Audio", "IME", "Verbose", "ExceptionHandling",
 			"Restart", "AllowMultipleInstances", "Logging", "DebugLevel", "LuaScript", "ForceIdle",
 			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog", "NetCommandGenerator",
-			// SCD3D11
-			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull",
-			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "VertexCacheSegments",
-			"VertexCacheSize",
 			// SC4CPUOptions and SC4DBPFLoading
 			"ParallelCull", "SimTickCap", "SimTickStats", "ModelSlice", "OverlayIndex", "StartupDBPFLoadTrace",
 		};
@@ -119,18 +121,27 @@ namespace nSCD3D11::Doctor {
 		// Switches only scvk reads. They look like SCD3D11's but do nothing here.
 		constexpr char const *kScvkSwitches[] = {"MaxFPS", "FullscreenMode"};
 
-		bool IsKnown(std::string const &name) {
-			for (char const *known : kKnownSwitches) {
-				if (Lower(known) == name) return true;
-			}
-			return false;
+		template <size_t N>
+		bool IsIn(char const *const (&names)[N], std::string const &name) {
+			return std::any_of(std::begin(names), std::end(names), [&](char const *known) { return Lower(known) == name; });
 		}
 
+		bool IsKnown(std::string const &name) {
+			return IsIn(kSettings, name) || IsIn(kKnownSwitches, name);
+		}
+
+		// A name two letters or fewer away.
 		char const *Closest(std::string const &name) {
 			if (name.size() < 4) return nullptr;
-			for (char const *known : kKnownSwitches) {
+			auto const near = [&](char const *known) {
 				std::string const lower = Lower(known);
-				if (lower.size() >= 4 && Distance(name, lower) <= 2) return known;
+				return lower.size() >= 4 && Distance(name, lower) <= 2;
+			};
+			for (char const *known : kSettings) {
+				if (near(known)) return known;
+			}
+			for (char const *known : kKnownSwitches) {
+				if (near(known)) return known;
 			}
 			return nullptr;
 		}
@@ -331,10 +342,8 @@ namespace nSCD3D11::Doctor {
 						"%s no longer does anything. Live shadows are -LiveShadows:on, and -NetworkShadowMasks:on "
 						"keeps the flat network shadows.", entry.token.c_str())});
 				} else if (!IsKnown(entry.name)) {
-					bool scvk = false;
-					for (char const *name : kScvkSwitches) scvk |= Lower(name) == entry.name;
 					char const *const closest = Closest(entry.name);
-					if (scvk) {
+					if (IsIn(kScvkSwitches, entry.name)) {
 						findings.push_back({Severity::Note, Format(
 							"%s is an scvk switch. SCD3D11 does not read it.", entry.token.c_str())});
 					} else if (closest != nullptr) {
