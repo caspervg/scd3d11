@@ -54,9 +54,11 @@ namespace nSCD3D11 {
     // only overwhelmingly likely, not proof, that the contents are equal.
     struct GeometryCacheKey {
         XXH128_hash_t digest{};
-        uint32_t count = 0;
+        // Never 0 for a real key, and below 2^31 because every upload's byte size fits 32 bits. The flag
+        // shares its word, which keeps a key at 24 bytes.
+        uint32_t count : 31 = 0;
+        uint32_t generation : 1 = 0;
         uint32_t format = 0; // SimGL vertex format or DXGI index format
-        bool generation = false;
 
         bool operator==(GeometryCacheKey const &other) const {
             // Not XXH128_isEqual, which is an out-of-line call on every cache probe.
@@ -65,8 +67,12 @@ namespace nSCD3D11 {
         }
     };
 
-    // The only way index keys are built: format, count and the exact bytes uploaded.
+    // Index keys are built from format, count and the exact bytes uploaded, except SequentialIndexKey.
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count);
+
+    // The 32-bit indices BuildSequentialIndices makes depend only on the primitive and the vertex count,
+    // so their key is those two, as a generation key that no content key can equal.
+    GeometryCacheKey SequentialIndexKey(uint32_t primitive, uint32_t vertexCount);
 
     // Content key of interleaved vertices. Only the bytes the format consumes are hashed, so padding
     // between strided vertices never affects it and packed and padded copies of a mesh share a key.
@@ -80,6 +86,9 @@ namespace nSCD3D11 {
         void const *source,
         uint32_t count,
         std::vector<D3D11Vertex> &destination);
+
+    // How many indices BuildSequentialIndices makes, 0 for a primitive or count it rejects.
+    uint64_t SequentialIndexCount(uint32_t primitive, uint32_t vertexCount);
 
     bool BuildSequentialIndices(uint32_t primitive, uint32_t vertexCount, std::vector<uint32_t> &indices);
 

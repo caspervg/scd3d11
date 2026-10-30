@@ -84,18 +84,21 @@ namespace nSCD3D11 {
 		size_t const offset = static_cast<size_t>(extensionVertexStart) * stride;
 		if (!ExtensionReservationHolds(byteSize)) return false;
 		uint8_t const *source = extensionVertexData.data() + offset;
-		// The reservation generation stands in for the contents: they can only change under GetVertices.
+		// The whole reservation is uploaded once, whatever part of it a draw reads, so draws of different
+		// lengths or index ranges share it. Its generation stands in for the contents: they can only
+		// change under GetVertices.
+		uint32_t const count = extensionVertexCursor - extensionVertexStart;
 		GeometryCacheKey key;
 		key.digest.low64 = extensionVertexGeneration;
-		key.count = byteSize / stride;
+		key.count = count;
 		key.format = format;
 		key.generation = true;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 		try {
-			if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
+			if (!ConvertVertices(format, stride, source, count, vertexScratch)) return false;
 		} catch (std::bad_alloc const &) {
-			Log(LogCategory::Resource, "out of memory converting %u terrain vertices", byteSize / stride);
+			Log(LogCategory::Resource, "out of memory converting %u terrain vertices", count);
 			LogMemoryStatus(LogCategory::Resource, "when terrain vertex conversion failed");
 			return false;
 		}
@@ -151,7 +154,7 @@ namespace nSCD3D11 {
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
-			d3dContext->Draw(byteSize / RZVertexFormatStride(interleavedFormat), 0);
+			d3dContext->Draw(byteSize / RZVertexFormatStride(interleavedFormat), FirstVertex());
 		}
 		interleavedFormat = previousFormat;
 	}
@@ -216,9 +219,8 @@ namespace nSCD3D11 {
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
-			d3dContext->IASetIndexBuffer(
-				dynamicIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, dynamicIndexBufferOffset);
-			d3dContext->DrawIndexed(count, 0, 0);
+			UINT const firstIndex = BindIndexBuffer(DXGI_FORMAT_R16_UINT);
+			d3dContext->DrawIndexed(count, firstIndex, static_cast<INT>(FirstVertex()));
 		}
 		interleavedFormat = previousFormat;
 	}

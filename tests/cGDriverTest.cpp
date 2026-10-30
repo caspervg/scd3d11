@@ -152,6 +152,60 @@ namespace nSCD3D11 {
 			d.vertexCacheTrimmed = d.indexCacheTrimmed = false;
 		}
 
+		// Segments stay bound at offset 0 and draws start at their upload, so later uploads in a segment
+		// draw through every path without rebinding the segment.
+		void DrawsStartAtTheirUpload() {
+			ResetGeometryCache();
+			d.InvalidateD3D11StateCache();
+			DrawFullscreen(255, 0, 0);
+			ID3D11Buffer *const vertexSegment = d.appliedVertexBuffer;
+			DrawFullscreen(0, 255, 0);
+			assert(d.dynamicVertexBufferOffset != 0 && d.appliedVertexBuffer == vertexSegment);
+			assert(Pixel(1, 1) == 0x00ff00ff);
+
+			// A square as a native list and as a fan, so the fan's converted indices differ from the list's.
+			ColorVertex square[4]{
+				{{-1.0f, -1.0f, 0.0f}, {}}, {{1.0f, -1.0f, 0.0f}, {}},
+				{{1.0f, 1.0f, 0.0f}, {}}, {{-1.0f, 1.0f, 0.0f}, {}},
+			};
+			auto const paint = [&](uint8_t r, uint8_t g, uint8_t b) {
+				for (ColorVertex &vertex: square) {
+					vertex.bgra[0] = b;
+					vertex.bgra[1] = g;
+					vertex.bgra[2] = r;
+					vertex.bgra[3] = 255;
+				}
+				d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, square);
+			};
+			uint16_t const shortIndices[]{0, 1, 2, 0, 2, 3};
+			uint32_t const longIndices[]{0, 1, 2, 0, 2, 3};
+			uint32_t const fanIndices[]{0, 1, 2, 3};
+
+			paint(0, 0, 255);
+			d.DrawElements(0, 6, 3, shortIndices);
+			assert(Pixel(1, 1) == 0x0000ffff);
+			ID3D11Buffer *const indexSegment = d.appliedIndexBuffer;
+			paint(255, 255, 0);
+			d.DrawElements(0, 6, 5, longIndices);
+			assert(Pixel(1, 1) == 0xffff00ff && d.dynamicIndexBufferOffset != 0);
+			assert(d.appliedIndexBuffer == indexSegment && d.appliedIndexFormat == DXGI_FORMAT_R32_UINT);
+			paint(255, 0, 255);
+			d.DrawElements(2, 4, 5, fanIndices);
+			assert(Pixel(1, 1) == 0xff00ffff);
+			paint(0, 255, 255);
+			uint64_t const indexMisses = d.indexBufferCacheMisses;
+			d.DrawArrays(2, 0, 4);
+			assert(Pixel(1, 1) == 0x00ffffff);
+			assert(d.appliedVertexBuffer == vertexSegment && d.appliedIndexBuffer == indexSegment);
+			// A converted fan's indices depend only on its vertex count: other vertices reuse them.
+			paint(255, 128, 0);
+			uint64_t const indexHits = d.indexBufferCacheHits;
+			d.DrawArrays(2, 0, 4);
+			assert(Pixel(1, 1) == 0xff8000ff);
+			assert(d.indexBufferCacheMisses == indexMisses + 1 && d.indexBufferCacheHits == indexHits + 1);
+			ResetGeometryCache();
+		}
+
 		// A native 32-bit line list [0, 1] once hashed exactly like a converted fan uploading [5, 0, 1].
 		void IndexKeysDoNotAlias() {
 			ColorVertex vertices[6]{};
@@ -302,6 +356,7 @@ namespace nSCD3D11 {
 
 			d.DrawPrims(0, 0, nullptr, 101 * stride);
 			assert(VertexUploads() == uploads);
+			uint64_t const misses = d.vertexBufferCacheMisses;
 			d.DrawPrims(0, 0, nullptr, 100 * stride);
 			assert(VertexUploads() == ++uploads);
 
@@ -311,6 +366,12 @@ namespace nSCD3D11 {
 			outside[2] = 99;
 			d.DrawPrimsIndexed(0, 0, 3, outside);
 			assert(VertexUploads() == ++uploads);
+			// Shorter draws and smaller index ranges reuse the reservation's single upload.
+			uint16_t front[]{0, 1, 2};
+			d.DrawPrimsIndexed(0, 0, 3, front);
+			d.DrawPrims(0, 0, nullptr, 3 * stride);
+			assert(VertexUploads() == uploads + 2 && d.vertexBufferCacheMisses == misses + 1);
+			uploads += 2;
 
 			d.Reset();
 			d.DrawPrims(0, 0, nullptr, 3 * stride);
@@ -561,22 +622,36 @@ namespace nSCD3D11 {
 			d.DrawArrays(0, 0, 3);
 		}
 
+		std::vector<uint8_t> ReadWholeBuffer(ID3D11Buffer *buffer) {
+			D3D11_BUFFER_DESC description{};
+			buffer->GetDesc(&description);
+			return ReadBuffer(buffer, 0, description.ByteWidth);
+		}
+
+		// Both constant buffers as the GPU sees them, per-draw then per-state.
+		std::vector<uint8_t> UploadedConstants() {
+			std::vector<uint8_t> constants = ReadWholeBuffer(d.drawConstantBuffer.Get());
+			std::vector<uint8_t> const state = ReadWholeBuffer(d.stateConstantBuffer.Get());
+			constants.insert(constants.end(), state.begin(), state.end());
+			return constants;
+		}
+
 		// The constants a setter leaves behind must equal a from-scratch rebuild, on the CPU and the GPU.
 		template <typename Setter>
 		void CheckConstants(char const *name, Setter const &setter) {
 			DrawFull();
-			std::vector<uint8_t> const before = d.constantBufferCache;
+			std::vector<uint8_t> const before = UploadedConstants();
 			setter();
 			DrawFull();
-			std::vector<uint8_t> const incremental = d.constantBufferCache;
-			bool const uploaded = ReadBuffer(d.transformBuffers[d.activeTransformBuffer].Get(), 0,
-			                                 static_cast<uint32_t>(incremental.size())) == incremental;
-			d.constantsDirty = true;
+			std::vector<uint8_t> const incremental = UploadedConstants();
+			bool const cached = ReadWholeBuffer(d.stateConstantBuffer.Get()) == d.constantBufferCache;
+			d.constantsDirty = d.drawConstantsDirty = true;
 			d.constantBufferCache.clear();
 			DrawFull();
-			if (!uploaded || incremental == before || d.constantBufferCache != incremental) {
-				std::fprintf(stderr, "constants wrong after %s (uploaded %d, changed %d, fresh %d)\n", name,
-				             uploaded, incremental != before, d.constantBufferCache == incremental);
+			bool const fresh = UploadedConstants() == incremental;
+			if (!cached || incremental == before || !fresh) {
+				std::fprintf(stderr, "constants wrong after %s (cached %d, changed %d, fresh %d)\n", name,
+				             cached, incremental != before, fresh);
 				assert(false);
 			}
 		}
@@ -651,14 +726,19 @@ namespace nSCD3D11 {
 			CheckConstants("vertex format without normals", [&] { drawNormals = false; });
 			CheckConstants("vertex format with normals", [&] { drawNormals = true; });
 
-			// Identical draws rebuild and upload nothing. Losing the bindings does not force an upload either.
-			uint8_t const buffer = d.activeTransformBuffer;
+			// Identical draws rebuild and upload nothing. Losing the bindings does not force an upload either:
+			// a rebuild would put back the byte flipped in the cache.
 			DrawFull();
+			std::vector<uint8_t> const drawConstants = ReadWholeBuffer(d.drawConstantBuffer.Get());
+			d.constantBufferCache[0] ^= 1;
 			DrawFull();
-			assert(!d.constantsDirty && !d.normalMatrixDirty && d.activeTransformBuffer == buffer);
+			assert(!d.constantsDirty && !d.drawConstantsDirty && !d.normalMatrixDirty);
 			d.InvalidateD3D11StateCache();
 			DrawFull();
-			assert(d.activeTransformBuffer == buffer && d.appliedTransformBuffer == d.transformBuffers[buffer].Get());
+			assert(d.constantBuffersBound);
+			d.constantBufferCache[0] ^= 1;
+			assert(ReadWholeBuffer(d.stateConstantBuffer.Get()) == d.constantBufferCache);
+			assert(ReadWholeBuffer(d.drawConstantBuffer.Get()) == drawConstants);
 
 			d.DeleteTextures(1, &texture);
 			d.Disable(kGDCapability_Fog);
@@ -683,7 +763,7 @@ namespace nSCD3D11 {
 			d.TexStageMatrix(texture42, 4, 2, 1);
 			d.TexParameter(0, 2, 2);
 			DrawFull();
-			assert(!d.constantsDirty);
+			assert(!d.constantsDirty && !d.drawConstantsDirty);
 			ID3D11SamplerState *const sampler = d.textureStages[0].sampler.Get();
 			assert(sampler != nullptr);
 			// Only the cull test consumes the clip rows, and nothing here draws into a partial viewport.
@@ -698,7 +778,7 @@ namespace nSCD3D11 {
 			d.TexStageCoord(0);
 			d.TexStageMatrix(texture42, 4, 2, 1);
 			d.TexParameter(0, 2, 2);
-			assert(!d.constantsDirty && !d.normalMatrixDirty && !d.clipRowsDirty);
+			assert(!d.constantsDirty && !d.drawConstantsDirty && !d.normalMatrixDirty && !d.clipRowsDirty);
 			assert(d.textureStages[0].sampler.Get() == sampler);
 
 			// Each real change still marks them.
@@ -706,10 +786,10 @@ namespace nSCD3D11 {
 			assert(d.constantsDirty);
 			DrawFull();
 			d.LoadIdentity();
-			assert(d.constantsDirty && d.normalMatrixDirty && d.clipRowsDirty);
+			assert(!d.constantsDirty && d.drawConstantsDirty && d.normalMatrixDirty && d.clipRowsDirty);
 			DrawFull();
 			d.LoadIdentity();
-			assert(!d.constantsDirty);
+			assert(!d.constantsDirty && !d.drawConstantsDirty);
 			d.TexParameter(0, 2, 1);
 			assert(d.textureStages[0].sampler.Get() == nullptr);
 
@@ -830,7 +910,8 @@ namespace nSCD3D11 {
 				cGDriver::GeometryCacheSegment const &segment = d.vertexBufferSegments[index];
 				total += segment.capacity;
 				assert(!segment.buffer == (segment.capacity == 0));
-				assert(segment.buffer || (segment.cursor == 0 && segment.keys.empty()));
+				assert(segment.buffer || (segment.cursor == 0 && segment.keys.empty() && segment.lastUseFrame == 0));
+				assert(segment.lastUseFrame <= d.currentFrame);
 				assert(segment.keys.size() <= 32768);
 				for (GeometryCacheKey const &key: segment.keys) {
 					auto const entry = d.vertexBufferCache.find(key);
@@ -877,6 +958,21 @@ namespace nSCD3D11 {
 			assert(!d.vertexCacheTrimmed);
 			for (int index = 0; index < 8; ++index) draw();
 			assert(CheckVertexCache() == 8 * segmentBytes);
+
+			// A view that only hits the cache fills no segment, so Flush checks too, at most once a second.
+			d.injectedAvailableAddressSpace = 512ull * 1024 * 1024;
+			d.nextAddressSpaceCheck = 0;
+			d.Flush();
+			assert(d.vertexCacheTrimmed && d.indexCacheTrimmed && CheckVertexCache() == 2 * segmentBytes);
+			assert(d.activeVertexBufferSegment < 2 && d.activeIndexBufferSegment < 2);
+			draw();
+			assert(UploadedX(0) == x);
+			assert(d.nextAddressSpaceCheck != 0);
+			d.vertexCacheTrimmed = false;
+			d.nextAddressSpaceCheck = GetTickCount64() + 60000;
+			d.Flush();
+			assert(!d.vertexCacheTrimmed);
+			d.vertexCacheTrimmed = true;
 			d.injectedAvailableAddressSpace = 0;
 
 			// VertexCacheSegments=3 and VertexCacheSize=4 bound the ring and each segment.
@@ -957,6 +1053,95 @@ namespace nSCD3D11 {
 			CheckVertexCache();
 		}
 
+		// The driver never waits for a frame; the test does, so the in-place path is reached deterministically.
+		void WaitForFrame(uint64_t frame) {
+			for (int attempt = 0; attempt < 5000 && !d.FrameCompleted(frame); ++attempt) {
+				d.d3dContext->Flush();
+				Sleep(1);
+			}
+			assert(d.FrameCompleted(frame));
+		}
+
+		// A full segment is refilled in place (WRITE_NO_OVERWRITE) once the GPU has finished its last frame,
+		// and renamed (WRITE_DISCARD) only while that frame may still be read. Hits count as uses.
+		void GeometryCacheRefillsWithoutRenaming() {
+			ResetGeometryCache();
+			d.vertexCacheSegments = 2;
+			d.vertexCacheSegmentBytes = 4u * 1024 * 1024;
+			d.segmentRefills = d.segmentRefillDiscards = 0;
+			// 90,000 vertices convert to 3,960,000 bytes: one nearly full 4 MB segment each.
+			std::vector<ColorVertex> medium(90000);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, medium.data());
+			float x = 0.0f;
+			auto const draw = [&] {
+				medium.back().position[0] = ++x;
+				d.DrawArrays(0, 0, 90000);
+				assert(UploadedX(89999) == x);
+				CheckVertexCache();
+			};
+			auto const refills = [&](uint64_t total, uint64_t discards) {
+				return d.segmentRefills == total && d.segmentRefillDiscards == discards;
+			};
+
+			// New buffers are written in place straight away.
+			draw();
+			draw();
+			assert(refills(0, 0) && d.vertexBufferSegments[1].lastUseFrame == d.currentFrame);
+
+			// Segment 0 was drawn from this frame, so its refill renames it.
+			draw();
+			assert(d.activeVertexBufferSegment == 0 && refills(1, 1));
+
+			// Segment 1's last frame is done: written in place.
+			uint64_t const first = d.currentFrame;
+			d.Flush();
+			assert(d.currentFrame == first + 1);
+			WaitForFrame(first);
+			draw();
+			assert(d.activeVertexBufferSegment == 1 && refills(2, 1));
+
+			// A cache hit in the next frame keeps segment 1 busy, while segment 0 is free again.
+			uint64_t const second = d.currentFrame;
+			d.Flush();
+			uint64_t const hits = d.vertexBufferCacheHits;
+			d.DrawArrays(0, 0, 90000);
+			assert(d.vertexBufferCacheHits == hits + 1 && d.vertexBufferSegments[1].lastUseFrame == second + 1);
+			WaitForFrame(second);
+			draw();
+			assert(d.activeVertexBufferSegment == 0 && refills(3, 1));
+			draw();
+			assert(d.activeVertexBufferSegment == 1 && refills(4, 2));
+
+			// A failed refill map draws nothing and leaves the segment empty. The next draw refills it.
+			d.Flush();
+			WaitForFrame(d.currentFrame - 1);
+			d.injectedFaults[cGDriver::FAULT_MAP] = {E_OUTOFMEMORY, 1};
+			uint64_t const misses = d.vertexBufferCacheMisses;
+			medium.back().position[0] = ++x;
+			d.DrawArrays(0, 0, 90000);
+			assert(d.injectedFaults[cGDriver::FAULT_MAP].remaining == 0 && !d.deviceLost);
+			assert(d.vertexBufferCacheMisses == misses + 1 && refills(4, 2));
+			assert(d.activeVertexBufferSegment == 0 && d.vertexBufferSegments[0].cursor == 0);
+			CheckVertexCache();
+			d.DrawArrays(0, 0, 90000);
+			assert(UploadedX(89999) == x && refills(5, 2));
+
+			// A new device starts the frame count and the fences over, with every segment new.
+			d.Flush();
+			assert(d.frameFences[(d.currentFrame - 1) % std::size(d.frameFences)].query);
+			assert(d.RecoverD3D11Device());
+			assert(d.currentFrame == 1 && d.completedFrame == 0);
+			for (auto const &fence: d.frameFences) assert(!fence.query && fence.frame == 0);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, medium.data());
+			draw();
+			draw();
+			assert(refills(5, 2));
+
+			d.vertexCacheSegments = 8;
+			d.vertexCacheSegmentBytes = 16u * 1024 * 1024;
+			ResetGeometryCache();
+		}
+
 		DXGI_SWAP_EFFECT SwapEffect() {
 			DXGI_SWAP_CHAIN_DESC description{};
 			assert(SUCCEEDED(d.swapChain->GetDesc(&description)));
@@ -1008,6 +1193,7 @@ namespace nSCD3D11 {
 
 		int Run() {
 			DrawsGeometry();
+			DrawsStartAtTheirUpload();
 			ViewportCullsOutsideDraws();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();
@@ -1024,6 +1210,7 @@ namespace nSCD3D11 {
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();
 			GeometryCacheTrimsWhenAddressSpaceRunsLow();
+			GeometryCacheRefillsWithoutRenaming();
 			FlipModelWithLegacyFallback();
 			return 0;
 		}

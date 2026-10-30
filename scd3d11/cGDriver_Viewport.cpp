@@ -593,6 +593,9 @@ namespace nSCD3D11 {
 			RecoverFromDeviceLoss();
 			return;
 		}
+		// The frame's draws are all recorded by now, and Present below submits the fence along with them.
+		EndFrameFence();
+		TrimGeometryCachesIfLow();
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
 			NoteRenderPhase("Flush: GetFullscreenState");

@@ -68,8 +68,7 @@ namespace nSCD3D11 {
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),
-	                       activeTransformBuffer(0),
-	                       appliedTransformBuffer(nullptr),
+	                       constantBuffersBound(false),
 	                       vertexBufferSegments{},
 	                       indexBufferSegments{},
 	                       activeVertexBufferSegment(0),
@@ -81,11 +80,16 @@ namespace nSCD3D11 {
 	                       dynamicVertexBufferOffset(0),
 	                       dynamicIndexBufferOffset(0),
 	                       appliedVertexBuffer(nullptr),
-	                       appliedVertexBufferOffset(UINT32_MAX),
+	                       appliedIndexBuffer(nullptr),
+	                       appliedIndexFormat(DXGI_FORMAT_UNKNOWN),
 	                       vertexBufferCacheHits(0),
 	                       vertexBufferCacheMisses(0),
 	                       indexBufferCacheHits(0),
 	                       indexBufferCacheMisses(0),
+	                       currentFrame(1),
+	                       completedFrame(0),
+	                       segmentRefills(0),
+	                       segmentRefillDiscards(0),
 	                       geometryPipelineBound(false),
 	                       appliedPixelShader(nullptr),
 	                       textureBindingsValid(false),
@@ -105,6 +109,7 @@ namespace nSCD3D11 {
 	                       normalMatrix{},
 	                       normalMatrixDirty(true),
 	                       constantsDirty(true),
+	                       drawConstantsDirty(true),
 	                       constantsFlagInputs(0),
 	                       extensionVertexCursor(0),
 	                       extensionVertexStart(0),
@@ -392,9 +397,13 @@ namespace nSCD3D11 {
 	void cGDriver::LoadMatrix(GLfloat const *m) {
 		if (m == nullptr || memcmp(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode])) == 0) return;
 		memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
-		constantsDirty = true;
-		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
-		else ShadowRegistry::NoteProjection(m);
+		if (activeMatrixMode == MODEL_VIEW) {
+			drawConstantsDirty = true;
+			normalMatrixDirty = true;
+		} else {
+			constantsDirty = true;
+			ShadowRegistry::NoteProjection(m);
+		}
 		clipRowsDirty = true;
 	}
 
