@@ -64,6 +64,8 @@ namespace nSCD3D11 {
 	constexpr size_t MAX_TEXTURE_UNITS = 2;
 	// The most segments a geometry cache can have. VertexCacheSegments picks how many the vertex cache uses.
 	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 16;
+	// Segment size of the terrain vertex stream, which has four. A terrain draw streams about 15 vertices.
+	constexpr uint32_t TERRAIN_VERTEX_STREAM_BYTES = 2u * 1024u * 1024u;
 
 	struct cGDriverTestAccess;
 
@@ -203,6 +205,20 @@ namespace nSCD3D11 {
 		struct FrameFence {
 			Microsoft::WRL::ComPtr<ID3D11Query> query;
 			uint64_t frame = 0;
+		};
+
+		// Terrain vertices are drawn once and never again, so they stream through a ring of their own. In
+		// the geometry cache they would only evict models that are drawn again.
+		struct StreamSegment {
+			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+			uint32_t cursor = 0;
+			// The last frame that appended to it. 0 for a buffer nothing has used yet.
+			uint64_t lastUseFrame = 0;
+		};
+
+		struct StreamRing {
+			StreamSegment segments[4];
+			uint8_t active = 0;
 		};
 
 		void *windowHandle;
@@ -438,6 +454,7 @@ namespace nSCD3D11 {
 		uint64_t completedFrame;
 		uint64_t segmentRefills;
 		uint64_t segmentRefillDiscards;
+		StreamRing terrainVertexStream;
 		bool geometryPipelineBound;
 		bool textureBindingsValid;
 		D3D11_PRIMITIVE_TOPOLOGY appliedTopology;
@@ -473,6 +490,13 @@ namespace nSCD3D11 {
 			uint64_t viewportPixels = 0;
 			uint32_t textureCreates = 0;
 			uint32_t textureDeletes = 0;
+			// Geometry uploads: terrain draws and the bytes streamed for them, and what the geometry cache
+			// uploaded and how often it refilled a segment.
+			uint32_t terrainDraws = 0;
+			uint64_t terrainStreamBytes = 0;
+			uint32_t terrainStreamRenames = 0;
+			uint64_t cacheUploadBytes = 0;
+			uint32_t cacheRefills = 0;
 			// Live shadows. Static passes run at DrawPostStaticView, full window or one dirty rectangle.
 			uint32_t shadowFullPasses = 0;
 			uint32_t shadowPartialPasses = 0;
@@ -534,7 +558,6 @@ namespace nSCD3D11 {
 		std::vector<uint8_t> extensionVertexData;
 		uint32_t extensionVertexCursor;
 		uint32_t extensionVertexStart;
-		uint64_t extensionVertexGeneration;
 		bool extensionVerticesLocked;
 		std::unordered_map<uint32_t, TextureResource> textures;
 		std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11SamplerState> > samplerStates;
@@ -726,7 +749,12 @@ namespace nSCD3D11 {
 		UINT BindIndexBuffer(DXGI_FORMAT format);
 		ID3D11ShaderResourceView *BoundTextureView(uint32_t stage);
 
-		bool UploadExtensionVertices(uint32_t byteSize);
+		// Appends bytes to a stream ring and returns the buffer and byte offset they landed at.
+		bool StreamUpload(StreamRing &ring, uint32_t segmentBytes, uint32_t bindFlags, void const *data,
+		                  uint32_t bytes, ID3D11Buffer *&buffer, uint32_t &offset);
+
+		// Streams reservation vertices [first, first + count) and makes them the current vertex upload.
+		bool UploadExtensionVertices(uint32_t first, uint32_t count);
 
 		// Whether [extensionVertexStart, +byteSize) is a drawable part of the current reservation.
 		bool ExtensionReservationHolds(uint32_t byteSize) const;

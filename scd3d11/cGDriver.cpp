@@ -113,7 +113,6 @@ namespace nSCD3D11 {
 	                       constantsFlagInputs(0),
 	                       extensionVertexCursor(0),
 	                       extensionVertexStart(0),
-	                       extensionVertexGeneration(0),
 	                       extensionVerticesLocked(false),
 	                       nextTextureId(1),
 	                       boundTextures{},
