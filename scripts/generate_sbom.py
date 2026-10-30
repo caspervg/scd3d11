@@ -3,6 +3,8 @@
 
 SBOM scanners only understand package managers, so they cannot see this project's vendored
 sources. The components are therefore declared here; keep DEPENDENCIES in sync with vendor/.
+The C++ runtime is linked in statically, so the toolset's parts of it are declared too, at the
+versions in the build environment that vcvars sets up.
 Both formats are written directly: the CycloneDX CLI's SPDX conversion drops the main package
 and relationships and produces invalid SPDX identifiers. CI validates both files.
 
@@ -34,6 +36,47 @@ def remote_tag(url, commit):
     return None
 
 
+# Licenses without an SPDX identifier, by the LicenseRef the SPDX document gives them: name, URL and
+# the summary that stands in for their text.
+PROPRIETARY_LICENSES = {
+    "LicenseRef-Microsoft-Visual-Studio": (
+        "Microsoft Visual Studio license terms", "https://visualstudio.microsoft.com/license-terms/",
+        "Proprietary. The distributable code terms allow shipping it as part of a program built with it."),
+    "LicenseRef-Microsoft-Windows-SDK": (
+        "Microsoft Windows SDK license terms", "https://developer.microsoft.com/windows/downloads/windows-sdk/",
+        "Proprietary. The distributable code terms allow shipping it as part of a program built with it."),
+}
+
+
+def runtime_packages():
+    # The parts of the C++ runtime /MT links in: the standard library, vcruntime and the universal C runtime.
+    toolset = os.environ.get("VCToolsVersion", "")
+    ucrt = os.environ.get("UCRTVersion", "")
+
+    def package(name, version, description, license, purl_name, **reference):
+        return {
+            "spdx_id": f"SPDXRef-{name}",
+            "name": name,
+            "version": version,
+            "description": description,
+            "license": license,
+            "purl": f"pkg:generic/microsoft/{purl_name}" + (f"@{version}" if version else ""),
+            "download_location": "NOASSERTION",
+            **reference,
+        }
+
+    return [
+        package("msvc-stl", toolset, "Microsoft C++ standard library, linked in statically from the MSVC toolset",
+                "Apache-2.0 WITH LLVM-exception", "msvc-stl", vcs="https://github.com/microsoft/STL"),
+        package("vcruntime", toolset, "Microsoft Visual C++ runtime, linked in statically from the MSVC toolset",
+                "LicenseRef-Microsoft-Visual-Studio", "vcruntime",
+                website="https://learn.microsoft.com/cpp/c-runtime-library/crt-library-features"),
+        package("ucrt", ucrt, "Universal C Runtime, linked in statically from the Windows SDK",
+                "LicenseRef-Microsoft-Windows-SDK", "ucrt",
+                website="https://learn.microsoft.com/cpp/windows/universal-crt-deployment"),
+    ]
+
+
 def cyclonedx_component(package):
     component = {"type": "library", "bom-ref": package["purl"], "name": package["name"]}
     if package.get("version"):
@@ -41,9 +84,17 @@ def cyclonedx_component(package):
     component["description"] = package["description"]
     if package.get("sha256"):
         component["hashes"] = [{"alg": "SHA-256", "content": package["sha256"]}]
-    component["licenses"] = [{"license": {"id": package["license"]}}]
+    if package["license"] in PROPRIETARY_LICENSES:
+        name, url, _ = PROPRIETARY_LICENSES[package["license"]]
+        component["licenses"] = [{"license": {"name": name, "url": url}}]
+    elif " " in package["license"]:
+        component["licenses"] = [{"expression": package["license"]}]
+    else:
+        component["licenses"] = [{"license": {"id": package["license"]}}]
     component["purl"] = package["purl"]
-    component["externalReferences"] = [{"type": "vcs", "url": package["vcs"]}]
+    component["externalReferences"] = [
+        {"type": "vcs", "url": package["vcs"]} if package.get("vcs") else {"type": "website", "url": package["website"]}
+    ]
     return component
 
 
@@ -112,7 +163,9 @@ def main():
         submodule("sc4-dll-utilities", "vendor/sc4-dll-utilities", "0xC0000054/sc4-dll-utilities",
                   "LGPL-2.1-or-later", "SimCity 4 DLL plugin utilities, without Logger.cpp"),
         submodule("wil", "vendor/wil", "microsoft/wil", "MIT", "Windows Implementation Library headers"),
+        *runtime_packages(),
     ]
+    proprietary = sorted({package["license"] for package in dependencies} & PROPRIETARY_LICENSES.keys())
 
     cyclonedx = {
         "bomFormat": "CycloneDX",
@@ -139,6 +192,11 @@ def main():
         "documentNamespace": f"https://github.com/{repository}/sbom/SCD3D11-{version}-{serial}",
         "creationInfo": {"created": timestamp, "creators": ["Tool: generate_sbom.py"]},
         "packages": [spdx_package(package) for package in [main_package, *dependencies]],
+        "hasExtractedLicensingInfos": [
+            {"licenseId": license, "name": PROPRIETARY_LICENSES[license][0],
+             "seeAlsos": [PROPRIETARY_LICENSES[license][1]], "extractedText": PROPRIETARY_LICENSES[license][2]}
+            for license in proprietary
+        ],
         "relationships": [
             {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
              "relatedSpdxElement": main_package["spdx_id"]},
