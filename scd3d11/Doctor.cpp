@@ -104,7 +104,7 @@ namespace nSCD3D11::Doctor {
 		// SC4's own come from the names in SimCity 4.exe. SCD3D11's must match Settings::Load.
 		constexpr char const *kKnownSwitches[] = {
 			// SimCity 4
-			"w", "f", "r", "d", "gp", "Intro", "CustomResolution", "CustomCursors", "AutoZoomChange", "CPUPriority",
+			"w", "f", "r", "d", "l", "gp", "Intro", "CustomResolution", "CustomCursors", "AutoZoomChange", "CPUPriority",
 			"CPUCount", "UserDir", "Music", "Radio", "Sound", "Audio", "IME", "Verbose", "ExceptionHandling",
 			"Restart", "AllowMultipleInstances", "Logging", "DebugLevel", "LuaScript", "ForceIdle",
 			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog", "NetCommandGenerator",
