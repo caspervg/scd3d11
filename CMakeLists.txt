@@ -21,6 +21,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The C++ runtime is linked into the DLL, so SC4 loads it without the Visual C++ Redistributable. Every
+# target, the vendored libraries included, must use the same one.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 if (NOT CMAKE_HOST_WIN32 AND NOT CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR "SCD3D11 targets SimCity 4, a 32-bit Windows application, and must be cross-compiled.")
 endif ()
