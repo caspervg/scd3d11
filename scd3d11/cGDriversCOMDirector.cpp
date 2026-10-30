@@ -19,6 +19,7 @@
 #include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
+#include "Doctor.h"
 #include "LiveShadowHooks.h"
 #include "Settings.h"
 #include "ShadowRegistry.h"
@@ -43,6 +44,13 @@ namespace nSCD3D11
 		}
 
 		bool PreFrameWorkInit() {
+			return true;
+		}
+
+		// SC4 has picked its driver and screen mode by now, so the doctor can see what it ended up with.
+		bool PostAppInit() {
+			cIGZFrameWork* const pFramework = RZGetFrameWork();
+			Doctor::Run(pFramework != nullptr ? pFramework->CommandLine() : nullptr);
 			return true;
 		}
 

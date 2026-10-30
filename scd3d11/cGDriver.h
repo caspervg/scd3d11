@@ -206,6 +206,10 @@ namespace nSCD3D11 {
 		// Last observed swap chain state, so only changes are logged.
 		HRESULT lastPresentResult = S_OK;
 		BOOL lastFullscreenState = FALSE;
+		// Exclusive fullscreen was refused at startup because another window was in front. Flush tries
+		// again, no more than once a second, while the game is the foreground window.
+		bool exclusiveFullscreenPending = false;
+		ULONGLONG nextFullscreenAttempt = 0;
 		bool presentationPaused = false;
 		// Borderless: raise the window after the first frame it presents, so the taskbar drops behind it.
 		bool raiseWindowAfterPresent = false;

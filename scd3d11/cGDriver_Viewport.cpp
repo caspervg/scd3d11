@@ -31,6 +31,9 @@
 namespace nSCD3D11 {
 	namespace {
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
+		// SC4's own drivers name their windows GDriverWindow--<name>, and SC4GraphicsOptions 1.4.1 finds the
+		// game window by that prefix and the GDriverClass one to make it borderless.
+		char const *kWindowName = "GDriverWindow--Direct3D11";
 
 		bool BorderlessFullscreenRequested() {
 			return Settings::Get().borderless;
@@ -367,7 +370,7 @@ namespace nSCD3D11 {
 			window = CreateWindowExA(
 				extendedStyle,
 				kWindowClassName,
-				"SimCity 4 (Direct3D 11)",
+				kWindowName,
 				style,
 				windowX,
 				windowY,
@@ -508,8 +511,17 @@ namespace nSCD3D11 {
 			targetMode.RefreshRate = DXGI_RATIONAL{0, 0};
 			result = swapChain->ResizeTarget(&targetMode);
 			if (SUCCEEDED(result)) result = swapChain->SetFullscreenState(TRUE, nullptr);
-			if (SUCCEEDED(result)) lastFullscreenState = TRUE;
-			if (SUCCEEDED(result)) {
+			// DXGI refuses while another window is in front, for example a launcher that keeps the focus or
+			// a player who switches away during startup. Failing the mode here makes SC4 switch to its
+			// software driver for every later start, so the game starts in its window and Flush retries.
+			exclusiveFullscreenPending = result == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+			if (exclusiveFullscreenPending) {
+				Log(LogCategory::SwapChain,
+				    "exclusive fullscreen is not available while another window is in front, retrying once the game is");
+				nextFullscreenAttempt = 0;
+				result = S_OK;
+			} else if (SUCCEEDED(result)) {
+				lastFullscreenState = TRUE;
 				result = swapChain->ResizeBuffers(
 					0, static_cast<UINT>(mode.width), static_cast<UINT>(mode.height),
 					DXGI_FORMAT_UNKNOWN, swapChainFlags);
@@ -583,6 +595,17 @@ namespace nSCD3D11 {
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
 			NoteRenderPhase("Flush: GetFullscreenState");
+			HWND const gameWindow = static_cast<HWND>(windowHandle);
+			ULONGLONG const now = GetTickCount64();
+			if (exclusiveFullscreenPending && now >= nextFullscreenAttempt && GetForegroundWindow() == gameWindow &&
+			    !IsIconic(gameWindow)) {
+				nextFullscreenAttempt = now + 1000;
+				HRESULT const entered = swapChain->SetFullscreenState(TRUE, nullptr);
+				if (entered != DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) {
+					exclusiveFullscreenPending = false;
+					if (FAILED(entered)) LogHRESULT(LogCategory::SwapChain, "enter exclusive fullscreen", entered);
+				}
+			}
 			BOOL fullscreen = FALSE;
 			if (SUCCEEDED(swapChain->GetFullscreenState(&fullscreen, nullptr)) && fullscreen != lastFullscreenState) {
 				HWND const window = static_cast<HWND>(windowHandle);

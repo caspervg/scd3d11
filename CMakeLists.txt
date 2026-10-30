@@ -120,6 +120,8 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
+        scd3d11/Doctor.cpp
+        scd3d11/DoctorScan.cpp
         scd3d11/SCD3D11Service.cpp
         scd3d11/Settings.cpp
         scd3d11/TextureUploadUtils.cpp
@@ -160,7 +162,7 @@ set(SCD3D11_DRIVER_INCLUDES "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
 target_include_directories(SCD3D11 PRIVATE ${SCD3D11_DRIVER_INCLUDES})
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
-target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version)
+target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version wininet)
 
 include(CTest)
 if (BUILD_TESTING)
@@ -216,6 +218,10 @@ if (BUILD_TESTING)
             scd3d11/Settings.cpp
             scd3d11/Diagnostics.cpp)
 
+    scd3d11_add_test(DoctorTest
+            tests/DoctorTest.cpp
+            scd3d11/Doctor.cpp)
+
     scd3d11_add_test(TerrainShadowMapTest
             tests/TerrainShadowMapTest.cpp
             scd3d11/TerrainShadowMap.cpp)
@@ -246,7 +252,7 @@ if (BUILD_TESTING)
     target_include_directories(cGDriverTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
     # Enables the fault injection points the tests use.
     target_compile_definitions(cGDriverTest PRIVATE SCD3D11_TESTING)
-    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version)
+    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version wininet)
     # No usable D3D11 device skips instead of failing.
     set_tests_properties(cGDriverTest PROPERTIES SKIP_RETURN_CODE 77)
 endif ()

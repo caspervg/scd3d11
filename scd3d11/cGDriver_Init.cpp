@@ -10,6 +10,7 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
+#include "Doctor.h"
 #include "SCD3D11Service.h"
 #include "Settings.h"
 #include "ThumbnailFocusGuard.h"
@@ -281,6 +282,7 @@ namespace nSCD3D11 {
 
 		initialized = true;
 		Log(LogCategory::Initialization, "initialized with %d display modes", videoModeCount);
+		Doctor::CheckRequestedScreenMode();
 		SetLastError(DriverError::OK);
 		return true;
 	}
