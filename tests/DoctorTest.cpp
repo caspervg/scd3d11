@@ -35,6 +35,14 @@ int main() {
 		environment.gameSize = Size{1920, 1080};
 		assert(Diagnose(environment).size() == 1);
 	}
+	{
+		// A resolution without the r is broken, not merely unknown.
+		Environment environment = Clean();
+		environment.arguments = {"-1280x1024x32"};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Warning, "SC4 ignores -1280x1024x32. A resolution needs an r in front: -r1280x1024x32"));
+		assert(!Has(findings, Severity::Note, "does not know"));
+	}
 	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
 	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
 	assert(ReleaseVersion(R"({"url":"x","tag_name": "v0.3.3","name":"SCD3D11 0.3.3"})") == "0.3.3");
@@ -170,6 +178,17 @@ int main() {
 		assert(Has(findings, Severity::Warning, "-UserDir folder does not exist"));
 	}
 	{
+		// The fix names where the mode is set: the exe for all users, or for this user.
+		Environment environment = Clean();
+		environment.compatibilityLayer = "~ WINXPSP3";
+		environment.exePath = "C:\\SC4\\Apps\\SimCity 4.exe";
+		environment.compatibilityLayerUser = "~ WINXPSP3";
+		environment.compatibilityLayerAllUsers = "~ HIGHDPIAWARE";
+		assert(Has(Diagnose(environment), Severity::Problem, "Properties, Compatibility of C:\\SC4\\Apps\\SimCity 4.exe."));
+		environment.compatibilityLayerAllUsers = "WINXPSP3";
+		assert(Has(Diagnose(environment), Severity::Problem, "Change settings for all users of C:\\SC4"));
+	}
+	{
 		// Compatibility mode, wrappers in Apps, plugins that clash.
 		Environment environment = Clean();
 		environment.compatibilityLayer = "~ WINXPSP3 HIGHDPIAWARE";
@@ -191,6 +210,7 @@ int main() {
 		environment.windowsFolder = "C:\\Windows";
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Problem, "compatibility mode (WINXPSP3)"));
+		assert(Has(findings, Severity::Problem, "the program that started it passed it on"));
 		assert(Has(findings, Severity::Note, "settings on SimCity 4.exe: HIGHDPIAWARE"));
 		assert(Has(findings, Severity::Warning, "not SimCity 4 version 1.1.641"));
 		assert(Has(findings, Severity::Note, "ReShade v6.8.0 is installed as Apps\\dxgi.dll"));

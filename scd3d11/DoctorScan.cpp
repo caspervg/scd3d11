@@ -238,6 +238,23 @@ namespace nSCD3D11::Doctor {
 
 			wchar_t layer[512]{};
 			if (GetEnvironmentVariableW(L"__COMPAT_LAYER", layer, 512) < 512) environment.compatibilityLayer = Utf8(layer);
+			std::wstring const exe = ModulePath(nullptr);
+			environment.exePath = Utf8(exe);
+			// The 64-bit view, which is where Explorer's Properties dialog writes.
+			for (auto const [root, value] : {std::pair{HKEY_CURRENT_USER, &environment.compatibilityLayerUser},
+			                                  std::pair{HKEY_LOCAL_MACHINE, &environment.compatibilityLayerAllUsers}}) {
+				HKEY key = nullptr;
+				if (RegOpenKeyExW(root, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers", 0,
+				                  KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) continue;
+				wchar_t text[512]{};
+				DWORD type = 0;
+				DWORD size = sizeof(text) - sizeof(wchar_t);
+				if (RegQueryValueExW(key, exe.c_str(), nullptr, &type, reinterpret_cast<BYTE *>(text), &size) ==
+				    ERROR_SUCCESS && type == REG_SZ) {
+					*value = Utf8(text);
+				}
+				RegCloseKey(key);
+			}
 			environment.graphicsOptions = ReadGraphicsOptions();
 
 			environment.displayModes = DisplayModes();
@@ -410,7 +427,9 @@ namespace nSCD3D11::Doctor {
 			if (everything) {
 				Log(LogCategory::Doctor, "command line as Windows passed it: %s", environment.rawCommandLine.c_str());
 				if (!environment.compatibilityLayer.empty()) {
-					Log(LogCategory::Doctor, "compatibility layers: %s", environment.compatibilityLayer.c_str());
+					Log(LogCategory::Doctor, "compatibility layers: %s (this user: %s, all users: %s)",
+					    environment.compatibilityLayer.c_str(), environment.compatibilityLayerUser.c_str(),
+					    environment.compatibilityLayerAllUsers.c_str());
 				}
 			}
 			Log(LogCategory::Doctor, "driver in use: %s", environment.activeDriverModule.empty()

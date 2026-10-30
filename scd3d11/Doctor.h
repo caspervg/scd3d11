@@ -58,6 +58,11 @@ namespace nSCD3D11::Doctor {
 		std::vector<std::string> imguiPlugins;
 		// The __COMPAT_LAYER variable Windows sets when the exe runs in compatibility mode.
 		std::string compatibilityLayer;
+		// Where it can come from: this exe's own Properties, Compatibility settings for the current user
+		// and for all users. When neither asks for a mode, the program that started SC4 passed it on.
+		std::string exePath;
+		std::string compatibilityLayerUser;
+		std::string compatibilityLayerAllUsers;
 		// SC4GraphicsOptions.ini by lower-case key, when SC4GraphicsOptions.dll is loaded. A key the
 		// INI lacks is absent.
 		std::optional<std::map<std::string, std::string>> graphicsOptions;

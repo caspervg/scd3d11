@@ -22,9 +22,10 @@ namespace nSCD3D11 {
     // cache line. Deletion shifts the following entries back instead of leaving tombstones, because
     // recycling a segment erases thousands of keys at once.
     //
-    // The table stays at most half full, which keeps lookups that miss as short as hits. The cache
-    // holds at most GEOMETRY_CACHE_SEGMENTS * MAX_CACHE_ENTRIES_PER_SEGMENT (262144) keys, so it never
-    // grows past 2^19 slots, about 24 MB, against about 17 MB for std::unordered_map at that size.
+    // The table stays at most half full, which keeps lookups that miss as short as hits. With the
+    // default 8 segments the cache holds at most 8 * MAX_CACHE_ENTRIES_PER_SEGMENT (262144) keys, so it
+    // never grows past 2^19 slots, about 24 MB, against about 17 MB for std::unordered_map at that size.
+    // VertexCacheSegments=16 doubles that.
     //
     // It offers the part of std::unordered_map the driver uses. find() returns a pointer to the slot,
     // with the key in first and the value in second, and end() is null. Inserting or erasing
