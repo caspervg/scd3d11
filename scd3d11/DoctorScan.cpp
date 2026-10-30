@@ -37,15 +37,19 @@
 #include <thread>
 
 #include <windows.h>
+#include <dxgi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <wininet.h>
+#include <wrl/client.h>
 
 namespace nSCD3D11::Doctor {
 	namespace {
 		// Set when CheckRequestedScreenMode replaced a full-screen size the screen lacks, for the report.
 		std::string gScreenModeWarning;
+		// The LUID of the GPU SCD3D11 draws on, once it has a device.
+		std::optional<uint64_t> gActiveAdapter;
 
 		std::string Utf8(std::wstring_view text) {
 			if (text.empty()) return {};
@@ -202,6 +206,23 @@ namespace nSCD3D11::Doctor {
 			return modes;
 		}
 
+		std::vector<Gpu> Gpus() {
+			std::vector<Gpu> gpus;
+			Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+			if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return gpus;
+			Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+			for (UINT index = 0; SUCCEEDED(factory->EnumAdapters1(index, &adapter)); ++index) {
+				DXGI_ADAPTER_DESC1 description{};
+				if (FAILED(adapter->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) continue;
+				uint64_t const luid = (static_cast<uint64_t>(static_cast<uint32_t>(description.AdapterLuid.HighPart)) << 32) |
+				                      description.AdapterLuid.LowPart;
+				gpus.push_back(Gpu{Utf8(description.Description),
+				                   static_cast<uint32_t>(description.DedicatedVideoMemory / (1024 * 1024)),
+				                   gActiveAdapter == luid});
+			}
+			return gpus;
+		}
+
 		Environment Collect(cIGZCmdLine *commandLine) {
 			Environment environment;
 			if (commandLine != nullptr) {
@@ -265,6 +286,7 @@ namespace nSCD3D11::Doctor {
 			wchar_t windowsFolder[MAX_PATH]{};
 			if (GetWindowsDirectoryW(windowsFolder, MAX_PATH) != 0) environment.windowsFolder = Utf8(windowsFolder);
 			ReadDriver(environment);
+			environment.gpus = Gpus();
 			return environment;
 		}
 
@@ -451,6 +473,10 @@ namespace nSCD3D11::Doctor {
 				}
 			}
 		}
+	}
+
+	void SetActiveAdapter(uint64_t luid) {
+		gActiveAdapter = luid;
 	}
 
 	void CheckRequestedScreenMode() {

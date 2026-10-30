@@ -43,6 +43,13 @@ namespace nSCD3D11::Doctor {
 		uint32_t height = 0;
 	};
 
+	// A GPU Windows reports, and whether SCD3D11 draws on it.
+	struct Gpu {
+		std::string name;
+		uint32_t dedicatedMB = 0;
+		bool inUse = false;
+	};
+
 	// Everything the checks read, gathered in one place so they can be tested without a game.
 	struct Environment {
 		// SC4's arguments as it split them, without the program path.
@@ -84,6 +91,8 @@ namespace nSCD3D11::Doctor {
 		std::string screenModeWarning;
 		// Where Windows lives, whose own DLLs are never a plugin's duplicate.
 		std::string windowsFolder;
+		// The GPUs in the machine, without Windows' software renderer.
+		std::vector<Gpu> gpus;
 	};
 
 	std::vector<Finding> Diagnose(Environment const &environment);
@@ -98,6 +107,9 @@ namespace nSCD3D11::Doctor {
 	// would make SC4 close without a word, so it gets the screen's own size too and the report says why.
 	// When SC4 does not take the new size, a message box says why first, since no game window exists yet.
 	void CheckRequestedScreenMode();
+
+	// Called once SCD3D11 has its device, with the LUID of the GPU it draws on, so the report can name it.
+	void SetActiveAdapter(uint64_t luid);
 
 	// A DLL some check is about, whose version is always worth logging.
 	bool IsWatched(std::string const &path);

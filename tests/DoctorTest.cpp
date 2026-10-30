@@ -171,6 +171,13 @@ int main() {
 		assert(Has(findings, Severity::Warning, "-r1920x1080x32 and -r1366x768x32 are both"));
 	}
 	{
+		Environment environment = Clean();
+		environment.gpus = {{"AMD Radeon(TM) Graphics", 512, false}, {"NVIDIA GeForce RTX 4070", 12002, true}};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Note, "GPUs in this machine: AMD Radeon(TM) Graphics (512 MB), "
+		                                     "NVIDIA GeForce RTX 4070 (12002 MB, in use)"));
+	}
+	{
 		// Borderless turns on full screen itself, so -w with it is no window.
 		Environment environment = Clean();
 		environment.arguments = {"-w", "-b", "-r3840x2160x32"};

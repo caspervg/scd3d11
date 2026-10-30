@@ -539,6 +539,15 @@ namespace nSCD3D11::Doctor {
 			return !old.empty();
 		}
 
+		void CheckGpus(Environment const &environment, std::vector<Finding> &findings) {
+			if (environment.gpus.empty()) return;
+			std::string list;
+			for (Gpu const &gpu : environment.gpus) {
+				list += (list.empty() ? "" : ", ") + gpu.name + Format(" (%u MB%s)", gpu.dedicatedMB, gpu.inUse ? ", in use" : "");
+			}
+			findings.push_back({Severity::Note, "GPUs in this machine: " + list});
+		}
+
 		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
 			std::string old, other;
 			SplitLayers(environment.compatibilityLayer, old, other);
@@ -633,6 +642,7 @@ namespace nSCD3D11::Doctor {
 		CheckGraphicsOptions(environment, switches, findings);
 		CheckSwitches(environment, switches, strays, findings);
 		CheckModules(environment, findings);
+		CheckGpus(environment, findings);
 		CheckGame(environment, findings);
 		std::stable_sort(findings.begin(), findings.end(),
 		                 [](Finding const &a, Finding const &b) { return a.severity > b.severity; });
