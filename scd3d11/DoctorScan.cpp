@@ -287,6 +287,8 @@ namespace nSCD3D11::Doctor {
 			if (GetWindowsDirectoryW(windowsFolder, MAX_PATH) != 0) environment.windowsFolder = Utf8(windowsFolder);
 			ReadDriver(environment);
 			environment.gpus = Gpus();
+			environment.gpuSystemDefault = Settings::Get().gpu.systemDefault;
+			environment.gpuNumber = Settings::Get().gpu.number;
 			return environment;
 		}
 

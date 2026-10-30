@@ -501,7 +501,8 @@ namespace nSCD3D11 {
 			    HIWORD(driverVersion.HighPart), LOWORD(driverVersion.HighPart),
 			    HIWORD(driverVersion.LowPart), LOWORD(driverVersion.LowPart),
 			    static_cast<unsigned>(adapterDescription.DedicatedVideoMemory / (1024 * 1024)),
-			    preferredAdapter ? "high-performance preference" : "system default");
+			    !preferredAdapter ? "system default"
+			    : Settings::Get().gpu.number != 0 ? "GPU setting" : "high-performance preference");
 			if (adapterDescription.VendorId == 0x1AF4) {
 				Log(LogCategory::Initialization,
 				    "adapter: this is the VirtIO GPU driver of a virtual machine. Its 3D support is still experimental, "

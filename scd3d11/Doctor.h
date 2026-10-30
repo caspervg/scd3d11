@@ -91,8 +91,11 @@ namespace nSCD3D11::Doctor {
 		std::string screenModeWarning;
 		// Where Windows lives, whose own DLLs are never a plugin's duplicate.
 		std::string windowsFolder;
-		// The GPUs in the machine, without Windows' software renderer.
+		// The GPUs in the machine, without Windows' software renderer, in the order GPU=<n> counts them.
 		std::vector<Gpu> gpus;
+		// The GPU setting: GPU=default, or the number from GPU=<n>, 0 when it has none.
+		bool gpuSystemDefault = false;
+		uint32_t gpuNumber = 0;
 	};
 
 	std::vector<Finding> Diagnose(Environment const &environment);

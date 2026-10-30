@@ -174,8 +174,16 @@ int main() {
 		Environment environment = Clean();
 		environment.gpus = {{"AMD Radeon(TM) Graphics", 512, false}, {"NVIDIA GeForce RTX 4070", 12002, true}};
 		auto const findings = Diagnose(environment);
-		assert(Has(findings, Severity::Note, "GPUs in this machine: AMD Radeon(TM) Graphics (512 MB), "
-		                                     "NVIDIA GeForce RTX 4070 (12002 MB, in use)"));
+		assert(Has(findings, Severity::Note, "GPUs in this machine: 1: AMD Radeon(TM) Graphics (512 MB), "
+		                                     "2: NVIDIA GeForce RTX 4070 (12002 MB, in use). GPU=<number> in "
+		                                     "SCD3D11.ini picks one."));
+		// The one GPU needs no hint, and a number past the last one falls back.
+		environment.gpus.resize(1);
+		environment.gpuNumber = 3;
+		auto const single = Diagnose(environment);
+		assert(Has(single, Severity::Note, "GPUs in this machine: 1: AMD Radeon(TM) Graphics (512 MB)"));
+		assert(!Has(single, Severity::Note, "picks one"));
+		assert(Has(single, Severity::Warning, "GPU=3 asks for a GPU this machine lacks. It has 1"));
 	}
 	{
 		// Borderless turns on full screen itself, so -w with it is no window.

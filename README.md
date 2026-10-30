@@ -55,7 +55,7 @@ where it came from.
 | `Borderless` | off | A monitor-sized borderless window instead of exclusive fullscreen. Needs no `-f`, and wins over `-w` |
 | `VSync` | on | Wait for vsync before presenting |
 | `FlipModel` | on | Windowed and borderless: present with the flip model. Off uses the legacy DISCARD swap chain |
-| `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one |
+| `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one. A number picks that GPU from the list in `SCD3D11.log` |
 | `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |
 | `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
@@ -77,7 +77,8 @@ SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-B
 `-FullscreenMode:Borderless`) to get a monitor-sized borderless window instead. It needs no `-f`, and wins over `-w`.
 
 On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Set `GPU=default`
-to use the adapter Windows picks instead. `SCD3D11.log` names the adapter in use on its `adapter:` line.
+to use the adapter Windows picks instead. The doctor's `GPUs in this machine:` line in `SCD3D11.log` numbers every GPU
+and marks the one in use. `GPU=2` picks the second one.
 
 ### CPU options
 

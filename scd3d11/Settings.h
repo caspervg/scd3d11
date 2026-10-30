@@ -23,6 +23,13 @@ class cIGZCmdLine;
 namespace nSCD3D11::Settings {
 	// Every setting, read once by Load. Until then, and in the tests, the
 	// defaults below apply.
+	// GPU=high-performance, the default. GPU=default: the GPU Windows picks. GPU=<n>: the nth GPU in the
+	// doctor's list, from 1.
+	struct GpuChoice {
+		bool systemDefault = false;
+		uint32_t number = 0;
+	};
+
 	struct Values {
 		bool liveShadows = false;
 		bool networkShadowMasks = false;
@@ -30,8 +37,7 @@ namespace nSCD3D11::Settings {
 		// A monitor-sized window. It needs no -f, SCD3D11 turns full screen on, and wins over -w.
 		bool borderless = false;
 		bool flipModel = true;
-		// GPU=default: the adapter Windows picks instead of the high-performance one.
-		bool defaultAdapter = false;
+		GpuChoice gpu;
 		bool viewportCull = true;
 		bool reshade = true;
 		bool drawStats = false;

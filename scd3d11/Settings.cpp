@@ -86,10 +86,10 @@ namespace nSCD3D11::Settings {
 			return value;
 		}
 
-		// GPU=default or GPU=high-performance.
-		bool ParseAdapter(std::string_view value, bool &defaultAdapter) {
-			defaultAdapter = value == "default";
-			return defaultAdapter || value == "high-performance";
+		// GPU=high-performance, GPU=default or GPU=<n>.
+		bool ParseGpu(std::string_view value, GpuChoice &gpu) {
+			gpu = GpuChoice{value == "default", 0};
+			return gpu.systemDefault || value == "high-performance" || ParseNumber(value, 1, 16, gpu.number);
 		}
 
 		// LogLevel=trace or LogLevel=info.
@@ -185,7 +185,7 @@ namespace nSCD3D11::Settings {
 			}
 		}
 		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
-		values.defaultAdapter = Resolve(sources, "GPU", ParseAdapter, values.defaultAdapter);
+		values.gpu = Resolve(sources, "GPU", ParseGpu, values.gpu);
 		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);

@@ -541,11 +541,20 @@ namespace nSCD3D11::Doctor {
 
 		void CheckGpus(Environment const &environment, std::vector<Finding> &findings) {
 			if (environment.gpus.empty()) return;
+			size_t const count = environment.gpus.size();
 			std::string list;
-			for (Gpu const &gpu : environment.gpus) {
-				list += (list.empty() ? "" : ", ") + gpu.name + Format(" (%u MB%s)", gpu.dedicatedMB, gpu.inUse ? ", in use" : "");
+			for (size_t index = 0; index < count; ++index) {
+				Gpu const &gpu = environment.gpus[index];
+				list += (list.empty() ? "" : ", ") + Format("%zu: ", index + 1) + gpu.name +
+					Format(" (%u MB%s)", gpu.dedicatedMB, gpu.inUse ? ", in use" : "");
 			}
-			findings.push_back({Severity::Note, "GPUs in this machine: " + list});
+			findings.push_back({Severity::Note, "GPUs in this machine: " + list +
+			                                    (count > 1 ? ". GPU=<number> in SCD3D11.ini picks one." : "")});
+			if (environment.gpuNumber > count) {
+				findings.push_back({Severity::Warning, Format(
+					"GPU=%u asks for a GPU this machine lacks. It has %zu, so SCD3D11 uses the high-performance one.",
+					environment.gpuNumber, count)});
+			}
 		}
 
 		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
