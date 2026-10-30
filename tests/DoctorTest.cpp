@@ -219,7 +219,7 @@ int main() {
 		assert(Has(findings, Severity::Note, "imgui.dll is left over"));
 		assert(Has(findings, Severity::Warning, "scd3d11.dll is loaded twice"));
 		assert(!Has(findings, Severity::Warning, "version.dll is loaded twice"));
-		assert(Has(findings, Severity::Warning, "memo.3dcamera.dll and sc4-moderncamera.dll all turn the camera"));
+		assert(!Has(findings, Severity::Warning, "turn the camera"));
 		assert(Has(findings, Severity::Warning, "sc4singlecpu.dll is replaced by SC4CPUOptions"));
 		assert(Has(findings, Severity::Note, "scvk.dll is installed too"));
 		assert(Has(findings, Severity::Note, "Overlays in the game: Steam overlay"));

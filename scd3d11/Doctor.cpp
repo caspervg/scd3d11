@@ -439,16 +439,6 @@ namespace nSCD3D11::Doctor {
 					findings.push_back({Severity::Warning, Format("%s is replaced by SC4CPUOptions. Remove it.", old)});
 				}
 			}
-			std::string cameras;
-			int cameraCount = 0;
-			for (char const *camera : {"memo.3dcamera.dll", "sc4-moderncamera.dll", "sc4moderncamera.dll"}) {
-				if (FindModule(environment, camera) == nullptr) continue;
-				cameras += (cameras.empty() ? "" : " and ") + std::string(camera);
-				++cameraCount;
-			}
-			if (cameraCount > 1) {
-				findings.push_back({Severity::Warning, Format("%s all turn the camera. Keep one.", cameras.c_str())});
-			}
 
 			// The same plugin loaded from two folders, usually the game's Plugins and the user's. A proxy
 			// such as Appsersion.dll loading the Windows original is normal, so Windows' own copies do
