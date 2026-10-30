@@ -830,7 +830,8 @@ namespace nSCD3D11 {
 				cGDriver::GeometryCacheSegment const &segment = d.vertexBufferSegments[index];
 				total += segment.capacity;
 				assert(!segment.buffer == (segment.capacity == 0));
-				assert(segment.buffer || (segment.cursor == 0 && segment.keys.empty()));
+				assert(segment.buffer || (segment.cursor == 0 && segment.keys.empty() && segment.lastUseFrame == 0));
+				assert(segment.lastUseFrame <= d.currentFrame);
 				assert(segment.keys.size() <= 32768);
 				for (GeometryCacheKey const &key: segment.keys) {
 					auto const entry = d.vertexBufferCache.find(key);
@@ -957,6 +958,95 @@ namespace nSCD3D11 {
 			CheckVertexCache();
 		}
 
+		// The driver never waits for a frame; the test does, so the in-place path is reached deterministically.
+		void WaitForFrame(uint64_t frame) {
+			for (int attempt = 0; attempt < 5000 && !d.FrameCompleted(frame); ++attempt) {
+				d.d3dContext->Flush();
+				Sleep(1);
+			}
+			assert(d.FrameCompleted(frame));
+		}
+
+		// A full segment is refilled in place (WRITE_NO_OVERWRITE) once the GPU has finished its last frame,
+		// and renamed (WRITE_DISCARD) only while that frame may still be read. Hits count as uses.
+		void GeometryCacheRefillsWithoutRenaming() {
+			ResetGeometryCache();
+			d.vertexCacheSegments = 2;
+			d.vertexCacheSegmentBytes = 4u * 1024 * 1024;
+			d.segmentRefills = d.segmentRefillDiscards = 0;
+			// 90,000 vertices convert to 3,960,000 bytes: one nearly full 4 MB segment each.
+			std::vector<ColorVertex> medium(90000);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, medium.data());
+			float x = 0.0f;
+			auto const draw = [&] {
+				medium.back().position[0] = ++x;
+				d.DrawArrays(0, 0, 90000);
+				assert(UploadedX(89999) == x);
+				CheckVertexCache();
+			};
+			auto const refills = [&](uint64_t total, uint64_t discards) {
+				return d.segmentRefills == total && d.segmentRefillDiscards == discards;
+			};
+
+			// New buffers are written in place straight away.
+			draw();
+			draw();
+			assert(refills(0, 0) && d.vertexBufferSegments[1].lastUseFrame == d.currentFrame);
+
+			// Segment 0 was drawn from this frame, so its refill renames it.
+			draw();
+			assert(d.activeVertexBufferSegment == 0 && refills(1, 1));
+
+			// Segment 1's last frame is done: written in place.
+			uint64_t const first = d.currentFrame;
+			d.Flush();
+			assert(d.currentFrame == first + 1);
+			WaitForFrame(first);
+			draw();
+			assert(d.activeVertexBufferSegment == 1 && refills(2, 1));
+
+			// A cache hit in the next frame keeps segment 1 busy, while segment 0 is free again.
+			uint64_t const second = d.currentFrame;
+			d.Flush();
+			uint64_t const hits = d.vertexBufferCacheHits;
+			d.DrawArrays(0, 0, 90000);
+			assert(d.vertexBufferCacheHits == hits + 1 && d.vertexBufferSegments[1].lastUseFrame == second + 1);
+			WaitForFrame(second);
+			draw();
+			assert(d.activeVertexBufferSegment == 0 && refills(3, 1));
+			draw();
+			assert(d.activeVertexBufferSegment == 1 && refills(4, 2));
+
+			// A failed refill map draws nothing and leaves the segment empty. The next draw refills it.
+			d.Flush();
+			WaitForFrame(d.currentFrame - 1);
+			d.injectedFaults[cGDriver::FAULT_MAP] = {E_OUTOFMEMORY, 1};
+			uint64_t const misses = d.vertexBufferCacheMisses;
+			medium.back().position[0] = ++x;
+			d.DrawArrays(0, 0, 90000);
+			assert(d.injectedFaults[cGDriver::FAULT_MAP].remaining == 0 && !d.deviceLost);
+			assert(d.vertexBufferCacheMisses == misses + 1 && refills(4, 2));
+			assert(d.activeVertexBufferSegment == 0 && d.vertexBufferSegments[0].cursor == 0);
+			CheckVertexCache();
+			d.DrawArrays(0, 0, 90000);
+			assert(UploadedX(89999) == x && refills(5, 2));
+
+			// A new device starts the frame count and the fences over, with every segment new.
+			d.Flush();
+			assert(d.frameFences[(d.currentFrame - 1) % std::size(d.frameFences)].query);
+			assert(d.RecoverD3D11Device());
+			assert(d.currentFrame == 1 && d.completedFrame == 0);
+			for (auto const &fence: d.frameFences) assert(!fence.query && fence.frame == 0);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, medium.data());
+			draw();
+			draw();
+			assert(refills(5, 2));
+
+			d.vertexCacheSegments = 8;
+			d.vertexCacheSegmentBytes = 16u * 1024 * 1024;
+			ResetGeometryCache();
+		}
+
 		DXGI_SWAP_EFFECT SwapEffect() {
 			DXGI_SWAP_CHAIN_DESC description{};
 			assert(SUCCEEDED(d.swapChain->GetDesc(&description)));
@@ -1024,6 +1114,7 @@ namespace nSCD3D11 {
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();
 			GeometryCacheTrimsWhenAddressSpaceRunsLow();
+			GeometryCacheRefillsWithoutRenaming();
 			FlipModelWithLegacyFallback();
 			return 0;
 		}
