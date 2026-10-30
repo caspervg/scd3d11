@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -41,6 +42,10 @@ namespace nSCD3D11::Settings {
 		bool doctorDialog = true;
 		// UpdateCheck=off: do not ask GitHub, at most once a day, whether a newer SCD3D11 is out.
 		bool updateCheck = true;
+		// VertexCacheSegments=1-16: how many segments the vertex cache keeps.
+		uint32_t vertexCacheSegments = 8;
+		// VertexCacheSize=4-64: each vertex cache segment's size in MB.
+		uint32_t vertexCacheSizeMB = 16;
 	};
 
 	// Reads every setting from SC4's command line (may be null) and the INI.
@@ -54,4 +59,8 @@ namespace nSCD3D11::Settings {
 	// (on/off, true/false, enabled/disabled, 1/0, any case), with an empty
 	// value - a bare -Name - meaning on. False when it is none of those.
 	bool ParseFlag(std::string_view value, bool &flag);
+
+	// Exposed for tests: reads value as a whole number from minimum to
+	// maximum, digits only. False when it is anything else.
+	bool ParseNumber(std::string_view value, uint32_t minimum, uint32_t maximum, uint32_t &number);
 } // namespace nSCD3D11::Settings

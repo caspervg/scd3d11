@@ -149,6 +149,7 @@ namespace nSCD3D11 {
 			d.vertexBufferCache.clear();
 			d.activeIndexBufferSegment = d.activeVertexBufferSegment = 0;
 			d.indexBufferCacheHits = d.indexBufferCacheMisses = 0;
+			d.vertexCacheTrimmed = d.indexCacheTrimmed = false;
 		}
 
 		// A native 32-bit line list [0, 1] once hashed exactly like a converted fan uploading [5, 0, 1].
@@ -843,6 +844,58 @@ namespace nSCD3D11 {
 			return total;
 		}
 
+		// Low address space trims the ring to two segments and frees the rest. Room for the whole cache
+		// twice over lets it grow back.
+		void GeometryCacheTrimsWhenAddressSpaceRunsLow() {
+			uint64_t const segmentBytes = 16u * 1024 * 1024;
+			ResetGeometryCache();
+			std::vector<ColorVertex> large(360000);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, large.data());
+			float x = 0.0f;
+			auto const draw = [&] {
+				large[0].position[0] = ++x;
+				d.DrawArrays(0, 0, 360000);
+				CheckVertexCache();
+			};
+			for (int index = 0; index < 8; ++index) draw();
+			assert(CheckVertexCache() == 8 * segmentBytes);
+
+			d.injectedAvailableAddressSpace = 512ull * 1024 * 1024;
+			draw();
+			assert(d.vertexCacheTrimmed && CheckVertexCache() == 2 * segmentBytes);
+			for (int index = 0; index < 6; ++index) {
+				draw();
+				assert(d.activeVertexBufferSegment < 2 && CheckVertexCache() == 2 * segmentBytes);
+			}
+			// Still short of 768 + 2 * 128 MB: stays trimmed.
+			d.injectedAvailableAddressSpace = 1000ull * 1024 * 1024;
+			draw();
+			assert(d.vertexCacheTrimmed);
+
+			d.injectedAvailableAddressSpace = 1024ull * 1024 * 1024;
+			draw();
+			assert(!d.vertexCacheTrimmed);
+			for (int index = 0; index < 8; ++index) draw();
+			assert(CheckVertexCache() == 8 * segmentBytes);
+			d.injectedAvailableAddressSpace = 0;
+
+			// VertexCacheSegments=3 and VertexCacheSize=4 bound the ring and each segment.
+			ResetGeometryCache();
+			d.vertexCacheSegments = 3;
+			d.vertexCacheSegmentBytes = 4u * 1024 * 1024;
+			std::vector<ColorVertex> medium(90000);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, medium.data());
+			for (int index = 0; index < 7; ++index) {
+				medium[0].position[0] = static_cast<float>(index);
+				d.DrawArrays(0, 0, 90000);
+				assert(d.activeVertexBufferSegment < 3 && CheckVertexCache() <= 3ull * 4 * 1024 * 1024);
+			}
+			assert(CheckVertexCache() == 3ull * 4 * 1024 * 1024);
+			d.vertexCacheSegments = 8;
+			d.vertexCacheSegmentBytes = static_cast<uint32_t>(segmentBytes);
+			ResetGeometryCache();
+		}
+
 		void GeometryCacheStaysBounded() {
 			uint32_t const segmentBytes = 16u * 1024 * 1024;
 			ResetGeometryCache();
@@ -970,6 +1023,7 @@ namespace nSCD3D11 {
 			BoundTextureViewsFollowTextureChanges();
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();
+			GeometryCacheTrimsWhenAddressSpaceRunsLow();
 			FlipModelWithLegacyFallback();
 			return 0;
 		}

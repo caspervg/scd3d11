@@ -110,7 +110,8 @@ namespace nSCD3D11::Doctor {
 			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog", "NetCommandGenerator",
 			// SCD3D11
 			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull",
-			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck",
+			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "VertexCacheSegments",
+			"VertexCacheSize",
 			// SC4CPUOptions and SC4DBPFLoading
 			"ParallelCull", "SimTickCap", "SimTickStats", "ModelSlice", "OverlayIndex", "StartupDBPFLoadTrace",
 		};

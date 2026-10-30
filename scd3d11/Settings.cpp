@@ -98,6 +98,14 @@ namespace nSCD3D11::Settings {
 			return trace || value == "info";
 		}
 
+		bool ParseVertexCacheSegments(std::string_view value, uint32_t &segments) {
+			return ParseNumber(value, 1, 16, segments);
+		}
+
+		bool ParseVertexCacheSize(std::string_view value, uint32_t &megabytes) {
+			return ParseNumber(value, 4, 64, megabytes);
+		}
+
 		// The setting from the first source whose value parse accepts: the
 		// command line, then the INI. A value it rejects is logged and skipped,
 		// so a mistyped switch leaves the INI's setting in force.
@@ -136,6 +144,17 @@ namespace nSCD3D11::Settings {
 		return StringViewUtil::TryParse(value, flag);
 	}
 
+	bool ParseNumber(std::string_view value, uint32_t minimum, uint32_t maximum, uint32_t &number) {
+		if (value.empty() || value.size() > 9) return false;
+		uint32_t result = 0;
+		for (char const character : value) {
+			if (character < '0' || character > '9') return false;
+			result = result * 10 + static_cast<uint32_t>(character - '0');
+		}
+		if (result < minimum || result > maximum) return false;
+		number = result;
+		return true;
+	}
 
 	void Load(cIGZCmdLine *commandLine) {
 		// The arguments as SC4 split them, which is what the switches are matched against.
@@ -163,6 +182,9 @@ namespace nSCD3D11::Settings {
 		values.doctor = Resolve(sources, "Doctor", ParseFlag, values.doctor);
 		values.doctorDialog = Resolve(sources, "DoctorDialog", ParseFlag, values.doctorDialog);
 		values.updateCheck = Resolve(sources, "UpdateCheck", ParseFlag, values.updateCheck);
+		values.vertexCacheSegments =
+			Resolve(sources, "VertexCacheSegments", ParseVertexCacheSegments, values.vertexCacheSegments);
+		values.vertexCacheSizeMB = Resolve(sources, "VertexCacheSize", ParseVertexCacheSize, values.vertexCacheSizeMB);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
 	}

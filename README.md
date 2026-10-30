@@ -60,6 +60,8 @@ where it came from.
 | `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
 | `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included). See [ReShade](#reshade) |
+| `VertexCacheSegments` | 8 | How many segments (1-16) the vertex cache keeps SC4's geometry in on the GPU. With less than 768 MB of address space free, the vertex and index caches shrink to 2 segments until there is room again |
+| `VertexCacheSize` | 16 | Size of each vertex cache segment in MB (4-64). Lower both if the game runs out of memory; some drivers use twice the cache's size in the game's 4 GB address space |
 
 Standard SimCity 4 switches that SCD3D11 reacts to:
 

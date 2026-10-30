@@ -21,10 +21,15 @@
 #include <cmath>
 
 namespace nSCD3D11 {
-	// 8 segments each: at most 128 MB vertex + 32 MB index cache (was 512 + 128 MB).
-	constexpr uint32_t VERTEX_CACHE_SEGMENT_BYTES = 16u * 1024u * 1024u;
+	// By default 8 segments each: at most 128 MB vertex + 32 MB index cache (was 512 + 128 MB). The
+	// vertex cache's count and size come from VertexCacheSegments and VertexCacheSize.
+	constexpr uint8_t INDEX_CACHE_SEGMENTS = 8;
 	constexpr uint32_t INDEX_CACHE_SEGMENT_BYTES = 4u * 1024u * 1024u;
-	constexpr uint64_t LOW_ADDRESS_SPACE_BYTES = 512ull * 1024u * 1024u;
+	// Below this much free address space a cache shrinks to TRIMMED_CACHE_SEGMENTS and frees the rest
+	// for SC4, whose own allocations crash when they fail. Some drivers (VirtIO) map a dynamic buffer
+	// at twice its size, so the whole cache must fit twice over before it grows back.
+	constexpr uint64_t LOW_ADDRESS_SPACE_BYTES = 768ull * 1024u * 1024u;
+	constexpr uint8_t TRIMMED_CACHE_SEGMENTS = 2;
 	// Bounds cache bookkeeping (roughly 100 bytes per entry) when uploads are tiny.
 	constexpr size_t MAX_CACHE_ENTRIES_PER_SEGMENT = 32768;
 
@@ -422,10 +427,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 		// Segment count, actual capacities and entries per segment are all bounded, so an oversized upload
 		// evicts older segments rather than growing the cache past its budget.
-		uint32_t const normalCapacity = bindFlags == D3D11_BIND_VERTEX_BUFFER
-			                                ? VERTEX_CACHE_SEGMENT_BYTES
-			                                : INDEX_CACHE_SEGMENT_BYTES;
-		uint64_t const budget = static_cast<uint64_t>(normalCapacity) * GEOMETRY_CACHE_SEGMENTS;
+		bool const vertices = bindFlags == D3D11_BIND_VERTEX_BUFFER;
+		uint32_t const normalCapacity = vertices ? vertexCacheSegmentBytes : INDEX_CACHE_SEGMENT_BYTES;
+		uint8_t const configured = vertices ? vertexCacheSegments : INDEX_CACHE_SEGMENTS;
+		bool &trimmed = vertices ? vertexCacheTrimmed : indexCacheTrimmed;
+		uint8_t ring = trimmed ? (std::min)(configured, TRIMMED_CACHE_SEGMENTS) : configured;
+		uint64_t const budget = static_cast<uint64_t>(normalCapacity) * configured;
 		if (requiredSize > budget) {
 			Log(LogCategory::Unsupported, "%u byte upload exceeds the geometry cache budget", requiredSize);
 			return false;
@@ -435,16 +442,30 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (!segment->buffer || static_cast<uint64_t>(segment->cursor) + requiredSize > segment->capacity ||
 		    segment->keys.size() >= MAX_CACHE_ENTRIES_PER_SEGMENT) {
 			if (segment->buffer && segment->cursor != 0) {
-				activeSegment = static_cast<uint8_t>((activeSegment + 1) % GEOMETRY_CACHE_SEGMENTS);
-				// Low 32-bit address space: recycle the segments we already have instead of growing.
-				MEMORYSTATUSEX memory{sizeof(memory)};
-				if (!segments[activeSegment].buffer && GlobalMemoryStatusEx(&memory) &&
-				    memory.ullAvailVirtual < LOW_ADDRESS_SPACE_BYTES) {
-					activeSegment = 0;
+				// Low 32-bit address space: shrink the ring and hand the other segments back to SC4.
+				uint64_t const available = AvailableAddressSpace();
+				if (!trimmed && available < LOW_ADDRESS_SPACE_BYTES) {
+					trimmed = true;
+					ring = (std::min)(configured, TRIMMED_CACHE_SEGMENTS);
+					uint64_t freed = 0;
+					for (uint8_t index = ring; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
+						freed += segments[index].capacity;
+						ClearCacheSegment(segments, cache, index, true);
+					}
+					Log(LogCategory::Resource, "%s cache trimmed to %u segments, %llu MB freed, %llu MB "
+					    "address space was free", vertices ? "vertex" : "index", ring,
+					    static_cast<unsigned long long>(freed >> 20),
+					    static_cast<unsigned long long>(available >> 20));
+				} else if (trimmed && available != UINT64_MAX && available >= LOW_ADDRESS_SPACE_BYTES + 2 * budget) {
+					trimmed = false;
+					ring = configured;
+					Log(LogCategory::Resource, "%s cache may grow to %u segments again, %llu MB address space free",
+					    vertices ? "vertex" : "index", ring, static_cast<unsigned long long>(available >> 20));
 				}
+				activeSegment = static_cast<uint8_t>((activeSegment + 1) % ring);
 				segment = &segments[activeSegment];
 				LogTrace(LogCategory::Resource, "%s cache advanced to segment %u",
-				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment);
+				    vertices ? "vertex" : "index", activeSegment);
 			}
 
 			// An oversized segment shrinks back once it is reused for ordinary uploads.
@@ -457,8 +478,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 				for (size_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) others += segments[index].capacity;
 				others -= segment->capacity;
 				// Oldest first: the segment after the active one is the next to be recycled anyway.
-				for (uint8_t step = 1; others + newCapacity > budget && step < GEOMETRY_CACHE_SEGMENTS; ++step) {
-					uint8_t const victim = static_cast<uint8_t>((activeSegment + step) % GEOMETRY_CACHE_SEGMENTS);
+				for (uint8_t step = 1; others + newCapacity > budget && step < ring; ++step) {
+					uint8_t const victim = static_cast<uint8_t>((activeSegment + step) % ring);
 					others -= segments[victim].capacity;
 					ClearCacheSegment(segments, cache, victim, true);
 				}
@@ -499,7 +520,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				}
 				segment->capacity = newCapacity;
 				Log(LogCategory::Resource, "%s cache segment %u allocated at %u bytes",
-				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment, newCapacity);
+				    vertices ? "vertex" : "index", activeSegment, newCapacity);
 				LogMemoryStatus(LogCategory::Resource, "after the segment allocation");
 			}
 		}
@@ -529,6 +550,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 			if (keyed) segment->keys.pop_back();
 		}
 		return true;
+	}
+
+	uint64_t cGDriver::AvailableAddressSpace() const {
+#ifdef SCD3D11_TESTING
+		if (injectedAvailableAddressSpace != 0) return injectedAvailableAddressSpace;
+#endif
+		MEMORYSTATUSEX memory{sizeof(memory)};
+		return GlobalMemoryStatusEx(&memory) ? memory.ullAvailVirtual : UINT64_MAX;
 	}
 
 	void cGDriver::ClearCacheSegment(

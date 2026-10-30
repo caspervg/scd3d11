@@ -62,7 +62,8 @@ namespace nSCD3D11 {
 
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
 	constexpr size_t MAX_TEXTURE_UNITS = 2;
-	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 8;
+	// The most segments a geometry cache can have. VertexCacheSegments picks how many the vertex cache uses.
+	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 16;
 	constexpr size_t CONSTANT_BUFFER_COUNT = 8;
 
 	struct cGDriverTestAccess;
@@ -399,6 +400,12 @@ namespace nSCD3D11 {
 		GeometryCacheSegment indexBufferSegments[GEOMETRY_CACHE_SEGMENTS];
 		uint8_t activeVertexBufferSegment;
 		uint8_t activeIndexBufferSegment;
+		// VertexCacheSegments and VertexCacheSize, read when the driver is created.
+		uint8_t vertexCacheSegments;
+		uint32_t vertexCacheSegmentBytes;
+		// Set while low address space keeps a cache's ring trimmed.
+		bool vertexCacheTrimmed;
+		bool indexCacheTrimmed;
 		uint32_t dynamicVertexBufferOffset;
 		uint32_t dynamicIndexBufferOffset;
 		ID3D11Buffer *appliedVertexBuffer;
@@ -634,10 +641,16 @@ namespace nSCD3D11 {
 			--fault.remaining;
 			return fault.result;
 		}
+
+		// Non-zero: the free address space the geometry cache sees instead of the real one.
+		uint64_t injectedAvailableAddressSpace = 0;
 #else
 		// The tests make D3D11 calls at these boundaries fail. The DLL never does.
 		static HRESULT TakeInjectedFault(FaultPoint) { return S_OK; }
 #endif
+
+		// Free 32-bit address space, or UINT64_MAX when Windows cannot say.
+		uint64_t AvailableAddressSpace() const;
 
 		HRESULT CreateGeometryPipeline();
 
