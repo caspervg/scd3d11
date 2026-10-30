@@ -187,14 +187,16 @@ int main() {
 		assert(Has(single, Severity::Warning, "GPU=3 asks for a GPU this machine lacks. It has 1"));
 	}
 	{
-		// No 4GB patch, and Wine.
+		// No 4GB patch, Wine, and a ReShade too old for the add-on.
 		Environment environment = Clean();
 		environment.largeAddressAware = false;
 		environment.wineVersion = "9.0";
 		environment.wineHost = "Linux";
+		environment.appsFiles = {{"C:\\SC4\\Apps\\dxgi.dll", "ReShade", "5.9.2.0"}};
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Problem, "can use only 2 GB of memory"));
 		assert(Has(findings, Severity::Note, "runs under Wine 9.0 on Linux"));
+		assert(Has(findings, Severity::Warning, "ReShade v5.9.2 is installed as Apps\\dxgi.dll. Its effects cannot see"));
 	}
 	{
 		// A laptop drawing on its integrated GPU. Two similar cards are fine either way.

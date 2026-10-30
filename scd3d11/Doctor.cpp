@@ -498,7 +498,12 @@ namespace nSCD3D11::Doctor {
 					findings.push_back({Severity::Note, "Apps\\imgui.dll is left over from SC4RenderServices before "
 					                                    "v0.8 and is no longer used."});
 				} else if (name == "dxgi.dll" || name == "d3d11.dll") {
-					if (kind == "ReShade") {
+					if (kind == "ReShade" && !file.version.empty() && OlderThan(file.version, "6.0")) {
+						// Older versions refuse SCD3D11's add-on, which needs API version 10.
+						findings.push_back({Severity::Warning, Format(
+							"ReShade %s is installed as Apps\\%s. Its effects cannot see SC4's depth buffer before "
+							"v6.0. Update it.", VersionLabel(file.version).c_str(), name.c_str())});
+					} else if (kind == "ReShade") {
 						findings.push_back({Severity::Note, Format("ReShade %s is installed as Apps\\%s.",
 						                                           VersionLabel(file.version).c_str(), name.c_str())});
 					} else {
