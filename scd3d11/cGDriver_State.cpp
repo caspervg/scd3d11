@@ -132,10 +132,6 @@ namespace nSCD3D11 {
             appliedRasterizerStateKey = rasterizerKey;
         }
 
-        if (shadeModel == 0) {
-            Log(LogCategory::Unsupported,
-                "flat shading requested; generic pipeline currently uses smooth interpolation");
-        }
         return true;
     }
 }
