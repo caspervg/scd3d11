@@ -554,7 +554,23 @@ namespace nSCD3D11::Doctor {
 				findings.push_back({Severity::Warning, Format(
 					"GPU=%u asks for a GPU this machine lacks. It has %zu, so SCD3D11 uses the high-performance one.",
 					environment.gpuNumber, count)});
+				return;
 			}
+			// A GPU picked by number is the player's choice.
+			if (environment.gpuNumber != 0) return;
+
+			// Integrated graphics reports little dedicated memory, so a GPU with at least twice as much is
+			// the one SC4 should be on.
+			auto const used = std::find_if(environment.gpus.begin(), environment.gpus.end(),
+			                               [](Gpu const &gpu) { return gpu.inUse; });
+			if (used == environment.gpus.end()) return;
+			auto const stronger = std::max_element(environment.gpus.begin(), environment.gpus.end(),
+			                                       [](Gpu const &a, Gpu const &b) { return a.dedicatedMB < b.dedicatedMB; });
+			if (stronger->dedicatedMB < 1024 || stronger->dedicatedMB < 2 * used->dedicatedMB) return;
+			findings.push_back({Severity::Problem, Format(
+				"SCD3D11 draws on %s, not the faster %s. %sSet GPU=%zu in SCD3D11.ini to use it.", used->name.c_str(),
+				stronger->name.c_str(), environment.gpuSystemDefault ? "GPU is set to default. " : "",
+				static_cast<size_t>(stronger - environment.gpus.begin()) + 1)});
 		}
 
 		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {

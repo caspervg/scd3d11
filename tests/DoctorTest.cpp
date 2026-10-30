@@ -177,6 +177,7 @@ int main() {
 		assert(Has(findings, Severity::Note, "GPUs in this machine: 1: AMD Radeon(TM) Graphics (512 MB), "
 		                                     "2: NVIDIA GeForce RTX 4070 (12002 MB, in use). GPU=<number> in "
 		                                     "SCD3D11.ini picks one."));
+		assert(!Has(findings, Severity::Problem, "not the faster"));
 		// The one GPU needs no hint, and a number past the last one falls back.
 		environment.gpus.resize(1);
 		environment.gpuNumber = 3;
@@ -184,6 +185,22 @@ int main() {
 		assert(Has(single, Severity::Note, "GPUs in this machine: 1: AMD Radeon(TM) Graphics (512 MB)"));
 		assert(!Has(single, Severity::Note, "picks one"));
 		assert(Has(single, Severity::Warning, "GPU=3 asks for a GPU this machine lacks. It has 1"));
+	}
+	{
+		// A laptop drawing on its integrated GPU. Two similar cards are fine either way.
+		Environment environment = Clean();
+		environment.gpus = {{"Intel(R) UHD Graphics", 128, true}, {"NVIDIA GeForce RTX 3060 Laptop GPU", 5980, false}};
+		assert(Has(Diagnose(environment), Severity::Problem,
+		           "draws on Intel(R) UHD Graphics, not the faster NVIDIA GeForce RTX 3060 Laptop GPU. Set GPU=2"));
+		environment.gpuSystemDefault = true;
+		assert(Has(Diagnose(environment), Severity::Problem, "GPU is set to default. Set GPU=2"));
+		// Picked by number, it is the player's choice.
+		environment.gpuSystemDefault = false;
+		environment.gpuNumber = 1;
+		assert(!Has(Diagnose(environment), Severity::Problem, "not the faster"));
+		environment.gpuNumber = 0;
+		environment.gpus = {{"NVIDIA GeForce RTX 3070", 8000, true}, {"NVIDIA GeForce RTX 3080", 10000, false}};
+		assert(!Has(Diagnose(environment), Severity::Problem, "not the faster"));
 	}
 	{
 		// Borderless turns on full screen itself, so -w with it is no window.
