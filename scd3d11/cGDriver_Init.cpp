@@ -383,9 +383,8 @@ namespace nSCD3D11 {
 		for (FrameFence &fence: frameFences) fence = {};
 		currentFrame = 1;
 		completedFrame = 0;
-		for (auto &buffer: transformBuffers) buffer.Reset();
+		transformBuffer.Reset();
 		constantBufferCache.clear();
-		activeTransformBuffer = 0;
 		inputLayout.Reset();
 		flatPixelShader.Reset();
 		pixelShader.Reset();

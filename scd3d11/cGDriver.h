@@ -64,7 +64,6 @@ namespace nSCD3D11 {
 	constexpr size_t MAX_TEXTURE_UNITS = 2;
 	// The most segments a geometry cache can have. VertexCacheSegments picks how many the vertex cache uses.
 	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 16;
-	constexpr size_t CONSTANT_BUFFER_COUNT = 8;
 
 	struct cGDriverTestAccess;
 
@@ -399,8 +398,8 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11PixelShader> flatPixelShader;
 		ID3D11PixelShader *appliedPixelShader;
 		Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffers[CONSTANT_BUFFER_COUNT];
-		uint8_t activeTransformBuffer;
+		// One buffer: WRITE_DISCARD already renames it, so the binding never has to change.
+		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffer;
 		ID3D11Buffer *appliedTransformBuffer;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicVertexBuffer;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicIndexBuffer;
@@ -518,8 +517,8 @@ namespace nSCD3D11 {
 		std::vector<uint32_t> sourceIndexScratch;
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
-		// The constants last uploaded to transformBuffers[activeTransformBuffer]. Losing the binding
-		// (ClearState) keeps them valid. Only destroying the buffers clears this.
+		// The constants last uploaded to transformBuffer. Losing the binding (ClearState) keeps them
+		// valid. Only destroying the buffer clears this.
 		std::vector<uint8_t> constantBufferCache;
 		// Set by every setter feeding the shader constants.
 		bool constantsDirty;

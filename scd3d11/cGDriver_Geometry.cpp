@@ -362,12 +362,10 @@ float4 PSMain(PSInput input) : SV_TARGET
 		constantDescription.Usage = D3D11_USAGE_DYNAMIC;
 		constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		for (auto &buffer: transformBuffers) {
-			result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &buffer);
-			if (FAILED(result)) {
-				LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
-				return result;
-			}
+		result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &transformBuffer);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
+			return result;
 		}
 
 		// Bound to empty texture stages so the debug layer never sees a NULL sampler.
@@ -690,7 +688,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
-		    !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
+		    !transformBuffer || !dynamicVertexBuffer ||
 		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
 		}
@@ -771,19 +769,17 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 			if (constantBufferCache.size() != sizeof(constants) ||
 			    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
-				uint8_t const nextBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
 				D3D11_MAPPED_SUBRESOURCE mapping{};
 				HRESULT result = TakeInjectedFault(FAULT_MAP);
 				if (SUCCEEDED(result)) result = d3dContext->Map(
-					transformBuffers[nextBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+					transformBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
 					NoteDeviceLoss(result);
 					return false;
 				}
 				memcpy(mapping.pData, &constants, sizeof(constants));
-				d3dContext->Unmap(transformBuffers[nextBuffer].Get(), 0);
-				activeTransformBuffer = nextBuffer;
+				d3dContext->Unmap(transformBuffer.Get(), 0);
 				constantBufferCache.assign(
 					reinterpret_cast<uint8_t const *>(&constants),
 					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
@@ -795,7 +791,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		UINT const stride = sizeof(D3D11Vertex);
 		UINT const offset = dynamicVertexBufferOffset;
 		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
-		ID3D11Buffer *constantBuffer = transformBuffers[activeTransformBuffer].Get();
+		ID3D11Buffer *constantBuffer = transformBuffer.Get();
 		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
 			d3dContext->IASetInputLayout(inputLayout.Get());

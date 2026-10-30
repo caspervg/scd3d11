@@ -569,7 +569,7 @@ namespace nSCD3D11 {
 			setter();
 			DrawFull();
 			std::vector<uint8_t> const incremental = d.constantBufferCache;
-			bool const uploaded = ReadBuffer(d.transformBuffers[d.activeTransformBuffer].Get(), 0,
+			bool const uploaded = ReadBuffer(d.transformBuffer.Get(), 0,
 			                                 static_cast<uint32_t>(incremental.size())) == incremental;
 			d.constantsDirty = true;
 			d.constantBufferCache.clear();
@@ -651,14 +651,18 @@ namespace nSCD3D11 {
 			CheckConstants("vertex format without normals", [&] { drawNormals = false; });
 			CheckConstants("vertex format with normals", [&] { drawNormals = true; });
 
-			// Identical draws rebuild and upload nothing. Losing the bindings does not force an upload either.
-			uint8_t const buffer = d.activeTransformBuffer;
+			// Identical draws rebuild and upload nothing. Losing the bindings does not force an upload either:
+			// a rebuild would put back the byte flipped in the cache.
 			DrawFull();
+			d.constantBufferCache[0] ^= 1;
 			DrawFull();
-			assert(!d.constantsDirty && !d.normalMatrixDirty && d.activeTransformBuffer == buffer);
+			assert(!d.constantsDirty && !d.normalMatrixDirty);
 			d.InvalidateD3D11StateCache();
 			DrawFull();
-			assert(d.activeTransformBuffer == buffer && d.appliedTransformBuffer == d.transformBuffers[buffer].Get());
+			assert(d.appliedTransformBuffer == d.transformBuffer.Get());
+			d.constantBufferCache[0] ^= 1;
+			assert(ReadBuffer(d.transformBuffer.Get(), 0, static_cast<uint32_t>(d.constantBufferCache.size())) ==
+			       d.constantBufferCache);
 
 			d.DeleteTextures(1, &texture);
 			d.Disable(kGDCapability_Fog);

@@ -68,7 +68,6 @@ namespace nSCD3D11 {
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),
-	                       activeTransformBuffer(0),
 	                       appliedTransformBuffer(nullptr),
 	                       vertexBufferSegments{},
 	                       indexBufferSegments{},
