@@ -457,18 +457,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				// Low 32-bit address space: shrink the ring and hand the other segments back to SC4.
 				uint64_t const available = AvailableAddressSpace();
 				if (!trimmed && available < LOW_ADDRESS_SPACE_BYTES) {
-					trimmed = true;
-					ring = (std::min)(configured, TRIMMED_CACHE_SEGMENTS);
-					uint64_t freed = 0;
-					for (uint8_t index = ring; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
-						freed += segments[index].capacity;
-						ClearCacheSegment(segments, cache, index, true);
-					}
-					cache.shrink_to_fit();
-					Log(LogCategory::Resource, "%s cache trimmed to %u segments, %llu MB freed, %llu MB "
-					    "address space was free", vertices ? "vertex" : "index", ring,
-					    static_cast<unsigned long long>(freed >> 20),
-					    static_cast<unsigned long long>(available >> 20));
+					ring = TrimCache(segments, cache, vertices, available);
 				} else if (trimmed && available != UINT64_MAX && available >= LOW_ADDRESS_SPACE_BYTES + 2 * budget) {
 					trimmed = false;
 					ring = configured;
@@ -573,6 +562,40 @@ float4 PSMain(PSInput input) : SV_TARGET
 			if (keyed) segment->keys.pop_back();
 		}
 		return true;
+	}
+
+	uint8_t cGDriver::TrimCache(GeometryCacheSegment *segments, GeometryCache &cache, bool vertices, uint64_t available) {
+		uint8_t const configured = vertices ? vertexCacheSegments : INDEX_CACHE_SEGMENTS;
+		uint8_t const ring = (std::min)(configured, TRIMMED_CACHE_SEGMENTS);
+		(vertices ? vertexCacheTrimmed : indexCacheTrimmed) = true;
+		uint64_t freed = 0;
+		for (uint8_t index = ring; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
+			freed += segments[index].capacity;
+			ClearCacheSegment(segments, cache, index, true);
+		}
+		cache.shrink_to_fit();
+		Log(LogCategory::Resource, "%s cache trimmed to %u segments, %llu MB freed, %llu MB address space was free",
+		    vertices ? "vertex" : "index", ring, static_cast<unsigned long long>(freed >> 20),
+		    static_cast<unsigned long long>(available >> 20));
+		return ring;
+	}
+
+	void cGDriver::TrimGeometryCachesIfLow() {
+		if (vertexCacheTrimmed && indexCacheTrimmed) return;
+		ULONGLONG const now = GetTickCount64();
+		if (now < nextAddressSpaceCheck) return;
+		nextAddressSpaceCheck = now + 1000;
+		uint64_t const available = AvailableAddressSpace();
+		if (available >= LOW_ADDRESS_SPACE_BYTES) return;
+		// The next upload goes to a segment that is still there.
+		if (!vertexCacheTrimmed) {
+			uint8_t const ring = TrimCache(vertexBufferSegments, vertexBufferCache, true, available);
+			if (activeVertexBufferSegment >= ring) activeVertexBufferSegment = 0;
+		}
+		if (!indexCacheTrimmed) {
+			uint8_t const ring = TrimCache(indexBufferSegments, indexBufferCache, false, available);
+			if (activeIndexBufferSegment >= ring) activeIndexBufferSegment = 0;
+		}
 	}
 
 	uint64_t cGDriver::AvailableAddressSpace() const {

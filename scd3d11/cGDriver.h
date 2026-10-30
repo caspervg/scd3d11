@@ -417,6 +417,7 @@ namespace nSCD3D11 {
 		// Set while low address space keeps a cache's ring trimmed.
 		bool vertexCacheTrimmed;
 		bool indexCacheTrimmed;
+		ULONGLONG nextAddressSpaceCheck = 0;
 		uint32_t dynamicVertexBufferOffset;
 		uint32_t dynamicIndexBufferOffset;
 		ID3D11Buffer *appliedVertexBuffer;
@@ -700,6 +701,13 @@ namespace nSCD3D11 {
 
 		// Whether the GPU has finished every command of a frame. Never waits or flushes.
 		bool FrameCompleted(uint64_t frame);
+
+		// Shrinks a cache to TRIMMED_CACHE_SEGMENTS for low address space and returns its new ring size.
+		uint8_t TrimCache(GeometryCacheSegment *segments, GeometryCache &cache, bool vertices, uint64_t available);
+
+		// Uploads check for low address space only when a segment fills, which a view that only hits the
+		// cache never does. Flush checks here as well, at most once a second.
+		void TrimGeometryCachesIfLow();
 
 		// Forgets a segment's cache entries. Release also frees its buffer and bookkeeping.
 		void ClearCacheSegment(GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release);

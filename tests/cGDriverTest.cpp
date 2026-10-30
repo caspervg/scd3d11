@@ -951,6 +951,21 @@ namespace nSCD3D11 {
 			assert(!d.vertexCacheTrimmed);
 			for (int index = 0; index < 8; ++index) draw();
 			assert(CheckVertexCache() == 8 * segmentBytes);
+
+			// A view that only hits the cache fills no segment, so Flush checks too, at most once a second.
+			d.injectedAvailableAddressSpace = 512ull * 1024 * 1024;
+			d.nextAddressSpaceCheck = 0;
+			d.Flush();
+			assert(d.vertexCacheTrimmed && d.indexCacheTrimmed && CheckVertexCache() == 2 * segmentBytes);
+			assert(d.activeVertexBufferSegment < 2 && d.activeIndexBufferSegment < 2);
+			draw();
+			assert(UploadedX(0) == x);
+			assert(d.nextAddressSpaceCheck != 0);
+			d.vertexCacheTrimmed = false;
+			d.nextAddressSpaceCheck = GetTickCount64() + 60000;
+			d.Flush();
+			assert(!d.vertexCacheTrimmed);
+			d.vertexCacheTrimmed = true;
 			d.injectedAvailableAddressSpace = 0;
 
 			// VertexCacheSegments=3 and VertexCacheSize=4 bound the ring and each segment.
