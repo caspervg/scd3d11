@@ -68,7 +68,7 @@ namespace nSCD3D11 {
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),
-	                       appliedTransformBuffer(nullptr),
+	                       constantBuffersBound(false),
 	                       vertexBufferSegments{},
 	                       indexBufferSegments{},
 	                       activeVertexBufferSegment(0),
@@ -108,6 +108,7 @@ namespace nSCD3D11 {
 	                       normalMatrix{},
 	                       normalMatrixDirty(true),
 	                       constantsDirty(true),
+	                       drawConstantsDirty(true),
 	                       constantsFlagInputs(0),
 	                       extensionVertexCursor(0),
 	                       extensionVertexStart(0),
@@ -395,9 +396,13 @@ namespace nSCD3D11 {
 	void cGDriver::LoadMatrix(GLfloat const *m) {
 		if (m == nullptr || memcmp(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode])) == 0) return;
 		memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
-		constantsDirty = true;
-		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
-		else ShadowRegistry::NoteProjection(m);
+		if (activeMatrixMode == MODEL_VIEW) {
+			drawConstantsDirty = true;
+			normalMatrixDirty = true;
+		} else {
+			constantsDirty = true;
+			ShadowRegistry::NoteProjection(m);
+		}
 		clipRowsDirty = true;
 	}
 

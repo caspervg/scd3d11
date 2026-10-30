@@ -45,11 +45,15 @@ struct StageState
 	uint4 parameters1;
 };
 
-cbuffer DriverConstants : register(b0)
+cbuffer DrawConstants : register(b0)
 {
 	column_major float4x4 modelView;
-	column_major float4x4 projection;
 	column_major float4x4 normalMatrix;
+};
+
+cbuffer DriverConstants : register(b1)
+{
+	column_major float4x4 projection;
 	uint flags;
 	uint alphaFunction;
 	float alphaReference;
@@ -215,10 +219,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 }
 )";
 
-		struct DriverConstants {
+		// Changes with nearly every object, so it is uploaded on its own.
+		struct DrawConstants {
 			float modelView[16];
-			float projection[16];
 			float normalMatrix[16];
+		};
+
+		struct DriverConstants {
+			float projection[16];
 			uint32_t flags;
 			uint32_t alphaFunction;
 			float alphaReference;
@@ -362,7 +370,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 		constantDescription.Usage = D3D11_USAGE_DYNAMIC;
 		constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &transformBuffer);
+		result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &stateConstantBuffer);
+		if (SUCCEEDED(result)) {
+			constantDescription.ByteWidth = sizeof(DrawConstants);
+			result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &drawConstantBuffer);
+		}
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
 			return result;
@@ -688,7 +700,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
-		    !transformBuffer || !dynamicVertexBuffer ||
+		    !stateConstantBuffer || !drawConstantBuffer || !dynamicVertexBuffer ||
 		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
 		}
@@ -708,18 +720,34 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (lit) flagInputs |= 4;
 		if (lit && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) flagInputs |= 128;
 
+		// LoadMatrix marks these only when the model-view really changes.
+		if (drawConstantsDirty) {
+			if (normalMatrixDirty) {
+				MakeNormalMatrix(matrices[MODEL_VIEW], normalMatrix);
+				normalMatrixDirty = false;
+			}
+			D3D11_MAPPED_SUBRESOURCE mapping{};
+			HRESULT result = TakeInjectedFault(FAULT_MAP);
+			if (SUCCEEDED(result)) result = d3dContext->Map(
+				drawConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(draw constants)", result);
+				NoteDeviceLoss(result);
+				return false;
+			}
+			DrawConstants *const constants = static_cast<DrawConstants *>(mapping.pData);
+			memcpy(constants->modelView, matrices[MODEL_VIEW], sizeof(constants->modelView));
+			memcpy(constants->normalMatrix, normalMatrix, sizeof(constants->normalMatrix));
+			d3dContext->Unmap(drawConstantBuffer.Get(), 0);
+			drawConstantsDirty = false;
+		}
+
 		// Setters mark the constants dirty. The only other inputs are bound textures and whether the vertex
 		// format carries normals, which can change without a setter and are compared here instead.
 		if (constantsDirty || flagInputs != constantsFlagInputs || constantBufferCache.size() != sizeof(DriverConstants)) {
 			DriverConstants constants{};
 			constants.flags = flagInputs;
-			memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
-			memcpy(constants.projection, matrices[1], sizeof(constants.projection));
-			if (normalMatrixDirty) {
-				MakeNormalMatrix(matrices[MODEL_VIEW], normalMatrix);
-				normalMatrixDirty = false;
-			}
-			memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
+			memcpy(constants.projection, matrices[PROJECTION], sizeof(constants.projection));
 			constants.alphaFunction = alphaFunction;
 			constants.alphaReference = alphaReference;
 			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
@@ -772,14 +800,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 				D3D11_MAPPED_SUBRESOURCE mapping{};
 				HRESULT result = TakeInjectedFault(FAULT_MAP);
 				if (SUCCEEDED(result)) result = d3dContext->Map(
-					transformBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+					stateConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
 					NoteDeviceLoss(result);
 					return false;
 				}
 				memcpy(mapping.pData, &constants, sizeof(constants));
-				d3dContext->Unmap(transformBuffer.Get(), 0);
+				d3dContext->Unmap(stateConstantBuffer.Get(), 0);
 				constantBufferCache.assign(
 					reinterpret_cast<uint8_t const *>(&constants),
 					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
@@ -791,7 +819,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 		UINT const stride = sizeof(D3D11Vertex);
 		UINT const offset = dynamicVertexBufferOffset;
 		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
-		ID3D11Buffer *constantBuffer = transformBuffer.Get();
 		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
 			d3dContext->IASetInputLayout(inputLayout.Get());
@@ -802,10 +829,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 			d3dContext->PSSetShader(desiredPixelShader, nullptr, 0);
 			appliedPixelShader = desiredPixelShader;
 		}
-		if (constantBuffer != appliedTransformBuffer) {
-			d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);
-			d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
-			appliedTransformBuffer = constantBuffer;
+		if (!constantBuffersBound) {
+			ID3D11Buffer *const constantBuffers[2]{drawConstantBuffer.Get(), stateConstantBuffer.Get()};
+			d3dContext->VSSetConstantBuffers(0, 2, constantBuffers);
+			d3dContext->PSSetConstantBuffers(0, 2, constantBuffers);
+			constantBuffersBound = true;
 		}
 		if (vertexBuffer != appliedVertexBuffer || offset != appliedVertexBufferOffset) {
 			d3dContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);

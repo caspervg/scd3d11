@@ -18,7 +18,7 @@ namespace nSCD3D11 {
         geometryPipelineBound = false;
 		appliedPixelShader = nullptr;
 		appliedVertexBuffer = nullptr;
-		appliedTransformBuffer = nullptr;
+		constantBuffersBound = false;
         appliedVertexBufferOffset = UINT32_MAX;
         textureBindingsValid = false;
         appliedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;

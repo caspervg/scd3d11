@@ -398,9 +398,12 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11PixelShader> flatPixelShader;
 		ID3D11PixelShader *appliedPixelShader;
 		Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
-		// One buffer: WRITE_DISCARD already renames it, so the binding never has to change.
-		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffer;
-		ID3D11Buffer *appliedTransformBuffer;
+		// The model-view and normal matrix (b0) change with nearly every object, so they are uploaded
+		// apart from the rest of the constants (b1). One buffer each: WRITE_DISCARD already renames them,
+		// so the bindings never change.
+		Microsoft::WRL::ComPtr<ID3D11Buffer> drawConstantBuffer;
+		Microsoft::WRL::ComPtr<ID3D11Buffer> stateConstantBuffer;
+		bool constantBuffersBound;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicVertexBuffer;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicIndexBuffer;
 		GeometryCacheSegment vertexBufferSegments[GEOMETRY_CACHE_SEGMENTS];
@@ -517,11 +520,12 @@ namespace nSCD3D11 {
 		std::vector<uint32_t> sourceIndexScratch;
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
-		// The constants last uploaded to transformBuffer. Losing the binding (ClearState) keeps them
+		// The constants last uploaded to stateConstantBuffer. Losing the binding (ClearState) keeps them
 		// valid. Only destroying the buffer clears this.
 		std::vector<uint8_t> constantBufferCache;
-		// Set by every setter feeding the shader constants.
+		// Set by every setter feeding the shader constants, except the model-view (drawConstantsDirty).
 		bool constantsDirty;
+		bool drawConstantsDirty;
 		// Texture and lighting flag inputs the cached constants were built with.
 		uint32_t constantsFlagInputs;
 		std::vector<uint8_t> extensionVertexData;

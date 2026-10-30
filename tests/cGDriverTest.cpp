@@ -561,22 +561,36 @@ namespace nSCD3D11 {
 			d.DrawArrays(0, 0, 3);
 		}
 
+		std::vector<uint8_t> ReadWholeBuffer(ID3D11Buffer *buffer) {
+			D3D11_BUFFER_DESC description{};
+			buffer->GetDesc(&description);
+			return ReadBuffer(buffer, 0, description.ByteWidth);
+		}
+
+		// Both constant buffers as the GPU sees them, per-draw then per-state.
+		std::vector<uint8_t> UploadedConstants() {
+			std::vector<uint8_t> constants = ReadWholeBuffer(d.drawConstantBuffer.Get());
+			std::vector<uint8_t> const state = ReadWholeBuffer(d.stateConstantBuffer.Get());
+			constants.insert(constants.end(), state.begin(), state.end());
+			return constants;
+		}
+
 		// The constants a setter leaves behind must equal a from-scratch rebuild, on the CPU and the GPU.
 		template <typename Setter>
 		void CheckConstants(char const *name, Setter const &setter) {
 			DrawFull();
-			std::vector<uint8_t> const before = d.constantBufferCache;
+			std::vector<uint8_t> const before = UploadedConstants();
 			setter();
 			DrawFull();
-			std::vector<uint8_t> const incremental = d.constantBufferCache;
-			bool const uploaded = ReadBuffer(d.transformBuffer.Get(), 0,
-			                                 static_cast<uint32_t>(incremental.size())) == incremental;
-			d.constantsDirty = true;
+			std::vector<uint8_t> const incremental = UploadedConstants();
+			bool const cached = ReadWholeBuffer(d.stateConstantBuffer.Get()) == d.constantBufferCache;
+			d.constantsDirty = d.drawConstantsDirty = true;
 			d.constantBufferCache.clear();
 			DrawFull();
-			if (!uploaded || incremental == before || d.constantBufferCache != incremental) {
-				std::fprintf(stderr, "constants wrong after %s (uploaded %d, changed %d, fresh %d)\n", name,
-				             uploaded, incremental != before, d.constantBufferCache == incremental);
+			bool const fresh = UploadedConstants() == incremental;
+			if (!cached || incremental == before || !fresh) {
+				std::fprintf(stderr, "constants wrong after %s (cached %d, changed %d, fresh %d)\n", name,
+				             cached, incremental != before, fresh);
 				assert(false);
 			}
 		}
@@ -654,15 +668,16 @@ namespace nSCD3D11 {
 			// Identical draws rebuild and upload nothing. Losing the bindings does not force an upload either:
 			// a rebuild would put back the byte flipped in the cache.
 			DrawFull();
+			std::vector<uint8_t> const drawConstants = ReadWholeBuffer(d.drawConstantBuffer.Get());
 			d.constantBufferCache[0] ^= 1;
 			DrawFull();
-			assert(!d.constantsDirty && !d.normalMatrixDirty);
+			assert(!d.constantsDirty && !d.drawConstantsDirty && !d.normalMatrixDirty);
 			d.InvalidateD3D11StateCache();
 			DrawFull();
-			assert(d.appliedTransformBuffer == d.transformBuffer.Get());
+			assert(d.constantBuffersBound);
 			d.constantBufferCache[0] ^= 1;
-			assert(ReadBuffer(d.transformBuffer.Get(), 0, static_cast<uint32_t>(d.constantBufferCache.size())) ==
-			       d.constantBufferCache);
+			assert(ReadWholeBuffer(d.stateConstantBuffer.Get()) == d.constantBufferCache);
+			assert(ReadWholeBuffer(d.drawConstantBuffer.Get()) == drawConstants);
 
 			d.DeleteTextures(1, &texture);
 			d.Disable(kGDCapability_Fog);
@@ -687,7 +702,7 @@ namespace nSCD3D11 {
 			d.TexStageMatrix(texture42, 4, 2, 1);
 			d.TexParameter(0, 2, 2);
 			DrawFull();
-			assert(!d.constantsDirty);
+			assert(!d.constantsDirty && !d.drawConstantsDirty);
 			ID3D11SamplerState *const sampler = d.textureStages[0].sampler.Get();
 			assert(sampler != nullptr);
 			// Only the cull test consumes the clip rows, and nothing here draws into a partial viewport.
@@ -702,7 +717,7 @@ namespace nSCD3D11 {
 			d.TexStageCoord(0);
 			d.TexStageMatrix(texture42, 4, 2, 1);
 			d.TexParameter(0, 2, 2);
-			assert(!d.constantsDirty && !d.normalMatrixDirty && !d.clipRowsDirty);
+			assert(!d.constantsDirty && !d.drawConstantsDirty && !d.normalMatrixDirty && !d.clipRowsDirty);
 			assert(d.textureStages[0].sampler.Get() == sampler);
 
 			// Each real change still marks them.
@@ -710,10 +725,10 @@ namespace nSCD3D11 {
 			assert(d.constantsDirty);
 			DrawFull();
 			d.LoadIdentity();
-			assert(d.constantsDirty && d.normalMatrixDirty && d.clipRowsDirty);
+			assert(!d.constantsDirty && d.drawConstantsDirty && d.normalMatrixDirty && d.clipRowsDirty);
 			DrawFull();
 			d.LoadIdentity();
-			assert(!d.constantsDirty);
+			assert(!d.constantsDirty && !d.drawConstantsDirty);
 			d.TexParameter(0, 2, 1);
 			assert(d.textureStages[0].sampler.Get() == nullptr);
 
