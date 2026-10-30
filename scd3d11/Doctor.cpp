@@ -240,9 +240,9 @@ namespace nSCD3D11::Doctor {
 				}
 			}
 			if (Lower(forceDraw) == "true" || forceDraw == "1") {
-				findings.push_back({Severity::Note,
-				                    "SC4GraphicsOptions.ini has ForceDrawOnScroll=true. It works around tearing in "
-				                    "SC4's DirectX 7 driver and only makes scrolling slower with SCD3D11. Set it to false."});
+				findings.push_back({Severity::Warning,
+				                    "SC4GraphicsOptions.ini has ForceDrawOnScroll=true. It is a fallback for old graphics "
+				                    "hardware that SCD3D11 does not need, and only makes scrolling slower. Set it to false."});
 			}
 
 			std::string overridden;

@@ -112,7 +112,7 @@ int main() {
 		findings = Diagnose(environment);
 		assert(Has(findings, Severity::Problem, "cannot read EnableIntroVideo=off"));
 		assert(!Has(findings, Severity::Problem, "has no WindowHeight"));
-		assert(Has(findings, Severity::Note, "ForceDrawOnScroll=true"));
+		assert(Has(findings, Severity::Warning, "ForceDrawOnScroll=true"));
 		assert(Has(findings, Severity::Warning, "Set ColorDepth=32"));
 	}
 	{
