@@ -504,11 +504,10 @@ namespace nSCD3D11::Doctor {
 			}
 		}
 
-		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
-			// Windows lists its compatibility layers separated by spaces, sometimes after a ~.
-			std::string old, other;
+		// Splits Windows' compatibility layers, separated by spaces and sometimes after a ~, into the
+		// old Windows modes and the other settings.
+		void SplitLayers(std::string const &layers, std::string &old, std::string &other) {
 			size_t start = 0;
-			std::string const &layers = environment.compatibilityLayer;
 			while (start < layers.size()) {
 				size_t end = layers.find(' ', start);
 				if (end == std::string::npos) end = layers.size();
@@ -520,10 +519,32 @@ namespace nSCD3D11::Doctor {
 				                    lower == "256color" || lower == "16bitcolor" || lower == "640x480";
 				(legacy ? old : other) += ((legacy ? old : other).empty() ? "" : " ") + layer;
 			}
+		}
+
+		bool HasLegacyLayer(std::string const &layers) {
+			std::string old, other;
+			SplitLayers(layers, old, other);
+			return !old.empty();
+		}
+
+		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
+			std::string old, other;
+			SplitLayers(environment.compatibilityLayer, old, other);
 			if (!old.empty()) {
+				std::string const exe = environment.exePath.empty() ? "SimCity 4.exe" : environment.exePath;
+				std::string fix;
+				if (HasLegacyLayer(environment.compatibilityLayerAllUsers)) {
+					fix = "It is set for all users: turn it off under Properties, Compatibility, Change settings for "
+					      "all users of " + exe + ".";
+				} else if (HasLegacyLayer(environment.compatibilityLayerUser)) {
+					fix = "Turn it off under Properties, Compatibility of " + exe + ".";
+				} else {
+					fix = exe + " has no compatibility mode set, so the program that started it passed it on. Turn "
+					      "compatibility mode off on that launcher, or start the game another way.";
+				}
 				findings.push_back({Severity::Problem, Format(
-					"SimCity 4.exe runs in compatibility mode (%s). SCD3D11 is not tested with it. Turn it off under "
-					"Properties, Compatibility of SimCity 4.exe.", old.c_str())});
+					"SimCity 4.exe runs in compatibility mode (%s). SCD3D11 is not tested with it. %s", old.c_str(),
+					fix.c_str())});
 			}
 			if (!other.empty()) {
 				findings.push_back({Severity::Note, "Windows compatibility settings on SimCity 4.exe: " + other});

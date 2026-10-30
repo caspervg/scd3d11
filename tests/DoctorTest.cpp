@@ -170,6 +170,17 @@ int main() {
 		assert(Has(findings, Severity::Warning, "-UserDir folder does not exist"));
 	}
 	{
+		// The fix names where the mode is set: the exe for all users, or for this user.
+		Environment environment = Clean();
+		environment.compatibilityLayer = "~ WINXPSP3";
+		environment.exePath = "C:\\SC4\\Apps\\SimCity 4.exe";
+		environment.compatibilityLayerUser = "~ WINXPSP3";
+		environment.compatibilityLayerAllUsers = "~ HIGHDPIAWARE";
+		assert(Has(Diagnose(environment), Severity::Problem, "Properties, Compatibility of C:\\SC4\\Apps\\SimCity 4.exe."));
+		environment.compatibilityLayerAllUsers = "WINXPSP3";
+		assert(Has(Diagnose(environment), Severity::Problem, "Change settings for all users of C:\\SC4"));
+	}
+	{
 		// Compatibility mode, wrappers in Apps, plugins that clash.
 		Environment environment = Clean();
 		environment.compatibilityLayer = "~ WINXPSP3 HIGHDPIAWARE";
@@ -191,6 +202,7 @@ int main() {
 		environment.windowsFolder = "C:\\Windows";
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Problem, "compatibility mode (WINXPSP3)"));
+		assert(Has(findings, Severity::Problem, "the program that started it passed it on"));
 		assert(Has(findings, Severity::Note, "settings on SimCity 4.exe: HIGHDPIAWARE"));
 		assert(Has(findings, Severity::Warning, "not SimCity 4 version 1.1.641"));
 		assert(Has(findings, Severity::Note, "ReShade v6.8.0 is installed as Apps\\dxgi.dll"));
