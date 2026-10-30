@@ -187,11 +187,14 @@ int main() {
 		assert(Has(single, Severity::Warning, "GPU=3 asks for a GPU this machine lacks. It has 1"));
 	}
 	{
-		// No 4GB patch.
+		// No 4GB patch, and Wine.
 		Environment environment = Clean();
 		environment.largeAddressAware = false;
+		environment.wineVersion = "9.0";
+		environment.wineHost = "Linux";
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Problem, "can use only 2 GB of memory"));
+		assert(Has(findings, Severity::Note, "runs under Wine 9.0 on Linux"));
 	}
 	{
 		// A laptop drawing on its integrated GPU. Two similar cards are fine either way.

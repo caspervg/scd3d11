@@ -579,6 +579,12 @@ namespace nSCD3D11::Doctor {
 				                                       "Plugins folders run out of it, and then the game crashes. Apply "
 				                                       "the 4GB patch to SimCity 4.exe."});
 			}
+			if (!environment.wineVersion.empty()) {
+				findings.push_back({Severity::Note, Format(
+					"SimCity 4 runs under Wine %s%s%s, where DXVK or WineD3D turns Direct3D 11 into Vulkan or OpenGL.",
+					environment.wineVersion.c_str(), environment.wineHost.empty() ? "" : " on ",
+					environment.wineHost.c_str())});
+			}
 			std::string old, other;
 			SplitLayers(environment.compatibilityLayer, old, other);
 			if (!old.empty()) {

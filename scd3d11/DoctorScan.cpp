@@ -231,6 +231,21 @@ namespace nSCD3D11::Doctor {
 			return (headers->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
 		}
 
+		// Wine exports its version from its ntdll, which Windows' own does not.
+		void ReadWine(Environment &environment) {
+			HMODULE const ntdll = GetModuleHandleW(L"ntdll.dll");
+			if (ntdll == nullptr) return;
+			auto const version = reinterpret_cast<char const *(__cdecl *)()>(
+				reinterpret_cast<void *>(GetProcAddress(ntdll, "wine_get_version")));
+			if (version == nullptr) return;
+			environment.wineVersion = version();
+			auto const host = reinterpret_cast<void(__cdecl *)(char const **, char const **)>(
+				reinterpret_cast<void *>(GetProcAddress(ntdll, "wine_get_host_version")));
+			char const *system = nullptr, *release = nullptr;
+			if (host != nullptr) host(&system, &release);
+			if (system != nullptr) environment.wineHost = system;
+		}
+
 		Environment Collect(cIGZCmdLine *commandLine) {
 			Environment environment;
 			if (commandLine != nullptr) {
@@ -298,6 +313,7 @@ namespace nSCD3D11::Doctor {
 			environment.gpuSystemDefault = Settings::Get().gpu.systemDefault;
 			environment.gpuNumber = Settings::Get().gpu.number;
 			environment.largeAddressAware = IsLargeAddressAware();
+			ReadWine(environment);
 			return environment;
 		}
 
