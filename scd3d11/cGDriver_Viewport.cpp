@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
+#include "Doctor.h"
 #include "SCD3D11Service.h"
 #include "Settings.h"
 #include "ShadowRegistry.h"
@@ -487,6 +488,8 @@ namespace nSCD3D11 {
 		}
 		DXGI_ADAPTER_DESC adapterDescription{};
 		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
+			Doctor::SetActiveDevice((static_cast<uint64_t>(static_cast<uint32_t>(adapterDescription.AdapterLuid.HighPart)) << 32) |
+			                        adapterDescription.AdapterLuid.LowPart, window);
 			char name[sizeof(adapterDescription.Description)]{};
 			WideCharToMultiByte(CP_UTF8, 0, adapterDescription.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
 			// The user-mode driver version, packed as four 16-bit parts, from most to least significant.
@@ -498,7 +501,8 @@ namespace nSCD3D11 {
 			    HIWORD(driverVersion.HighPart), LOWORD(driverVersion.HighPart),
 			    HIWORD(driverVersion.LowPart), LOWORD(driverVersion.LowPart),
 			    static_cast<unsigned>(adapterDescription.DedicatedVideoMemory / (1024 * 1024)),
-			    preferredAdapter ? "high-performance preference" : "system default");
+			    !preferredAdapter ? "system default"
+			    : Settings::Get().gpu.number != 0 ? "GPU setting" : "high-performance preference");
 			if (adapterDescription.VendorId == 0x1AF4) {
 				Log(LogCategory::Initialization,
 				    "adapter: this is the VirtIO GPU driver of a virtual machine. Its 3D support is still experimental, "

@@ -112,7 +112,7 @@ int main() {
 		findings = Diagnose(environment);
 		assert(Has(findings, Severity::Problem, "cannot read EnableIntroVideo=off"));
 		assert(!Has(findings, Severity::Problem, "has no WindowHeight"));
-		assert(Has(findings, Severity::Note, "ForceDrawOnScroll=true"));
+		assert(Has(findings, Severity::Warning, "ForceDrawOnScroll=true"));
 		assert(Has(findings, Severity::Warning, "Set ColorDepth=32"));
 	}
 	{
@@ -148,7 +148,7 @@ int main() {
 		Environment environment = Clean();
 		environment.arguments = {"-UserDir:C:\\My", "Games\\SC4\\", "-LiveShadow", "-VSync=off", "-NativeShadowMasks",
 		                         "-MaxFPS:60", "-SomeOtherPlugin:on", "-CPUPriority:Realtime", "-intro:off",
-		                         "-NetCommandGenerator:enabled"};
+		                         "-NetCommandGenerator:enabled", "-FullscreenMode:Borderless", "-b"};
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Warning, "Not a switch on the command line: Games\\SC4\\"));
 		assert(Has(findings, Severity::Warning, "Did you mean -LiveShadows?"));
@@ -159,6 +159,8 @@ int main() {
 		assert(Has(findings, Severity::Warning, "-CPUPriority:High"));
 		assert(!Has(findings, Severity::Note, "-intro:off"));
 		assert(!Has(findings, Severity::Note, "-NetCommandGenerator"));
+		assert(!Has(findings, Severity::Note, "-FullscreenMode"));
+		assert(!Has(findings, Severity::Note, "-SomeOtherPlugin:on, -b"));
 	}
 	{
 		Environment environment = Clean();
@@ -166,8 +168,98 @@ int main() {
 		environment.gameSize.reset();
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Warning, "Both -w and -f"));
-		assert(Has(findings, Severity::Note, "-Borderless only applies with -f"));
 		assert(Has(findings, Severity::Warning, "-r1920x1080x32 and -r1366x768x32 are both"));
+	}
+	{
+		Environment environment = Clean();
+		environment.gpus = {{"AMD Radeon(TM) Graphics", 512, false}, {"NVIDIA GeForce RTX 4070", 12002, true}};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Note, "GPUs in this machine: 1: AMD Radeon(TM) Graphics (512 MB), "
+		                                     "2: NVIDIA GeForce RTX 4070 (12002 MB, in use). GPU=<number> in "
+		                                     "SCD3D11.ini picks one."));
+		assert(!Has(findings, Severity::Problem, "not the faster"));
+		// The one GPU needs no hint, and a number past the last one falls back.
+		environment.gpus.resize(1);
+		environment.gpuNumber = 3;
+		auto const single = Diagnose(environment);
+		assert(Has(single, Severity::Note, "GPUs in this machine: 1: AMD Radeon(TM) Graphics (512 MB)"));
+		assert(!Has(single, Severity::Note, "picks one"));
+		assert(Has(single, Severity::Warning, "GPU=3 asks for a GPU this machine lacks. It has 1"));
+	}
+	{
+		Environment environment = Clean();
+		environment.monitors = {{"DELL U2720Q", {3840, 2160}, 60, true, false}, {"LG 27GL850", {2560, 1440}, 144, false, true}};
+		assert(Has(Diagnose(environment), Severity::Note, "Monitors: DELL U2720Q (3840x2160 at 60 Hz, primary), "
+		                                                  "LG 27GL850 (2560x1440 at 144 Hz, SC4 draws here)"));
+	}
+	{
+		// SCD3D11.ini typos, values Settings rejected and a log from before the rename.
+		Environment environment = Clean();
+		environment.iniKeys = {"LiveShadow", "liveshadows", "SomethingElse"};
+		environment.rejectedSettings = {{"VSync", "maybe", "SCD3D11.ini"}, {"GPU", "", "command line"},
+		                                {"LogLevel", "loud", "command line"}};
+		environment.oldLogLeftOver = true;
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Warning, "SCD3D11.ini has LiveShadow, which is not a setting. Did you mean LiveShadows?"));
+		assert(!Has(findings, Severity::Warning, "liveshadows"));
+		assert(Has(findings, Severity::Warning, "SCD3D11.ini has SomethingElse, which is not a setting SCD3D11 reads"));
+		assert(Has(findings, Severity::Warning, "SCD3D11.ini has VSync=maybe, which SCD3D11 cannot read"));
+		assert(Has(findings, Severity::Warning, "-GPU needs a value"));
+		assert(Has(findings, Severity::Warning, "cannot read -LogLevel:loud"));
+		assert(Has(findings, Severity::Note, "SC4D3D11.log is left over"));
+	}
+	{
+		Environment environment = Clean();
+		environment.iniError = "Invalid INI line 4";
+		assert(Has(Diagnose(environment), Severity::Warning, "SCD3D11.ini cannot be read, so SCD3D11 ignores all of it: "
+		                                                     "Invalid INI line 4"));
+		environment.iniError.clear();
+		environment.iniWithoutSection = true;
+		assert(Has(Diagnose(environment), Severity::Warning, "no [SCD3D11] section"));
+	}
+	{
+		// Plugins built with /MD on a machine without the Visual C++ Redistributable.
+		Environment environment = Clean();
+		environment.pluginsMissingRuntime = {"SC4CPUOptions.dll", "memo.3dcamera.dll"};
+		environment.missingRuntimeDlls = {"msvcp140.dll", "vcruntime140.dll"};
+		assert(Has(Diagnose(environment), Severity::Problem,
+		           "SC4 skips SC4CPUOptions.dll, memo.3dcamera.dll, because Windows cannot find msvcp140.dll, "
+		           "vcruntime140.dll from the Microsoft Visual C++ Redistributable. Install its x86 version"));
+	}
+	{
+		// No 4GB patch, Wine, and a ReShade too old for the add-on.
+		Environment environment = Clean();
+		environment.largeAddressAware = false;
+		environment.wineVersion = "9.0";
+		environment.wineHost = "Linux";
+		environment.appsFiles = {{"C:\\SC4\\Apps\\dxgi.dll", "ReShade", "5.9.2.0"}};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Problem, "can use only 2 GB of memory"));
+		assert(Has(findings, Severity::Note, "runs under Wine 9.0 on Linux"));
+		assert(Has(findings, Severity::Warning, "ReShade v5.9.2 is installed as Apps\\dxgi.dll. Its effects cannot see"));
+	}
+	{
+		// A laptop drawing on its integrated GPU. Two similar cards are fine either way.
+		Environment environment = Clean();
+		environment.gpus = {{"Intel(R) UHD Graphics", 128, true}, {"NVIDIA GeForce RTX 3060 Laptop GPU", 5980, false}};
+		assert(Has(Diagnose(environment), Severity::Problem,
+		           "draws on Intel(R) UHD Graphics, not the faster NVIDIA GeForce RTX 3060 Laptop GPU. Set GPU=2"));
+		environment.gpuSystemDefault = true;
+		assert(Has(Diagnose(environment), Severity::Problem, "GPU is set to default. Set GPU=2"));
+		// Picked by number, it is the player's choice.
+		environment.gpuSystemDefault = false;
+		environment.gpuNumber = 1;
+		assert(!Has(Diagnose(environment), Severity::Problem, "not the faster"));
+		environment.gpuNumber = 0;
+		environment.gpus = {{"NVIDIA GeForce RTX 3070", 8000, true}, {"NVIDIA GeForce RTX 3080", 10000, false}};
+		assert(!Has(Diagnose(environment), Severity::Problem, "not the faster"));
+	}
+	{
+		// Borderless turns on full screen itself, so -w with it is no window.
+		Environment environment = Clean();
+		environment.arguments = {"-w", "-b", "-r3840x2160x32"};
+		auto const findings = Diagnose(environment);
+		assert(!Has(findings, Severity::Warning, "window is larger than"));
 	}
 	{
 		Environment environment = Clean();
@@ -212,19 +304,20 @@ int main() {
 		assert(Has(findings, Severity::Problem, "compatibility mode (WINXPSP3)"));
 		assert(Has(findings, Severity::Problem, "the program that started it passed it on"));
 		assert(Has(findings, Severity::Note, "settings on SimCity 4.exe: HIGHDPIAWARE"));
-		assert(Has(findings, Severity::Warning, "not SimCity 4 version 1.1.641"));
+		assert(Has(findings, Severity::Problem, "not SimCity 4 version 1.1.641"));
 		assert(Has(findings, Severity::Note, "ReShade v6.8.0 is installed as Apps\\dxgi.dll"));
 		assert(Has(findings, Severity::Warning, "Apps\\d3d11.dll is DXVK"));
 		assert(Has(findings, Severity::Note, "Apps\\ddraw.dll is dgVoodoo"));
 		assert(Has(findings, Severity::Note, "imgui.dll is left over"));
 		assert(Has(findings, Severity::Warning, "scd3d11.dll is loaded twice"));
 		assert(!Has(findings, Severity::Warning, "version.dll is loaded twice"));
-		assert(Has(findings, Severity::Warning, "memo.3dcamera.dll and sc4-moderncamera.dll all turn the camera"));
+		assert(!Has(findings, Severity::Warning, "turn the camera"));
 		assert(Has(findings, Severity::Warning, "sc4singlecpu.dll is replaced by SC4CPUOptions"));
 		assert(Has(findings, Severity::Note, "scvk.dll is installed too"));
 		assert(Has(findings, Severity::Note, "Overlays in the game: Steam overlay"));
 		assert(!Has(findings, Severity::Warning, "SCD3D11 used the screen's own"));
 		assert(Has(findings, Severity::Warning, "SC4 Painter draws its ground fills"));
+		assert(Has(findings, Severity::Warning, "SC4 Painter writes yellow text on the black loading screen"));
 	}
 	{
 		// Plugin versions that predate SCD3D11 support. Equal and newer versions, and DLLs without a

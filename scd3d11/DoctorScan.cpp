@@ -14,6 +14,9 @@
 #include "GameVersion.h"
 #include "Settings.h"
 
+#include "FileSystem.h"
+#include "IniReader.h"
+
 #include <GZCLSIDDefs.h>
 #include <GZServPtrs.h>
 #include <SC4NotificationDialog.h>
@@ -37,15 +40,20 @@
 #include <thread>
 
 #include <windows.h>
+#include <dxgi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <wininet.h>
+#include <wrl/client.h>
 
 namespace nSCD3D11::Doctor {
 	namespace {
 		// Set when CheckRequestedScreenMode replaced a full-screen size the screen lacks, for the report.
 		std::string gScreenModeWarning;
+		// The LUID of the GPU SCD3D11 draws on and its window, once it has a device.
+		std::optional<uint64_t> gActiveAdapter;
+		HWND gGameWindow = nullptr;
 
 		std::string Utf8(std::wstring_view text) {
 			if (text.empty()) return {};
@@ -103,41 +111,75 @@ namespace nSCD3D11::Doctor {
 			return module;
 		}
 
-		// Maps the DLL as an image without loading what it imports or running it, then reads its import table.
-		bool ImportsImGui(std::filesystem::path const &file) {
+		// The DLLs a DLL imports, in lower case. Maps it as an image without loading what it imports or
+		// running it, then reads its import table.
+		std::vector<std::string> Imports(std::filesystem::path const &file) {
+			std::vector<std::string> names;
 			HMODULE const image = LoadLibraryExW(file.c_str(), nullptr, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-			if (image == nullptr) return false;
+			if (image == nullptr) return names;
 			// The low bits of the handle mark it as a resource mapping.
 			auto const base = reinterpret_cast<uint8_t const *>(reinterpret_cast<uintptr_t>(image) & ~uintptr_t(3));
 			auto const headers = reinterpret_cast<IMAGE_NT_HEADERS32 const *>(
 				base + reinterpret_cast<IMAGE_DOS_HEADER const *>(base)->e_lfanew);
-			bool found = false;
 			if (headers->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
 				IMAGE_DATA_DIRECTORY const &imports = headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 				for (auto entry = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR const *>(base + imports.VirtualAddress);
-				     imports.VirtualAddress != 0 && entry->Name != 0 && !found; ++entry) {
-					found = _stricmp(reinterpret_cast<char const *>(base + entry->Name), "imgui.dll") == 0;
+				     imports.VirtualAddress != 0 && entry->Name != 0; ++entry) {
+					std::string name = reinterpret_cast<char const *>(base + entry->Name);
+					for (char &character : name) character = static_cast<char>(tolower(static_cast<unsigned char>(character)));
+					names.push_back(std::move(name));
 				}
 			}
 			FreeLibrary(image);
-			return found;
+			return names;
 		}
 
 		// SC4 loads the DLLs at the top of the game's Plugins folder and of the user's.
-		std::vector<std::string> ImGuiPlugins(std::filesystem::path const &userFolder) {
+		std::vector<std::filesystem::path> PluginDlls(std::filesystem::path const &userFolder) {
 			std::set<std::filesystem::path> folders{
 				std::filesystem::path(ModulePath(nullptr)).parent_path().parent_path() / L"Plugins", userFolder / L"Plugins",
 				std::filesystem::path(ModulePath(ModuleAt(reinterpret_cast<void *>(&Run)))).parent_path()};
-			std::vector<std::string> plugins;
+			std::vector<std::filesystem::path> plugins;
 			for (std::filesystem::path const &folder : folders) {
 				std::error_code error;
 				for (auto const &entry : std::filesystem::directory_iterator(folder, error)) {
-					if (_wcsicmp(entry.path().extension().c_str(), L".dll") == 0 && ImportsImGui(entry.path())) {
-						plugins.push_back(Utf8(entry.path().filename().wstring()));
-					}
+					if (_wcsicmp(entry.path().extension().c_str(), L".dll") == 0) plugins.push_back(entry.path());
 				}
 			}
 			return plugins;
+		}
+
+		// The Visual C++ runtime DLLs plugins built with /MD import. Windows 10 ships the universal C runtime
+		// they also need, so only these come from the Redistributable.
+		bool IsVisualCppRuntime(std::string const &name) {
+			return name.starts_with("msvcp140") || name.starts_with("vcruntime140") || name == "concrt140.dll";
+		}
+
+		// Whether the loader finds a DLL by name, searching where it would for a plugin's imports.
+		bool CanLoad(std::string const &name) {
+			std::wstring const wide(name.begin(), name.end());
+			if (GetModuleHandleW(wide.c_str()) != nullptr) return true;
+			HMODULE const module = LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE);
+			if (module == nullptr) return false;
+			FreeLibrary(module);
+			return true;
+		}
+
+		void ReadPlugins(Environment &environment, std::filesystem::path const &userFolder) {
+			std::set<std::string> missing;
+			for (std::filesystem::path const &plugin : PluginDlls(userFolder)) {
+				std::string const name = Utf8(plugin.filename().wstring());
+				bool needsMissingRuntime = false;
+				for (std::string const &import : Imports(plugin)) {
+					if (import == "imgui.dll") environment.imguiPlugins.push_back(name);
+					if (IsVisualCppRuntime(import) && !CanLoad(import)) {
+						missing.insert(import);
+						needsMissingRuntime = true;
+					}
+				}
+				if (needsMissingRuntime) environment.pluginsMissingRuntime.push_back(name);
+			}
+			environment.missingRuntimeDlls.assign(missing.begin(), missing.end());
 		}
 
 		std::vector<Module> LoadedModules() {
@@ -202,6 +244,119 @@ namespace nSCD3D11::Doctor {
 			return modes;
 		}
 
+		std::vector<Gpu> Gpus() {
+			std::vector<Gpu> gpus;
+			Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+			if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return gpus;
+			Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+			for (UINT index = 0; SUCCEEDED(factory->EnumAdapters1(index, &adapter)); ++index) {
+				DXGI_ADAPTER_DESC1 description{};
+				if (FAILED(adapter->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) continue;
+				uint64_t const luid = (static_cast<uint64_t>(static_cast<uint32_t>(description.AdapterLuid.HighPart)) << 32) |
+				                      description.AdapterLuid.LowPart;
+				gpus.push_back(Gpu{Utf8(description.Description),
+				                   static_cast<uint32_t>(description.DedicatedVideoMemory / (1024 * 1024)),
+				                   gActiveAdapter == luid});
+			}
+			return gpus;
+		}
+
+		std::vector<Monitor> Monitors() {
+			// Windows' own names for the monitors, such as DELL U2720Q, by GDI device name.
+			std::map<std::wstring, std::wstring> names;
+			UINT32 pathCount = 0, modeCount = 0;
+			if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) == ERROR_SUCCESS) {
+				std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+				std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+				if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(),
+				                       nullptr) == ERROR_SUCCESS) {
+					for (UINT32 index = 0; index < pathCount; ++index) {
+						DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+						source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source),
+						                 paths[index].sourceInfo.adapterId, paths[index].sourceInfo.id};
+						DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
+						target.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(target),
+						                 paths[index].targetInfo.adapterId, paths[index].targetInfo.id};
+						if (DisplayConfigGetDeviceInfo(&source.header) == ERROR_SUCCESS &&
+						    DisplayConfigGetDeviceInfo(&target.header) == ERROR_SUCCESS &&
+						    target.monitorFriendlyDeviceName[0] != L'\0') {
+							names[source.viewGdiDeviceName] = target.monitorFriendlyDeviceName;
+						}
+					}
+				}
+			}
+
+			struct Context {
+				std::map<std::wstring, std::wstring> const &names;
+				HMONITOR used;
+				std::vector<Monitor> monitors;
+			} context{names, gGameWindow != nullptr && IsWindow(gGameWindow)
+				                 ? MonitorFromWindow(gGameWindow, MONITOR_DEFAULTTONULL) : nullptr, {}};
+			EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
+				auto &context = *reinterpret_cast<Context *>(data);
+				MONITORINFOEXW info{};
+				info.cbSize = sizeof(info);
+				if (!GetMonitorInfoW(monitor, &info)) return TRUE;
+				Monitor entry;
+				auto const name = context.names.find(info.szDevice);
+				entry.name = Utf8(name != context.names.end() ? name->second : std::wstring(info.szDevice));
+				// The mode in real pixels. The monitor rectangle is scaled, since SC4 is not DPI-aware.
+				DEVMODEW mode{};
+				mode.dmSize = sizeof(mode);
+				if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+					entry.size = Size{mode.dmPelsWidth, mode.dmPelsHeight};
+					entry.refreshHz = mode.dmDisplayFrequency;
+				}
+				entry.primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+				entry.inUse = monitor == context.used;
+				context.monitors.push_back(entry);
+				return TRUE;
+			}, reinterpret_cast<LPARAM>(&context));
+			return context.monitors;
+		}
+
+		// The flag the 4GB patch sets in the exe's header.
+		bool IsLargeAddressAware() {
+			auto const base = reinterpret_cast<uint8_t const *>(GetModuleHandleW(nullptr));
+			auto const headers = reinterpret_cast<IMAGE_NT_HEADERS32 const *>(
+				base + reinterpret_cast<IMAGE_DOS_HEADER const *>(base)->e_lfanew);
+			return (headers->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
+		}
+
+		// Wine exports its version from its ntdll, which Windows' own does not.
+		void ReadWine(Environment &environment) {
+			HMODULE const ntdll = GetModuleHandleW(L"ntdll.dll");
+			if (ntdll == nullptr) return;
+			auto const version = reinterpret_cast<char const *(__cdecl *)()>(
+				reinterpret_cast<void *>(GetProcAddress(ntdll, "wine_get_version")));
+			if (version == nullptr) return;
+			environment.wineVersion = version();
+			auto const host = reinterpret_cast<void(__cdecl *)(char const **, char const **)>(
+				reinterpret_cast<void *>(GetProcAddress(ntdll, "wine_get_host_version")));
+			char const *system = nullptr, *release = nullptr;
+			if (host != nullptr) host(&system, &release);
+			if (system != nullptr) environment.wineHost = system;
+		}
+
+		// SCD3D11.ini read the way Settings reads it.
+		void ReadIni(Environment &environment) {
+			std::filesystem::path const path = FileSystem::GetDllIniFilePath();
+			std::error_code error;
+			if (!std::filesystem::exists(path, error)) return;
+			try {
+				IniReader const reader(path);
+				std::optional<IniSection> const section = reader.get_section_optional("SCD3D11");
+				if (!section) {
+					environment.iniWithoutSection = true;
+					return;
+				}
+				for (auto const &[key, value] : *section) environment.iniKeys.push_back(key);
+				std::sort(environment.iniKeys.begin(), environment.iniKeys.end());
+			} catch (std::exception const &failure) {
+				environment.iniError = failure.what();
+			}
+		}
+
 		Environment Collect(cIGZCmdLine *commandLine) {
 			Environment environment;
 			if (commandLine != nullptr) {
@@ -228,7 +383,7 @@ namespace nSCD3D11::Doctor {
 			CoTaskMemFree(documents);
 
 			environment.modules = LoadedModules();
-			environment.imguiPlugins = ImGuiPlugins(userFolder);
+			ReadPlugins(environment, userFolder);
 			std::filesystem::path const apps = std::filesystem::path(ModulePath(nullptr)).parent_path();
 			for (wchar_t const *name : {L"dxgi.dll", L"d3d11.dll", L"ddraw.dll", L"d3dimm.dll", L"d3d8.dll", L"d3d9.dll",
 			                            L"opengl32.dll", L"imgui.dll"}) {
@@ -265,6 +420,20 @@ namespace nSCD3D11::Doctor {
 			wchar_t windowsFolder[MAX_PATH]{};
 			if (GetWindowsDirectoryW(windowsFolder, MAX_PATH) != 0) environment.windowsFolder = Utf8(windowsFolder);
 			ReadDriver(environment);
+			environment.gpus = Gpus();
+			environment.gpuSystemDefault = Settings::Get().gpu.systemDefault;
+			environment.gpuNumber = Settings::Get().gpu.number;
+			environment.monitors = Monitors();
+			environment.largeAddressAware = IsLargeAddressAware();
+			ReadWine(environment);
+			ReadIni(environment);
+			for (Settings::Rejection const &rejection : Settings::Rejected()) {
+				environment.rejectedSettings.push_back({rejection.name, rejection.value, rejection.source});
+			}
+			// Before v0.3 the log went next to the Plugins folder holding SCD3D11.dll.
+			std::filesystem::path const plugins = std::filesystem::path(ModulePath(ModuleAt(reinterpret_cast<void *>(&Run)))).parent_path();
+			std::error_code error;
+			environment.oldLogLeftOver = std::filesystem::exists(plugins.parent_path() / L"SC4D3D11.log", error);
 			return environment;
 		}
 
@@ -451,6 +620,11 @@ namespace nSCD3D11::Doctor {
 				}
 			}
 		}
+	}
+
+	void SetActiveDevice(uint64_t adapterLuid, void *window) {
+		gActiveAdapter = adapterLuid;
+		gGameWindow = static_cast<HWND>(window);
 	}
 
 	void CheckRequestedScreenMode() {

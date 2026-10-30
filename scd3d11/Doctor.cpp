@@ -100,37 +100,51 @@ namespace nSCD3D11::Doctor {
 			return row[b.size()];
 		}
 
-		// Switch names SC4 itself and common plugins read, in lower case, with their usual spelling.
-		// SC4's own come from the names in SimCity 4.exe. SCD3D11's must match Settings::Load.
+		// SCD3D11's settings, read from the command line and SCD3D11.ini. They must match Settings::Load.
+		constexpr char const *kSettings[] = {
+			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull", "ReShade",
+			"DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize",
+		};
+
+		// Other switch names SC4 itself and common plugins read, with their usual spelling. SC4's own come
+		// from the names in SimCity 4.exe.
 		constexpr char const *kKnownSwitches[] = {
 			// SimCity 4
 			"w", "f", "r", "d", "l", "gp", "Intro", "CustomResolution", "CustomCursors", "AutoZoomChange", "CPUPriority",
 			"CPUCount", "UserDir", "Music", "Radio", "Sound", "Audio", "IME", "Verbose", "ExceptionHandling",
 			"Restart", "AllowMultipleInstances", "Logging", "DebugLevel", "LuaScript", "ForceIdle",
 			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog", "NetCommandGenerator",
-			// SCD3D11
-			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull",
-			"ReShade", "DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "VertexCacheSegments",
-			"VertexCacheSize",
+			// SCD3D11's command-line only names for Borderless, which scvk reads too
+			"b", "FullscreenMode",
 			// SC4CPUOptions and SC4DBPFLoading
 			"ParallelCull", "SimTickCap", "SimTickStats", "ModelSlice", "OverlayIndex", "StartupDBPFLoadTrace",
 		};
 
 		// Switches only scvk reads. They look like SCD3D11's but do nothing here.
-		constexpr char const *kScvkSwitches[] = {"MaxFPS", "FullscreenMode"};
+		constexpr char const *kScvkSwitches[] = {"MaxFPS"};
 
-		bool IsKnown(std::string const &name) {
-			for (char const *known : kKnownSwitches) {
-				if (Lower(known) == name) return true;
-			}
-			return false;
+		template <size_t N>
+		bool IsIn(char const *const (&names)[N], std::string const &name) {
+			return std::any_of(std::begin(names), std::end(names), [&](char const *known) { return Lower(known) == name; });
 		}
 
-		char const *Closest(std::string const &name) {
+		bool IsKnown(std::string const &name) {
+			return IsIn(kSettings, name) || IsIn(kKnownSwitches, name);
+		}
+
+		// A name two letters or fewer away, from the settings alone or from every switch.
+		char const *Closest(std::string const &name, bool settingsOnly = false) {
 			if (name.size() < 4) return nullptr;
-			for (char const *known : kKnownSwitches) {
+			auto const near = [&](char const *known) {
 				std::string const lower = Lower(known);
-				if (lower.size() >= 4 && Distance(name, lower) <= 2) return known;
+				return lower.size() >= 4 && Distance(name, lower) <= 2;
+			};
+			for (char const *known : kSettings) {
+				if (near(known)) return known;
+			}
+			if (settingsOnly) return nullptr;
+			for (char const *known : kKnownSwitches) {
+				if (near(known)) return known;
 			}
 			return nullptr;
 		}
@@ -240,9 +254,9 @@ namespace nSCD3D11::Doctor {
 				}
 			}
 			if (Lower(forceDraw) == "true" || forceDraw == "1") {
-				findings.push_back({Severity::Note,
-				                    "SC4GraphicsOptions.ini has ForceDrawOnScroll=true. It works around tearing in "
-				                    "SC4's DirectX 7 driver and only makes scrolling slower with SCD3D11. Set it to false."});
+				findings.push_back({Severity::Warning,
+				                    "SC4GraphicsOptions.ini has ForceDrawOnScroll=true. It is a fallback for old graphics "
+				                    "hardware that SCD3D11 does not need, and only makes scrolling slower. Set it to false."});
 			}
 
 			std::string overridden;
@@ -294,7 +308,8 @@ namespace nSCD3D11::Doctor {
 				}
 				windowed |= entry.name == "w";
 				fullScreen |= entry.name == "f";
-				borderless |= entry.name == "borderless";
+				borderless |= ((entry.name == "borderless" || entry.name == "b") && Lower(entry.value) != "off") ||
+				              (entry.name == "fullscreenmode" && Lower(entry.value) == "borderless");
 				customResolution |= entry.name == "customresolution";
 
 				size_t const equals = entry.name.find('=');
@@ -331,10 +346,8 @@ namespace nSCD3D11::Doctor {
 						"%s no longer does anything. Live shadows are -LiveShadows:on, and -NetworkShadowMasks:on "
 						"keeps the flat network shadows.", entry.token.c_str())});
 				} else if (!IsKnown(entry.name)) {
-					bool scvk = false;
-					for (char const *name : kScvkSwitches) scvk |= Lower(name) == entry.name;
 					char const *const closest = Closest(entry.name);
-					if (scvk) {
+					if (IsIn(kScvkSwitches, entry.name)) {
 						findings.push_back({Severity::Note, Format(
 							"%s is an scvk switch. SCD3D11 does not read it.", entry.token.c_str())});
 					} else if (closest != nullptr) {
@@ -352,8 +365,10 @@ namespace nSCD3D11::Doctor {
 			if (windowed && fullScreen) {
 				findings.push_back({Severity::Warning, "Both -w and -f are on the command line. Keep one."});
 			}
-			if (borderless && windowed) {
-				findings.push_back({Severity::Note, "-Borderless only applies with -f, not in a window."});
+			// Borderless turns on full screen itself and wins over -w.
+			if (borderless) {
+				windowed = false;
+				fullScreen = true;
 			}
 
 			// Compare what -r asked for with what SC4 ended up with. SC4GraphicsOptions explains any
@@ -417,6 +432,15 @@ namespace nSCD3D11::Doctor {
 					"%s is built for SC4RenderServices before v0.8. It does not load, or cannot show its windows, "
 					"with SCD3D11. Update it.", plugin.c_str())});
 			}
+			if (!environment.pluginsMissingRuntime.empty()) {
+				std::string plugins, dlls;
+				for (std::string const &plugin : environment.pluginsMissingRuntime) plugins += (plugins.empty() ? "" : ", ") + plugin;
+				for (std::string const &dll : environment.missingRuntimeDlls) dlls += (dlls.empty() ? "" : ", ") + dll;
+				findings.push_back({Severity::Problem, Format(
+					"SC4 skips %s, because Windows cannot find %s from the Microsoft Visual C++ Redistributable. "
+					"Install its x86 version from https://aka.ms/vs/17/release/vc_redist.x86.exe, also on 64-bit Windows.",
+					plugins.c_str(), dlls.c_str())});
+			}
 
 			for (char const *rival : {"scvk.dll", "scgl.dll"}) {
 				if (FindModule(environment, rival) != nullptr) {
@@ -425,10 +449,14 @@ namespace nSCD3D11::Doctor {
 						"SC4GraphicsOptions.ini.", rival)});
 				}
 			}
-			if (FindModule(environment, "sc4_painter.dll") != nullptr &&
-			    FindModule(environment, "sc4renderservices.dll") == nullptr) {
-				findings.push_back({Severity::Warning, "SC4 Painter draws its ground fills and decals through "
-				                                       "SC4RenderServices, which is not installed."});
+			if (FindModule(environment, "sc4_painter.dll") != nullptr) {
+				findings.push_back({Severity::Warning, "SC4 Painter writes yellow text on the black loading screen "
+				                                       "before the game has finished loading. Nothing is broken: wait "
+				                                       "for the game to load."});
+				if (FindModule(environment, "sc4renderservices.dll") == nullptr) {
+					findings.push_back({Severity::Warning, "SC4 Painter draws its ground fills and decals through "
+					                                       "SC4RenderServices, which is not installed."});
+				}
 			}
 			if (FindModule(environment, "sc4fullscreen32bit.dll") != nullptr) {
 				findings.push_back({Severity::Note, "SC4FullScreen32Bit.dll only changes SC4's DirectX 7 driver and "
@@ -438,16 +466,6 @@ namespace nSCD3D11::Doctor {
 				if (FindModule(environment, old) != nullptr) {
 					findings.push_back({Severity::Warning, Format("%s is replaced by SC4CPUOptions. Remove it.", old)});
 				}
-			}
-			std::string cameras;
-			int cameraCount = 0;
-			for (char const *camera : {"memo.3dcamera.dll", "sc4-moderncamera.dll", "sc4moderncamera.dll"}) {
-				if (FindModule(environment, camera) == nullptr) continue;
-				cameras += (cameras.empty() ? "" : " and ") + std::string(camera);
-				++cameraCount;
-			}
-			if (cameraCount > 1) {
-				findings.push_back({Severity::Warning, Format("%s all turn the camera. Keep one.", cameras.c_str())});
 			}
 
 			// The same plugin loaded from two folders, usually the game's Plugins and the user's. A proxy
@@ -490,7 +508,12 @@ namespace nSCD3D11::Doctor {
 					findings.push_back({Severity::Note, "Apps\\imgui.dll is left over from SC4RenderServices before "
 					                                    "v0.8 and is no longer used."});
 				} else if (name == "dxgi.dll" || name == "d3d11.dll") {
-					if (kind == "ReShade") {
+					if (kind == "ReShade" && !file.version.empty() && OlderThan(file.version, "6.0")) {
+						// Older versions refuse SCD3D11's add-on, which needs API version 10.
+						findings.push_back({Severity::Warning, Format(
+							"ReShade %s is installed as Apps\\%s. Its effects cannot see SC4's depth buffer before "
+							"v6.0. Update it.", VersionLabel(file.version).c_str(), name.c_str())});
+					} else if (kind == "ReShade") {
 						findings.push_back({Severity::Note, Format("ReShade %s is installed as Apps\\%s.",
 						                                           VersionLabel(file.version).c_str(), name.c_str())});
 					} else {
@@ -531,7 +554,93 @@ namespace nSCD3D11::Doctor {
 			return !old.empty();
 		}
 
+		void CheckGpus(Environment const &environment, std::vector<Finding> &findings) {
+			if (environment.gpus.empty()) return;
+			size_t const count = environment.gpus.size();
+			std::string list;
+			for (size_t index = 0; index < count; ++index) {
+				Gpu const &gpu = environment.gpus[index];
+				list += (list.empty() ? "" : ", ") + Format("%zu: ", index + 1) + gpu.name +
+					Format(" (%u MB%s)", gpu.dedicatedMB, gpu.inUse ? ", in use" : "");
+			}
+			findings.push_back({Severity::Note, "GPUs in this machine: " + list +
+			                                    (count > 1 ? ". GPU=<number> in SCD3D11.ini picks one." : "")});
+			if (environment.gpuNumber > count) {
+				findings.push_back({Severity::Warning, Format(
+					"GPU=%u asks for a GPU this machine lacks. It has %zu, so SCD3D11 uses the high-performance one.",
+					environment.gpuNumber, count)});
+				return;
+			}
+			// A GPU picked by number is the player's choice.
+			if (environment.gpuNumber != 0) return;
+
+			// Integrated graphics reports little dedicated memory, so a GPU with at least twice as much is
+			// the one SC4 should be on.
+			auto const used = std::find_if(environment.gpus.begin(), environment.gpus.end(),
+			                               [](Gpu const &gpu) { return gpu.inUse; });
+			if (used == environment.gpus.end()) return;
+			auto const stronger = std::max_element(environment.gpus.begin(), environment.gpus.end(),
+			                                       [](Gpu const &a, Gpu const &b) { return a.dedicatedMB < b.dedicatedMB; });
+			if (stronger->dedicatedMB < 1024 || stronger->dedicatedMB < 2 * used->dedicatedMB) return;
+			findings.push_back({Severity::Problem, Format(
+				"SCD3D11 draws on %s, not the faster %s. %sSet GPU=%zu in SCD3D11.ini to use it.", used->name.c_str(),
+				stronger->name.c_str(), environment.gpuSystemDefault ? "GPU is set to default. " : "",
+				static_cast<size_t>(stronger - environment.gpus.begin()) + 1)});
+		}
+
+		void CheckMonitors(Environment const &environment, std::vector<Finding> &findings) {
+			if (environment.monitors.empty()) return;
+			std::string list;
+			for (Monitor const &monitor : environment.monitors) {
+				list += (list.empty() ? "" : ", ") + monitor.name + Format(" (%ux%u", monitor.size.width, monitor.size.height) +
+					(monitor.refreshHz > 1 ? Format(" at %u Hz", monitor.refreshHz) : "") +
+					(monitor.primary ? ", primary" : "") + (monitor.inUse ? ", SC4 draws here" : "") + ")";
+			}
+			findings.push_back({Severity::Note, "Monitors: " + list});
+		}
+
+		void CheckSettings(Environment const &environment, std::vector<Finding> &findings) {
+			if (!environment.iniError.empty()) {
+				findings.push_back({Severity::Warning, Format("SCD3D11.ini cannot be read, so SCD3D11 ignores all of it: %s",
+				                                              environment.iniError.c_str())});
+			} else if (environment.iniWithoutSection) {
+				findings.push_back({Severity::Warning, "SCD3D11.ini has no [SCD3D11] section, so SCD3D11 reads none of "
+				                                       "it. Put the settings below a line that says [SCD3D11]."});
+			}
+			for (std::string const &key : environment.iniKeys) {
+				if (IsIn(kSettings, Lower(key))) continue;
+				char const *const closest = Closest(Lower(key), true);
+				findings.push_back({Severity::Warning, closest != nullptr
+					? Format("SCD3D11.ini has %s, which is not a setting. Did you mean %s?", key.c_str(), closest)
+					: Format("SCD3D11.ini has %s, which is not a setting SCD3D11 reads.", key.c_str())});
+			}
+			for (RejectedSetting const &rejected : environment.rejectedSettings) {
+				char const *const name = rejected.name.c_str(), *const value = rejected.value.c_str();
+				findings.push_back({Severity::Warning,
+					rejected.source != "command line"
+						? Format("SCD3D11.ini has %s=%s, which SCD3D11 cannot read, so it uses the default.", name, value)
+					: rejected.value.empty()
+						? Format("-%s needs a value, so SCD3D11 ignores it.", name)
+						: Format("SCD3D11 cannot read -%s:%s, so it ignores it.", name, value)});
+			}
+			if (environment.oldLogLeftOver) {
+				findings.push_back({Severity::Note, "SC4D3D11.log is left over from SCD3D11 before v0.3, which writes "
+				                                    "Logs\\SCD3D11.log instead. It can be deleted."});
+			}
+		}
+
 		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
+			if (!environment.largeAddressAware) {
+				findings.push_back({Severity::Problem, "SimCity 4.exe can use only 2 GB of memory. Large cities and big "
+				                                       "Plugins folders run out of it, and then the game crashes. Apply "
+				                                       "the 4GB patch to SimCity 4.exe."});
+			}
+			if (!environment.wineVersion.empty()) {
+				findings.push_back({Severity::Note, Format(
+					"SimCity 4 runs under Wine %s%s%s, where DXVK or WineD3D turns Direct3D 11 into Vulkan or OpenGL.",
+					environment.wineVersion.c_str(), environment.wineHost.empty() ? "" : " on ",
+					environment.wineHost.c_str())});
+			}
 			std::string old, other;
 			SplitLayers(environment.compatibilityLayer, old, other);
 			if (!old.empty()) {
@@ -557,8 +666,9 @@ namespace nSCD3D11::Doctor {
 				findings.push_back({Severity::Warning, environment.screenModeWarning});
 			}
 			if (!environment.gameVersion641) {
-				findings.push_back({Severity::Warning, "This is not SimCity 4 version 1.1.641. Live shadows and the "
-				                                       "other SCD3D11 features that patch the game stay off."});
+				findings.push_back({Severity::Problem, "This is not SimCity 4 version 1.1.641. Live shadows and the "
+				                                       "other SCD3D11 features that patch the game stay off. Update "
+				                                       "the game to 1.1.641."});
 			}
 		}
 	}
@@ -624,6 +734,9 @@ namespace nSCD3D11::Doctor {
 		CheckGraphicsOptions(environment, switches, findings);
 		CheckSwitches(environment, switches, strays, findings);
 		CheckModules(environment, findings);
+		CheckGpus(environment, findings);
+		CheckMonitors(environment, findings);
+		CheckSettings(environment, findings);
 		CheckGame(environment, findings);
 		std::stable_sort(findings.begin(), findings.end(),
 		                 [](Finding const &a, Finding const &b) { return a.severity > b.severity; });

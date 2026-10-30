@@ -16,6 +16,9 @@
 #include "ThumbnailFocusGuard.h"
 #include "VideoModeUtils.h"
 
+#include <GZServPtrs.h>
+#include <cIGZGraphicSystem.h>
+
 #include <cstring>
 #include <dxgi1_6.h>
 
@@ -185,15 +188,28 @@ namespace nSCD3D11 {
 	}
 
 	// Passing no adapter gets DXGI adapter 0, which on hybrid-GPU laptops is usually the integrated
-	// GPU. Prefer the high-performance GPU instead. GPU=default restores the old behaviour.
+	// GPU. Prefer the high-performance GPU instead. GPU=default restores the old behaviour, and GPU=<n>
+	// picks one by its number in the doctor's list.
 	Microsoft::WRL::ComPtr<IDXGIAdapter> cGDriver::SelectAdapter(void) {
-		if (Settings::Get().defaultAdapter) return nullptr;
+		Settings::GpuChoice const gpu = Settings::Get().gpu;
+		if (gpu.systemDefault) return nullptr;
 
 		Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
 		Microsoft::WRL::ComPtr<IDXGIFactory6> factory6;
 		Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
 		DXGI_ADAPTER_DESC1 description{};
-		if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || FAILED(factory.As(&factory6)) ||
+		if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return nullptr;
+		if (gpu.number != 0) {
+			// Counted the way the doctor lists them: in DXGI's order, without Windows' software renderer.
+			uint32_t count = 0;
+			for (UINT index = 0; SUCCEEDED(factory->EnumAdapters1(index, &adapter)); ++index) {
+				if (FAILED(adapter->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) continue;
+				if (++count == gpu.number) return adapter;
+			}
+			Log(LogCategory::Initialization, "GPU=%u: this machine has %u GPUs, using the high-performance one instead",
+			    gpu.number, count);
+		}
+		if (FAILED(factory.As(&factory6)) ||
 		    FAILED(factory6->EnumAdapterByGpuPreference(
 			    0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter))) ||
 		    FAILED(adapter->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
@@ -282,6 +298,15 @@ namespace nSCD3D11 {
 
 		initialized = true;
 		Log(LogCategory::Initialization, "initialized with %d display modes", videoModeCount);
+		if (Settings::Get().borderless) {
+			// Borderless needs no -f, so switch SC4 to full screen before it picks its screen mode.
+			cIGZGraphicSystemPtr graphics;
+			if (graphics && !graphics->IsFullScreenMode()) {
+				bool const switched = graphics->PreInitSetWindowedMode(false);
+				Log(LogCategory::Initialization, "borderless: %s", switched ? "switched SC4 from a window to full screen"
+				                                                            : "SC4 did not switch to full screen");
+			}
+		}
 		Doctor::CheckRequestedScreenMode();
 		SetLastError(DriverError::OK);
 		return true;

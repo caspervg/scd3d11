@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 class cIGZCmdLine;
 
@@ -23,14 +24,21 @@ class cIGZCmdLine;
 namespace nSCD3D11::Settings {
 	// Every setting, read once by Load. Until then, and in the tests, the
 	// defaults below apply.
+	// GPU=high-performance, the default. GPU=default: the GPU Windows picks. GPU=<n>: the nth GPU in the
+	// doctor's list, from 1.
+	struct GpuChoice {
+		bool systemDefault = false;
+		uint32_t number = 0;
+	};
+
 	struct Values {
 		bool liveShadows = false;
 		bool networkShadowMasks = false;
 		bool vsync = true;
+		// A monitor-sized window. It needs no -f, SCD3D11 turns full screen on, and wins over -w.
 		bool borderless = false;
 		bool flipModel = true;
-		// GPU=default: the adapter Windows picks instead of the high-performance one.
-		bool defaultAdapter = false;
+		GpuChoice gpu;
 		bool viewportCull = true;
 		bool reshade = true;
 		bool drawStats = false;
@@ -54,6 +62,15 @@ namespace nSCD3D11::Settings {
 	void Load(cIGZCmdLine *commandLine);
 
 	Values const &Get();
+
+	// A value Load could not read and ignored, for the doctor. The source is "command line" or "SCD3D11.ini".
+	struct Rejection {
+		std::string name;
+		std::string value;
+		std::string source;
+	};
+
+	std::vector<Rejection> const &Rejected();
 
 	// Exposed for tests: reads value as a flag the way sc4-dll-utilities does
 	// (on/off, true/false, enabled/disabled, 1/0, any case), with an empty

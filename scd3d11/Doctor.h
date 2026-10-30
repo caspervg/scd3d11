@@ -43,6 +43,29 @@ namespace nSCD3D11::Doctor {
 		uint32_t height = 0;
 	};
 
+	// A GPU Windows reports, and whether SCD3D11 draws on it.
+	struct Gpu {
+		std::string name;
+		uint32_t dedicatedMB = 0;
+		bool inUse = false;
+	};
+
+	// A monitor in its current mode, and whether SCD3D11's window is on it.
+	struct Monitor {
+		std::string name;
+		Size size;
+		uint32_t refreshHz = 0;
+		bool primary = false;
+		bool inUse = false;
+	};
+
+	// A setting SCD3D11 could not read and ignored. The source is "command line" or "SCD3D11.ini".
+	struct RejectedSetting {
+		std::string name;
+		std::string value;
+		std::string source;
+	};
+
 	// Everything the checks read, gathered in one place so they can be tested without a game.
 	struct Environment {
 		// SC4's arguments as it split them, without the program path.
@@ -56,6 +79,10 @@ namespace nSCD3D11::Doctor {
 		// File names of DLLs in the Plugins folders that import imgui.dll, as plugins built for
 		// SC4RenderServices before v0.8 do. Loaded or not, since they fail to load once imgui.dll is gone.
 		std::vector<std::string> imguiPlugins;
+		// File names of DLLs in the Plugins folders that import a Visual C++ runtime DLL Windows cannot find,
+		// so SC4 skips them without a word, and the runtime DLLs that are missing.
+		std::vector<std::string> pluginsMissingRuntime;
+		std::vector<std::string> missingRuntimeDlls;
 		// The __COMPAT_LAYER variable Windows sets when the exe runs in compatibility mode.
 		std::string compatibilityLayer;
 		// Where it can come from: this exe's own Properties, Compatibility settings for the current user
@@ -80,10 +107,29 @@ namespace nSCD3D11::Doctor {
 		std::optional<Size> gameSize;
 		bool gameFullScreen = false;
 		bool gameVersion641 = true;
+		// The exe has the large-address-aware flag the 4GB patch sets, so it can use 4 GB instead of 2 GB.
+		bool largeAddressAware = true;
+		// The Wine version and its host system, such as Linux, when the game runs under Wine or Proton.
+		std::string wineVersion;
+		std::string wineHost;
 		// What SCD3D11 did when SC4 asked for a full-screen size the screen lacks. Empty when it did not.
 		std::string screenModeWarning;
 		// Where Windows lives, whose own DLLs are never a plugin's duplicate.
 		std::string windowsFolder;
+		// The GPUs in the machine, without Windows' software renderer, in the order GPU=<n> counts them.
+		std::vector<Gpu> gpus;
+		// The GPU setting: GPU=default, or the number from GPU=<n>, 0 when it has none.
+		bool gpuSystemDefault = false;
+		uint32_t gpuNumber = 0;
+		std::vector<Monitor> monitors;
+		// The keys in SCD3D11.ini's [SCD3D11] section as written. Why the INI could not be read at all, which
+		// makes SCD3D11 ignore every line of it, and whether it lacks the section.
+		std::vector<std::string> iniKeys;
+		std::string iniError;
+		bool iniWithoutSection = false;
+		std::vector<RejectedSetting> rejectedSettings;
+		// SC4D3D11.log, where SCD3D11 before v0.3 wrote its log, is still there.
+		bool oldLogLeftOver = false;
 	};
 
 	std::vector<Finding> Diagnose(Environment const &environment);
@@ -98,6 +144,10 @@ namespace nSCD3D11::Doctor {
 	// would make SC4 close without a word, so it gets the screen's own size too and the report says why.
 	// When SC4 does not take the new size, a message box says why first, since no game window exists yet.
 	void CheckRequestedScreenMode();
+
+	// Called once SCD3D11 has its device, with the LUID of the GPU it draws on and its window, so the report
+	// can name the GPU and the monitor.
+	void SetActiveDevice(uint64_t adapterLuid, void *window);
 
 	// A DLL some check is about, whose version is always worth logging.
 	bool IsWatched(std::string const &path);

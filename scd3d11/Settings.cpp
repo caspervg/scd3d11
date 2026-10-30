@@ -86,10 +86,10 @@ namespace nSCD3D11::Settings {
 			return value;
 		}
 
-		// GPU=default or GPU=high-performance.
-		bool ParseAdapter(std::string_view value, bool &defaultAdapter) {
-			defaultAdapter = value == "default";
-			return defaultAdapter || value == "high-performance";
+		// GPU=high-performance, GPU=default or GPU=<n>.
+		bool ParseGpu(std::string_view value, GpuChoice &gpu) {
+			gpu = GpuChoice{value == "default", 0};
+			return gpu.systemDefault || value == "high-performance" || ParseNumber(value, 1, 16, gpu.number);
 		}
 
 		// LogLevel=trace or LogLevel=info.
@@ -105,6 +105,8 @@ namespace nSCD3D11::Settings {
 		bool ParseVertexCacheSize(std::string_view value, uint32_t &megabytes) {
 			return ParseNumber(value, 4, 64, megabytes);
 		}
+
+		std::vector<Rejection> gRejected;
 
 		// The setting from the first source whose value parse accepts: the
 		// command line, then the INI. A value it rejects is logged and skipped,
@@ -127,6 +129,7 @@ namespace nSCD3D11::Settings {
 				}
 				Log(LogCategory::Initialization, "setting %s: %s%s%s from the %s is not a valid value, ignored", name,
 				    value->empty() ? "a bare switch" : "'", value->c_str(), value->empty() ? "" : "'", source);
+				gRejected.push_back({name, *value, source});
 			}
 			return fallback;
 		}
@@ -166,6 +169,7 @@ namespace nSCD3D11::Settings {
 			}
 			Log(LogCategory::Initialization, "command line as SC4 reads it: %s", arguments.c_str());
 		}
+		gRejected.clear();
 		std::optional<IniSection> const ini = ReadIni();
 		Sources const sources{commandLine, ini ? &*ini : nullptr};
 		Values values;
@@ -173,8 +177,19 @@ namespace nSCD3D11::Settings {
 		values.networkShadowMasks = Resolve(sources, "NetworkShadowMasks", ParseFlag, values.networkShadowMasks);
 		values.vsync = Resolve(sources, "VSync", ParseFlag, values.vsync);
 		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
+		// scvk's -b and -FullscreenMode:Borderless, the second SCD3D11's own before v0.3. -Borderless wins
+		// when it is given too.
+		if (!FromCommandLine(commandLine, "Borderless")) {
+			std::optional<std::string> const shortSwitch = FromCommandLine(commandLine, "b");
+			if (shortSwitch && ParseFlag(*shortSwitch, values.borderless)) {
+				Log(LogCategory::Initialization, "setting Borderless = %s (command line, -b)", values.borderless ? "on" : "off");
+			} else if (FromCommandLine(commandLine, "FullscreenMode") == std::optional<std::string>("borderless")) {
+				values.borderless = true;
+				Log(LogCategory::Initialization, "setting Borderless = on (command line, -FullscreenMode:Borderless)");
+			}
+		}
 		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
-		values.defaultAdapter = Resolve(sources, "GPU", ParseAdapter, values.defaultAdapter);
+		values.gpu = Resolve(sources, "GPU", ParseGpu, values.gpu);
 		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
@@ -191,5 +206,9 @@ namespace nSCD3D11::Settings {
 
 	Values const &Get() {
 		return gValues;
+	}
+
+	std::vector<Rejection> const &Rejected() {
+		return gRejected;
 	}
 } // namespace nSCD3D11::Settings
