@@ -396,7 +396,7 @@ namespace nSCD3D11::Doctor {
 			static constexpr Minimum kMinimums[] = {
 				{"sc4graphicsoptions.dll", "SC4GraphicsOptions", "1.4.1", "the first whose borderless mode finds SCD3D11's window"},
 				{"sc4cpuoptions.dll", "SC4CPUOptions", "1.1.0", "which took over the CPU fixes older SCD3D11 versions made"},
-				{"sc4renderservices.dll", "SC4RenderServices", "0.8.0", "the first that recognises SCD3D11 as the driver"},
+				{"sc4renderservices.dll", "SC4RenderServices", "0.8.1", "which SC4PlopAndPaint v0.12 and SC4TerrainExtensions v0.2 need"},
 			};
 			for (Minimum const &minimum : kMinimums) {
 				Module const *const module = FindModule(environment, minimum.file);
