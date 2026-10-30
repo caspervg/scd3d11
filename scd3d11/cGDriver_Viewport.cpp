@@ -488,8 +488,8 @@ namespace nSCD3D11 {
 		}
 		DXGI_ADAPTER_DESC adapterDescription{};
 		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
-			Doctor::SetActiveAdapter((static_cast<uint64_t>(static_cast<uint32_t>(adapterDescription.AdapterLuid.HighPart)) << 32) |
-			                         adapterDescription.AdapterLuid.LowPart);
+			Doctor::SetActiveDevice((static_cast<uint64_t>(static_cast<uint32_t>(adapterDescription.AdapterLuid.HighPart)) << 32) |
+			                        adapterDescription.AdapterLuid.LowPart, window);
 			char name[sizeof(adapterDescription.Description)]{};
 			WideCharToMultiByte(CP_UTF8, 0, adapterDescription.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
 			// The user-mode driver version, packed as four 16-bit parts, from most to least significant.

@@ -50,6 +50,15 @@ namespace nSCD3D11::Doctor {
 		bool inUse = false;
 	};
 
+	// A monitor in its current mode, and whether SCD3D11's window is on it.
+	struct Monitor {
+		std::string name;
+		Size size;
+		uint32_t refreshHz = 0;
+		bool primary = false;
+		bool inUse = false;
+	};
+
 	// Everything the checks read, gathered in one place so they can be tested without a game.
 	struct Environment {
 		// SC4's arguments as it split them, without the program path.
@@ -101,6 +110,7 @@ namespace nSCD3D11::Doctor {
 		// The GPU setting: GPU=default, or the number from GPU=<n>, 0 when it has none.
 		bool gpuSystemDefault = false;
 		uint32_t gpuNumber = 0;
+		std::vector<Monitor> monitors;
 	};
 
 	std::vector<Finding> Diagnose(Environment const &environment);
@@ -116,8 +126,9 @@ namespace nSCD3D11::Doctor {
 	// When SC4 does not take the new size, a message box says why first, since no game window exists yet.
 	void CheckRequestedScreenMode();
 
-	// Called once SCD3D11 has its device, with the LUID of the GPU it draws on, so the report can name it.
-	void SetActiveAdapter(uint64_t luid);
+	// Called once SCD3D11 has its device, with the LUID of the GPU it draws on and its window, so the report
+	// can name the GPU and the monitor.
+	void SetActiveDevice(uint64_t adapterLuid, void *window);
 
 	// A DLL some check is about, whose version is always worth logging.
 	bool IsWatched(std::string const &path);

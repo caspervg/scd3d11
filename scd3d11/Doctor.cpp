@@ -578,6 +578,17 @@ namespace nSCD3D11::Doctor {
 				static_cast<size_t>(stronger - environment.gpus.begin()) + 1)});
 		}
 
+		void CheckMonitors(Environment const &environment, std::vector<Finding> &findings) {
+			if (environment.monitors.empty()) return;
+			std::string list;
+			for (Monitor const &monitor : environment.monitors) {
+				list += (list.empty() ? "" : ", ") + monitor.name + Format(" (%ux%u", monitor.size.width, monitor.size.height) +
+					(monitor.refreshHz > 1 ? Format(" at %u Hz", monitor.refreshHz) : "") +
+					(monitor.primary ? ", primary" : "") + (monitor.inUse ? ", SC4 draws here" : "") + ")";
+			}
+			findings.push_back({Severity::Note, "Monitors: " + list});
+		}
+
 		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
 			if (!environment.largeAddressAware) {
 				findings.push_back({Severity::Problem, "SimCity 4.exe can use only 2 GB of memory. Large cities and big "
@@ -684,6 +695,7 @@ namespace nSCD3D11::Doctor {
 		CheckSwitches(environment, switches, strays, findings);
 		CheckModules(environment, findings);
 		CheckGpus(environment, findings);
+		CheckMonitors(environment, findings);
 		CheckGame(environment, findings);
 		std::stable_sort(findings.begin(), findings.end(),
 		                 [](Finding const &a, Finding const &b) { return a.severity > b.severity; });

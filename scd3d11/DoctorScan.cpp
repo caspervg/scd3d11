@@ -48,8 +48,9 @@ namespace nSCD3D11::Doctor {
 	namespace {
 		// Set when CheckRequestedScreenMode replaced a full-screen size the screen lacks, for the report.
 		std::string gScreenModeWarning;
-		// The LUID of the GPU SCD3D11 draws on, once it has a device.
+		// The LUID of the GPU SCD3D11 draws on and its window, once it has a device.
 		std::optional<uint64_t> gActiveAdapter;
+		HWND gGameWindow = nullptr;
 
 		std::string Utf8(std::wstring_view text) {
 			if (text.empty()) return {};
@@ -223,6 +224,60 @@ namespace nSCD3D11::Doctor {
 			return gpus;
 		}
 
+		std::vector<Monitor> Monitors() {
+			// Windows' own names for the monitors, such as DELL U2720Q, by GDI device name.
+			std::map<std::wstring, std::wstring> names;
+			UINT32 pathCount = 0, modeCount = 0;
+			if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) == ERROR_SUCCESS) {
+				std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+				std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+				if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(),
+				                       nullptr) == ERROR_SUCCESS) {
+					for (UINT32 index = 0; index < pathCount; ++index) {
+						DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+						source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source),
+						                 paths[index].sourceInfo.adapterId, paths[index].sourceInfo.id};
+						DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
+						target.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(target),
+						                 paths[index].targetInfo.adapterId, paths[index].targetInfo.id};
+						if (DisplayConfigGetDeviceInfo(&source.header) == ERROR_SUCCESS &&
+						    DisplayConfigGetDeviceInfo(&target.header) == ERROR_SUCCESS &&
+						    target.monitorFriendlyDeviceName[0] != L'\0') {
+							names[source.viewGdiDeviceName] = target.monitorFriendlyDeviceName;
+						}
+					}
+				}
+			}
+
+			struct Context {
+				std::map<std::wstring, std::wstring> const &names;
+				HMONITOR used;
+				std::vector<Monitor> monitors;
+			} context{names, gGameWindow != nullptr && IsWindow(gGameWindow)
+				                 ? MonitorFromWindow(gGameWindow, MONITOR_DEFAULTTONULL) : nullptr, {}};
+			EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
+				auto &context = *reinterpret_cast<Context *>(data);
+				MONITORINFOEXW info{};
+				info.cbSize = sizeof(info);
+				if (!GetMonitorInfoW(monitor, &info)) return TRUE;
+				Monitor entry;
+				auto const name = context.names.find(info.szDevice);
+				entry.name = Utf8(name != context.names.end() ? name->second : std::wstring(info.szDevice));
+				// The mode in real pixels. The monitor rectangle is scaled, since SC4 is not DPI-aware.
+				DEVMODEW mode{};
+				mode.dmSize = sizeof(mode);
+				if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+					entry.size = Size{mode.dmPelsWidth, mode.dmPelsHeight};
+					entry.refreshHz = mode.dmDisplayFrequency;
+				}
+				entry.primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+				entry.inUse = monitor == context.used;
+				context.monitors.push_back(entry);
+				return TRUE;
+			}, reinterpret_cast<LPARAM>(&context));
+			return context.monitors;
+		}
+
 		// The flag the 4GB patch sets in the exe's header.
 		bool IsLargeAddressAware() {
 			auto const base = reinterpret_cast<uint8_t const *>(GetModuleHandleW(nullptr));
@@ -312,6 +367,7 @@ namespace nSCD3D11::Doctor {
 			environment.gpus = Gpus();
 			environment.gpuSystemDefault = Settings::Get().gpu.systemDefault;
 			environment.gpuNumber = Settings::Get().gpu.number;
+			environment.monitors = Monitors();
 			environment.largeAddressAware = IsLargeAddressAware();
 			ReadWine(environment);
 			return environment;
@@ -502,8 +558,9 @@ namespace nSCD3D11::Doctor {
 		}
 	}
 
-	void SetActiveAdapter(uint64_t luid) {
-		gActiveAdapter = luid;
+	void SetActiveDevice(uint64_t adapterLuid, void *window) {
+		gActiveAdapter = adapterLuid;
+		gGameWindow = static_cast<HWND>(window);
 	}
 
 	void CheckRequestedScreenMode() {

@@ -187,6 +187,12 @@ int main() {
 		assert(Has(single, Severity::Warning, "GPU=3 asks for a GPU this machine lacks. It has 1"));
 	}
 	{
+		Environment environment = Clean();
+		environment.monitors = {{"DELL U2720Q", {3840, 2160}, 60, true, false}, {"LG 27GL850", {2560, 1440}, 144, false, true}};
+		assert(Has(Diagnose(environment), Severity::Note, "Monitors: DELL U2720Q (3840x2160 at 60 Hz, primary), "
+		                                                  "LG 27GL850 (2560x1440 at 144 Hz, SC4 draws here)"));
+	}
+	{
 		// No 4GB patch, Wine, and a ReShade too old for the add-on.
 		Environment environment = Clean();
 		environment.largeAddressAware = false;
