@@ -96,6 +96,7 @@ namespace nSCD3D11 {
 			if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
 		} catch (std::bad_alloc const &) {
 			Log(LogCategory::Resource, "out of memory converting %u terrain vertices", byteSize / stride);
+			LogMemoryStatus(LogCategory::Resource, "when terrain vertex conversion failed");
 			return false;
 		}
 		return UploadCachedBuffer(
