@@ -35,6 +35,14 @@ int main() {
 		environment.gameSize = Size{1920, 1080};
 		assert(Diagnose(environment).size() == 1);
 	}
+	{
+		// A resolution without the r is broken, not merely unknown.
+		Environment environment = Clean();
+		environment.arguments = {"-1280x1024x32"};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Warning, "SC4 ignores -1280x1024x32. A resolution needs an r in front: -r1280x1024x32"));
+		assert(!Has(findings, Severity::Note, "does not know"));
+	}
 	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
 	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
 	assert(ReleaseVersion(R"({"url":"x","tag_name": "v0.3.3","name":"SCD3D11 0.3.3"})") == "0.3.3");

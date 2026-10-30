@@ -319,6 +319,10 @@ namespace nSCD3D11::Doctor {
 							"%s asks for %u-bit colour, and SCD3D11 only has 32-bit screen modes. Use x32.",
 							entry.token.c_str(), (*resolution)[2])});
 					}
+				} else if (entry.value.empty() && ParseResolution(entry.name)) {
+					findings.push_back({Severity::Warning, Format(
+						"SC4 ignores %s. A resolution needs an r in front: -r%s", entry.token.c_str(),
+						entry.token.substr(1).c_str())});
 				} else if (entry.name == "cpupriority" && StartsWith(Lower(entry.value), "real")) {
 					findings.push_back({Severity::Warning, Format(
 						"%s can starve Windows of time for input and sound. Use -CPUPriority:High.", entry.token.c_str())});
