@@ -784,6 +784,11 @@ namespace nSCD3D11 {
 			uint64_t scrollCulled = 0;
 			uint64_t textureCreates = 0;
 			uint64_t textureDeletes = 0;
+			uint64_t terrainDraws = 0;
+			uint64_t terrainStreamBytes = 0;
+			uint64_t terrainStreamRenames = 0;
+			uint64_t cacheUploadBytes = 0;
+			uint64_t cacheRefills = 0;
 			// Live shadow fields summed over the second. shadowStaticMaxMs and shadowWorldCasters are maxima.
 			FrameStats shadows;
 			uint32_t shadowFrames = 0;
@@ -838,6 +843,11 @@ namespace nSCD3D11 {
 		summary.culledDraws += frame.culledDraws;
 		summary.textureCreates += frame.textureCreates;
 		summary.textureDeletes += frame.textureDeletes;
+		summary.terrainDraws += frame.terrainDraws;
+		summary.terrainStreamBytes += frame.terrainStreamBytes;
+		summary.terrainStreamRenames += frame.terrainStreamRenames;
+		summary.cacheUploadBytes += frame.cacheUploadBytes;
+		summary.cacheRefills += frame.cacheRefills;
 		if (shadowFrame) {
 			FrameStats &sum = summary.shadows;
 			++summary.shadowFrames;
@@ -897,6 +907,16 @@ namespace nSCD3D11 {
 			    static_cast<unsigned long long>(summary.scrollFrames ? summary.scrollCulled / summary.scrollFrames : 0),
 			    summary.fullFrames, static_cast<unsigned long long>(summary.textureCreates),
 			    static_cast<unsigned long long>(summary.textureDeletes));
+			if (summary.terrainDraws != 0 || summary.cacheUploadBytes != 0) {
+				Log(LogCategory::Stats,
+				    "geometry: %llu terrain draws, %.1f MB streamed (%llu renamed); "
+				    "cache uploaded %.1f MB, %llu segment refills",
+				    static_cast<unsigned long long>(summary.terrainDraws),
+				    static_cast<double>(summary.terrainStreamBytes) / 1.0e6,
+				    static_cast<unsigned long long>(summary.terrainStreamRenames),
+				    static_cast<double>(summary.cacheUploadBytes) / 1.0e6,
+				    static_cast<unsigned long long>(summary.cacheRefills));
+			}
 			FrameStats const &shadow = summary.shadows;
 			if (summary.shadowFrames != 0 || shadow.shadowHashedDraws != 0) {
 				double const renders = shadow.shadowMapRenders != 0 ? shadow.shadowMapRenders : 1.0;

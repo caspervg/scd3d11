@@ -405,6 +405,7 @@ namespace nSCD3D11 {
 		for (GeometryCacheSegment &segment: vertexBufferSegments) segment = {};
 		indexBufferCache.clear();
 		vertexBufferCache.clear();
+		terrainVertexStream = {};
 		for (FrameFence &fence: frameFences) fence = {};
 		currentFrame = 1;
 		completedFrame = 0;

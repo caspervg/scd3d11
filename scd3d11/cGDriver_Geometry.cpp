@@ -544,8 +544,10 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (refill) {
 			++segmentRefills;
+			++frameStats.cacheRefills;
 			if (discard) ++segmentRefillDiscards;
 		}
+		frameStats.cacheUploadBytes += requiredSize;
 		offset = segment->cursor;
 		memcpy(static_cast<uint8_t *>(mapping.pData) + offset, data, requiredSize);
 		d3dContext->Unmap(segment->buffer.Get(), 0);
@@ -561,6 +563,56 @@ float4 PSMain(PSInput input) : SV_TARGET
 		} catch (std::bad_alloc const &) {
 			if (keyed) segment->keys.pop_back();
 		}
+		return true;
+	}
+
+	bool cGDriver::StreamUpload(StreamRing &ring, uint32_t segmentBytes, uint32_t bindFlags, void const *data,
+	                            uint32_t bytes, ID3D11Buffer *&buffer, uint32_t &offset) {
+		if (!d3dDevice || !d3dContext || deviceLost || data == nullptr || bytes == 0 || bytes > segmentBytes) {
+			return false;
+		}
+		StreamSegment *segment = &ring.segments[ring.active];
+		bool discard = false;
+		if (!segment->buffer || segment->cursor + bytes > segmentBytes) {
+			if (segment->buffer) {
+				ring.active = static_cast<uint8_t>((ring.active + 1) % std::size(ring.segments));
+				segment = &ring.segments[ring.active];
+			}
+			segment->cursor = 0;
+			if (!segment->buffer) {
+				D3D11_BUFFER_DESC description{};
+				description.ByteWidth = segmentBytes;
+				description.Usage = D3D11_USAGE_DYNAMIC;
+				description.BindFlags = bindFlags;
+				description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+				HRESULT const result = d3dDevice->CreateBuffer(&description, nullptr, &segment->buffer);
+				if (FAILED(result)) {
+					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(terrain stream)", result);
+					NoteDeviceLoss(result);
+					return false;
+				}
+				segment->lastUseFrame = 0;
+			}
+			// As for cache segments: rename only while the GPU may still read the segment's last frame.
+			discard = segment->lastUseFrame != 0 && !FrameCompleted(segment->lastUseFrame);
+		}
+		// Appends never overlap what a queued draw reads.
+		D3D11_MAPPED_SUBRESOURCE mapping{};
+		HRESULT const result = d3dContext->Map(
+			segment->buffer.Get(), 0, discard ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(terrain stream)", result);
+			NoteDeviceLoss(result);
+			return false;
+		}
+		memcpy(static_cast<uint8_t *>(mapping.pData) + segment->cursor, data, bytes);
+		d3dContext->Unmap(segment->buffer.Get(), 0);
+		if (discard) ++frameStats.terrainStreamRenames;
+		frameStats.terrainStreamBytes += bytes;
+		buffer = segment->buffer.Get();
+		offset = segment->cursor;
+		segment->cursor += bytes;
+		segment->lastUseFrame = currentFrame;
 		return true;
 	}
 

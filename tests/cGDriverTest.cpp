@@ -328,6 +328,11 @@ namespace nSCD3D11 {
 			return d.vertexBufferCacheHits + d.vertexBufferCacheMisses;
 		}
 
+		// Terrain draws that streamed their vertices.
+		uint64_t TerrainUploads() {
+			return d.frameStats.terrainDraws;
+		}
+
 		void TerrainDrawsStayInReservation() {
 			uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
 			uint32_t const capacity = d.MaxVertices(0);
@@ -349,39 +354,45 @@ namespace nSCD3D11 {
 			assert(d.GetVertices(0, 50) != 0);
 			d.ReleaseVertices(0);
 			assert(d.GetVertices(0, 100) != 0);
-			uint64_t uploads = VertexUploads();
+			uint64_t uploads = TerrainUploads();
 			d.DrawPrims(0, 0, nullptr, 3 * stride);
-			assert(VertexUploads() == uploads); // still locked
+			assert(TerrainUploads() == uploads); // still locked
 			d.ReleaseVertices(0);
 
 			d.DrawPrims(0, 0, nullptr, 101 * stride);
-			assert(VertexUploads() == uploads);
+			assert(TerrainUploads() == uploads);
 			d.DrawPrims(0, 0, nullptr, 100 * stride);
-			assert(VertexUploads() == ++uploads);
+			assert(TerrainUploads() == ++uploads);
 
 			uint16_t outside[]{0, 1, 100};
 			d.DrawPrimsIndexed(0, 0, 3, outside);
-			assert(VertexUploads() == uploads);
+			assert(TerrainUploads() == uploads);
 			outside[2] = 99;
 			d.DrawPrimsIndexed(0, 0, 3, outside);
-			assert(VertexUploads() == ++uploads);
+			assert(TerrainUploads() == ++uploads);
 
 			d.Reset();
 			d.DrawPrims(0, 0, nullptr, 3 * stride);
 			d.DrawPrimsIndexed(0, 0, 3, outside);
-			assert(VertexUploads() == uploads);
+			assert(TerrainUploads() == uploads);
 
 			// SC4 reserves nearly the whole buffer and draws about 15 vertices from it. Only the vertices a
-			// draw reads are uploaded: uploading the reservation cost 1.4 MB per terrain draw.
+			// draw reads are streamed: uploading the reservation cost 1.4 MB per terrain draw. An indexed
+			// draw streams its index range only, and terrain vertices never enter the geometry cache.
 			ResetGeometryCache();
 			d.Reset();
 			assert(d.GetVertices(0, capacity) != 0);
 			d.ReleaseVertices(0);
-			uint16_t front[]{0, 1, 2};
-			d.DrawPrimsIndexed(0, 0, 3, front);
-			assert(d.vertexBufferSegments[d.activeVertexBufferSegment].cursor == 3 * sizeof(D3D11Vertex));
+			auto const streamed = [&] {
+				return d.terrainVertexStream.segments[d.terrainVertexStream.active].cursor;
+			};
+			uint32_t const before = streamed();
+			uint16_t middle[]{4, 5, 6};
+			d.DrawPrimsIndexed(0, 0, 3, middle);
+			assert(streamed() == before + 3 * sizeof(D3D11Vertex));
 			d.DrawPrims(0, 0, nullptr, 4 * stride);
-			assert(d.vertexBufferSegments[d.activeVertexBufferSegment].cursor == 7 * sizeof(D3D11Vertex));
+			assert(streamed() == before + 7 * sizeof(D3D11Vertex));
+			assert(d.vertexBufferCache.empty());
 		}
 
 		float UploadedX(uint32_t vertex) {
@@ -409,7 +420,8 @@ namespace nSCD3D11 {
 			d.DrawArrays(0, 0, 3);
 			assert(d.vertexBufferCacheMisses == 2 && d.vertexBufferCacheHits == 1 && UploadedX(2) == 0.0f);
 
-			// Generation keys: a reservation that wraps back to the same offset and size is new data.
+			// Terrain streams every draw: a reservation that wraps back to the same offset is drawn with its
+			// new contents, and never touches the cache.
 			uint32_t const stride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
 			uint32_t const capacity = d.MaxVertices(0);
 			auto writeX = [&](uint32_t address, float x) {
@@ -420,8 +432,7 @@ namespace nSCD3D11 {
 			writeX(first, 1.0f);
 			d.ReleaseVertices(0);
 			d.DrawPrims(0, 0, nullptr, 20 * stride);
-			d.DrawPrims(0, 0, nullptr, 20 * stride);
-			assert(d.vertexBufferCacheMisses == 3 && d.vertexBufferCacheHits == 2 && UploadedX(0) == 1.0f);
+			assert(UploadedX(0) == 1.0f);
 			assert(d.GetVertices(0, capacity - 20) != 0);
 			d.ReleaseVertices(0);
 			uint32_t const wrapped = d.GetVertices(0, 20);
@@ -429,14 +440,73 @@ namespace nSCD3D11 {
 			writeX(wrapped, 2.0f);
 			d.ReleaseVertices(0);
 			d.DrawPrims(0, 0, nullptr, 20 * stride);
-			assert(d.vertexBufferCacheMisses == 4 && UploadedX(0) == 2.0f);
+			assert(UploadedX(0) == 2.0f);
+			assert(d.vertexBufferCacheMisses == 2 && d.vertexBufferCacheHits == 1);
 
 			// Device recreation drops every cached upload.
 			assert(d.RecoverD3D11Device());
 			assert(d.vertexBufferCache.empty() && d.indexBufferCache.empty());
 			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
 			d.DrawArrays(0, 0, 3);
-			assert(d.vertexBufferCacheMisses == 5 && UploadedX(2) == 0.0f);
+			assert(d.vertexBufferCacheMisses == 3 && UploadedX(2) == 0.0f);
+		}
+
+		struct TerrainVertex {
+			float position[3];
+			uint8_t bgra[4];
+			float texCoords[2][2];
+		};
+
+		// Reserves the whole terrain buffer as SC4 does, writes a clip-space rectangle at its vertices
+		// [first, first + 4) and draws it as two indexed triangles.
+		void DrawTerrainRect(float left, float right, uint8_t r, uint8_t g, uint8_t b, uint16_t first = 0) {
+			uint32_t const address = d.GetVertices(0, d.MaxVertices(0));
+			assert(address != 0);
+			TerrainVertex *const vertices = reinterpret_cast<TerrainVertex *>(static_cast<uintptr_t>(address)) + first;
+			float const corners[4][2]{{left, -1.0f}, {right, -1.0f}, {right, 1.0f}, {left, 1.0f}};
+			for (int i = 0; i < 4; ++i) {
+				vertices[i] = {{corners[i][0], corners[i][1], 0.0f}, {b, g, r, 255}, {}};
+			}
+			d.ReleaseVertices(0);
+			uint16_t indices[6]{first, static_cast<uint16_t>(first + 1), static_cast<uint16_t>(first + 2), first,
+			                    static_cast<uint16_t>(first + 2), static_cast<uint16_t>(first + 3)};
+			d.DrawPrimsIndexed(0, 0, 6, indices);
+		}
+
+		// Terrain draws stream only their index range and draw it with SC4's own indices, offset back to the
+		// range's first vertex, between and under ordinary draws.
+		void TerrainDrawsReadTheirIndexRange() {
+			assert(RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F) == sizeof(TerrainVertex));
+			for (uint32_t mode: {0u, 1u}) {
+				d.MatrixMode(mode);
+				d.LoadIdentity();
+			}
+			d.MatrixMode(0);
+			d.SetViewport();
+			d.SetTexture(0, 0);
+			d.ClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+			d.Clear(0x4000);
+			d.Reset();
+			ResetGeometryCache();
+			d.frameStats = {};
+
+			// The second starts at reservation vertex 5: only vertices 5-8 are streamed, and its indices 5-8
+			// must still reach them. The same indices then hit the index cache from another start.
+			DrawTerrainRect(-1.0f, 0.0f, 255, 0, 0);
+			DrawTerrainRect(0.0f, 1.0f, 0, 255, 0, 5);
+			assert(Pixel(1, 1) == 0xff0000ff && Pixel(d.windowWidth - 2, 1) == 0x00ff00ff);
+			uint64_t const indexHits = d.indexBufferCacheHits;
+			DrawTerrainRect(0.0f, 1.0f, 255, 255, 0, 5);
+			assert(Pixel(d.windowWidth - 2, 1) == 0xffff00ff && d.indexBufferCacheHits == indexHits + 1);
+			assert(d.frameStats.terrainDraws == 3 && d.vertexBufferCache.empty());
+
+			// Terrain and model draws keep their order.
+			DrawTerrainRect(-1.0f, 1.0f, 255, 0, 0);
+			DrawFullscreen(0, 0, 255);
+			assert(Pixel(1, 1) == 0x0000ffff);
+			DrawTerrainRect(-1.0f, 1.0f, 255, 0, 255);
+			assert(Pixel(1, 1) == 0xff00ffff);
+			d.frameStats = {};
 		}
 
 		// Leaves the immediate context in a state that would break the next draw if not cleaned up.
@@ -1205,6 +1275,7 @@ namespace nSCD3D11 {
 			OversizedInputsFailBeforeReading();
 			TerrainDrawsStayInReservation();
 			CachedVerticesFollowTheirSource();
+			TerrainDrawsReadTheirIndexRange();
 			FrameCallbackCleanupOnlyWhenNeeded();
 			TextureUploadsHonorRowPitch();
 			NormalMatrixFollowsModelView();
