@@ -574,6 +574,11 @@ namespace nSCD3D11::Doctor {
 		}
 
 		void CheckGame(Environment const &environment, std::vector<Finding> &findings) {
+			if (!environment.largeAddressAware) {
+				findings.push_back({Severity::Problem, "SimCity 4.exe can use only 2 GB of memory. Large cities and big "
+				                                       "Plugins folders run out of it, and then the game crashes. Apply "
+				                                       "the 4GB patch to SimCity 4.exe."});
+			}
 			std::string old, other;
 			SplitLayers(environment.compatibilityLayer, old, other);
 			if (!old.empty()) {

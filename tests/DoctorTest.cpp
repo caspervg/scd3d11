@@ -187,6 +187,13 @@ int main() {
 		assert(Has(single, Severity::Warning, "GPU=3 asks for a GPU this machine lacks. It has 1"));
 	}
 	{
+		// No 4GB patch.
+		Environment environment = Clean();
+		environment.largeAddressAware = false;
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Problem, "can use only 2 GB of memory"));
+	}
+	{
 		// A laptop drawing on its integrated GPU. Two similar cards are fine either way.
 		Environment environment = Clean();
 		environment.gpus = {{"Intel(R) UHD Graphics", 128, true}, {"NVIDIA GeForce RTX 3060 Laptop GPU", 5980, false}};

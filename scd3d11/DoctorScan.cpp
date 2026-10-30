@@ -223,6 +223,14 @@ namespace nSCD3D11::Doctor {
 			return gpus;
 		}
 
+		// The flag the 4GB patch sets in the exe's header.
+		bool IsLargeAddressAware() {
+			auto const base = reinterpret_cast<uint8_t const *>(GetModuleHandleW(nullptr));
+			auto const headers = reinterpret_cast<IMAGE_NT_HEADERS32 const *>(
+				base + reinterpret_cast<IMAGE_DOS_HEADER const *>(base)->e_lfanew);
+			return (headers->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
+		}
+
 		Environment Collect(cIGZCmdLine *commandLine) {
 			Environment environment;
 			if (commandLine != nullptr) {
@@ -289,6 +297,7 @@ namespace nSCD3D11::Doctor {
 			environment.gpus = Gpus();
 			environment.gpuSystemDefault = Settings::Get().gpu.systemDefault;
 			environment.gpuNumber = Settings::Get().gpu.number;
+			environment.largeAddressAware = IsLargeAddressAware();
 			return environment;
 		}
 

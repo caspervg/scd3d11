@@ -87,6 +87,8 @@ namespace nSCD3D11::Doctor {
 		std::optional<Size> gameSize;
 		bool gameFullScreen = false;
 		bool gameVersion641 = true;
+		// The exe has the large-address-aware flag the 4GB patch sets, so it can use 4 GB instead of 2 GB.
+		bool largeAddressAware = true;
 		// What SCD3D11 did when SC4 asked for a full-screen size the screen lacks. Empty when it did not.
 		std::string screenModeWarning;
 		// Where Windows lives, whose own DLLs are never a plugin's duplicate.
