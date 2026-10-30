@@ -349,6 +349,7 @@ namespace nSCD3D11 {
 
 			d.DrawPrims(0, 0, nullptr, 101 * stride);
 			assert(VertexUploads() == uploads);
+			uint64_t const misses = d.vertexBufferCacheMisses;
 			d.DrawPrims(0, 0, nullptr, 100 * stride);
 			assert(VertexUploads() == ++uploads);
 
@@ -358,6 +359,12 @@ namespace nSCD3D11 {
 			outside[2] = 99;
 			d.DrawPrimsIndexed(0, 0, 3, outside);
 			assert(VertexUploads() == ++uploads);
+			// Shorter draws and smaller index ranges reuse the reservation's single upload.
+			uint16_t front[]{0, 1, 2};
+			d.DrawPrimsIndexed(0, 0, 3, front);
+			d.DrawPrims(0, 0, nullptr, 3 * stride);
+			assert(VertexUploads() == uploads + 2 && d.vertexBufferCacheMisses == misses + 1);
+			uploads += 2;
 
 			d.Reset();
 			d.DrawPrims(0, 0, nullptr, 3 * stride);
