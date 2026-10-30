@@ -212,7 +212,7 @@ int main() {
 		assert(Has(findings, Severity::Problem, "compatibility mode (WINXPSP3)"));
 		assert(Has(findings, Severity::Problem, "the program that started it passed it on"));
 		assert(Has(findings, Severity::Note, "settings on SimCity 4.exe: HIGHDPIAWARE"));
-		assert(Has(findings, Severity::Warning, "not SimCity 4 version 1.1.641"));
+		assert(Has(findings, Severity::Problem, "not SimCity 4 version 1.1.641"));
 		assert(Has(findings, Severity::Note, "ReShade v6.8.0 is installed as Apps\\dxgi.dll"));
 		assert(Has(findings, Severity::Warning, "Apps\\d3d11.dll is DXVK"));
 		assert(Has(findings, Severity::Note, "Apps\\ddraw.dll is dgVoodoo"));

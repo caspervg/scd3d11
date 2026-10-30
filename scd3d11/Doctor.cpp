@@ -551,8 +551,9 @@ namespace nSCD3D11::Doctor {
 				findings.push_back({Severity::Warning, environment.screenModeWarning});
 			}
 			if (!environment.gameVersion641) {
-				findings.push_back({Severity::Warning, "This is not SimCity 4 version 1.1.641. Live shadows and the "
-				                                       "other SCD3D11 features that patch the game stay off."});
+				findings.push_back({Severity::Problem, "This is not SimCity 4 version 1.1.641. Live shadows and the "
+				                                       "other SCD3D11 features that patch the game stay off. Update "
+				                                       "the game to 1.1.641."});
 			}
 		}
 	}
