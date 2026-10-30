@@ -419,7 +419,8 @@ namespace nSCD3D11 {
 		uint32_t dynamicVertexBufferOffset;
 		uint32_t dynamicIndexBufferOffset;
 		ID3D11Buffer *appliedVertexBuffer;
-		uint32_t appliedVertexBufferOffset;
+		ID3D11Buffer *appliedIndexBuffer;
+		DXGI_FORMAT appliedIndexFormat;
 		GeometryCache vertexBufferCache;
 		GeometryCache indexBufferCache;
 		uint64_t vertexBufferCacheHits;
@@ -707,6 +708,13 @@ namespace nSCD3D11 {
 		bool UploadIndices(std::vector<uint32_t> const &indices);
 
 		bool BindGeometryPipeline(uint32_t primitive);
+
+		// The first vertex of the current vertex upload in its segment, which stays bound at offset 0.
+		UINT FirstVertex() const;
+
+		// Binds the current index segment at offset 0, unless it already is with this format, and returns
+		// the first index of the current upload.
+		UINT BindIndexBuffer(DXGI_FORMAT format);
 		ID3D11ShaderResourceView *BoundTextureView(uint32_t stage);
 
 		bool UploadExtensionVertices(uint32_t byteSize);

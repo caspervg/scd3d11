@@ -152,6 +152,53 @@ namespace nSCD3D11 {
 			d.vertexCacheTrimmed = d.indexCacheTrimmed = false;
 		}
 
+		// Segments stay bound at offset 0 and draws start at their upload, so later uploads in a segment
+		// draw through every path without rebinding the segment.
+		void DrawsStartAtTheirUpload() {
+			ResetGeometryCache();
+			d.InvalidateD3D11StateCache();
+			DrawFullscreen(255, 0, 0);
+			ID3D11Buffer *const vertexSegment = d.appliedVertexBuffer;
+			DrawFullscreen(0, 255, 0);
+			assert(d.dynamicVertexBufferOffset != 0 && d.appliedVertexBuffer == vertexSegment);
+			assert(Pixel(1, 1) == 0x00ff00ff);
+
+			// A square as a native list and as a fan, so the fan's converted indices differ from the list's.
+			ColorVertex square[4]{
+				{{-1.0f, -1.0f, 0.0f}, {}}, {{1.0f, -1.0f, 0.0f}, {}},
+				{{1.0f, 1.0f, 0.0f}, {}}, {{-1.0f, 1.0f, 0.0f}, {}},
+			};
+			auto const paint = [&](uint8_t r, uint8_t g, uint8_t b) {
+				for (ColorVertex &vertex: square) {
+					vertex.bgra[0] = b;
+					vertex.bgra[1] = g;
+					vertex.bgra[2] = r;
+					vertex.bgra[3] = 255;
+				}
+				d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, square);
+			};
+			uint16_t const shortIndices[]{0, 1, 2, 0, 2, 3};
+			uint32_t const longIndices[]{0, 1, 2, 0, 2, 3};
+			uint32_t const fanIndices[]{0, 1, 2, 3};
+
+			paint(0, 0, 255);
+			d.DrawElements(0, 6, 3, shortIndices);
+			assert(Pixel(1, 1) == 0x0000ffff);
+			ID3D11Buffer *const indexSegment = d.appliedIndexBuffer;
+			paint(255, 255, 0);
+			d.DrawElements(0, 6, 5, longIndices);
+			assert(Pixel(1, 1) == 0xffff00ff && d.dynamicIndexBufferOffset != 0);
+			assert(d.appliedIndexBuffer == indexSegment && d.appliedIndexFormat == DXGI_FORMAT_R32_UINT);
+			paint(255, 0, 255);
+			d.DrawElements(2, 4, 5, fanIndices);
+			assert(Pixel(1, 1) == 0xff00ffff);
+			paint(0, 255, 255);
+			d.DrawArrays(2, 0, 4);
+			assert(Pixel(1, 1) == 0x00ffffff);
+			assert(d.appliedVertexBuffer == vertexSegment && d.appliedIndexBuffer == indexSegment);
+			ResetGeometryCache();
+		}
+
 		// A native 32-bit line list [0, 1] once hashed exactly like a converted fan uploading [5, 0, 1].
 		void IndexKeysDoNotAlias() {
 			ColorVertex vertices[6]{};
@@ -1117,6 +1164,7 @@ namespace nSCD3D11 {
 
 		int Run() {
 			DrawsGeometry();
+			DrawsStartAtTheirUpload();
 			ViewportCullsOutsideDraws();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();

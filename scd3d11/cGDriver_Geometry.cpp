@@ -686,6 +686,24 @@ float4 PSMain(PSInput input) : SV_TARGET
 			dynamicIndexBufferOffset);
 	}
 
+	// Vertex uploads are whole D3D11Vertex records and the segment cursor only rounds up to 4 bytes, so
+	// every vertex offset is a whole vertex.
+	static_assert(sizeof(D3D11Vertex) % 4 == 0);
+
+	UINT cGDriver::FirstVertex() const {
+		return dynamicVertexBufferOffset / sizeof(D3D11Vertex);
+	}
+
+	UINT cGDriver::BindIndexBuffer(DXGI_FORMAT format) {
+		ID3D11Buffer *const buffer = dynamicIndexBuffer.Get();
+		if (buffer != appliedIndexBuffer || format != appliedIndexFormat) {
+			d3dContext->IASetIndexBuffer(buffer, format, 0);
+			appliedIndexBuffer = buffer;
+			appliedIndexFormat = format;
+		}
+		return dynamicIndexBufferOffset / (format == DXGI_FORMAT_R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t));
+	}
+
 	ID3D11ShaderResourceView *cGDriver::BoundTextureView(uint32_t stage) {
 		BoundTextureViewCache &cache = boundTextureViewCache[stage];
 		if (cache.name != boundTextures[stage] || cache.generation != textureViewsGeneration) {
@@ -817,7 +835,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		UINT const stride = sizeof(D3D11Vertex);
-		UINT const offset = dynamicVertexBufferOffset;
+		UINT const offset = 0;
 		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
 		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
@@ -835,10 +853,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 			d3dContext->PSSetConstantBuffers(0, 2, constantBuffers);
 			constantBuffersBound = true;
 		}
-		if (vertexBuffer != appliedVertexBuffer || offset != appliedVertexBufferOffset) {
+		// The segment stays bound at offset 0 and each draw starts at its upload (FirstVertex), so draws
+		// from the same segment rebind nothing.
+		if (vertexBuffer != appliedVertexBuffer) {
 			d3dContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
 			appliedVertexBuffer = vertexBuffer;
-			appliedVertexBufferOffset = offset;
 		}
 		if (topology != appliedTopology) {
 			d3dContext->IASetPrimitiveTopology(topology);
@@ -937,7 +956,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				}
 			}
 			if (!culled && BindGeometryPipeline(primitive)) {
-				d3dContext->Draw(static_cast<UINT>(count), 0);
+				d3dContext->Draw(static_cast<UINT>(count), FirstVertex());
 			}
 			return;
 		}
@@ -967,9 +986,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 			Log(LogCategory::Unsupported, "unsupported array primitive %u with %d vertices", primitive, count);
 			return;
 		}
-		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();
-		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, dynamicIndexBufferOffset);
-		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), 0, 0);
+		UINT const firstIndex = BindIndexBuffer(DXGI_FORMAT_R32_UINT);
+		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), firstIndex, static_cast<INT>(FirstVertex()));
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
@@ -1053,16 +1071,16 @@ float4 PSMain(PSInput input) : SV_TARGET
 			    !BindGeometryPipeline(primitive)) {
 				return;
 			}
-			d3dContext->IASetIndexBuffer(dynamicIndexBuffer.Get(), indexFormat, dynamicIndexBufferOffset);
-			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, baseVertex);
+			UINT const firstIndex = BindIndexBuffer(indexFormat);
+			d3dContext->DrawIndexed(static_cast<UINT>(count), firstIndex, baseVertex + static_cast<INT>(FirstVertex()));
 			return;
 		}
 
 		if (!UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
 			return;
 		}
-		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();
-		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, dynamicIndexBufferOffset);
-		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), 0, baseVertex);
+		UINT const firstIndex = BindIndexBuffer(DXGI_FORMAT_R32_UINT);
+		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), firstIndex,
+		                        baseVertex + static_cast<INT>(FirstVertex()));
 	}
 }

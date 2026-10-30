@@ -19,7 +19,8 @@ namespace nSCD3D11 {
 		appliedPixelShader = nullptr;
 		appliedVertexBuffer = nullptr;
 		constantBuffersBound = false;
-        appliedVertexBufferOffset = UINT32_MAX;
+        appliedIndexBuffer = nullptr;
+        appliedIndexFormat = DXGI_FORMAT_UNKNOWN;
         textureBindingsValid = false;
         appliedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
         appliedTextureViews[0] = appliedTextureViews[1] = nullptr;
