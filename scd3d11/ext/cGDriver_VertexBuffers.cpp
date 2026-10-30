@@ -92,7 +92,12 @@ namespace nSCD3D11 {
 		key.generation = true;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
-		if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
+		try {
+			if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
+		} catch (std::bad_alloc const &) {
+			Log(LogCategory::Resource, "out of memory converting %u terrain vertices", byteSize / stride);
+			return false;
+		}
 		return UploadCachedBuffer(
 			vertexBufferSegments, activeVertexBufferSegment, vertexBufferCache,
 			key, static_cast<uint32_t>(vertexScratch.size() * sizeof(D3D11Vertex)),
