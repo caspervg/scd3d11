@@ -402,7 +402,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheHits;
 		else ++indexBufferCacheHits;
-		buffer = segments[cached->second.segment].buffer;
+		GeometryCacheSegment &segment = segments[cached->second.segment];
+		segment.lastUseFrame = currentFrame;
+		buffer = segment.buffer;
 		offset = cached->second.offset;
 		return true;
 	}
@@ -519,26 +521,35 @@ float4 PSMain(PSInput input) : SV_TARGET
 					return false;
 				}
 				segment->capacity = newCapacity;
+				segment->lastUseFrame = 0;
 				Log(LogCategory::Resource, "%s cache segment %u allocated at %u bytes",
 				    vertices ? "vertex" : "index", activeSegment, newCapacity);
 				LogMemoryStatus(LogCategory::Resource, "after the segment allocation");
 			}
 		}
 
+		// Appends never overlap anything a queued draw reads. A refill from the start only renames the
+		// buffer (WRITE_DISCARD) while the GPU may still read the segment's last frame; a new buffer never.
+		bool const refill = segment->cursor == 0 && segment->lastUseFrame != 0;
+		bool const discard = refill && !FrameCompleted(segment->lastUseFrame);
 		D3D11_MAPPED_SUBRESOURCE mapping{};
 		HRESULT result = TakeInjectedFault(FAULT_MAP);
 		if (SUCCEEDED(result)) result = d3dContext->Map(
-			segment->buffer.Get(), 0,
-			segment->cursor == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
+			segment->buffer.Get(), 0, discard ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map", result);
 			NoteDeviceLoss(result);
 			return false;
 		}
+		if (refill) {
+			++segmentRefills;
+			if (discard) ++segmentRefillDiscards;
+		}
 		offset = segment->cursor;
 		memcpy(static_cast<uint8_t *>(mapping.pData) + offset, data, requiredSize);
 		d3dContext->Unmap(segment->buffer.Get(), 0);
 		segment->cursor = (segment->cursor + requiredSize + 3u) & ~3u;
+		segment->lastUseFrame = currentFrame;
 		buffer = segment->buffer;
 		// Remembering the upload is optional: if the bookkeeping cannot allocate, it still draws.
 		bool keyed = false;
@@ -560,6 +571,38 @@ float4 PSMain(PSInput input) : SV_TARGET
 		return GlobalMemoryStatusEx(&memory) ? memory.ullAvailVirtual : UINT64_MAX;
 	}
 
+	void cGDriver::EndFrameFence() {
+		if (!d3dDevice || !d3dContext || deviceLost) return;
+		// A slot whose frame is still pending is ended again for this one. Frames finish in order, so
+		// this frame's fence also answers for the one it replaces.
+		FrameFence &fence = frameFences[currentFrame % std::size(frameFences)];
+		D3D11_QUERY_DESC const description{D3D11_QUERY_EVENT, 0};
+		if (fence.query || SUCCEEDED(d3dDevice->CreateQuery(&description, &fence.query))) {
+			d3dContext->End(fence.query.Get());
+			fence.frame = currentFrame;
+		}
+		++currentFrame;
+	}
+
+	bool cGDriver::FrameCompleted(uint64_t frame) {
+		if (frame <= completedFrame) return true;
+		if (frame >= currentFrame || !d3dContext) return false;
+		// Oldest pending fence first: the first one not done means no later one is either.
+		uint64_t const fences = std::size(frameFences);
+		uint64_t next = (std::max)(completedFrame + 1, currentFrame > fences ? currentFrame - fences : 1);
+		for (; next < currentFrame; ++next) {
+			FrameFence const &fence = frameFences[next % fences];
+			if (!fence.query || fence.frame != next) continue;
+			BOOL done = FALSE;
+			if (d3dContext->GetData(fence.query.Get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+			    !done) {
+				break;
+			}
+			completedFrame = next;
+		}
+		return frame <= completedFrame;
+	}
+
 	void cGDriver::ClearCacheSegment(
 		GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release) {
 		GeometryCacheSegment &segment = segments[index];
@@ -572,6 +615,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			std::vector<GeometryCacheKey>().swap(segment.keys);
 			segment.buffer.Reset();
 			segment.capacity = 0;
+			segment.lastUseFrame = 0;
 		} else {
 			segment.keys.clear();
 		}

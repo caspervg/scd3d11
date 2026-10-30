@@ -194,7 +194,15 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
 			uint32_t capacity = 0;
 			uint32_t cursor = 0;
+			// The last frame that uploaded to or drew from it. 0 for a buffer nothing has used yet.
+			uint64_t lastUseFrame = 0;
 			std::vector<GeometryCacheKey> keys;
+		};
+
+		// One D3D11_QUERY_EVENT per recent frame, ended by Flush.
+		struct FrameFence {
+			Microsoft::WRL::ComPtr<ID3D11Query> query;
+			uint64_t frame = 0;
 		};
 
 		void *windowHandle;
@@ -416,6 +424,15 @@ namespace nSCD3D11 {
 		uint64_t vertexBufferCacheMisses;
 		uint64_t indexBufferCacheHits;
 		uint64_t indexBufferCacheMisses;
+		// A full segment is refilled with WRITE_NO_OVERWRITE once the GPU has finished its last frame.
+		// WRITE_DISCARD renames the buffer, and some drivers (VirtIO) keep every renamed copy's address
+		// space until the buffer itself is released. Frames count from 1, and every frame up to
+		// completedFrame is known to be done.
+		FrameFence frameFences[8];
+		uint64_t currentFrame;
+		uint64_t completedFrame;
+		uint64_t segmentRefills;
+		uint64_t segmentRefillDiscards;
 		bool geometryPipelineBound;
 		bool textureBindingsValid;
 		D3D11_PRIMITIVE_TOPOLOGY appliedTopology;
@@ -672,6 +689,12 @@ namespace nSCD3D11 {
 			void const *data,
 			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 			uint32_t &offset);
+
+		// Ends the current frame with an event query from frameFences.
+		void EndFrameFence();
+
+		// Whether the GPU has finished every command of a frame. Never waits or flushes.
+		bool FrameCompleted(uint64_t frame);
 
 		// Forgets a segment's cache entries. Release also frees its buffer and bookkeeping.
 		void ClearCacheSegment(GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release);

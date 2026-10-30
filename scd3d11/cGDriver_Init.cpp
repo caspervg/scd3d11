@@ -301,8 +301,14 @@ namespace nSCD3D11 {
 			    static_cast<unsigned long long>(indexBufferCacheHits),
 			    static_cast<unsigned long long>(indexBufferCacheMisses));
 		}
+		if (segmentRefills != 0) {
+			Log(LogCategory::Initialization, "geometry cache: %llu segment refills, %llu renamed while the GPU was "
+			    "still reading them", static_cast<unsigned long long>(segmentRefills),
+			    static_cast<unsigned long long>(segmentRefillDiscards));
+		}
 		vertexBufferCacheHits = vertexBufferCacheMisses = 0;
 		indexBufferCacheHits = indexBufferCacheMisses = 0;
+		segmentRefills = segmentRefillDiscards = 0;
 		StopRenderWatchdog();
 		DestroyD3D11Context();
 		UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
@@ -374,6 +380,9 @@ namespace nSCD3D11 {
 		for (GeometryCacheSegment &segment: vertexBufferSegments) segment = {};
 		indexBufferCache.clear();
 		vertexBufferCache.clear();
+		for (FrameFence &fence: frameFences) fence = {};
+		currentFrame = 1;
+		completedFrame = 0;
 		for (auto &buffer: transformBuffers) buffer.Reset();
 		constantBufferCache.clear();
 		activeTransformBuffer = 0;
