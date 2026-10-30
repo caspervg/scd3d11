@@ -374,7 +374,8 @@ namespace nSCD3D11::Doctor {
 				std::filesystem::path const stamp = LogDirectory() / L"SCD3D11-update.txt";
 				std::string day, latest;
 				std::ifstream(stamp) >> day >> latest;
-				if (day != Today() || latest.empty()) {
+				bool const asked = day != Today() || latest.empty();
+				if (asked) {
 					std::optional<std::string> const reply = Fetch(kLatestReleaseUrl, "SCD3D11/" + installed);
 					latest = reply ? ReleaseVersion(*reply) : std::string();
 					if (latest.empty()) {
@@ -389,6 +390,8 @@ namespace nSCD3D11::Doctor {
 				}
 				Log(LogCategory::Doctor, "update check: SCD3D11 %s is out, you have %s. Get it from %s.",
 				    VersionLabel(latest).c_str(), VersionLabel(installed).c_str(), kReleasesPage);
+				// The dialog comes with GitHub's answer, so at most once a day. The log has it every start.
+				if (!asked) return;
 				gProblemDialog.SetUpdate("SCD3D11 " + VersionLabel(latest) + " is out, you have " +
 				                         VersionLabel(installed) + ".\nPlease update, as older versions are not supported.");
 			} catch (std::exception const &error) {
