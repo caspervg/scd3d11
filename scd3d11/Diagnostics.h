@@ -39,6 +39,8 @@ namespace nSCD3D11
 	// Only written with LogLevel=trace.
 	void LogTrace(LogCategory category, char const* format, ...);
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result);
+	// Free address space, RAM and page file, to tell which one ran out when allocations fail.
+	void LogMemoryStatus(LogCategory category, char const* when);
 	// The DrawStats and LogLevel=trace settings, handed over by Settings::Load.
 	void SetDiagnostics(bool drawStats, bool traceLog);
 	bool DrawStatsEnabled();

@@ -482,6 +482,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				if (FAILED(result) && !NoteDeviceLoss(result)) {
 					// Out of memory: drop every other cached segment and retry once, sized for this upload only.
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer for a dynamic segment", result);
+					LogMemoryStatus(LogCategory::Resource, "when the segment allocation failed");
 					Log(LogCategory::Resource, "dropping the other cached segments and retrying");
 					buffer.Reset();
 					for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
@@ -499,6 +500,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				segment->capacity = newCapacity;
 				Log(LogCategory::Resource, "%s cache segment %u allocated at %u bytes",
 				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment, newCapacity);
+				LogMemoryStatus(LogCategory::Resource, "after the segment allocation");
 			}
 		}
 
@@ -578,6 +580,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 		} catch (std::bad_alloc const &) {
 			Log(LogCategory::Resource, "out of memory converting %u vertices", count);
+			LogMemoryStatus(LogCategory::Resource, "when vertex conversion failed");
 			return false;
 		}
 		return UploadCachedBuffer(
@@ -902,6 +905,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 		} catch (std::bad_alloc const &) {
 			Log(LogCategory::Resource, "out of memory converting %d indices", count);
+			LogMemoryStatus(LogCategory::Resource, "when index conversion failed");
 			return;
 		}
 		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX) return;

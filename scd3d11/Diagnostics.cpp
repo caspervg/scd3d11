@@ -130,6 +130,17 @@ namespace nSCD3D11
 		Log(category, "%s failed (HRESULT 0x%08lX)", operation, static_cast<unsigned long>(result));
 	}
 
+	void LogMemoryStatus(LogCategory category, char const* when) {
+		MEMORYSTATUSEX memory{sizeof(memory)};
+		if (!GlobalMemoryStatusEx(&memory)) return;
+		auto const mb = [](DWORDLONG bytes) { return static_cast<unsigned long long>(bytes / (1024 * 1024)); };
+		Log(category, "memory %s: address space %llu of %llu MB free, RAM %llu of %llu MB free, "
+		    "commit %llu of %llu MB free", when,
+		    mb(memory.ullAvailVirtual), mb(memory.ullTotalVirtual),
+		    mb(memory.ullAvailPhys), mb(memory.ullTotalPhys),
+		    mb(memory.ullAvailPageFile), mb(memory.ullTotalPageFile));
+	}
+
 	void RecordEncountered(ObservedCategory category, uint64_t value) {
 #ifndef NDEBUG
 		unsigned int const index = static_cast<unsigned int>(category);

@@ -505,6 +505,7 @@ namespace nSCD3D11 {
 				    "so keep the VM's guest tools up to date if the game crashes or freezes");
 			}
 		}
+		LogMemoryStatus(LogCategory::Initialization, "at startup");
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
 			DXGI_MODE_DESC targetMode = swapChainDescription.BufferDesc;
