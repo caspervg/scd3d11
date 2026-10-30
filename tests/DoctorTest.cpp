@@ -218,6 +218,15 @@ int main() {
 		assert(Has(Diagnose(environment), Severity::Warning, "no [SCD3D11] section"));
 	}
 	{
+		// Plugins built with /MD on a machine without the Visual C++ Redistributable.
+		Environment environment = Clean();
+		environment.pluginsMissingRuntime = {"SC4CPUOptions.dll", "memo.3dcamera.dll"};
+		environment.missingRuntimeDlls = {"msvcp140.dll", "vcruntime140.dll"};
+		assert(Has(Diagnose(environment), Severity::Problem,
+		           "SC4 skips SC4CPUOptions.dll, memo.3dcamera.dll, because Windows cannot find msvcp140.dll, "
+		           "vcruntime140.dll from the Microsoft Visual C++ Redistributable. Install its x86 version"));
+	}
+	{
 		// No 4GB patch, Wine, and a ReShade too old for the add-on.
 		Environment environment = Clean();
 		environment.largeAddressAware = false;

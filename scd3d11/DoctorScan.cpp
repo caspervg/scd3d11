@@ -111,41 +111,75 @@ namespace nSCD3D11::Doctor {
 			return module;
 		}
 
-		// Maps the DLL as an image without loading what it imports or running it, then reads its import table.
-		bool ImportsImGui(std::filesystem::path const &file) {
+		// The DLLs a DLL imports, in lower case. Maps it as an image without loading what it imports or
+		// running it, then reads its import table.
+		std::vector<std::string> Imports(std::filesystem::path const &file) {
+			std::vector<std::string> names;
 			HMODULE const image = LoadLibraryExW(file.c_str(), nullptr, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-			if (image == nullptr) return false;
+			if (image == nullptr) return names;
 			// The low bits of the handle mark it as a resource mapping.
 			auto const base = reinterpret_cast<uint8_t const *>(reinterpret_cast<uintptr_t>(image) & ~uintptr_t(3));
 			auto const headers = reinterpret_cast<IMAGE_NT_HEADERS32 const *>(
 				base + reinterpret_cast<IMAGE_DOS_HEADER const *>(base)->e_lfanew);
-			bool found = false;
 			if (headers->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
 				IMAGE_DATA_DIRECTORY const &imports = headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 				for (auto entry = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR const *>(base + imports.VirtualAddress);
-				     imports.VirtualAddress != 0 && entry->Name != 0 && !found; ++entry) {
-					found = _stricmp(reinterpret_cast<char const *>(base + entry->Name), "imgui.dll") == 0;
+				     imports.VirtualAddress != 0 && entry->Name != 0; ++entry) {
+					std::string name = reinterpret_cast<char const *>(base + entry->Name);
+					for (char &character : name) character = static_cast<char>(tolower(static_cast<unsigned char>(character)));
+					names.push_back(std::move(name));
 				}
 			}
 			FreeLibrary(image);
-			return found;
+			return names;
 		}
 
 		// SC4 loads the DLLs at the top of the game's Plugins folder and of the user's.
-		std::vector<std::string> ImGuiPlugins(std::filesystem::path const &userFolder) {
+		std::vector<std::filesystem::path> PluginDlls(std::filesystem::path const &userFolder) {
 			std::set<std::filesystem::path> folders{
 				std::filesystem::path(ModulePath(nullptr)).parent_path().parent_path() / L"Plugins", userFolder / L"Plugins",
 				std::filesystem::path(ModulePath(ModuleAt(reinterpret_cast<void *>(&Run)))).parent_path()};
-			std::vector<std::string> plugins;
+			std::vector<std::filesystem::path> plugins;
 			for (std::filesystem::path const &folder : folders) {
 				std::error_code error;
 				for (auto const &entry : std::filesystem::directory_iterator(folder, error)) {
-					if (_wcsicmp(entry.path().extension().c_str(), L".dll") == 0 && ImportsImGui(entry.path())) {
-						plugins.push_back(Utf8(entry.path().filename().wstring()));
-					}
+					if (_wcsicmp(entry.path().extension().c_str(), L".dll") == 0) plugins.push_back(entry.path());
 				}
 			}
 			return plugins;
+		}
+
+		// The Visual C++ runtime DLLs plugins built with /MD import. Windows 10 ships the universal C runtime
+		// they also need, so only these come from the Redistributable.
+		bool IsVisualCppRuntime(std::string const &name) {
+			return name.starts_with("msvcp140") || name.starts_with("vcruntime140") || name == "concrt140.dll";
+		}
+
+		// Whether the loader finds a DLL by name, searching where it would for a plugin's imports.
+		bool CanLoad(std::string const &name) {
+			std::wstring const wide(name.begin(), name.end());
+			if (GetModuleHandleW(wide.c_str()) != nullptr) return true;
+			HMODULE const module = LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE);
+			if (module == nullptr) return false;
+			FreeLibrary(module);
+			return true;
+		}
+
+		void ReadPlugins(Environment &environment, std::filesystem::path const &userFolder) {
+			std::set<std::string> missing;
+			for (std::filesystem::path const &plugin : PluginDlls(userFolder)) {
+				std::string const name = Utf8(plugin.filename().wstring());
+				bool needsMissingRuntime = false;
+				for (std::string const &import : Imports(plugin)) {
+					if (import == "imgui.dll") environment.imguiPlugins.push_back(name);
+					if (IsVisualCppRuntime(import) && !CanLoad(import)) {
+						missing.insert(import);
+						needsMissingRuntime = true;
+					}
+				}
+				if (needsMissingRuntime) environment.pluginsMissingRuntime.push_back(name);
+			}
+			environment.missingRuntimeDlls.assign(missing.begin(), missing.end());
 		}
 
 		std::vector<Module> LoadedModules() {
@@ -349,7 +383,7 @@ namespace nSCD3D11::Doctor {
 			CoTaskMemFree(documents);
 
 			environment.modules = LoadedModules();
-			environment.imguiPlugins = ImGuiPlugins(userFolder);
+			ReadPlugins(environment, userFolder);
 			std::filesystem::path const apps = std::filesystem::path(ModulePath(nullptr)).parent_path();
 			for (wchar_t const *name : {L"dxgi.dll", L"d3d11.dll", L"ddraw.dll", L"d3dimm.dll", L"d3d8.dll", L"d3d9.dll",
 			                            L"opengl32.dll", L"imgui.dll"}) {

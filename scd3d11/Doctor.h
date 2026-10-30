@@ -79,6 +79,10 @@ namespace nSCD3D11::Doctor {
 		// File names of DLLs in the Plugins folders that import imgui.dll, as plugins built for
 		// SC4RenderServices before v0.8 do. Loaded or not, since they fail to load once imgui.dll is gone.
 		std::vector<std::string> imguiPlugins;
+		// File names of DLLs in the Plugins folders that import a Visual C++ runtime DLL Windows cannot find,
+		// so SC4 skips them without a word, and the runtime DLLs that are missing.
+		std::vector<std::string> pluginsMissingRuntime;
+		std::vector<std::string> missingRuntimeDlls;
 		// The __COMPAT_LAYER variable Windows sets when the exe runs in compatibility mode.
 		std::string compatibilityLayer;
 		// Where it can come from: this exe's own Properties, Compatibility settings for the current user

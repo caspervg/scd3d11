@@ -432,6 +432,15 @@ namespace nSCD3D11::Doctor {
 					"%s is built for SC4RenderServices before v0.8. It does not load, or cannot show its windows, "
 					"with SCD3D11. Update it.", plugin.c_str())});
 			}
+			if (!environment.pluginsMissingRuntime.empty()) {
+				std::string plugins, dlls;
+				for (std::string const &plugin : environment.pluginsMissingRuntime) plugins += (plugins.empty() ? "" : ", ") + plugin;
+				for (std::string const &dll : environment.missingRuntimeDlls) dlls += (dlls.empty() ? "" : ", ") + dll;
+				findings.push_back({Severity::Problem, Format(
+					"SC4 skips %s, because Windows cannot find %s from the Microsoft Visual C++ Redistributable. "
+					"Install its x86 version from https://aka.ms/vs/17/release/vc_redist.x86.exe, also on 64-bit Windows.",
+					plugins.c_str(), dlls.c_str())});
+			}
 
 			for (char const *rival : {"scvk.dll", "scgl.dll"}) {
 				if (FindModule(environment, rival) != nullptr) {
