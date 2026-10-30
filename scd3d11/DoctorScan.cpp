@@ -37,6 +37,7 @@
 #include <thread>
 
 #include <windows.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <wininet.h>
@@ -251,10 +252,12 @@ namespace nSCD3D11::Doctor {
 		}
 
 		constexpr uint32_t kSC4MessagePostRegionInit = 0xCBB5BB45;
+		constexpr char kLatestReleaseUrl[] = "https://api.github.com/repos/caspervg/scd3d11/releases/latest";
+		constexpr char kReleasesPage[] = "https://github.com/caspervg/scd3d11/releases";
 
-		// Shows the doctor's problems in SC4's own dialog when the region view first opens. Players see it
-		// in any window mode, and the game is not held up while it waits. It lives as long as the game, so
-		// it does not count references.
+		// Shows the doctor's problems in SC4's own dialog when the region view first opens, then offers the
+		// releases page when a newer SCD3D11 is out. Players see both in any window mode. It lives as long as
+		// the game, so it does not count references.
 		class ProblemDialog final : public cIGZMessageTarget2 {
 		public:
 			bool QueryInterface(uint32_t riid, void **object) override {
@@ -271,17 +274,29 @@ namespace nSCD3D11::Doctor {
 
 			bool DoMessage(cIGZMessage2 *message) override {
 				if (message == nullptr || message->GetType() != kSC4MessagePostRegionInit) return true;
-				std::string text;
+				std::string text, notice;
 				{
 					std::lock_guard<std::mutex> const lock(mutex);
-					if (shown || (problems.empty() && update.empty())) return true;
+					if (shown) return true;
 					shown = true;
 					// SC4's dialog shows about five lines without scrolling, so this stays compact.
 					for (std::string const &problem : problems) text += problem + "\n";
-					if (!update.empty()) text += update + "\n";
+					notice = update;
 				}
-				text += "Details in Logs\\SCD3D11.log. DoctorDialog=off hides this.";
-				SC4NotificationDialog::ShowDialog(cRZBaseString(text.c_str()), cRZBaseString("SCD3D11"));
+				if (!text.empty()) {
+					text += "Details in Logs\\SCD3D11.log. DoctorDialog=off hides this.";
+					SC4NotificationDialog::ShowDialog(cRZBaseString(text.c_str()), cRZBaseString("SCD3D11"));
+				}
+				if (!notice.empty() && IsGameVersion641()) {
+					// SC4's own two-button dialog. It waits for a click and returns true for the first button.
+					using ShowConfirmation = bool(__cdecl *)(cIGZString const &caption, cIGZString const &message,
+					                                         cIGZString const *confirmLabel, cIGZString const *cancelLabel);
+					cRZBaseString const download("Download"), later("Later");
+					if (reinterpret_cast<ShowConfirmation>(0x78DFF0)(cRZBaseString("Update available"),
+					                                                 cRZBaseString(notice.c_str()), &download, &later)) {
+						ShellExecuteA(nullptr, "open", kReleasesPage, nullptr, nullptr, SW_SHOWNORMAL);
+					}
+				}
 				return true;
 			}
 
@@ -305,9 +320,6 @@ namespace nSCD3D11::Doctor {
 		};
 
 		ProblemDialog gProblemDialog;
-
-		constexpr char kLatestReleaseUrl[] = "https://api.github.com/repos/caspervg/scd3d11/releases/latest";
-		constexpr char kReleasesPage[] = "https://github.com/caspervg/scd3d11/releases";
 
 		// The reply to a GET, or nothing when it fails. WinINet is the HTTP library SC4 itself loads, and it
 		// follows the player's Windows proxy settings.
@@ -375,13 +387,10 @@ namespace nSCD3D11::Doctor {
 					Log(LogCategory::Doctor, "update check: this is the latest release (%s)", VersionLabel(latest).c_str());
 					return;
 				}
-				// Version resources have four parts and release tags three.
-				std::string shown = installed;
-				if (std::count(shown.begin(), shown.end(), '.') == 3 && shown.ends_with(".0")) shown.resize(shown.size() - 2);
-				std::string const notice = "SCD3D11 " + latest + " is out, this is " + shown + ". Get it from " +
-				                           kReleasesPage + ".";
-				Log(LogCategory::Doctor, "update check: %s", notice.c_str());
-				gProblemDialog.SetUpdate(notice);
+				Log(LogCategory::Doctor, "update check: SCD3D11 %s is out, you have %s. Get it from %s.",
+				    VersionLabel(latest).c_str(), VersionLabel(installed).c_str(), kReleasesPage);
+				gProblemDialog.SetUpdate("SCD3D11 " + VersionLabel(latest) + " is out, you have " +
+				                         VersionLabel(installed) + ".\nPlease update, as older versions are not supported.");
 			} catch (std::exception const &error) {
 				Log(LogCategory::Doctor, "update check failed: %s", error.what());
 			}
