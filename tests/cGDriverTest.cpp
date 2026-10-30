@@ -356,7 +356,6 @@ namespace nSCD3D11 {
 
 			d.DrawPrims(0, 0, nullptr, 101 * stride);
 			assert(VertexUploads() == uploads);
-			uint64_t const misses = d.vertexBufferCacheMisses;
 			d.DrawPrims(0, 0, nullptr, 100 * stride);
 			assert(VertexUploads() == ++uploads);
 
@@ -366,17 +365,23 @@ namespace nSCD3D11 {
 			outside[2] = 99;
 			d.DrawPrimsIndexed(0, 0, 3, outside);
 			assert(VertexUploads() == ++uploads);
-			// Shorter draws and smaller index ranges reuse the reservation's single upload.
-			uint16_t front[]{0, 1, 2};
-			d.DrawPrimsIndexed(0, 0, 3, front);
-			d.DrawPrims(0, 0, nullptr, 3 * stride);
-			assert(VertexUploads() == uploads + 2 && d.vertexBufferCacheMisses == misses + 1);
-			uploads += 2;
 
 			d.Reset();
 			d.DrawPrims(0, 0, nullptr, 3 * stride);
 			d.DrawPrimsIndexed(0, 0, 3, outside);
 			assert(VertexUploads() == uploads);
+
+			// SC4 reserves nearly the whole buffer and draws about 15 vertices from it. Only the vertices a
+			// draw reads are uploaded: uploading the reservation cost 1.4 MB per terrain draw.
+			ResetGeometryCache();
+			d.Reset();
+			assert(d.GetVertices(0, capacity) != 0);
+			d.ReleaseVertices(0);
+			uint16_t front[]{0, 1, 2};
+			d.DrawPrimsIndexed(0, 0, 3, front);
+			assert(d.vertexBufferSegments[d.activeVertexBufferSegment].cursor == 3 * sizeof(D3D11Vertex));
+			d.DrawPrims(0, 0, nullptr, 4 * stride);
+			assert(d.vertexBufferSegments[d.activeVertexBufferSegment].cursor == 7 * sizeof(D3D11Vertex));
 		}
 
 		float UploadedX(uint32_t vertex) {

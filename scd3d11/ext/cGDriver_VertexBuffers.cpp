@@ -84,21 +84,18 @@ namespace nSCD3D11 {
 		size_t const offset = static_cast<size_t>(extensionVertexStart) * stride;
 		if (!ExtensionReservationHolds(byteSize)) return false;
 		uint8_t const *source = extensionVertexData.data() + offset;
-		// The whole reservation is uploaded once, whatever part of it a draw reads, so draws of different
-		// lengths or index ranges share it. Its generation stands in for the contents: they can only
-		// change under GetVertices.
-		uint32_t const count = extensionVertexCursor - extensionVertexStart;
+		// The reservation generation stands in for the contents: they can only change under GetVertices.
 		GeometryCacheKey key;
 		key.digest.low64 = extensionVertexGeneration;
-		key.count = count;
+		key.count = byteSize / stride;
 		key.format = format;
 		key.generation = true;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 		try {
-			if (!ConvertVertices(format, stride, source, count, vertexScratch)) return false;
+			if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
 		} catch (std::bad_alloc const &) {
-			Log(LogCategory::Resource, "out of memory converting %u terrain vertices", count);
+			Log(LogCategory::Resource, "out of memory converting %u terrain vertices", byteSize / stride);
 			LogMemoryStatus(LogCategory::Resource, "when terrain vertex conversion failed");
 			return false;
 		}
