@@ -193,9 +193,16 @@ namespace nSCD3D11 {
 			d.DrawElements(2, 4, 5, fanIndices);
 			assert(Pixel(1, 1) == 0xff00ffff);
 			paint(0, 255, 255);
+			uint64_t const indexMisses = d.indexBufferCacheMisses;
 			d.DrawArrays(2, 0, 4);
 			assert(Pixel(1, 1) == 0x00ffffff);
 			assert(d.appliedVertexBuffer == vertexSegment && d.appliedIndexBuffer == indexSegment);
+			// A converted fan's indices depend only on its vertex count: other vertices reuse them.
+			paint(255, 128, 0);
+			uint64_t const indexHits = d.indexBufferCacheHits;
+			d.DrawArrays(2, 0, 4);
+			assert(Pixel(1, 1) == 0xff8000ff);
+			assert(d.indexBufferCacheMisses == indexMisses + 1 && d.indexBufferCacheHits == indexHits + 1);
 			ResetGeometryCache();
 		}
 

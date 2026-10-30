@@ -67,8 +67,12 @@ namespace nSCD3D11 {
         }
     };
 
-    // The only way index keys are built: format, count and the exact bytes uploaded.
+    // Index keys are built from format, count and the exact bytes uploaded, except SequentialIndexKey.
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count);
+
+    // The 32-bit indices BuildSequentialIndices makes depend only on the primitive and the vertex count,
+    // so their key is those two, as a generation key that no content key can equal.
+    GeometryCacheKey SequentialIndexKey(uint32_t primitive, uint32_t vertexCount);
 
     // Content key of interleaved vertices. Only the bytes the format consumes are hashed, so padding
     // between strided vertices never affects it and packed and padded copies of a mesh share a key.
@@ -82,6 +86,9 @@ namespace nSCD3D11 {
         void const *source,
         uint32_t count,
         std::vector<D3D11Vertex> &destination);
+
+    // How many indices BuildSequentialIndices makes, 0 for a primitive or count it rejects.
+    uint64_t SequentialIndexCount(uint32_t primitive, uint32_t vertexCount);
 
     bool BuildSequentialIndices(uint32_t primitive, uint32_t vertexCount, std::vector<uint32_t> &indices);
 

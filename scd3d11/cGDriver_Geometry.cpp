@@ -986,12 +986,22 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
+		// The indices depend only on the primitive and the vertex count and are keyed by those. They are
+		// built for a cache miss or a live shadow capture only, and never hashed.
+		uint64_t const indexCount = SequentialIndexCount(primitive, vertexCount);
+		GeometryCacheKey const key = SequentialIndexKey(primitive, vertexCount);
+		bool const cached = !culled && indexCount != 0 &&
+		                    UseCachedBuffer(indexBufferSegments, indexBufferCache, key, dynamicIndexBuffer,
+		                                    dynamicIndexBufferOffset, D3D11_BIND_INDEX_BUFFER);
 		bool built = false;
-		try {
-			built = BuildSequentialIndices(primitive, static_cast<uint32_t>(count), drawIndexScratch);
-		} catch (std::bad_alloc const &) {
-		}
-		if (built && MatchesLiveShadowMesh(firstVertex, vertexCount)) {
+		auto const build = [&] {
+			try {
+				built = BuildSequentialIndices(primitive, vertexCount, drawIndexScratch);
+			} catch (std::bad_alloc const &) {
+			}
+			return built;
+		};
+		if (indexCount != 0 && MatchesLiveShadowMesh(firstVertex, vertexCount)) {
 			if (LiveShadowHooks::NetworkDrawActive()) {
 				static bool loggedBracketArraysConverted = false;
 				if (!loggedBracketArraysConverted) {
@@ -1001,18 +1011,27 @@ float4 PSMain(PSInput input) : SV_TARGET
 				}
 			}
 			try {
-				CaptureLiveShadowDraw(firstVertex, vertexCount, drawIndexScratch,
-				                      D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				if (built || build()) {
+					CaptureLiveShadowDraw(firstVertex, vertexCount, drawIndexScratch,
+					                      D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				}
 			} catch (std::bad_alloc const &) {
 			}
 		}
 		if (culled) return;
-		if (!built || !UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
+		uint64_t const indexBytes = indexCount * sizeof(uint32_t);
+		bool uploaded = cached;
+		if (!uploaded && indexCount != 0 && indexBytes <= (std::numeric_limits<uint32_t>::max)() && (built || build())) {
+			uploaded = UploadCachedBuffer(
+				indexBufferSegments, activeIndexBufferSegment, indexBufferCache, key, static_cast<uint32_t>(indexBytes),
+				D3D11_BIND_INDEX_BUFFER, drawIndexScratch.data(), dynamicIndexBuffer, dynamicIndexBufferOffset);
+		}
+		if (!uploaded || !BindGeometryPipeline(0)) {
 			Log(LogCategory::Unsupported, "unsupported array primitive %u with %d vertices", primitive, count);
 			return;
 		}
 		UINT const firstIndex = BindIndexBuffer(DXGI_FORMAT_R32_UINT);
-		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), firstIndex, static_cast<INT>(FirstVertex()));
+		d3dContext->DrawIndexed(static_cast<UINT>(indexCount), firstIndex, static_cast<INT>(FirstVertex()));
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {

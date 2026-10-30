@@ -70,6 +70,25 @@ int main() {
     generationKey.generation = true;
     assert(!(generationKey == wideKey));
 
+    // Sequential indices are keyed by primitive and vertex count alone, never like the indices' bytes,
+    // and their count is known without building them.
+    using nSCD3D11::SequentialIndexKey;
+    std::vector<uint32_t> sequential;
+    for (uint32_t primitive = 0; primitive < 9; ++primitive) {
+        for (uint32_t count = 0; count < 13; ++count) {
+            bool const built = nSCD3D11::BuildSequentialIndices(primitive, count, sequential);
+            assert(nSCD3D11::SequentialIndexCount(primitive, count) == (built ? sequential.size() : 0u));
+            if (built) {
+                assert(!(SequentialIndexKey(primitive, count) ==
+                         nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, sequential.data(),
+                                                 static_cast<uint32_t>(sequential.size()))));
+            }
+        }
+    }
+    assert(SequentialIndexKey(2, 4) == SequentialIndexKey(2, 4));
+    assert(!(SequentialIndexKey(2, 4) == SequentialIndexKey(6, 4)) && !(SequentialIndexKey(2, 4) == SequentialIndexKey(2, 5)));
+    assert(nSCD3D11::SequentialIndexCount(2, UINT32_MAX) == (uint64_t{UINT32_MAX} - 2) * 3);
+
     struct SourceVertex {
         float position[3];
         float normal[3];
