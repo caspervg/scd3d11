@@ -425,10 +425,14 @@ namespace nSCD3D11::Doctor {
 						"SC4GraphicsOptions.ini.", rival)});
 				}
 			}
-			if (FindModule(environment, "sc4_painter.dll") != nullptr &&
-			    FindModule(environment, "sc4renderservices.dll") == nullptr) {
-				findings.push_back({Severity::Warning, "SC4 Painter draws its ground fills and decals through "
-				                                       "SC4RenderServices, which is not installed."});
+			if (FindModule(environment, "sc4_painter.dll") != nullptr) {
+				findings.push_back({Severity::Warning, "SC4 Painter writes yellow text on the black loading screen "
+				                                       "before the game has finished loading. Nothing is broken: wait "
+				                                       "for the game to load."});
+				if (FindModule(environment, "sc4renderservices.dll") == nullptr) {
+					findings.push_back({Severity::Warning, "SC4 Painter draws its ground fills and decals through "
+					                                       "SC4RenderServices, which is not installed."});
+				}
 			}
 			if (FindModule(environment, "sc4fullscreen32bit.dll") != nullptr) {
 				findings.push_back({Severity::Note, "SC4FullScreen32Bit.dll only changes SC4's DirectX 7 driver and "

@@ -225,6 +225,7 @@ int main() {
 		assert(Has(findings, Severity::Note, "Overlays in the game: Steam overlay"));
 		assert(!Has(findings, Severity::Warning, "SCD3D11 used the screen's own"));
 		assert(Has(findings, Severity::Warning, "SC4 Painter draws its ground fills"));
+		assert(Has(findings, Severity::Warning, "SC4 Painter writes yellow text on the black loading screen"));
 	}
 	{
 		// Plugin versions that predate SCD3D11 support. Equal and newer versions, and DLLs without a
