@@ -98,6 +98,8 @@ namespace nSCD3D11::Doctor {
 	std::string ReleaseVersion(std::string_view json);
 	// Whether a dotted version is newer than another. Missing parts count as 0.
 	bool IsNewer(std::string const &version, std::string const &than);
+	// A version as players read it: 1.4.1.0 becomes v1.4.1.
+	std::string VersionLabel(std::string version);
 
 	// Gathers the environment and logs the findings. With Doctor=on it also logs every DLL and
 	// relevant INI value it saw. Called once SC4 has set up its graphics.

@@ -401,8 +401,9 @@ namespace nSCD3D11::Doctor {
 			for (Minimum const &minimum : kMinimums) {
 				Module const *const module = FindModule(environment, minimum.file);
 				if (module == nullptr || module->version.empty() || !OlderThan(module->version, minimum.version)) continue;
-				findings.push_back({Severity::Warning, Format("%s %s is older than %s, %s. Update it.", minimum.name,
-				                                              module->version.c_str(), minimum.version, minimum.reason)});
+				findings.push_back({Severity::Warning, Format("%s %s is older than v%s, %s. Update it.", minimum.name,
+				                                              VersionLabel(module->version).c_str(), minimum.version,
+				                                              minimum.reason)});
 			}
 
 			for (char const *rival : {"scvk.dll", "scgl.dll"}) {
@@ -475,11 +476,11 @@ namespace nSCD3D11::Doctor {
 				std::string const kind = Identify(file);
 				if (name == "imgui.dll") {
 					findings.push_back({Severity::Note, "Apps\\imgui.dll is left over from SC4RenderServices before "
-					                                    "0.8 and is no longer used."});
+					                                    "v0.8 and is no longer used."});
 				} else if (name == "dxgi.dll" || name == "d3d11.dll") {
 					if (kind == "ReShade") {
 						findings.push_back({Severity::Note, Format("ReShade %s is installed as Apps\\%s.",
-						                                           file.version.c_str(), name.c_str())});
+						                                           VersionLabel(file.version).c_str(), name.c_str())});
 					} else {
 						findings.push_back({Severity::Warning, Format(
 							"Apps\\%s is %s. It sits between SCD3D11 and Direct3D 11, which is untested. Remove it "
@@ -542,6 +543,11 @@ namespace nSCD3D11::Doctor {
 
 	bool IsNewer(std::string const &version, std::string const &than) {
 		return OlderThan(than, version.c_str());
+	}
+
+	std::string VersionLabel(std::string version) {
+		if (std::count(version.begin(), version.end(), '.') == 3 && version.ends_with(".0")) version.resize(version.size() - 2);
+		return version.empty() ? version : "v" + version;
 	}
 
 	bool ScreenOffers(std::vector<Size> const &modes, uint32_t width, uint32_t height) {

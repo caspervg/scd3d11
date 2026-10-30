@@ -327,7 +327,7 @@ namespace nSCD3D11::Doctor {
 					std::ofstream(stamp) << Today() << ' ' << latest << '\n';
 				}
 				if (!IsNewer(latest, installed)) {
-					Log(LogCategory::Doctor, "update check: this is the latest release (%s)", latest.c_str());
+					Log(LogCategory::Doctor, "update check: this is the latest release (%s)", VersionLabel(latest).c_str());
 					return;
 				}
 				// Version resources have four parts and release tags three.
@@ -344,7 +344,7 @@ namespace nSCD3D11::Doctor {
 
 		std::string Label(Module const &module) {
 			if (module.product.empty() && module.version.empty()) return "no version info";
-			return module.product + (module.product.empty() || module.version.empty() ? "" : " ") + module.version;
+			return module.product + (module.product.empty() || module.version.empty() ? "" : " ") + VersionLabel(module.version);
 		}
 
 		// The driver, the screen and the DLLs the checks know about, with their versions, so every log

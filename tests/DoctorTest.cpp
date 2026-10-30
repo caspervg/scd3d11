@@ -193,7 +193,7 @@ int main() {
 		assert(Has(findings, Severity::Problem, "compatibility mode (WINXPSP3)"));
 		assert(Has(findings, Severity::Note, "settings on SimCity 4.exe: HIGHDPIAWARE"));
 		assert(Has(findings, Severity::Warning, "not SimCity 4 version 1.1.641"));
-		assert(Has(findings, Severity::Note, "ReShade 6.8.0.0 is installed as Apps\\dxgi.dll"));
+		assert(Has(findings, Severity::Note, "ReShade v6.8.0 is installed as Apps\\dxgi.dll"));
 		assert(Has(findings, Severity::Warning, "Apps\\d3d11.dll is DXVK"));
 		assert(Has(findings, Severity::Note, "Apps\\ddraw.dll is dgVoodoo"));
 		assert(Has(findings, Severity::Note, "imgui.dll is left over"));
@@ -214,11 +214,15 @@ int main() {
 		                       {"C:\\SC4\\Plugins\\SC4CPUOptions.dll", "SC4CPUOptions", "1.1.0.0"},
 		                       {"C:\\SC4\\Plugins\\SC4RenderServices.dll", "SC4RenderServices", ""}};
 		auto const findings = Diagnose(environment);
-		assert(Has(findings, Severity::Warning, "SC4GraphicsOptions 1.3.0.0 is older than 1.4.1"));
+		assert(Has(findings, Severity::Warning, "SC4GraphicsOptions v1.3.0 is older than v1.4.1"));
 		assert(!Has(findings, Severity::Warning, "SC4CPUOptions"));
 		assert(!Has(findings, Severity::Warning, "SC4RenderServices"));
 		environment.modules[0].version = "1.10.0.0";
 		assert(!Has(Diagnose(environment), Severity::Warning, "older than"));
 	}
+	assert(VersionLabel("1.4.1.0") == "v1.4.1");
+	assert(VersionLabel("0.8.2") == "v0.8.2");
+	assert(VersionLabel("1.0.0.3") == "v1.0.0.3");
+	assert(VersionLabel("").empty());
 	return 0;
 }
