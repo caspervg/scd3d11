@@ -148,7 +148,7 @@ int main() {
 		Environment environment = Clean();
 		environment.arguments = {"-UserDir:C:\\My", "Games\\SC4\\", "-LiveShadow", "-VSync=off", "-NativeShadowMasks",
 		                         "-MaxFPS:60", "-SomeOtherPlugin:on", "-CPUPriority:Realtime", "-intro:off",
-		                         "-NetCommandGenerator:enabled"};
+		                         "-NetCommandGenerator:enabled", "-FullscreenMode:Borderless", "-b"};
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Warning, "Not a switch on the command line: Games\\SC4\\"));
 		assert(Has(findings, Severity::Warning, "Did you mean -LiveShadows?"));
@@ -159,6 +159,8 @@ int main() {
 		assert(Has(findings, Severity::Warning, "-CPUPriority:High"));
 		assert(!Has(findings, Severity::Note, "-intro:off"));
 		assert(!Has(findings, Severity::Note, "-NetCommandGenerator"));
+		assert(!Has(findings, Severity::Note, "-FullscreenMode"));
+		assert(!Has(findings, Severity::Note, "-SomeOtherPlugin:on, -b"));
 	}
 	{
 		Environment environment = Clean();
@@ -166,8 +168,14 @@ int main() {
 		environment.gameSize.reset();
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Warning, "Both -w and -f"));
-		assert(Has(findings, Severity::Note, "-Borderless only applies with -f"));
 		assert(Has(findings, Severity::Warning, "-r1920x1080x32 and -r1366x768x32 are both"));
+	}
+	{
+		// Borderless turns on full screen itself, so -w with it is no window.
+		Environment environment = Clean();
+		environment.arguments = {"-w", "-b", "-r3840x2160x32"};
+		auto const findings = Diagnose(environment);
+		assert(!Has(findings, Severity::Warning, "window is larger than"));
 	}
 	{
 		Environment environment = Clean();

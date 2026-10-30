@@ -173,6 +173,17 @@ namespace nSCD3D11::Settings {
 		values.networkShadowMasks = Resolve(sources, "NetworkShadowMasks", ParseFlag, values.networkShadowMasks);
 		values.vsync = Resolve(sources, "VSync", ParseFlag, values.vsync);
 		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
+		// scvk's -b and -FullscreenMode:Borderless, the second SCD3D11's own before v0.3. -Borderless wins
+		// when it is given too.
+		if (!FromCommandLine(commandLine, "Borderless")) {
+			std::optional<std::string> const shortSwitch = FromCommandLine(commandLine, "b");
+			if (shortSwitch && ParseFlag(*shortSwitch, values.borderless)) {
+				Log(LogCategory::Initialization, "setting Borderless = %s (command line, -b)", values.borderless ? "on" : "off");
+			} else if (FromCommandLine(commandLine, "FullscreenMode") == std::optional<std::string>("borderless")) {
+				values.borderless = true;
+				Log(LogCategory::Initialization, "setting Borderless = on (command line, -FullscreenMode:Borderless)");
+			}
+		}
 		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
 		values.defaultAdapter = Resolve(sources, "GPU", ParseAdapter, values.defaultAdapter);
 		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);

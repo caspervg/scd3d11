@@ -52,7 +52,7 @@ where it came from.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `Borderless` | off | With `-f`, a monitor-sized borderless window instead of exclusive fullscreen |
+| `Borderless` | off | A monitor-sized borderless window instead of exclusive fullscreen. Needs no `-f`, and wins over `-w` |
 | `VSync` | on | Wait for vsync before presenting |
 | `FlipModel` | on | Windowed and borderless: present with the flip model. Off uses the legacy DISCARD swap chain |
 | `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one |
@@ -73,8 +73,8 @@ Standard SimCity 4 switches that SCD3D11 reacts to:
 
 ### Presentation modes
 
-SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` alongside a fullscreen
-launch to get a monitor-sized borderless window instead.
+SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` (or scvk's `-b` or
+`-FullscreenMode:Borderless`) to get a monitor-sized borderless window instead. It needs no `-f`, and wins over `-w`.
 
 On systems with both an integrated and a discrete GPU, SCD3D11 renders on the high-performance GPU. Set `GPU=default`
 to use the adapter Windows picks instead. `SCD3D11.log` names the adapter in use on its `adapter:` line.

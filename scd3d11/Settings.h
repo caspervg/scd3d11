@@ -27,6 +27,7 @@ namespace nSCD3D11::Settings {
 		bool liveShadows = false;
 		bool networkShadowMasks = false;
 		bool vsync = true;
+		// A monitor-sized window. It needs no -f, SCD3D11 turns full screen on, and wins over -w.
 		bool borderless = false;
 		bool flipModel = true;
 		// GPU=default: the adapter Windows picks instead of the high-performance one.

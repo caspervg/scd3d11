@@ -114,12 +114,14 @@ namespace nSCD3D11::Doctor {
 			"CPUCount", "UserDir", "Music", "Radio", "Sound", "Audio", "IME", "Verbose", "ExceptionHandling",
 			"Restart", "AllowMultipleInstances", "Logging", "DebugLevel", "LuaScript", "ForceIdle",
 			"CreateException", "IgnoreMissingModelDataBugs", "WriteLog", "NetCommandGenerator",
+			// SCD3D11's command-line only names for Borderless, which scvk reads too
+			"b", "FullscreenMode",
 			// SC4CPUOptions and SC4DBPFLoading
 			"ParallelCull", "SimTickCap", "SimTickStats", "ModelSlice", "OverlayIndex", "StartupDBPFLoadTrace",
 		};
 
 		// Switches only scvk reads. They look like SCD3D11's but do nothing here.
-		constexpr char const *kScvkSwitches[] = {"MaxFPS", "FullscreenMode"};
+		constexpr char const *kScvkSwitches[] = {"MaxFPS"};
 
 		template <size_t N>
 		bool IsIn(char const *const (&names)[N], std::string const &name) {
@@ -305,7 +307,8 @@ namespace nSCD3D11::Doctor {
 				}
 				windowed |= entry.name == "w";
 				fullScreen |= entry.name == "f";
-				borderless |= entry.name == "borderless";
+				borderless |= ((entry.name == "borderless" || entry.name == "b") && Lower(entry.value) != "off") ||
+				              (entry.name == "fullscreenmode" && Lower(entry.value) == "borderless");
 				customResolution |= entry.name == "customresolution";
 
 				size_t const equals = entry.name.find('=');
@@ -361,8 +364,10 @@ namespace nSCD3D11::Doctor {
 			if (windowed && fullScreen) {
 				findings.push_back({Severity::Warning, "Both -w and -f are on the command line. Keep one."});
 			}
-			if (borderless && windowed) {
-				findings.push_back({Severity::Note, "-Borderless only applies with -f, not in a window."});
+			// Borderless turns on full screen itself and wins over -w.
+			if (borderless) {
+				windowed = false;
+				fullScreen = true;
 			}
 
 			// Compare what -r asked for with what SC4 ended up with. SC4GraphicsOptions explains any

@@ -16,6 +16,9 @@
 #include "ThumbnailFocusGuard.h"
 #include "VideoModeUtils.h"
 
+#include <GZServPtrs.h>
+#include <cIGZGraphicSystem.h>
+
 #include <cstring>
 #include <dxgi1_6.h>
 
@@ -282,6 +285,15 @@ namespace nSCD3D11 {
 
 		initialized = true;
 		Log(LogCategory::Initialization, "initialized with %d display modes", videoModeCount);
+		if (Settings::Get().borderless) {
+			// Borderless needs no -f, so switch SC4 to full screen before it picks its screen mode.
+			cIGZGraphicSystemPtr graphics;
+			if (graphics && !graphics->IsFullScreenMode()) {
+				bool const switched = graphics->PreInitSetWindowedMode(false);
+				Log(LogCategory::Initialization, "borderless: %s", switched ? "switched SC4 from a window to full screen"
+				                                                            : "SC4 did not switch to full screen");
+			}
+		}
 		Doctor::CheckRequestedScreenMode();
 		SetLastError(DriverError::OK);
 		return true;
