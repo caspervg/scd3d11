@@ -220,6 +220,17 @@ int main() {
 		environment.modules[0].version = "1.10.0.0";
 		assert(!Has(Diagnose(environment), Severity::Warning, "older than"));
 	}
+	{
+		// Plugins that import imgui.dll were built for SC4RenderServices before v0.8. Its own old DLL is left
+		// to the version rule.
+		Environment environment = Clean();
+		environment.imguiPlugins = {"SC4PlopAndPaint.dll", "SC4RenderServices.dll"};
+		environment.modules = {{"C:\\SC4\\Plugins\\SC4RenderServices.dll", "SC4 Render Services", "0.7.1.0"}};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Warning, "SC4PlopAndPaint.dll is built for SC4RenderServices before v0.8"));
+		assert(!Has(findings, Severity::Warning, "SC4RenderServices.dll is built"));
+		assert(Has(findings, Severity::Warning, "SC4RenderServices v0.7.1 is older than v0.8.1"));
+	}
 	assert(VersionLabel("1.4.1.0") == "v1.4.1");
 	assert(VersionLabel("0.8.2") == "v0.8.2");
 	assert(VersionLabel("1.0.0.3") == "v1.0.0.3");

@@ -405,6 +405,13 @@ namespace nSCD3D11::Doctor {
 				                                              VersionLabel(module->version).c_str(), minimum.version,
 				                                              minimum.reason)});
 			}
+			for (std::string const &plugin : environment.imguiPlugins) {
+				// An old SC4RenderServices is already reported by its version.
+				if (Lower(plugin) == "sc4renderservices.dll") continue;
+				findings.push_back({Severity::Warning, Format(
+					"%s is built for SC4RenderServices before v0.8. It does not load, or cannot show its windows, "
+					"with SCD3D11. Update it.", plugin.c_str())});
+			}
 
 			for (char const *rival : {"scvk.dll", "scgl.dll"}) {
 				if (FindModule(environment, rival) != nullptr) {

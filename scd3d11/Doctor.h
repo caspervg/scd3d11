@@ -53,6 +53,9 @@ namespace nSCD3D11::Doctor {
 		std::vector<Module> modules;
 		// Copies of Windows graphics DLLs in the Apps folder, loaded or not.
 		std::vector<Module> appsFiles;
+		// File names of DLLs in the Plugins folders that import imgui.dll, as plugins built for
+		// SC4RenderServices before v0.8 do. Loaded or not, since they fail to load once imgui.dll is gone.
+		std::vector<std::string> imguiPlugins;
 		// The __COMPAT_LAYER variable Windows sets when the exe runs in compatibility mode.
 		std::string compatibilityLayer;
 		// SC4GraphicsOptions.ini by lower-case key, when SC4GraphicsOptions.dll is loaded. A key the
