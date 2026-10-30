@@ -54,9 +54,11 @@ namespace nSCD3D11 {
     // only overwhelmingly likely, not proof, that the contents are equal.
     struct GeometryCacheKey {
         XXH128_hash_t digest{};
-        uint32_t count = 0;
+        // Never 0 for a real key, and below 2^31 because every upload's byte size fits 32 bits. The flag
+        // shares its word, which keeps a key at 24 bytes.
+        uint32_t count : 31 = 0;
+        uint32_t generation : 1 = 0;
         uint32_t format = 0; // SimGL vertex format or DXGI index format
-        bool generation = false;
 
         bool operator==(GeometryCacheKey const &other) const {
             // Not XXH128_isEqual, which is an out-of-line call on every cache probe.

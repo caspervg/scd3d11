@@ -188,6 +188,7 @@ namespace nSCD3D11 {
 		};
 
 		using GeometryCache = FlatGeometryCache<GeometryCacheEntry>;
+		static_assert(sizeof(GeometryCache::Slot) == 32);
 
 		struct GeometryCacheSegment {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;

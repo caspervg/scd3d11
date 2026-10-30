@@ -464,6 +464,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 						freed += segments[index].capacity;
 						ClearCacheSegment(segments, cache, index, true);
 					}
+					cache.shrink_to_fit();
 					Log(LogCategory::Resource, "%s cache trimmed to %u segments, %llu MB freed, %llu MB "
 					    "address space was free", vertices ? "vertex" : "index", ring,
 					    static_cast<unsigned long long>(freed >> 20),
@@ -521,6 +522,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 					for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
 						if (index != activeSegment) ClearCacheSegment(segments, cache, index, true);
 					}
+					cache.shrink_to_fit();
 					newCapacity = (requiredSize + 3u) & ~3u;
 					result = allocate(newCapacity);
 				}
