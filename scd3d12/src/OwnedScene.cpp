@@ -206,6 +206,8 @@ namespace nSCD3D12 {
 			uint8_t place = 0;
 			uint64_t bin = 0;
 			uint64_t gathered = 0;
+			// The item's handle (OwnedScene::Impl::handles), 0 for none yet.
+			uint32_t handle = 0, generation = 0;
 		};
 
 		// A screen rectangle in pixels from the top left: left, top, right, bottom.
@@ -986,11 +988,62 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		// models and grid items whose occupant left) can have its middle up to half a bin outside, so the ring of
 		// bins around is searched for those too. Orphans are indexed again in orphanBins when their occupant leaves,
 		// so the ring needs no lookup of every model and grid item in it.
+		// What the index holds: a handle, which finds the item without a lookup by key, and its generation, which
+		// says whether it is still that item.
 		struct Entry {
+			uint32_t handle, generation;
+		};
+		// An item as its handle knows it: its kind and key, and where it lives (models, grid items and cells stay
+		// at their node in their map until erased, view pieces at their index in pieces). An erased item's handle
+		// gets the next generation, so entries still naming it are dropped when a search comes by.
+		struct Name {
 			uint8_t kind; // 0 model, 1 grid, 2 cell, 3 view piece
 			uint64_t key;
 			uint32_t group, instance; // the rest of a model's key
 		};
+		struct Handle {
+			Name name{};
+			void *item = nullptr;
+			uint32_t piece = 0;
+			uint32_t generation = 0;
+			bool alive = false;
+		};
+		// Handle 0 stands for none.
+		std::vector<Handle> handles = std::vector<Handle>(1);
+		std::vector<uint32_t> freeHandles;
+
+		Entry HandleOf(Name const &name, void *item, uint32_t piece, Indexed &where) {
+			if (where.handle == 0 || !handles[where.handle].alive || handles[where.handle].generation != where.generation) {
+				uint32_t handle;
+				if (!freeHandles.empty()) {
+					handle = freeHandles.back();
+					freeHandles.pop_back();
+				} else {
+					handle = static_cast<uint32_t>(handles.size());
+					handles.emplace_back();
+				}
+				handles[handle].alive = true;
+				where.handle = handle;
+				where.generation = handles[handle].generation;
+			}
+			Handle &h = handles[where.handle];
+			h.name = name;
+			h.item = item;
+			h.piece = piece;
+			return {where.handle, where.generation};
+		}
+
+		void ReleaseHandle(Indexed &where) {
+			if (where.handle == 0) return;
+			Handle &h = handles[where.handle];
+			if (h.alive && h.generation == where.generation) {
+				h.alive = false;
+				++h.generation;
+				h.item = nullptr;
+				freeHandles.push_back(where.handle);
+			}
+			where.handle = 0;
+		}
 		static constexpr float kBinMetres = 64.0f;
 		std::unordered_map<uint64_t, std::vector<Entry> > bins;
 		std::unordered_map<uint64_t, std::vector<Entry> > orphanBins;
@@ -1025,7 +1078,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			return true;
 		}
 
-		void Index(Entry const &entry, Extent const &extent, Indexed &where) {
+		void Index(Name const &name, void *item, uint32_t piece, Extent const &extent, Indexed &where) {
+			Entry const entry = HandleOf(name, item, piece, where);
 			int32_t x, y;
 			bool const binned = BinOf(extent, x, y);
 			uint8_t const place = binned ? 1 : 2;
@@ -1037,39 +1091,41 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		}
 
 		// An item whose occupant left, so the ring around a redraw finds it. Large ones are in the large list anyway.
-		void IndexOrphan(Entry const &entry, Extent const &extent) {
+		void IndexOrphan(Name const &name, void *item, Extent const &extent, Indexed &where) {
+			Entry const entry = HandleOf(name, item, 0, where);
 			int32_t x, y;
 			if (BinOf(extent, x, y)) orphanBins[BinKey(x, y)].push_back(entry);
 		}
 
 		Found Resolve(Entry const &entry) {
-			Found found;
-			switch (entry.kind) {
+			Handle const &h = handles[entry.handle];
+			if (!h.alive || h.generation != entry.generation) return {};
+			switch (h.name.kind) {
 				case 0: {
-					auto const it = models.find({entry.key, entry.group, entry.instance});
-					if (it != models.end()) found = {&it->second.extent, &it->second.index, &it->second, 0, it->second.orphan};
-					break;
+					auto *const model = static_cast<Model *>(h.item);
+					return {&model->extent, &model->index, model, 0, model->orphan};
 				}
 				case 1: {
-					auto const it = grid.find(entry.key);
-					if (it != grid.end()) found = {&it->second.extent, &it->second.index, &it->second, 0, it->second.orphan};
-					break;
+					auto *const item = static_cast<GridItem *>(h.item);
+					return {&item->extent, &item->index, item, 0, item->orphan};
 				}
 				case 2: {
-					auto const it = cells.find(entry.key);
-					if (it != cells.end()) found = {&it->second.extent, &it->second.index, &it->second, 0, false};
-					break;
+					auto *const cell = static_cast<Cell *>(h.item);
+					return {&cell->extent, &cell->index, cell, 0, false};
 				}
 				default: {
-					auto const it = viewPieces.find(entry.key);
-					if (it != viewPieces.end()) {
-						Piece &piece = pieces[it->second];
-						found = {&piece.extent, &piece.index, nullptr, it->second, false};
-					}
-					break;
+					Piece &piece = pieces[h.piece];
+					return {&piece.extent, &piece.index, nullptr, h.piece, false};
 				}
 			}
-			return found;
+		}
+
+		// Whether a screen rectangle meets any of this frame's redraws, which an item must to be removed by one.
+		bool MeetsRedraw(Rect const &r) const {
+			for (auto const &[rect, serial]: killRects) {
+				if (r.left < rect.right && r.right > rect.left && r.top < rect.bottom && r.bottom > rect.top) return true;
+			}
+			return false;
 		}
 
 		// Takes what an entry of bin (binned) or of the large list names as a candidate, once per search. False when
@@ -1089,13 +1145,14 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			if (found.index->gathered == gatherSerial) return orphans;
 			found.index->gathered = gatherSerial;
-			candidates.push_back({entry, found});
+			// Most of a bin lies outside a strip a few metres wide.
+			if (MeetsRedraw(ToScreen(*found.extent, camera))) candidates.push_back({entry, found});
 			return true;
 		}
 
 		void Sweep(std::vector<Entry> &list, uint64_t bin, bool viewPiecesOnly, bool orphans) {
 			std::erase_if(list, [&](Entry const &entry) {
-				if (viewPiecesOnly && entry.kind != 3) return false;
+				if (viewPiecesOnly && handles[entry.handle].name.kind != 3) return false;
 				return !Visit(entry, true, bin, orphans);
 			});
 		}
@@ -2027,12 +2084,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				if (found != viewPieces.end()) {
 					pieces[found->second].serial = serial;
 					pieces[found->second].frame = frame;
-					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent, pieces[found->second].index);
+					if (Refit(found->second)) Index({3, hash, 0, 0}, nullptr, found->second, pieces[found->second].extent, pieces[found->second].index);
 					DropUnused(group);
 				} else {
 					uint32_t const piece = AddPiece(group, std::move(world), std::vector<uint32_t>(indices, indices + indexCount), hash);
 					viewPieces.emplace(hash, piece);
-					Index({3, hash, 0, 0}, pieces[piece].extent, pieces[piece].index);
+					Index({3, hash, 0, 0}, nullptr, piece, pieces[piece].extent, pieces[piece].index);
 				}
 				++totals.captured[kView];
 				return owning;
@@ -2108,7 +2165,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 				cell.serial = serial;
 				cell.frame = frame;
-				if (changed) Index({2, key, 0, 0}, cell.extent, cell.index);
+				if (changed) Index({2, key, 0, 0}, &cell, 0, cell.extent, cell.index);
 				++(changed ? totals.cellsChanged : totals.cellsKept);
 			}
 			freshCells.clear();
@@ -2144,7 +2201,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				if (owner.occupant != 0) gridByOccupant[owner.occupant].push_back(owner.drawable);
 				item.occupant = owner.occupant;
 			}
-			if (!same) Index({1, owner.drawable, 0, 0}, item.extent, item.index);
+			if (!same) Index({1, owner.drawable, 0, 0}, &item, 0, item.extent, item.index);
 			item.serial = serial;
 			item.frame = frame;
 			item.orphan = false;
@@ -2170,6 +2227,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					if (list->second.empty()) gridByOccupant.erase(list);
 				}
 			}
+			ReleaseHandle(found->second.index);
 			grid.erase(found);
 		}
 
@@ -2187,6 +2245,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			if (capturing == &found->second) capturing = nullptr;
 			Changed(found->second.extent);
+			ReleaseHandle(found->second.index);
 			models.erase(found);
 			++modelChanges;
 		}
@@ -2199,12 +2258,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				if (found != viewPieces.end()) {
 					pieces[found->second].serial = serial;
 					pieces[found->second].frame = frame;
-					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent, pieces[found->second].index);
+					if (Refit(found->second)) Index({3, hash, 0, 0}, nullptr, found->second, pieces[found->second].extent, pieces[found->second].index);
 					DropUnused(fresh.group);
 				} else {
 					uint32_t const piece = AddPiece(fresh.group, std::move(fresh.vertices), std::move(fresh.indices), hash);
 					viewPieces.emplace(hash, piece);
-					Index({3, hash, 0, 0}, pieces[piece].extent, pieces[piece].index);
+					Index({3, hash, 0, 0}, nullptr, piece, pieces[piece].extent, pieces[piece].index);
 				}
 				++totals.captured[kBackground];
 			}
@@ -2260,6 +2319,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					continue;
 				}
 				for (uint32_t piece: it->second.pieces) RemovePiece(piece, 2);
+				ReleaseHandle(it->second.index);
 				it = cells.erase(it);
 				++cellsVersion;
 			}
@@ -2268,6 +2328,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					++it;
 					continue;
 				}
+				ReleaseHandle(pieces[it->second].index);
 				RemovePiece(it->second, 3);
 				it = viewPieces.erase(it);
 			}
@@ -2287,7 +2348,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			// removes another candidate's item, so the pointers hold.
 			Gather();
 			for (Candidate const &candidate: candidates) {
-				Entry const &entry = candidate.entry;
+				Name const entry = handles[candidate.entry.handle].name;
 				Rect const r = ToScreen(*candidate.found.extent, camera);
 				switch (entry.kind) {
 					case 0: {
@@ -2314,11 +2375,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 						break;
 					}
 					case 2: {
-						Cell const &cell = *static_cast<Cell const *>(candidate.found.item);
+						Cell &cell = *static_cast<Cell *>(candidate.found.item);
 						bool gone = false;
 						for (auto const &[rect, redrawSerial]: killRects) gone |= cell.serial < redrawSerial && Inside(r, rect);
 						if (!gone) break;
 						for (uint32_t piece: cell.pieces) RemovePiece(piece, 2);
+						ReleaseHandle(cell.index);
 						cells.erase(entry.key);
 						++cellsVersion;
 						break;
@@ -2328,6 +2390,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 						bool gone = false;
 						for (auto const &[rect, redrawSerial]: killRects) gone |= piece.serial < redrawSerial && Overlaps(r, rect);
 						if (!gone) break;
+						ReleaseHandle(pieces[candidate.found.piece].index);
 						RemovePiece(candidate.found.piece, 3);
 						viewPieces.erase(entry.key);
 						break;
@@ -2941,7 +3004,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				auto const found = d.models.find(key);
 				if (found == d.models.end() || found->second.orphan) continue;
 				found->second.orphan = true;
-				d.IndexOrphan({0, key.occupant, key.group, key.instance}, found->second.extent);
+				d.IndexOrphan({0, key.occupant, key.group, key.instance}, &found->second, found->second.extent, found->second.index);
 			}
 		}
 		auto const drawables = d.gridByOccupant.find(event.id);
@@ -2950,7 +3013,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				auto const found = d.grid.find(drawable);
 				if (found == d.grid.end() || found->second.orphan) continue;
 				found->second.orphan = true;
-				d.IndexOrphan({1, drawable, 0, 0}, found->second.extent);
+				d.IndexOrphan({1, drawable, 0, 0}, &found->second, found->second.extent, found->second.index);
 			}
 		}
 	}
@@ -3197,7 +3260,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			d.modelsThisFrame.push_back(key);
 			if (added || std::memcmp(&before, &model.extent, sizeof(before)) != 0 ||
 			    std::memcmp(previousWorld, model.world, sizeof(previousWorld)) != 0) {
-				d.Index({0, key.occupant, key.group, key.instance}, model.extent, model.index);
+				d.Index({0, key.occupant, key.group, key.instance}, &model, 0, model.extent, model.index);
 				d.Changed(before);
 				d.Changed(model.extent);
 			}
