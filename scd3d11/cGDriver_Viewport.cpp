@@ -145,8 +145,7 @@ namespace nSCD3D11 {
 		depthDescription.MipLevels = 1;
 		depthDescription.ArraySize = 1;
 		// Typeless with a shader view so the scene depth can be handed to ReShade.
-		bool const stencil = depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT;
-		depthDescription.Format = stencil ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_R32_TYPELESS;
+		depthDescription.Format = D3D11DepthTypelessFormat(depthStencilFormat);
 		depthDescription.SampleDesc.Count = 1;
 		depthDescription.Usage = D3D11_USAGE_DEFAULT;
 		depthDescription.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
@@ -161,7 +160,7 @@ namespace nSCD3D11 {
 		}
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC depthViewDescription{};
-		depthViewDescription.Format = stencil ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : DXGI_FORMAT_R32_FLOAT;
+		depthViewDescription.Format = D3D11DepthShaderFormat(depthStencilFormat);
 		depthViewDescription.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
 		depthViewDescription.Texture2D.MipLevels = 1;
 		result = d3dDevice->CreateShaderResourceView(depthStencilTexture.Get(), &depthViewDescription, &depthShaderView);

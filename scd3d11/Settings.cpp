@@ -191,6 +191,7 @@ namespace nSCD3D11::Settings {
 		values.flipModel = Resolve(sources, "FlipModel", ParseFlag, values.flipModel);
 		values.gpu = Resolve(sources, "GPU", ParseGpu, values.gpu);
 		values.viewportCull = Resolve(sources, "ViewportCull", ParseFlag, values.viewportCull);
+		values.depth16 = Resolve(sources, "Depth16", ParseFlag, values.depth16);
 		values.reshade = Resolve(sources, "ReShade", ParseFlag, values.reshade);
 		values.drawStats = Resolve(sources, "DrawStats", ParseFlag, values.drawStats);
 		values.traceLog = Resolve(sources, "LogLevel", ParseLogLevel, values.traceLog);

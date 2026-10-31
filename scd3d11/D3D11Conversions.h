@@ -42,6 +42,21 @@ namespace nSCD3D11 {
         return {-zbias, -static_cast<FLOAT>(zbias)};
     }
 
+    // The typeless format of a depth texture that takes a view of this depth-stencil format, so region copies
+    // and the scratch copy always match the depth buffer.
+    constexpr DXGI_FORMAT D3D11DepthTypelessFormat(DXGI_FORMAT depthStencilFormat) {
+        return depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT ? DXGI_FORMAT_R24G8_TYPELESS
+             : depthStencilFormat == DXGI_FORMAT_D16_UNORM         ? DXGI_FORMAT_R16_TYPELESS
+                                                                    : DXGI_FORMAT_R32_TYPELESS;
+    }
+
+    // The format a shader reads that depth texture through.
+    constexpr DXGI_FORMAT D3D11DepthShaderFormat(DXGI_FORMAT depthStencilFormat) {
+        return depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS
+             : depthStencilFormat == DXGI_FORMAT_D16_UNORM         ? DXGI_FORMAT_R16_UNORM
+                                                                    : DXGI_FORMAT_R32_FLOAT;
+    }
+
     constexpr int32_t D3D11TopLeftY(int32_t targetHeight, int32_t y, int32_t height) {
         return targetHeight - y - height;
     }

@@ -102,7 +102,7 @@ namespace nSCD3D11::Doctor {
 
 		// SCD3D11's settings, read from the command line and SCD3D11.ini. They must match Settings::Load.
 		constexpr char const *kSettings[] = {
-			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull", "ReShade",
+			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull", "Depth16", "ReShade",
 			"DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize",
 		};
 
@@ -189,17 +189,28 @@ namespace nSCD3D11::Doctor {
 					reason = "SCD3D11 could not start Direct3D 11. The lines above in this log say why.";
 				}
 			}
+			// What to change to get SCD3D11 back, for the scvk note below.
+			std::string switchBack = "start SimCity 4 with -d:DirectX";
 			for (Switch const &entry : switches) {
 				std::string const value = Lower(entry.value);
 				if (entry.name == "d" && value != "directx" && value != "dx") {
 					reason = Format("%s picks it. Remove that switch.", entry.token.c_str());
+					switchBack = Format("start SimCity 4 with -d:DirectX instead of %s", entry.token.c_str());
 				}
 			}
 			if (environment.graphicsOptions) {
 				std::string const driver = Value(*environment.graphicsOptions, "Driver");
 				if (!driver.empty() && Lower(driver) != "directx") {
 					reason = Format("SC4GraphicsOptions.ini has Driver=%s. Set it to DirectX.", driver.c_str());
+					switchBack = Format("set Driver=DirectX instead of Driver=%s in SC4GraphicsOptions.ini",
+					                    driver.c_str());
 				}
+			}
+			// scvk is a renderer of its own that people pick on purpose, so it is only noted in the log.
+			if (!environment.activeDriverBuiltIn && Lower(name) == "scvk.dll") {
+				findings.push_back({Severity::Note, Format("SimCity 4 is drawing with scvk.dll. To use SCD3D11, %s.",
+				                                           switchBack.c_str())});
+				return;
 			}
 			findings.push_back({Severity::Problem, Format("SimCity 4 is drawing with %s, not SCD3D11. %s",
 			                                              name.c_str(), reason.c_str())});

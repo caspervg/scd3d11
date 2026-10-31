@@ -24,6 +24,7 @@
 #include "ShadowRegistry.h"
 #include "VertexFormatUtils.h"
 
+#include <cmath>
 #include <cstring>
 
 cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() {
@@ -237,6 +238,8 @@ namespace nSCD3D11 {
 
 	void cGDriver::ClearDepth(GLclampd depth) {
 		clearDepth = static_cast<float>(depth < 0.0 ? 0.0 : (depth > 1.0 ? 1.0 : depth));
+		// On Depth16's grid too, rounded the same way as the pixel shader, so a draw at the clear depth ties.
+		if (Settings::Get().depth16) clearDepth = std::ceil(clearDepth * 65536.0f) / 65536.0f;
 	}
 
 	void cGDriver::ClearStencil(GLint s) {
