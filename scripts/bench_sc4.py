@@ -57,7 +57,7 @@ def find_game() -> Path:
 
 GAME_EXE = find_game()
 LIVE_PLUGINS = Path(r"C:\Users\caspe\OneDrive - Maplix\SimCity 4\Plugins")
-SKIP = re.compile(r"^(SCD3D11\..*|SC4AutoSave\..*|.*\.(log|csv|bak))$", re.IGNORECASE)
+SKIP = re.compile(r"^(SCD3D1[12]\..*|SC4AutoSave\..*|.*\.(log|csv|bak))$", re.IGNORECASE)
 
 
 def send(command: str, timeout: float = 60) -> str | None:
@@ -270,10 +270,11 @@ def main() -> int:
     parser.add_argument("--city-name", help="the name saved in the city, when it differs from the file name")
     parser.add_argument("--delay", type=float, default=3.0, help="seconds after each command")
     parser.add_argument("--size", default="1920x1080")
-    parser.add_argument("--dll", type=Path, default=REPO / "cmake-build-release" / "SCD3D11.dll")
+    parser.add_argument("--dll", type=Path, default=REPO / "cmake-build-release" / "SCD3D11.dll",
+                        help="SCD3D11.dll, or SCD3D12.dll for the thin client (its ini and log take its name)")
     parser.add_argument("--server", type=Path, default=REPO / "cmake-build-server-release" / "SCD3D12Server.exe",
                         help="copied into Plugins/SCD3D12, for Renderer=server")
-    parser.add_argument("--ini", default="VSync=off", help="SCD3D11.ini lines, separated by ;")
+    parser.add_argument("--ini", default="VSync=off", help="lines of the DLL's ini, separated by ;")
     parser.add_argument("--arg", action="append", default=["-DrawStats"], help="extra game argument")
     parser.add_argument("--mirror-plugins", action="store_true")
     parser.add_argument("--plugin-source", type=Path, default=LIVE_PLUGINS)
@@ -287,17 +288,22 @@ def main() -> int:
     plugins.mkdir(parents=True, exist_ok=True)
     if args.mirror_plugins:
         mirror_plugins(args.plugin_source, plugins)
-    shutil.copy2(args.dll, plugins / "SCD3D11.dll")
+    # One driver DLL at a time, under its own name.
+    name = args.dll.stem
+    for other in ("SCD3D11", "SCD3D12"):
+        (plugins / f"{other}.dll").unlink(missing_ok=True)
+        (plugins / f"{other}.ini").unlink(missing_ok=True)
+    shutil.copy2(args.dll, plugins / args.dll.name)
     (plugins / "SCD3D12Server.exe").unlink(missing_ok=True)
     if args.server.exists():
         (plugins / "SCD3D12").mkdir(exist_ok=True)
         shutil.copy2(args.server, plugins / "SCD3D12" / "SCD3D12Server.exe")
-    (plugins / "SCD3D11.ini").write_text("[SCD3D11]\r\n" + "\r\n".join(args.ini.split(";")) + "\r\n")
+    (plugins / f"{name}.ini").write_text(f"[{name}]\r\n" + "\r\n".join(args.ini.split(";")) + "\r\n")
     region = prepare_region(args.user_dir, args.city)
 
     capture = REPO / "runtime-captures" / f"bench-{datetime.now():%Y%m%d-%H%M%S}"
     capture.mkdir(parents=True)
-    log = args.user_dir / "Logs" / "SCD3D11.log"
+    log = args.user_dir / "Logs" / f"{name}.log"
     server_log = args.user_dir / "Logs" / "SCD3D12Server.log"
     log.unlink(missing_ok=True)
     server_log.unlink(missing_ok=True)
