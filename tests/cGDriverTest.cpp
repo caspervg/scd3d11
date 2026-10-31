@@ -4,6 +4,7 @@
 #include "VertexFormatUtils.h"
 
 #include <cassert>
+#include <cfloat>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -924,6 +925,22 @@ namespace nSCD3D11 {
 			d.DeleteTextures(1, &texture);
 		}
 
+		// Min filters 0 and 1 (GL_NEAREST, GL_LINEAR) sample only the base level, like the stock
+		// driver. Some automata FSHes carry mips of a different vehicle, which must never show.
+		void NonMipmapMinFiltersSampleOnlyTheBaseLevel() {
+			d.TexStage(0);
+			float const expected[8] = {0, 0, FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX};
+			for (int32_t filter = 0; filter < 8; ++filter) {
+				if (filter == 2 || filter == 3) continue; // clamp and repeat aren't filters
+				d.TexParameter(0, 1, filter);
+				assert(SUCCEEDED(d.EnsureSampler(d.textureStages[0])));
+				D3D11_SAMPLER_DESC description{};
+				d.textureStages[0].sampler->GetDesc(&description);
+				assert(description.MaxLOD == expected[filter]);
+			}
+			d.TexParameter(0, 1, 6);
+		}
+
 		// Draws reuse the view each stage's texture resolved to, so deleting or recreating a texture must
 		// be seen by the next draw.
 		void BoundTextureViewsFollowTextureChanges() {
@@ -1335,6 +1352,7 @@ namespace nSCD3D11 {
 			MatchesDirect3D7Lighting();
 			ConstantsFollowEverySetter();
 			UnchangedSettersStayClean();
+			NonMipmapMinFiltersSampleOnlyTheBaseLevel();
 			BoundTextureViewsFollowTextureChanges();
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();
