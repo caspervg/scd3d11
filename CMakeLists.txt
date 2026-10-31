@@ -54,6 +54,10 @@ if (CMAKE_SIZEOF_VOID_P EQUAL 8)
         add_compile_options($<$<CONFIG:Release,RelWithDebInfo>:/arch:AVX2> $<$<CONFIG:Release,RelWithDebInfo>:/Gw>
                             $<$<CONFIG:Release,RelWithDebInfo>:/Gy>)
         add_link_options($<$<CONFIG:Release,RelWithDebInfo>:/OPT:REF> $<$<CONFIG:Release,RelWithDebInfo>:/OPT:ICF>)
+        # A PDB beside Release too, so profiles (WPR) and crash dumps resolve. /DEBUG would turn the two /OPT
+        # off again, which is why they are named above.
+        add_compile_options($<$<CONFIG:Release>:/Zi> $<$<CONFIG:Release>:/FS>)
+        add_link_options($<$<CONFIG:Release>:/DEBUG:FULL>)
     endif ()
     add_subdirectory(scd3d12)
     return()
