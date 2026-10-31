@@ -257,6 +257,18 @@ since). Motion vectors of a 1 and a 2 pixel scroll average 1.000 and 1.999 pixel
 `--look <x>,<y>` draws the chosen frames from a camera moved along the screen: at frame 13800 of scene-tutorial,
 960 pixels to the left shows the blocks SC4 drew at the start of the scroll and no longer draws.
 
+The static view is kept between frames, as SC4 keeps its backing store (`cGDriver12::SaveStaticView`). When SC4's
+camera has the same zoom and rotation as at the last composite and moved by whole pixels if at all, the kept colour
+and depth are copied back, moved by that much, and only what the move uncovered, what SC4 redrew and what changed in
+the scene since (every piece and model added, removed or moved, by its extent) are drawn again, clipped to a few
+rectangles of 64 pixel tiles. More than half the screen, a new view, the free camera, a look elsewhere, relighting
+and DLSS jitter draw everything. On a 23,000 frame Big City Tutorial capture (tutorial-a, 1920x1080): 9,807
+composites from the kept view in place and 1,547 moved by a scroll, 0.8 parts and 1.8% of the screen drawn per such
+composite; GPU per composite 0.40 ms average and 0.10 median (1.45 and 0.71 drawing everything), CPU 0.67 and 0.05
+(0.80 and 0.53). Frames where the camera stood still since the last full draw stay identical to the bit. A moved
+view differs along edges where a subpixel camera difference flips coverage (0.6% of the channels after a long
+scroll), as SC4's own moved backing store does.
+
 Time per composite (replay of scene-tutorial at 1920x1080; the retained scene's medians are from net-live):
 
 | Metres per pixel | Draws | Instances | CPU median (average) | GPU median (average) | Retained before (CPU, GPU) |

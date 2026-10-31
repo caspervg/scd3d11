@@ -658,6 +658,10 @@ namespace nSCD3D12 {
 			std::vector<float> cpuMilliseconds, gpuMilliseconds;
 			// CPU time of the composite's steps: what redraws removed, the buckets, the instances, the draws.
 			double steps[4]{};
+			// Composites drawn from the kept static view: in place, moved by a scroll, and scrolls that changed depth
+			// too (drawn whole). Parts drawn and their share of the screen.
+			uint64_t keptInPlace = 0, keptMoved = 0, depthMoves = 0, parts = 0;
+			double partArea = 0.0;
 		};
 
 		struct Zoom {
@@ -1145,6 +1149,23 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		uint64_t frame = 0;
 		bool staticWindow = true;
 		bool owning = false, composited = false;
+		// The static view as drawn at the last composite, kept by the driver (SaveStaticView), and the camera it
+		// was drawn with. What changed since, as extents (the camera's translation is added when they are drawn),
+		// or everything.
+		bool staticKept = false;
+		Camera staticCamera;
+		std::vector<Extent> changed;
+		bool changedAll = false;
+		void Changed(Extent const &e) {
+			if (e.Empty() || changedAll) return;
+			// So many that the whole view is drawn anyway (a full redraw adds every piece).
+			if (changed.size() >= 65536) {
+				changedAll = true;
+				changed.clear();
+				return;
+			}
+			changed.push_back(e);
+		}
 		std::vector<nSCDWire::DrawOwner> owners;
 		int32_t lastPass = -1;
 		uint64_t serial = 0;
@@ -1629,6 +1650,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					hi[a] = (std::max)(hi[a], v.position[a]);
 				}
 			}
+			Changed(p.extent);
 			Use(group);
 			int32_t const tx = static_cast<int32_t>(std::floor((lo[0] + hi[0]) * 0.5f / kTileMetres));
 			int32_t const tz = static_cast<int32_t>(std::floor((lo[2] + hi[2]) * 0.5f / kTileMetres));
@@ -1672,8 +1694,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		bool Refit(uint32_t index) {
 			Piece &p = pieces[index];
 			if (std::memcmp(p.view, captureView, sizeof(p.view)) == 0) return false;
+			Changed(p.extent);
 			p.extent = {};
 			for (D3D11Vertex const &v: p.vertices) p.extent.Add(captureView, v.position);
+			Changed(p.extent);
 			std::memcpy(p.view, captureView, sizeof(p.view));
 			buckets[p.bucket].extent.Add(p.extent);
 			return true;
@@ -1682,6 +1706,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		void RemovePiece(uint32_t index, uint32_t reason) {
 			Piece &p = pieces[index];
 			if (!p.alive) return;
+			Changed(p.extent);
 			Bucket &bucket = buckets[p.bucket];
 			uint32_t const last = bucket.pieces.back();
 			bucket.pieces[p.place] = last;
@@ -2136,6 +2161,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 			}
 			if (capturing == &found->second) capturing = nullptr;
+			Changed(found->second.extent);
 			models.erase(found);
 			++modelChanges;
 		}
@@ -2189,6 +2215,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		}
 
 		void KillAll(bool keepFresh) {
+			changedAll = true;
 			std::vector<ModelKey> modelKeys;
 			for (auto const &[key, model]: models) {
 				if (!keepFresh || model.frame != frame) modelKeys.push_back(key);
@@ -2355,6 +2382,103 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					instanceScratch[g.instanceFirst + g.instanceCount++] = rows;
 				}
 			}
+		}
+
+		// How far the view moved on screen since `from`, in whole pixels (right and down). False when it moved by
+		// part of a pixel, or changed every depth (depthMoved), so the kept view cannot simply be moved.
+		static bool PixelShift(Camera const &from, Camera const &to, int32_t &dx, int32_t &dy, bool &depthMoved) {
+			float const *p = to.projection, *q = from.projection;
+			float const x = ((to.view[12] - from.view[12]) * p[0] + (p[12] - q[12])) * static_cast<float>(to.width) * 0.5f;
+			float const y = -((to.view[13] - from.view[13]) * p[5] + (p[13] - q[13])) * static_cast<float>(to.height) * 0.5f;
+			float const z = (to.view[14] - from.view[14]) * p[10] + (p[14] - q[14]);
+			dx = static_cast<int32_t>(std::lround(x));
+			dy = static_cast<int32_t>(std::lround(y));
+			depthMoved = std::fabs(z) > 1e-6f;
+			return !depthMoved && std::fabs(x - static_cast<float>(dx)) < 0.02f && std::fabs(y - static_cast<float>(dy)) < 0.02f;
+		}
+
+		// The parts of the screen to draw again over the kept view moved by dx, dy: what the move uncovered, what
+		// SC4 redrew and what changed in the scene. Put together on a grid of 64 pixel tiles into a few rectangles.
+		// False when they would cover most of the screen, which is then drawn whole.
+		bool PartsToDraw(Camera const &now, int32_t dx, int32_t dy, std::vector<D3D12_RECT> &parts) {
+			constexpr int32_t kTile = 64;
+			int32_t const width = now.width, height = now.height;
+			int32_t const columns = (width + kTile - 1) / kTile, rows = (height + kTile - 1) / kTile;
+			std::vector<uint8_t> tiles(static_cast<size_t>(columns) * rows, 0);
+			auto const mark = [&](float left, float top, float right, float bottom) {
+				if (right < 0.0f || bottom < 0.0f || left > static_cast<float>(width) || top > static_cast<float>(height)) return;
+				// Two pixels either way for what rasterization and filtering reach past the vertices.
+				int32_t const l = (std::max)(0, static_cast<int32_t>(std::floor(left)) - 2) / kTile;
+				int32_t const t = (std::max)(0, static_cast<int32_t>(std::floor(top)) - 2) / kTile;
+				int32_t const r = (std::min)(width - 1, static_cast<int32_t>(std::ceil(right)) + 2) / kTile;
+				int32_t const b = (std::min)(height - 1, static_cast<int32_t>(std::ceil(bottom)) + 2) / kTile;
+				for (int32_t y = t; y <= b; ++y) {
+					for (int32_t x = l; x <= r; ++x) tiles[static_cast<size_t>(y) * columns + x] = 1;
+				}
+			};
+			if (dx > 0) mark(0.0f, 0.0f, static_cast<float>(dx), static_cast<float>(height));
+			if (dx < 0) mark(static_cast<float>(width + dx), 0.0f, static_cast<float>(width), static_cast<float>(height));
+			if (dy > 0) mark(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(dy));
+			if (dy < 0) mark(0.0f, static_cast<float>(height + dy), static_cast<float>(width), static_cast<float>(height));
+			for (Redraw const &redraw: redraws) {
+				int32_t const *const v = redraw.viewport;
+				mark(static_cast<float>(v[0]), static_cast<float>(height - v[3]), static_cast<float>(v[2]),
+				     static_cast<float>(height - v[1]));
+			}
+			for (Extent const &e: changed) {
+				Rect const r = ToScreen(e, now);
+				mark(r.left, r.top, r.right, r.bottom);
+			}
+			size_t marked = 0;
+			for (uint8_t tile: tiles) marked += tile;
+			if (marked * 2 > tiles.size()) return false;
+			// Runs of tiles per row, and runs that repeat on the rows below as one rectangle.
+			parts.clear();
+			std::vector<D3D12_RECT> open;
+			auto const pixels = [&](D3D12_RECT const &t, int32_t bottom) {
+				return D3D12_RECT{t.left * kTile, t.top * kTile, (std::min)(static_cast<LONG>(t.right * kTile), static_cast<LONG>(width)),
+				                  (std::min)(static_cast<LONG>(bottom * kTile), static_cast<LONG>(height))};
+			};
+			for (int32_t y = 0; y <= rows; ++y) {
+				std::vector<std::pair<int32_t, int32_t>> runs;
+				for (int32_t x = 0; y < rows && x < columns;) {
+					if (!tiles[static_cast<size_t>(y) * columns + x]) {
+						++x;
+						continue;
+					}
+					int32_t const first = x;
+					while (x < columns && tiles[static_cast<size_t>(y) * columns + x]) ++x;
+					runs.emplace_back(first, x);
+				}
+				std::vector<D3D12_RECT> next;
+				for (D3D12_RECT const &rect: open) {
+					std::pair<int32_t, int32_t> const run{rect.left, rect.right};
+					auto const same = std::find(runs.begin(), runs.end(), run);
+					if (same != runs.end()) {
+						next.push_back(rect);
+						runs.erase(same);
+					} else {
+						parts.push_back(pixels(rect, y));
+					}
+				}
+				for (auto const &[first, last]: runs) next.push_back({first, y, last, y});
+				open.swap(next);
+			}
+			// Each part is a pass over every group, so many small ones become their bounding box.
+			if (parts.size() > 12) {
+				D3D12_RECT box = parts.front();
+				for (D3D12_RECT const &rect: parts) {
+					box.left = (std::min)(box.left, rect.left);
+					box.top = (std::min)(box.top, rect.top);
+					box.right = (std::max)(box.right, rect.right);
+					box.bottom = (std::max)(box.bottom, rect.bottom);
+				}
+				if (static_cast<int64_t>(box.right - box.left) * (box.bottom - box.top) * 2 > static_cast<int64_t>(width) * height) {
+					return false;
+				}
+				parts.assign(1, box);
+			}
+			return true;
 		}
 
 		void Composite() {
@@ -2525,9 +2649,26 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 				fill = terrainField.Prepare(keptCells, keptVersion);
 			}
+			// Only what moved into view and what changed since the last composite, when the static view is kept from
+			// it: SC4's own camera at the same zoom and rotation, moved by whole pixels if at all. As SC4 keeps its
+			// backing store, but for everything the owned scene holds.
+			bool const keepable = plain && !fill && jitter[0] == 0.0f && jitter[1] == 0.0f && !driver.Relighting();
+			std::vector<D3D12_RECT> parts;
+			bool partial = false;
+			if (keepable && staticKept && !changedAll && SameView(now, staticCamera)) {
+				int32_t dx = 0, dy = 0;
+				bool depthMoved = false;
+				if (PixelShift(staticCamera, now, dx, dy, depthMoved) && PartsToDraw(now, dx, dy, parts) &&
+				    driver.RestoreStaticView(dx, dy)) {
+					partial = true;
+					++(dx == 0 && dy == 0 ? totals.keptInPlace : totals.keptMoved);
+				} else if (depthMoved) {
+					++totals.depthMoves;
+				}
+			}
 			cGDriver12::Transform game{};
 			driver.SaveTransform(game);
-			driver.ClearTargets();
+			if (!partial) driver.ClearTargets();
 			float jittered[16];
 			std::memcpy(jittered, now.projection, sizeof(jittered));
 			jittered[12] += 2.0f * jitter[0] / static_cast<float>(now.width);
@@ -2536,73 +2677,100 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			driver.RetainedCamera(now.view, now.projection);
 			uint64_t draws = 0, instances = 0;
 			D3D12_VERTEX_BUFFER_VIEW const viewInstance{instanceBase, sizeof(InstanceRows), sizeof(InstanceRows)};
-			for (uint32_t g: order) {
-				Group &group = groups[g];
-				if (group.model ? group.instanceCount == 0 : group.buckets.empty()) continue;
-				// After the background SC4 drew without depth test and its terrain, before the rest.
-				if (fill && group.rank >= 2ull << 48) {
-					terrainField.Draw(viewInstance);
-					fill = false;
-				}
-				cGDriver12::RetainedDraw draw{};
-				draw.pipeline = group.state.pipeline;
-				draw.depthBias = group.state.depthBias;
-				draw.stencilReference = group.state.stencilReference;
-				for (uint32_t stage = 0; stage < 2; ++stage) {
-					draw.pins[stage] = group.state.textures[stage];
-					draw.samplers[stage] = group.state.samplers[stage];
-				}
-				if (group.viewCoordinates) {
-					// Back from the world to this frame's view, or as captured with that view. The constants made for a
-					// view stay in a slot of their own until the view changes; a slot the GPU may still read is only
-					// freed, never written again.
-					if (group.viewSlot == UINT32_MAX || std::memcmp(now.view, group.viewSlotView, sizeof(now.view)) != 0) {
-						viewState = group.state;
-						bool const sameView = std::memcmp(now.view, group.captureView, sizeof(now.view)) == 0;
-						for (uint32_t stage = 0; stage < 2; ++stage) {
-							if (!ViewCoordinates(viewState, stage)) continue;
-							float *const matrix = ConstantMatrix(viewState, cGDriver12::kTextureMatrixOffset + stage * 64);
-							if (sameView || !inverted) std::memcpy(matrix, group.captureMatrices[stage], 16 * sizeof(float));
-							else Multiply(ConstantMatrix(group.state, cGDriver12::kTextureMatrixOffset + stage * 64), inverseView, matrix);
-						}
-						uint32_t const fresh = slots.Allocate(viewState.constants);
-						if (fresh == UINT32_MAX) continue;
-						if (group.viewSlot != UINT32_MAX) slots.Free(group.viewSlot, frame);
-						group.viewSlot = fresh;
-						std::memcpy(group.viewSlotView, now.view, sizeof(now.view));
+			// Every group in order, the buckets culled to the screen or to one part of it.
+			auto const drawAll = [&](Rect const *part) {
+				for (uint32_t g: order) {
+					Group &group = groups[g];
+					if (group.model ? group.instanceCount == 0 : group.buckets.empty()) continue;
+					// After the background SC4 drew without depth test and its terrain, before the rest.
+					if (fill && group.rank >= 2ull << 48) {
+						terrainField.Draw(viewInstance);
+						fill = false;
 					}
-					draw.constants = slots.Address(group.viewSlot);
-				} else {
-					draw.constants = slots.Address(group.slot);
+					cGDriver12::RetainedDraw draw{};
+					draw.pipeline = group.state.pipeline;
+					draw.depthBias = group.state.depthBias;
+					draw.stencilReference = group.state.stencilReference;
+					for (uint32_t stage = 0; stage < 2; ++stage) {
+						draw.pins[stage] = group.state.textures[stage];
+						draw.samplers[stage] = group.state.samplers[stage];
+					}
+					if (group.viewCoordinates) {
+						// Back from the world to this frame's view, or as captured with that view. The constants made for
+						// a view stay in a slot of their own until the view changes; a slot the GPU may still read is only
+						// freed, never written again.
+						if (group.viewSlot == UINT32_MAX || std::memcmp(now.view, group.viewSlotView, sizeof(now.view)) != 0) {
+							viewState = group.state;
+							bool const sameView = std::memcmp(now.view, group.captureView, sizeof(now.view)) == 0;
+							for (uint32_t stage = 0; stage < 2; ++stage) {
+								if (!ViewCoordinates(viewState, stage)) continue;
+								float *const matrix = ConstantMatrix(viewState, cGDriver12::kTextureMatrixOffset + stage * 64);
+								if (sameView || !inverted) std::memcpy(matrix, group.captureMatrices[stage], 16 * sizeof(float));
+								else Multiply(ConstantMatrix(group.state, cGDriver12::kTextureMatrixOffset + stage * 64), inverseView, matrix);
+							}
+							uint32_t const fresh = slots.Allocate(viewState.constants);
+							if (fresh == UINT32_MAX) continue;
+							if (group.viewSlot != UINT32_MAX) slots.Free(group.viewSlot, frame);
+							group.viewSlot = fresh;
+							std::memcpy(group.viewSlotView, now.view, sizeof(now.view));
+						}
+						draw.constants = slots.Address(group.viewSlot);
+					} else {
+						draw.constants = slots.Address(group.slot);
+					}
+					if (group.model) {
+						draw.vertices = group.vertices;
+						draw.indices = group.indices;
+						draw.indexCount = group.count;
+						draw.instances = {instanceBase + static_cast<uint64_t>(group.instanceFirst) * sizeof(InstanceRows),
+						                  group.instanceCount * static_cast<UINT>(sizeof(InstanceRows)), sizeof(InstanceRows)};
+						driver.DrawRetained(draw);
+						++draws;
+						instances += group.instanceCount;
+						continue;
+					}
+					draw.instances = {instanceBase, sizeof(InstanceRows), sizeof(InstanceRows)};
+					for (uint32_t b: group.buckets) {
+						Bucket const &bucket = buckets[b];
+						if (bucket.chunk == UINT32_MAX || bucket.indexUsed == 0) continue;
+						if (!everywhere) {
+							Rect const at = ToScreen(bucket.extent, camera);
+							if (!OnScreen(at, camera)) continue;
+							if (part != nullptr && (at.right < part->left || at.left > part->right ||
+							                        at.bottom < part->top || at.top > part->bottom)) continue;
+						}
+						pool.Ready(bucket.chunk);
+						D3D12_GPU_VIRTUAL_ADDRESS const address = pool.Address(bucket.chunk, bucket.offset);
+						draw.vertices = {address, bucket.vertexCapacity * static_cast<UINT>(sizeof(D3D11Vertex)), sizeof(D3D11Vertex)};
+						draw.indices = {address + IndexOffset(bucket), bucket.indexCapacity * 4u, DXGI_FORMAT_R32_UINT};
+						draw.indexCount = bucket.indexUsed;
+						driver.DrawRetained(draw);
+						++draws;
+						++instances;
+					}
 				}
-				if (group.model) {
-					draw.vertices = group.vertices;
-					draw.indices = group.indices;
-					draw.indexCount = group.count;
-					draw.instances = {instanceBase + static_cast<uint64_t>(group.instanceFirst) * sizeof(InstanceRows),
-					                  group.instanceCount * static_cast<UINT>(sizeof(InstanceRows)), sizeof(InstanceRows)};
-					driver.DrawRetained(draw);
-					++draws;
-					instances += group.instanceCount;
-					continue;
+			};
+			if (!partial) {
+				drawAll(nullptr);
+			} else {
+				for (D3D12_RECT const &rect: parts) {
+					Rect const part{static_cast<float>(rect.left), static_cast<float>(rect.top), static_cast<float>(rect.right),
+					                static_cast<float>(rect.bottom)};
+					driver.ClearTargetRect(rect);
+					driver.RetainedScissor(rect);
+					drawAll(&part);
+					totals.partArea += static_cast<double>(rect.right - rect.left) * (rect.bottom - rect.top) /
+					                   (static_cast<double>(now.width) * now.height);
 				}
-				draw.instances = {instanceBase, sizeof(InstanceRows), sizeof(InstanceRows)};
-				for (uint32_t b: group.buckets) {
-					Bucket const &bucket = buckets[b];
-					if (bucket.chunk == UINT32_MAX || bucket.indexUsed == 0) continue;
-					if (!everywhere && !OnScreen(ToScreen(bucket.extent, camera), camera)) continue;
-					pool.Ready(bucket.chunk);
-					D3D12_GPU_VIRTUAL_ADDRESS const address = pool.Address(bucket.chunk, bucket.offset);
-					draw.vertices = {address, bucket.vertexCapacity * static_cast<UINT>(sizeof(D3D11Vertex)), sizeof(D3D11Vertex)};
-					draw.indices = {address + IndexOffset(bucket), bucket.indexCapacity * 4u, DXGI_FORMAT_R32_UINT};
-					draw.indexCount = bucket.indexUsed;
-					driver.DrawRetained(draw);
-					++draws;
-					++instances;
-				}
+				totals.parts += parts.size();
 			}
 			if (fill) terrainField.Draw(viewInstance);
 			driver.EndRetained();
+			// Kept for the next composite, in place of drawing all of it again.
+			staticKept = keepable && driver.SaveStaticView();
+			if (staticKept) staticCamera = now;
+			changed.clear();
+			changedAll = false;
 			lap(3);
 			driver.RestoreTransform(game);
 			camera = sc4;
@@ -2760,6 +2928,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		Impl &d = *impl;
 		d.terrainField.VideoMode();
 		d.KillAll(false);
+		d.staticKept = false;
+		d.driver.DropStaticView();
 		d.bins.clear();
 		d.orphanBins.clear();
 		d.large.clear();
@@ -2967,8 +3137,11 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			d.retaken.swap(model.meshes);
 			model.meshes.clear();
 			d.modelsThisFrame.push_back(key);
-			if (added || std::memcmp(&before, &model.extent, sizeof(before)) != 0) {
+			if (added || std::memcmp(&before, &model.extent, sizeof(before)) != 0 ||
+			    std::memcmp(previousWorld, model.world, sizeof(previousWorld)) != 0) {
 				d.Index({0, key.occupant, key.group, key.instance}, model.extent, model.index);
+				d.Changed(before);
+				d.Changed(model.extent);
 			}
 			d.capturing = &model;
 			d.capturingDrawable = owner.drawable;
@@ -2989,7 +3162,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		for (uint32_t stage = 0; stage < 2; ++stage) kept.drawState.stages[stage].texture = kept.state.textures[stage];
 		// ponytail: a model drawn again with fewer meshes goes unnoticed. SC4 draws every mesh of a model each time.
 		size_t const at = d.capturing->meshes.size() - 1;
-		if (at >= d.retaken.size() || d.retaken[at] != group) ++d.modelChanges;
+		if (at >= d.retaken.size() || d.retaken[at] != group) {
+			++d.modelChanges;
+			d.Changed(d.capturing->extent);
+		}
 		++d.totals.captured[kModel];
 		return true;
 	}
@@ -3031,6 +3207,11 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		            t.composites ? static_cast<double>(t.draws) / t.composites : 0.0,
 		            t.composites ? static_cast<double>(t.instances) / t.composites : 0.0,
 		            static_cast<double>(t.appendedBytes) / (1 << 20), u(t.rebuilds));
+		std::printf("owned: %llu composites from the kept view in place, %llu moved by a scroll (%llu scrolls changed depth "
+		            "and were drawn whole); %.2f parts drawn per such composite, %.1f%% of the screen\n",
+		            u(t.keptInPlace), u(t.keptMoved), u(t.depthMoves),
+		            t.keptInPlace + t.keptMoved ? static_cast<double>(t.parts) / (t.keptInPlace + t.keptMoved) : 0.0,
+		            t.keptInPlace + t.keptMoved ? 100.0 * t.partArea / (t.keptInPlace + t.keptMoved) : 0.0);
 		auto const report = [](char const *indent, char const *name, std::vector<float> values) {
 			if (values.empty()) return;
 			std::sort(values.begin(), values.end());

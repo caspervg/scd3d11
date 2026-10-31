@@ -220,6 +220,19 @@ namespace nSCD3D12 {
 		void DrawRetained(RetainedDraw const &draw);
 		// Puts back the driver's own bindings and viewport.
 		void EndRetained();
+		// Between BeginRetained and EndRetained: draws only inside rect (pixels from the top left) from now on.
+		void RetainedScissor(D3D12_RECT const &rect);
+		// Clears colour and depth inside rect as ClearTargets does everywhere.
+		void ClearTargetRect(D3D12_RECT const &rect);
+		// The owned scene's static view kept between frames, as SC4 keeps its backing store. SaveStaticView copies
+		// colour and depth (with stencil) once the static view is drawn. RestoreStaticView clears both targets and
+		// copies the kept view back moved by dx, dy pixels (right and down), so only what the move uncovers and
+		// what changed need drawing. False when there is none or the move leaves none of it on screen. Not with
+		// relighting, whose light layer is not kept.
+		bool SaveStaticView();
+		bool RestoreStaticView(int32_t dx, int32_t dy);
+		void DropStaticView();
+		bool Relighting() const;
 		// The camera the kept draws were drawn with, for relighting: a view that only turns about world up and
 		// tilts, and the full window's projection. Without it the lighting pass learns the camera from the
 		// game's static draws, which the owned scene keeps from the driver.

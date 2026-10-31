@@ -916,6 +916,11 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		ComPtr<ID3D12Resource> depthScratch;
 		D3D12_RESOURCE_STATES depthScratchState = D3D12_RESOURCE_STATE_COPY_DEST;
 		bool depthScratchValid = false;
+		// The owned scene's static view between frames (SaveStaticView).
+		ComPtr<ID3D12Resource> staticColor, staticDepth;
+		D3D12_RESOURCE_STATES staticColorState = D3D12_RESOURCE_STATE_COPY_DEST;
+		D3D12_RESOURCE_STATES staticDepthState = D3D12_RESOURCE_STATE_COPY_DEST;
+		bool staticValid = false;
 		int32_t windowWidth = 0;
 		int32_t windowHeight = 0;
 		Region regions[kRegionCount];
@@ -2721,6 +2726,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		d.Retire(d.depthBuffer);
 		d.Retire(d.depthScratch);
 		d.depthScratchValid = false;
+		d.Retire(d.staticColor);
+		d.Retire(d.staticDepth);
+		d.staticValid = false;
 		// A new video mode starts over, as SC4 expects. A resize keeps textures and region numbers.
 		if (!d.resizing) {
 			for (Impl::Region &region: d.regions) d.RetireRegion(region);
@@ -4116,6 +4124,93 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	}
 
 	void cGDriver12::EndRetained() { impl->ApplyViewport(); }
+
+	void cGDriver12::RetainedScissor(D3D12_RECT const &rect) { impl->list->RSSetScissorRects(1, &rect); }
+
+	void cGDriver12::ClearTargetRect(D3D12_RECT const &rect) {
+		Impl &d = *impl;
+		if (!d.backBuffer) return;
+		float const black[4]{0.0f, 0.0f, 0.0f, 1.0f};
+		d.list->ClearRenderTargetView(d.RenderTargetView(), black, 1, &rect);
+		d.list->ClearDepthStencilView(d.DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 1,
+		                              &rect);
+		d.depthScratchValid = false;
+	}
+
+	bool cGDriver12::SaveStaticView() {
+		Impl &d = *impl;
+		if (!d.backBuffer || !d.depthBuffer || d.relight) return false;
+		if (!d.staticColor) {
+			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
+			D3D12_RESOURCE_DESC const color = TextureDescription(kColorFormat, d.windowWidth, d.windowHeight, 1);
+			D3D12_RESOURCE_DESC const depth = TextureDescription(kDepthTypeless, d.windowWidth, d.windowHeight, 1);
+			if (FAILED(d.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &color, D3D12_RESOURCE_STATE_COPY_DEST,
+			                                             nullptr, IID_PPV_ARGS(&d.staticColor))) ||
+			    FAILED(d.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &depth, D3D12_RESOURCE_STATE_COPY_DEST,
+			                                             nullptr, IID_PPV_ARGS(&d.staticDepth)))) {
+				d.staticColor.Reset();
+				d.staticDepth.Reset();
+				return false;
+			}
+			d.staticColorState = d.staticDepthState = D3D12_RESOURCE_STATE_COPY_DEST;
+		}
+		D3D12_RESOURCE_STATES color = D3D12_RESOURCE_STATE_RENDER_TARGET, depth = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		d.Transition(d.backBuffer.Get(), color, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		d.Transition(d.depthBuffer.Get(), depth, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		d.Transition(d.staticColor.Get(), d.staticColorState, D3D12_RESOURCE_STATE_COPY_DEST);
+		d.Transition(d.staticDepth.Get(), d.staticDepthState, D3D12_RESOURCE_STATE_COPY_DEST);
+		d.list->CopyResource(d.staticColor.Get(), d.backBuffer.Get());
+		d.list->CopyResource(d.staticDepth.Get(), d.depthBuffer.Get());
+		d.Transition(d.backBuffer.Get(), color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		d.Transition(d.depthBuffer.Get(), depth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+		d.staticValid = true;
+		return true;
+	}
+
+	bool cGDriver12::RestoreStaticView(int32_t dx, int32_t dy) {
+		Impl &d = *impl;
+		int32_t const width = d.windowWidth, height = d.windowHeight;
+		if (!d.staticValid || !d.backBuffer || d.relight || dx <= -width || dx >= width || dy <= -height || dy >= height) {
+			return false;
+		}
+		D3D12_RESOURCE_STATES color = D3D12_RESOURCE_STATE_RENDER_TARGET, depth = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		d.Transition(d.staticColor.Get(), d.staticColorState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		d.Transition(d.staticDepth.Get(), d.staticDepthState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		if (dx == 0 && dy == 0) {
+			d.Transition(d.backBuffer.Get(), color, D3D12_RESOURCE_STATE_COPY_DEST);
+			d.Transition(d.depthBuffer.Get(), depth, D3D12_RESOURCE_STATE_COPY_DEST);
+			d.list->CopyResource(d.backBuffer.Get(), d.staticColor.Get());
+			d.list->CopyResource(d.depthBuffer.Get(), d.staticDepth.Get());
+			d.Transition(d.backBuffer.Get(), color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			d.Transition(d.depthBuffer.Get(), depth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+			d.depthScratchValid = false;
+			return true;
+		}
+		// What stays on screen: a pixel at x in the kept view is at x + dx now. The rest stays cleared.
+		ClearTargets();
+		UINT const left = static_cast<UINT>(dx < 0 ? -dx : 0), top = static_cast<UINT>(dy < 0 ? -dy : 0);
+		D3D12_BOX const box{left, top, 0, static_cast<UINT>(width - (dx > 0 ? dx : 0)),
+		                    static_cast<UINT>(height - (dy > 0 ? dy : 0)), 1};
+		UINT const toX = static_cast<UINT>(static_cast<int32_t>(left) + dx), toY = static_cast<UINT>(static_cast<int32_t>(top) + dy);
+		d.Transition(d.backBuffer.Get(), color, D3D12_RESOURCE_STATE_COPY_DEST);
+		d.CopyRegion(d.backBuffer.Get(), toX, toY, d.staticColor.Get(), box, false);
+		d.Transition(d.backBuffer.Get(), color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		// Depth goes through the plain copy, as part of a depth buffer cannot be copied: the cleared depth, the kept
+		// part over it, then all of it back.
+		if (!d.RefreshDepthScratch()) return false;
+		d.Transition(d.depthScratch.Get(), d.depthScratchState, D3D12_RESOURCE_STATE_COPY_DEST);
+		d.CopyRegion(d.depthScratch.Get(), toX, toY, d.staticDepth.Get(), box, true);
+		d.Transition(d.depthScratch.Get(), d.depthScratchState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		d.Transition(d.depthBuffer.Get(), depth, D3D12_RESOURCE_STATE_COPY_DEST);
+		d.list->CopyResource(d.depthBuffer.Get(), d.depthScratch.Get());
+		d.Transition(d.depthBuffer.Get(), depth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+		d.depthScratchValid = true;
+		return true;
+	}
+
+	void cGDriver12::DropStaticView() { impl->staticValid = false; }
+
+	bool cGDriver12::Relighting() const { return impl->relight; }
 
 	void cGDriver12::RetainedCamera(float const *view, float const *projection) {
 		Impl &d = *impl;
