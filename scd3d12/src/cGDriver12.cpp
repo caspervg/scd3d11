@@ -3243,8 +3243,12 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				ComPtr<ID3D12Resource> const old = texture.resource;
 				D3D12_RESOURCE_STATES oldState = texture.state;
 				uint32_t const oldLevels = texture.levels;
+				// A pinned image stays with its pin, which reads it in any shader: ReleaseTexture makes it readable
+				// before the new chain replaces it, and it is made readable again once copied from.
+				bool const pinned = !d.pinOf.empty() && d.pinOf.count(old.Get()) != 0;
 				if (!d.CreateTextureResource(texture, static_cast<uint32_t>(internalFormat), texture.width,
 				                             texture.height, maximumLevels)) return;
+				if (pinned) oldState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
 				d.Transition(old.Get(), oldState, D3D12_RESOURCE_STATE_COPY_SOURCE);
 				for (uint32_t oldLevel = 0; oldLevel < oldLevels; ++oldLevel) {
 					D3D12_TEXTURE_COPY_LOCATION to{texture.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
