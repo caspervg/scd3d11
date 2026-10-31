@@ -117,7 +117,9 @@ namespace nSCD3D11 {
                 description.FillMode = D3D11_FILL_SOLID;
                 description.CullMode = enabledCapabilities[kGDCapability_CullFace] ? D3D11_CULL_BACK : D3D11_CULL_NONE;
                 description.FrontCounterClockwise = TRUE;
-                description.DepthBias = polygonOffset;
+                DepthBias const bias = D3D11DepthBias(polygonOffset);
+                description.DepthBias = bias.units;
+                description.SlopeScaledDepthBias = bias.slopeScale;
                 description.DepthClipEnable = TRUE;
                 description.ScissorEnable = scissorEnabled;
 
