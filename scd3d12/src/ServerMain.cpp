@@ -599,6 +599,11 @@ namespace {
 }
 
 int wmain(int argc, wchar_t **argv) {
+	// Built for AVX2 (see CMakeLists.txt). PF_AVX2_INSTRUCTIONS_AVAILABLE is 40.
+	if (!IsProcessorFeaturePresent(40)) {
+		std::fputs("SCD3D12Server needs a CPU with AVX2.\n", stderr);
+		return 3;
+	}
 	CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 	int result = 2;
 	std::wstring const command = argc > 1 ? argv[1] : L"";

@@ -21,6 +21,8 @@ namespace nSCD3D11 {
 		constexpr uint64_t kRingBytes = 64ull << 20;
 		// How long a frame may take before the server counts as stuck.
 		constexpr DWORD kFrameTimeoutMs = 3000;
+		// PF_AVX2_INSTRUCTIONS_AVAILABLE, which older SDKs do not name.
+		constexpr DWORD kAvx2Feature = 40;
 
 		std::wstring ModuleFolder() {
 			HMODULE module = nullptr;
@@ -41,6 +43,11 @@ namespace nSCD3D11 {
 	}
 
 	bool RemoteRenderer::Start() {
+		// The server is built for AVX2 and would crash at its first AVX2 instruction without it.
+		if (!IsProcessorFeaturePresent(kAvx2Feature)) {
+			Log(LogCategory::Initialization, "server: this CPU has no AVX2, which SCD3D12Server needs; not starting it");
+			return false;
+		}
 		DWORD const self = GetCurrentProcessId();
 		// A server started in place of one that stopped gets a ring of its own: the old one stays open until the
 		// stream has moved over.

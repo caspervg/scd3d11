@@ -43,6 +43,18 @@ endforeach ()
 
 # A 64-bit configuration builds SCD3D12Server alone. Everything else is 32-bit, like SimCity 4.
 if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    # The server's CPU time per frame is what limits it, so its optimized builds get everything that keeps results
+    # the same: whole-program optimization across all its code (DBPFKit and libsquish included), AVX2, and unused
+    # functions and data dropped. Not /fp:fast, which would change floating-point results, and replays are compared
+    # to the bit. Every GPU with Direct3D 12 sits next to a CPU with AVX2 in practice; the shim checks before it
+    # starts the server.
+    if (MSVC)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+        add_compile_options($<$<CONFIG:Release,RelWithDebInfo>:/arch:AVX2> $<$<CONFIG:Release,RelWithDebInfo>:/Gw>
+                            $<$<CONFIG:Release,RelWithDebInfo>:/Gy>)
+        add_link_options($<$<CONFIG:Release,RelWithDebInfo>:/OPT:REF> $<$<CONFIG:Release,RelWithDebInfo>:/OPT:ICF>)
+    endif ()
     add_subdirectory(scd3d12)
     return()
 endif ()
