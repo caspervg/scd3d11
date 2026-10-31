@@ -662,6 +662,12 @@ namespace nSCD3D12 {
 			// too (drawn whole). Parts drawn and their share of the screen.
 			uint64_t keptInPlace = 0, keptMoved = 0, depthMoves = 0, parts = 0;
 			double partArea = 0.0;
+			// Composites drawn whole because: not SC4's plain camera (free camera, kept view, look elsewhere, jitter,
+			// relighting), nothing kept yet, everything changed, another zoom or rotation, depth moved, moved by part of
+			// a pixel, too much to draw again, the kept view could not be restored. fractionSum adds up how far from
+			// whole pixels the part-pixel moves were.
+			uint64_t drawnWhole[8]{};
+			double fractionSum = 0.0;
 		};
 
 		struct Zoom {
@@ -2386,15 +2392,21 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 
 		// How far the view moved on screen since `from`, in whole pixels (right and down). False when it moved by
 		// part of a pixel, or changed every depth (depthMoved), so the kept view cannot simply be moved.
-		static bool PixelShift(Camera const &from, Camera const &to, int32_t &dx, int32_t &dy, bool &depthMoved) {
+		// How far the view moved on screen since `from`, as the nearest whole pixels (right and down), and how far
+		// those are from the move (snapX, snapY). False when every depth changed too, so the kept depth would not fit.
+		static bool PixelShift(Camera const &from, Camera const &to, int32_t &dx, int32_t &dy, float &snapX, float &snapY) {
 			float const *p = to.projection, *q = from.projection;
 			float const x = ((to.view[12] - from.view[12]) * p[0] + (p[12] - q[12])) * static_cast<float>(to.width) * 0.5f;
 			float const y = -((to.view[13] - from.view[13]) * p[5] + (p[13] - q[13])) * static_cast<float>(to.height) * 0.5f;
 			float const z = (to.view[14] - from.view[14]) * p[10] + (p[14] - q[14]);
 			dx = static_cast<int32_t>(std::lround(x));
 			dy = static_cast<int32_t>(std::lround(y));
-			depthMoved = std::fabs(z) > 1e-6f;
-			return !depthMoved && std::fabs(x - static_cast<float>(dx)) < 0.02f && std::fabs(y - static_cast<float>(dy)) < 0.02f;
+			snapX = static_cast<float>(dx) - x;
+			snapY = static_cast<float>(dy) - y;
+			// Rounding noise of a move by whole pixels is no move.
+			if (std::fabs(snapX) < 0.002f) snapX = 0.0f;
+			if (std::fabs(snapY) < 0.002f) snapY = 0.0f;
+			return std::fabs(z) <= 1e-6f;
 		}
 
 		// The parts of the screen to draw again over the kept view moved by dx, dy: what the move uncovered, what
@@ -2612,6 +2624,44 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			bool const usePicks = turned || freePicks;
 			// SC4's own camera, as it is most of the time: the rows can come from SC4's modelviews and the cache below.
 			bool const plain = !everywhere && !looking && !usePicks;
+			// Only what moved into view and what changed since the last composite, when the static view is kept from
+			// it: SC4's own camera at the same zoom and rotation. SC4 moves its camera by parts of a pixel while it
+			// scrolls and its backing store by whole ones, and so does this: the kept view moves by the whole pixels
+			// nearest to the camera's move, and what is drawn again is drawn with the camera moved by exactly that
+			// much, so it lines up with the kept view. The static view is then up to half a pixel from SC4's camera,
+			// as SC4's own is, and that never adds up, as the next move is measured from the snapped camera.
+			// Decided before the instance rows, which are made with the snapped camera too.
+			bool const keepable = plain && jitter[0] == 0.0f && jitter[1] == 0.0f && !driver.Relighting();
+			std::vector<D3D12_RECT> parts;
+			bool partial = false;
+			// Why a composite drew everything, for PrintTotals.
+			uint64_t *why = nullptr;
+			if (!keepable) why = &totals.drawnWhole[0];
+			else if (!staticKept) why = &totals.drawnWhole[1];
+			else if (changedAll) why = &totals.drawnWhole[2];
+			else if (!SameView(now, staticCamera)) why = &totals.drawnWhole[3];
+			if (why == nullptr) {
+				int32_t dx = 0, dy = 0;
+				float snapX = 0.0f, snapY = 0.0f;
+				if (!PixelShift(staticCamera, now, dx, dy, snapX, snapY)) {
+					why = &totals.drawnWhole[4];
+				} else if (!PartsToDraw(now, dx, dy, parts)) {
+					why = &totals.drawnWhole[6];
+				} else if (!driver.RestoreStaticView(dx, dy)) {
+					why = &totals.drawnWhole[7];
+				} else {
+					partial = true;
+					++(dx == 0 && dy == 0 ? totals.keptInPlace : totals.keptMoved);
+					if (snapX != 0.0f || snapY != 0.0f) {
+						++totals.drawnWhole[5];
+						totals.fractionSum += std::fabs(snapX) + std::fabs(snapY);
+						// The view moved by the whole pixels: snap is how far that is from SC4's move, in pixels.
+						now.view[12] += snapX / (now.projection[0] * static_cast<float>(now.width) * 0.5f);
+						now.view[13] -= snapY / (now.projection[5] * static_cast<float>(now.height) * 0.5f);
+					}
+				}
+			}
+			if (why != nullptr) ++*why;
 			InstanceSource const source{true, cameraId, modelChanges, modelTakes, orderVersion, models.size()};
 			bool const reuse = plain && instanceSource.valid && instanceSource.camera == source.camera &&
 			                   instanceSource.modelChanges == source.modelChanges &&
@@ -2648,23 +2698,6 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					}
 				}
 				fill = terrainField.Prepare(keptCells, keptVersion);
-			}
-			// Only what moved into view and what changed since the last composite, when the static view is kept from
-			// it: SC4's own camera at the same zoom and rotation, moved by whole pixels if at all. As SC4 keeps its
-			// backing store, but for everything the owned scene holds.
-			bool const keepable = plain && !fill && jitter[0] == 0.0f && jitter[1] == 0.0f && !driver.Relighting();
-			std::vector<D3D12_RECT> parts;
-			bool partial = false;
-			if (keepable && staticKept && !changedAll && SameView(now, staticCamera)) {
-				int32_t dx = 0, dy = 0;
-				bool depthMoved = false;
-				if (PixelShift(staticCamera, now, dx, dy, depthMoved) && PartsToDraw(now, dx, dy, parts) &&
-				    driver.RestoreStaticView(dx, dy)) {
-					partial = true;
-					++(dx == 0 && dy == 0 ? totals.keptInPlace : totals.keptMoved);
-				} else if (depthMoved) {
-					++totals.depthMoves;
-				}
 			}
 			cGDriver12::Transform game{};
 			driver.SaveTransform(game);
@@ -3207,6 +3240,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		            t.composites ? static_cast<double>(t.draws) / t.composites : 0.0,
 		            t.composites ? static_cast<double>(t.instances) / t.composites : 0.0,
 		            static_cast<double>(t.appendedBytes) / (1 << 20), u(t.rebuilds));
+		std::printf("owned: drawn whole because: %llu not SC4's plain camera, %llu nothing kept, %llu everything changed, %llu "
+		            "another view, %llu depth moved; %llu moved by part of a pixel and snapped (%.3f px on average); %llu too much "
+		            "changed, %llu not restored\n",
+		            u(t.drawnWhole[0]), u(t.drawnWhole[1]), u(t.drawnWhole[2]), u(t.drawnWhole[3]), u(t.drawnWhole[4]),
+		            u(t.drawnWhole[5]), t.drawnWhole[5] ? t.fractionSum / static_cast<double>(t.drawnWhole[5]) : 0.0,
+		            u(t.drawnWhole[6]), u(t.drawnWhole[7]));
 		std::printf("owned: %llu composites from the kept view in place, %llu moved by a scroll (%llu scrolls changed depth "
 		            "and were drawn whole); %.2f parts drawn per such composite, %.1f%% of the screen\n",
 		            u(t.keptInPlace), u(t.keptMoved), u(t.depthMoves),
