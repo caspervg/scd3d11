@@ -24,12 +24,12 @@ namespace nSCD3D11
 	namespace
 	{
 		// Window and swap chain events repeat on every focus change, so they get a larger budget.
-		constexpr unsigned int kMessagesPerCategory[] = { 128, 128, 1024, 128, 128, 128, 1024, 1u << 20 };
+		constexpr unsigned int kMessagesPerCategory[] = { 128, 128, 1024, 128, 128, 128, 1024, 1u << 20, 1024 };
 		std::atomic<unsigned int> messageCounts[static_cast<unsigned int>(LogCategory::Count)]{};
 		std::unordered_set<uint64_t> observed[static_cast<unsigned int>(ObservedCategory::Count)];
 
 		char const* CategoryName(LogCategory category) {
-			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported", "window", "stats" };
+			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported", "window", "stats", "doctor" };
 			return names[static_cast<unsigned int>(category)];
 		}
 
@@ -37,19 +37,7 @@ namespace nSCD3D11
 		// SCD3D11.dll, where other plugins keep their logs too. Falls back to the working directory if
 		// the module path is unavailable.
 		void WriteLogLine(char const* message) {
-			static std::filesystem::path const logPath = [] {
-				HMODULE module = nullptr;
-				wchar_t path[MAX_PATH]{};
-				if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				                        reinterpret_cast<LPCWSTR>(&WriteLogLine), &module) ||
-				    GetModuleFileNameW(module, path, MAX_PATH) == 0) {
-					return std::filesystem::path(L"SCD3D11.log");
-				}
-				std::filesystem::path const logs = std::filesystem::path(path).parent_path().parent_path() / L"Logs";
-				std::error_code ignored;
-				std::filesystem::create_directories(logs, ignored);
-				return logs / L"SCD3D11.log";
-			}();
+			static std::filesystem::path const logPath = LogDirectory() / L"SCD3D11.log";
 
 			// _wfopen_s does not share the file, so a concurrent writer (the watchdog) would lose its line.
 			static std::mutex mutex;
@@ -92,6 +80,23 @@ namespace nSCD3D11
 		}
 	}
 
+	std::filesystem::path LogDirectory() {
+		static std::filesystem::path const logs = [] {
+			HMODULE module = nullptr;
+			wchar_t path[MAX_PATH]{};
+			if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			                        reinterpret_cast<LPCWSTR>(&LogDirectory), &module) ||
+			    GetModuleFileNameW(module, path, MAX_PATH) == 0) {
+				return std::filesystem::path();
+			}
+			std::filesystem::path const folder = std::filesystem::path(path).parent_path().parent_path() / L"Logs";
+			std::error_code ignored;
+			std::filesystem::create_directories(folder, ignored);
+			return folder;
+		}();
+		return logs;
+	}
+
 	void Log(LogCategory category, char const* format, ...) {
 		va_list arguments;
 		va_start(arguments, format);
@@ -123,6 +128,17 @@ namespace nSCD3D11
 
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result) {
 		Log(category, "%s failed (HRESULT 0x%08lX)", operation, static_cast<unsigned long>(result));
+	}
+
+	void LogMemoryStatus(LogCategory category, char const* when) {
+		MEMORYSTATUSEX memory{sizeof(memory)};
+		if (!GlobalMemoryStatusEx(&memory)) return;
+		auto const mb = [](DWORDLONG bytes) { return static_cast<unsigned long long>(bytes / (1024 * 1024)); };
+		Log(category, "memory %s: address space %llu of %llu MB free, RAM %llu of %llu MB free, "
+		    "commit %llu of %llu MB free", when,
+		    mb(memory.ullAvailVirtual), mb(memory.ullTotalVirtual),
+		    mb(memory.ullAvailPhys), mb(memory.ullTotalPhys),
+		    mb(memory.ullAvailPageFile), mb(memory.ullTotalPageFile));
 	}
 
 	void RecordEncountered(ObservedCategory category, uint64_t value) {

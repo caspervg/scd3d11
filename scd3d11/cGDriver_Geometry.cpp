@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 #include "LiveShadowHooks.h"
+#include "Settings.h"
 #include "VertexFormatUtils.h"
 
 #include <cstddef>
@@ -21,10 +22,15 @@
 #include <cmath>
 
 namespace nSCD3D11 {
-	// 8 segments each: at most 128 MB vertex + 32 MB index cache (was 512 + 128 MB).
-	constexpr uint32_t VERTEX_CACHE_SEGMENT_BYTES = 16u * 1024u * 1024u;
+	// By default 8 segments each: at most 128 MB vertex + 32 MB index cache (was 512 + 128 MB). The
+	// vertex cache's count and size come from VertexCacheSegments and VertexCacheSize.
+	constexpr uint8_t INDEX_CACHE_SEGMENTS = 8;
 	constexpr uint32_t INDEX_CACHE_SEGMENT_BYTES = 4u * 1024u * 1024u;
-	constexpr uint64_t LOW_ADDRESS_SPACE_BYTES = 512ull * 1024u * 1024u;
+	// Below this much free address space a cache shrinks to TRIMMED_CACHE_SEGMENTS and frees the rest
+	// for SC4, whose own allocations crash when they fail. Some drivers (VirtIO) map a dynamic buffer
+	// at twice its size, so the whole cache must fit twice over before it grows back.
+	constexpr uint64_t LOW_ADDRESS_SPACE_BYTES = 768ull * 1024u * 1024u;
+	constexpr uint8_t TRIMMED_CACHE_SEGMENTS = 2;
 	// Bounds cache bookkeeping (roughly 100 bytes per entry) when uploads are tiny.
 	constexpr size_t MAX_CACHE_ENTRIES_PER_SEGMENT = 32768;
 
@@ -33,6 +39,13 @@ namespace nSCD3D11 {
 #ifndef SCD3D11_INTERPOLATION
 #define SCD3D11_INTERPOLATION
 #endif
+// A pixel shader that promises SV_DepthGreaterEqual must read the position centroid. Without multisampling that
+// is still the pixel centre.
+#ifdef SCD3D11_DEPTH_SEMANTIC
+#define SCD3D11_POSITION_INTERPOLATION centroid
+#else
+#define SCD3D11_POSITION_INTERPOLATION
+#endif
 struct StageState
 {
 	uint4 modes;
@@ -40,11 +53,15 @@ struct StageState
 	uint4 parameters1;
 };
 
-cbuffer DriverConstants : register(b0)
+cbuffer DrawConstants : register(b0)
 {
 	column_major float4x4 modelView;
-	column_major float4x4 projection;
 	column_major float4x4 normalMatrix;
+};
+
+cbuffer DriverConstants : register(b1)
+{
+	column_major float4x4 projection;
 	uint flags;
 	uint alphaFunction;
 	float alphaReference;
@@ -84,7 +101,7 @@ struct VSInput
 
 struct PSInput
 {
-	float4 position : SV_POSITION;
+	SCD3D11_POSITION_INTERPOLATION float4 position : SV_POSITION;
 	SCD3D11_INTERPOLATION float3 normal : NORMAL;
 	SCD3D11_INTERPOLATION float4 color : COLOR0;
 	SCD3D11_INTERPOLATION float3 viewPosition : TEXCOORD3;
@@ -161,8 +178,20 @@ float4 ApplyStage(StageState state, float4 textureColor, float4 previous, float4
 	return result;
 }
 
+// SCD3D11_DEPTH_SEMANTIC, when defined, rounds each depth up onto a 16-bit grid before it is tested and written.
+// SC4's DirectX 7 driver kept the first depth format Direct3D listed, a 16-bit one, and SC4 layers the ground's
+// overlays (shadows, decals, network and lot textures) 1/65536 apart, relying on near-equal depths to tie under
+// its LESSEQUAL test. A 24-bit buffer resolves those ties into per-pixel z-fighting. 65536 is a power of two, so
+// every grid value is an exact float. Rounding up keeps SV_DepthGreaterEqual true, so early depth rejection stays.
+#ifdef SCD3D11_DEPTH_SEMANTIC
+float4 PSMain(PSInput input, out float depth : SCD3D11_DEPTH_SEMANTIC) : SV_TARGET
+#else
 float4 PSMain(PSInput input) : SV_TARGET
+#endif
 {
+#ifdef SCD3D11_DEPTH_SEMANTIC
+	depth = ceil(input.position.z * 65536.0f) * (1.0f / 65536.0f);
+#endif
 	float4 primary = input.color;
 	if ((flags & 4) != 0)
 	{
@@ -210,10 +239,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 }
 )";
 
-		struct DriverConstants {
+		// Changes with nearly every object, so it is uploaded on its own.
+		struct DrawConstants {
 			float modelView[16];
-			float projection[16];
 			float normalMatrix[16];
+		};
+
+		struct DriverConstants {
+			float projection[16];
 			uint32_t flags;
 			uint32_t alphaFunction;
 			float alphaReference;
@@ -287,7 +320,21 @@ float4 PSMain(PSInput input) : SV_TARGET
 			LogHRESULT(LogCategory::Resource, "D3DCompile(VSMain)", result);
 			return result;
 		}
-		D3D_SHADER_MACRO const flatMacros[] = {{"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+		// Depth16 writes the depth from the pixel shader. Feature level 11 can promise it only moves away from
+		// the viewer, which keeps early depth rejection; 10.x gets a plain depth output.
+		bool const shaderModel5 = featureLevel >= D3D_FEATURE_LEVEL_11_0;
+		char const *const pixelProfile = shaderModel5 ? "ps_5_0" : "ps_4_0";
+		char const *const depthSemantic =
+			!Settings::Get().depth16 ? nullptr : (shaderModel5 ? "SV_DepthGreaterEqual" : "SV_Depth");
+		D3D_SHADER_MACRO const flatMacros[] = {
+			{"SCD3D11_INTERPOLATION", "nointerpolation"},
+			{depthSemantic != nullptr ? "SCD3D11_DEPTH_SEMANTIC" : nullptr, depthSemantic},
+			{nullptr, nullptr}
+		};
+		D3D_SHADER_MACRO const smoothMacros[] = {
+			{depthSemantic != nullptr ? "SCD3D11_DEPTH_SEMANTIC" : nullptr, depthSemantic},
+			{nullptr, nullptr}
+		};
 		// The flat pair is compiled together: the interpolation modes decide how outputs pack into
 		// registers, so the smooth vertex shader would hand the flat pixel shader the wrong fog distance.
 		result = D3DCompile(
@@ -300,7 +347,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		result = D3DCompile(
 			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", flatMacros, nullptr,
-			"PSMain", "ps_4_0", compileFlags, 0, &flatPixelBytecode, &messages);
+			"PSMain", pixelProfile, compileFlags, 0, &flatPixelBytecode, &messages);
 		if (messages) messages.Reset();
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "D3DCompile(PSMain flat)", result);
@@ -308,8 +355,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		result = D3DCompile(
-			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", nullptr, nullptr,
-			"PSMain", "ps_4_0", compileFlags, 0, &pixelBytecode, &messages);
+			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", smoothMacros, nullptr,
+			"PSMain", pixelProfile, compileFlags, 0, &pixelBytecode, &messages);
 		if (messages) {
 			Log(LogCategory::Resource, "pixel shader compiler: %s",
 			    static_cast<char const *>(messages->GetBufferPointer()));
@@ -371,12 +418,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 		constantDescription.Usage = D3D11_USAGE_DYNAMIC;
 		constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		for (auto &buffer: transformBuffers) {
-			result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &buffer);
-			if (FAILED(result)) {
-				LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
-				return result;
-			}
+		result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &stateConstantBuffer);
+		if (SUCCEEDED(result)) {
+			constantDescription.ByteWidth = sizeof(DrawConstants);
+			result = d3dDevice->CreateBuffer(&constantDescription, nullptr, &drawConstantBuffer);
+		}
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(constants)", result);
+			return result;
 		}
 
 		// Bound to empty texture stages so the debug layer never sees a NULL sampler.
@@ -411,7 +460,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheHits;
 		else ++indexBufferCacheHits;
-		buffer = segments[cached->second.segment].buffer;
+		GeometryCacheSegment &segment = segments[cached->second.segment];
+		segment.lastUseFrame = currentFrame;
+		buffer = segment.buffer;
 		offset = cached->second.offset;
 		return true;
 	}
@@ -436,10 +487,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 		// Segment count, actual capacities and entries per segment are all bounded, so an oversized upload
 		// evicts older segments rather than growing the cache past its budget.
-		uint32_t const normalCapacity = bindFlags == D3D11_BIND_VERTEX_BUFFER
-			                                ? VERTEX_CACHE_SEGMENT_BYTES
-			                                : INDEX_CACHE_SEGMENT_BYTES;
-		uint64_t const budget = static_cast<uint64_t>(normalCapacity) * GEOMETRY_CACHE_SEGMENTS;
+		bool const vertices = bindFlags == D3D11_BIND_VERTEX_BUFFER;
+		uint32_t const normalCapacity = vertices ? vertexCacheSegmentBytes : INDEX_CACHE_SEGMENT_BYTES;
+		uint8_t const configured = vertices ? vertexCacheSegments : INDEX_CACHE_SEGMENTS;
+		bool &trimmed = vertices ? vertexCacheTrimmed : indexCacheTrimmed;
+		uint8_t ring = trimmed ? (std::min)(configured, TRIMMED_CACHE_SEGMENTS) : configured;
+		uint64_t const budget = static_cast<uint64_t>(normalCapacity) * configured;
 		if (requiredSize > budget) {
 			Log(LogCategory::Unsupported, "%u byte upload exceeds the geometry cache budget", requiredSize);
 			return false;
@@ -449,16 +502,20 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (!segment->buffer || static_cast<uint64_t>(segment->cursor) + requiredSize > segment->capacity ||
 		    segment->keys.size() >= MAX_CACHE_ENTRIES_PER_SEGMENT) {
 			if (segment->buffer && segment->cursor != 0) {
-				activeSegment = static_cast<uint8_t>((activeSegment + 1) % GEOMETRY_CACHE_SEGMENTS);
-				// Low 32-bit address space: recycle the segments we already have instead of growing.
-				MEMORYSTATUSEX memory{sizeof(memory)};
-				if (!segments[activeSegment].buffer && GlobalMemoryStatusEx(&memory) &&
-				    memory.ullAvailVirtual < LOW_ADDRESS_SPACE_BYTES) {
-					activeSegment = 0;
+				// Low 32-bit address space: shrink the ring and hand the other segments back to SC4.
+				uint64_t const available = AvailableAddressSpace();
+				if (!trimmed && available < LOW_ADDRESS_SPACE_BYTES) {
+					ring = TrimCache(segments, cache, vertices, available);
+				} else if (trimmed && available != UINT64_MAX && available >= LOW_ADDRESS_SPACE_BYTES + 2 * budget) {
+					trimmed = false;
+					ring = configured;
+					Log(LogCategory::Resource, "%s cache may grow to %u segments again, %llu MB address space free",
+					    vertices ? "vertex" : "index", ring, static_cast<unsigned long long>(available >> 20));
 				}
+				activeSegment = static_cast<uint8_t>((activeSegment + 1) % ring);
 				segment = &segments[activeSegment];
 				LogTrace(LogCategory::Resource, "%s cache advanced to segment %u",
-				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment);
+				    vertices ? "vertex" : "index", activeSegment);
 			}
 
 			// An oversized segment shrinks back once it is reused for ordinary uploads.
@@ -471,8 +528,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 				for (size_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) others += segments[index].capacity;
 				others -= segment->capacity;
 				// Oldest first: the segment after the active one is the next to be recycled anyway.
-				for (uint8_t step = 1; others + newCapacity > budget && step < GEOMETRY_CACHE_SEGMENTS; ++step) {
-					uint8_t const victim = static_cast<uint8_t>((activeSegment + step) % GEOMETRY_CACHE_SEGMENTS);
+				for (uint8_t step = 1; others + newCapacity > budget && step < ring; ++step) {
+					uint8_t const victim = static_cast<uint8_t>((activeSegment + step) % ring);
 					others -= segments[victim].capacity;
 					ClearCacheSegment(segments, cache, victim, true);
 				}
@@ -496,11 +553,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 				if (FAILED(result) && !NoteDeviceLoss(result)) {
 					// Out of memory: drop every other cached segment and retry once, sized for this upload only.
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer for a dynamic segment", result);
+					LogMemoryStatus(LogCategory::Resource, "when the segment allocation failed");
 					Log(LogCategory::Resource, "dropping the other cached segments and retrying");
 					buffer.Reset();
 					for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
 						if (index != activeSegment) ClearCacheSegment(segments, cache, index, true);
 					}
+					cache.shrink_to_fit();
 					newCapacity = (requiredSize + 3u) & ~3u;
 					result = allocate(newCapacity);
 				}
@@ -511,25 +570,37 @@ float4 PSMain(PSInput input) : SV_TARGET
 					return false;
 				}
 				segment->capacity = newCapacity;
+				segment->lastUseFrame = 0;
 				Log(LogCategory::Resource, "%s cache segment %u allocated at %u bytes",
-				    bindFlags == D3D11_BIND_VERTEX_BUFFER ? "vertex" : "index", activeSegment, newCapacity);
+				    vertices ? "vertex" : "index", activeSegment, newCapacity);
+				LogMemoryStatus(LogCategory::Resource, "after the segment allocation");
 			}
 		}
 
+		// Appends never overlap anything a queued draw reads. A refill from the start only renames the
+		// buffer (WRITE_DISCARD) while the GPU may still read the segment's last frame; a new buffer never.
+		bool const refill = segment->cursor == 0 && segment->lastUseFrame != 0;
+		bool const discard = refill && !FrameCompleted(segment->lastUseFrame);
 		D3D11_MAPPED_SUBRESOURCE mapping{};
 		HRESULT result = TakeInjectedFault(FAULT_MAP);
 		if (SUCCEEDED(result)) result = d3dContext->Map(
-			segment->buffer.Get(), 0,
-			segment->cursor == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
+			segment->buffer.Get(), 0, discard ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map", result);
 			NoteDeviceLoss(result);
 			return false;
 		}
+		if (refill) {
+			++segmentRefills;
+			++frameStats.cacheRefills;
+			if (discard) ++segmentRefillDiscards;
+		}
+		frameStats.cacheUploadBytes += requiredSize;
 		offset = segment->cursor;
 		memcpy(static_cast<uint8_t *>(mapping.pData) + offset, data, requiredSize);
 		d3dContext->Unmap(segment->buffer.Get(), 0);
 		segment->cursor = (segment->cursor + requiredSize + 3u) & ~3u;
+		segment->lastUseFrame = currentFrame;
 		buffer = segment->buffer;
 		// Remembering the upload is optional: if the bookkeeping cannot allocate, it still draws.
 		bool keyed = false;
@@ -541,6 +612,130 @@ float4 PSMain(PSInput input) : SV_TARGET
 			if (keyed) segment->keys.pop_back();
 		}
 		return true;
+	}
+
+	bool cGDriver::StreamUpload(StreamRing &ring, uint32_t segmentBytes, uint32_t bindFlags, void const *data,
+	                            uint32_t bytes, ID3D11Buffer *&buffer, uint32_t &offset) {
+		if (!d3dDevice || !d3dContext || deviceLost || data == nullptr || bytes == 0 || bytes > segmentBytes) {
+			return false;
+		}
+		StreamSegment *segment = &ring.segments[ring.active];
+		bool discard = false;
+		if (!segment->buffer || segment->cursor + bytes > segmentBytes) {
+			if (segment->buffer) {
+				ring.active = static_cast<uint8_t>((ring.active + 1) % std::size(ring.segments));
+				segment = &ring.segments[ring.active];
+			}
+			segment->cursor = 0;
+			if (!segment->buffer) {
+				D3D11_BUFFER_DESC description{};
+				description.ByteWidth = segmentBytes;
+				description.Usage = D3D11_USAGE_DYNAMIC;
+				description.BindFlags = bindFlags;
+				description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+				HRESULT const result = d3dDevice->CreateBuffer(&description, nullptr, &segment->buffer);
+				if (FAILED(result)) {
+					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(terrain stream)", result);
+					NoteDeviceLoss(result);
+					return false;
+				}
+				segment->lastUseFrame = 0;
+			}
+			// As for cache segments: rename only while the GPU may still read the segment's last frame.
+			discard = segment->lastUseFrame != 0 && !FrameCompleted(segment->lastUseFrame);
+		}
+		// Appends never overlap what a queued draw reads.
+		D3D11_MAPPED_SUBRESOURCE mapping{};
+		HRESULT const result = d3dContext->Map(
+			segment->buffer.Get(), 0, discard ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapping);
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(terrain stream)", result);
+			NoteDeviceLoss(result);
+			return false;
+		}
+		memcpy(static_cast<uint8_t *>(mapping.pData) + segment->cursor, data, bytes);
+		d3dContext->Unmap(segment->buffer.Get(), 0);
+		if (discard) ++frameStats.terrainStreamRenames;
+		frameStats.terrainStreamBytes += bytes;
+		buffer = segment->buffer.Get();
+		offset = segment->cursor;
+		segment->cursor += bytes;
+		segment->lastUseFrame = currentFrame;
+		return true;
+	}
+
+	uint8_t cGDriver::TrimCache(GeometryCacheSegment *segments, GeometryCache &cache, bool vertices, uint64_t available) {
+		uint8_t const configured = vertices ? vertexCacheSegments : INDEX_CACHE_SEGMENTS;
+		uint8_t const ring = (std::min)(configured, TRIMMED_CACHE_SEGMENTS);
+		(vertices ? vertexCacheTrimmed : indexCacheTrimmed) = true;
+		uint64_t freed = 0;
+		for (uint8_t index = ring; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
+			freed += segments[index].capacity;
+			ClearCacheSegment(segments, cache, index, true);
+		}
+		cache.shrink_to_fit();
+		Log(LogCategory::Resource, "%s cache trimmed to %u segments, %llu MB freed, %llu MB address space was free",
+		    vertices ? "vertex" : "index", ring, static_cast<unsigned long long>(freed >> 20),
+		    static_cast<unsigned long long>(available >> 20));
+		return ring;
+	}
+
+	void cGDriver::TrimGeometryCachesIfLow() {
+		if (vertexCacheTrimmed && indexCacheTrimmed) return;
+		ULONGLONG const now = GetTickCount64();
+		if (now < nextAddressSpaceCheck) return;
+		nextAddressSpaceCheck = now + 1000;
+		uint64_t const available = AvailableAddressSpace();
+		if (available >= LOW_ADDRESS_SPACE_BYTES) return;
+		// The next upload goes to a segment that is still there.
+		if (!vertexCacheTrimmed) {
+			uint8_t const ring = TrimCache(vertexBufferSegments, vertexBufferCache, true, available);
+			if (activeVertexBufferSegment >= ring) activeVertexBufferSegment = 0;
+		}
+		if (!indexCacheTrimmed) {
+			uint8_t const ring = TrimCache(indexBufferSegments, indexBufferCache, false, available);
+			if (activeIndexBufferSegment >= ring) activeIndexBufferSegment = 0;
+		}
+	}
+
+	uint64_t cGDriver::AvailableAddressSpace() const {
+#ifdef SCD3D11_TESTING
+		if (injectedAvailableAddressSpace != 0) return injectedAvailableAddressSpace;
+#endif
+		MEMORYSTATUSEX memory{sizeof(memory)};
+		return GlobalMemoryStatusEx(&memory) ? memory.ullAvailVirtual : UINT64_MAX;
+	}
+
+	void cGDriver::EndFrameFence() {
+		if (!d3dDevice || !d3dContext || deviceLost) return;
+		// A slot whose frame is still pending is ended again for this one. Frames finish in order, so
+		// this frame's fence also answers for the one it replaces.
+		FrameFence &fence = frameFences[currentFrame % std::size(frameFences)];
+		D3D11_QUERY_DESC const description{D3D11_QUERY_EVENT, 0};
+		if (fence.query || SUCCEEDED(d3dDevice->CreateQuery(&description, &fence.query))) {
+			d3dContext->End(fence.query.Get());
+			fence.frame = currentFrame;
+		}
+		++currentFrame;
+	}
+
+	bool cGDriver::FrameCompleted(uint64_t frame) {
+		if (frame <= completedFrame) return true;
+		if (frame >= currentFrame || !d3dContext) return false;
+		// Oldest pending fence first: the first one not done means no later one is either.
+		uint64_t const fences = std::size(frameFences);
+		uint64_t next = (std::max)(completedFrame + 1, currentFrame > fences ? currentFrame - fences : 1);
+		for (; next < currentFrame; ++next) {
+			FrameFence const &fence = frameFences[next % fences];
+			if (!fence.query || fence.frame != next) continue;
+			BOOL done = FALSE;
+			if (d3dContext->GetData(fence.query.Get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+			    !done) {
+				break;
+			}
+			completedFrame = next;
+		}
+		return frame <= completedFrame;
 	}
 
 	void cGDriver::ClearCacheSegment(
@@ -555,6 +750,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			std::vector<GeometryCacheKey>().swap(segment.keys);
 			segment.buffer.Reset();
 			segment.capacity = 0;
+			segment.lastUseFrame = 0;
 		} else {
 			segment.keys.clear();
 		}
@@ -595,6 +791,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 		} catch (std::bad_alloc const &) {
 			Log(LogCategory::Resource, "out of memory converting %u vertices", count);
+			LogMemoryStatus(LogCategory::Resource, "when vertex conversion failed");
 			return false;
 		}
 		return UploadCachedBuffer(
@@ -617,6 +814,24 @@ float4 PSMain(PSInput input) : SV_TARGET
 			dynamicIndexBufferOffset);
 	}
 
+	// Vertex uploads are whole D3D11Vertex records and the segment cursor only rounds up to 4 bytes, so
+	// every vertex offset is a whole vertex.
+	static_assert(sizeof(D3D11Vertex) % 4 == 0);
+
+	UINT cGDriver::FirstVertex() const {
+		return dynamicVertexBufferOffset / sizeof(D3D11Vertex);
+	}
+
+	UINT cGDriver::BindIndexBuffer(DXGI_FORMAT format) {
+		ID3D11Buffer *const buffer = dynamicIndexBuffer.Get();
+		if (buffer != appliedIndexBuffer || format != appliedIndexFormat) {
+			d3dContext->IASetIndexBuffer(buffer, format, 0);
+			appliedIndexBuffer = buffer;
+			appliedIndexFormat = format;
+		}
+		return dynamicIndexBufferOffset / (format == DXGI_FORMAT_R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t));
+	}
+
 	ID3D11ShaderResourceView *cGDriver::BoundTextureView(uint32_t stage) {
 		BoundTextureViewCache &cache = boundTextureViewCache[stage];
 		if (cache.name != boundTextures[stage] || cache.generation != textureViewsGeneration) {
@@ -631,7 +846,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !flatVertexShader ||
-		    !inputLayout || !transformBuffers[activeTransformBuffer] || !dynamicVertexBuffer ||
+		    !inputLayout ||
+		    !stateConstantBuffer || !drawConstantBuffer || !dynamicVertexBuffer ||
 		    topology == D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
 			return false;
 		}
@@ -651,18 +867,34 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (lit) flagInputs |= 4;
 		if (lit && RZVertexFormatNumElements(interleavedFormat, kGDElementType_Normal) != 0) flagInputs |= 128;
 
+		// LoadMatrix marks these only when the model-view really changes.
+		if (drawConstantsDirty) {
+			if (normalMatrixDirty) {
+				MakeNormalMatrix(matrices[MODEL_VIEW], normalMatrix);
+				normalMatrixDirty = false;
+			}
+			D3D11_MAPPED_SUBRESOURCE mapping{};
+			HRESULT result = TakeInjectedFault(FAULT_MAP);
+			if (SUCCEEDED(result)) result = d3dContext->Map(
+				drawConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+			if (FAILED(result)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(draw constants)", result);
+				NoteDeviceLoss(result);
+				return false;
+			}
+			DrawConstants *const constants = static_cast<DrawConstants *>(mapping.pData);
+			memcpy(constants->modelView, matrices[MODEL_VIEW], sizeof(constants->modelView));
+			memcpy(constants->normalMatrix, normalMatrix, sizeof(constants->normalMatrix));
+			d3dContext->Unmap(drawConstantBuffer.Get(), 0);
+			drawConstantsDirty = false;
+		}
+
 		// Setters mark the constants dirty. The only other inputs are bound textures and whether the vertex
 		// format carries normals, which can change without a setter and are compared here instead.
 		if (constantsDirty || flagInputs != constantsFlagInputs || constantBufferCache.size() != sizeof(DriverConstants)) {
 			DriverConstants constants{};
 			constants.flags = flagInputs;
-			memcpy(constants.modelView, matrices[0], sizeof(constants.modelView));
-			memcpy(constants.projection, matrices[1], sizeof(constants.projection));
-			if (normalMatrixDirty) {
-				MakeNormalMatrix(matrices[MODEL_VIEW], normalMatrix);
-				normalMatrixDirty = false;
-			}
-			memcpy(constants.normalMatrix, normalMatrix, sizeof(constants.normalMatrix));
+			memcpy(constants.projection, matrices[PROJECTION], sizeof(constants.projection));
 			constants.alphaFunction = alphaFunction;
 			constants.alphaReference = alphaReference;
 			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
@@ -712,19 +944,17 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 			if (constantBufferCache.size() != sizeof(constants) ||
 			    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
-				uint8_t const nextBuffer = static_cast<uint8_t>((activeTransformBuffer + 1) % CONSTANT_BUFFER_COUNT);
 				D3D11_MAPPED_SUBRESOURCE mapping{};
 				HRESULT result = TakeInjectedFault(FAULT_MAP);
 				if (SUCCEEDED(result)) result = d3dContext->Map(
-					transformBuffers[nextBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
+					stateConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping);
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
 					NoteDeviceLoss(result);
 					return false;
 				}
 				memcpy(mapping.pData, &constants, sizeof(constants));
-				d3dContext->Unmap(transformBuffers[nextBuffer].Get(), 0);
-				activeTransformBuffer = nextBuffer;
+				d3dContext->Unmap(stateConstantBuffer.Get(), 0);
 				constantBufferCache.assign(
 					reinterpret_cast<uint8_t const *>(&constants),
 					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
@@ -734,9 +964,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		UINT const stride = sizeof(D3D11Vertex);
-		UINT const offset = dynamicVertexBufferOffset;
+		UINT const offset = 0;
 		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
-		ID3D11Buffer *constantBuffer = transformBuffers[activeTransformBuffer].Get();
 		bool const flat = shadeModel == 0;
 		ID3D11PixelShader *desiredPixelShader = flat ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
@@ -749,15 +978,17 @@ float4 PSMain(PSInput input) : SV_TARGET
 			d3dContext->PSSetShader(desiredPixelShader, nullptr, 0);
 			appliedPixelShader = desiredPixelShader;
 		}
-		if (constantBuffer != appliedTransformBuffer) {
-			d3dContext->VSSetConstantBuffers(0, 1, &constantBuffer);
-			d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
-			appliedTransformBuffer = constantBuffer;
+		if (!constantBuffersBound) {
+			ID3D11Buffer *const constantBuffers[2]{drawConstantBuffer.Get(), stateConstantBuffer.Get()};
+			d3dContext->VSSetConstantBuffers(0, 2, constantBuffers);
+			d3dContext->PSSetConstantBuffers(0, 2, constantBuffers);
+			constantBuffersBound = true;
 		}
-		if (vertexBuffer != appliedVertexBuffer || offset != appliedVertexBufferOffset) {
+		// The segment stays bound at offset 0 and each draw starts at its upload (FirstVertex), so draws
+		// from the same segment rebind nothing.
+		if (vertexBuffer != appliedVertexBuffer) {
 			d3dContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
 			appliedVertexBuffer = vertexBuffer;
-			appliedVertexBufferOffset = offset;
 		}
 		if (topology != appliedTopology) {
 			d3dContext->IASetPrimitiveTopology(topology);
@@ -857,17 +1088,27 @@ float4 PSMain(PSInput input) : SV_TARGET
 				}
 			}
 			if (!culled && BindGeometryPipeline(primitive)) {
-				d3dContext->Draw(static_cast<UINT>(count), 0);
+				d3dContext->Draw(static_cast<UINT>(count), FirstVertex());
 			}
 			return;
 		}
 
+		// The indices depend only on the primitive and the vertex count and are keyed by those. They are
+		// built for a cache miss or a live shadow capture only, and never hashed.
+		uint64_t const indexCount = SequentialIndexCount(primitive, vertexCount);
+		GeometryCacheKey const key = SequentialIndexKey(primitive, vertexCount);
+		bool const cached = !culled && indexCount != 0 &&
+		                    UseCachedBuffer(indexBufferSegments, indexBufferCache, key, dynamicIndexBuffer,
+		                                    dynamicIndexBufferOffset, D3D11_BIND_INDEX_BUFFER);
 		bool built = false;
-		try {
-			built = BuildSequentialIndices(primitive, static_cast<uint32_t>(count), drawIndexScratch);
-		} catch (std::bad_alloc const &) {
-		}
-		if (built && MatchesLiveShadowMesh(firstVertex, vertexCount)) {
+		auto const build = [&] {
+			try {
+				built = BuildSequentialIndices(primitive, vertexCount, drawIndexScratch);
+			} catch (std::bad_alloc const &) {
+			}
+			return built;
+		};
+		if (indexCount != 0 && MatchesLiveShadowMesh(firstVertex, vertexCount)) {
 			if (LiveShadowHooks::NetworkDrawActive()) {
 				static bool loggedBracketArraysConverted = false;
 				if (!loggedBracketArraysConverted) {
@@ -877,19 +1118,27 @@ float4 PSMain(PSInput input) : SV_TARGET
 				}
 			}
 			try {
-				CaptureLiveShadowDraw(firstVertex, vertexCount, drawIndexScratch,
-				                      D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				if (built || build()) {
+					CaptureLiveShadowDraw(firstVertex, vertexCount, drawIndexScratch,
+					                      D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				}
 			} catch (std::bad_alloc const &) {
 			}
 		}
 		if (culled) return;
-		if (!built || !UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
+		uint64_t const indexBytes = indexCount * sizeof(uint32_t);
+		bool uploaded = cached;
+		if (!uploaded && indexCount != 0 && indexBytes <= (std::numeric_limits<uint32_t>::max)() && (built || build())) {
+			uploaded = UploadCachedBuffer(
+				indexBufferSegments, activeIndexBufferSegment, indexBufferCache, key, static_cast<uint32_t>(indexBytes),
+				D3D11_BIND_INDEX_BUFFER, drawIndexScratch.data(), dynamicIndexBuffer, dynamicIndexBufferOffset);
+		}
+		if (!uploaded || !BindGeometryPipeline(0)) {
 			Log(LogCategory::Unsupported, "unsupported array primitive %u with %d vertices", primitive, count);
 			return;
 		}
-		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();
-		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, dynamicIndexBufferOffset);
-		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), 0, 0);
+		UINT const firstIndex = BindIndexBuffer(DXGI_FORMAT_R32_UINT);
+		d3dContext->DrawIndexed(static_cast<UINT>(indexCount), firstIndex, static_cast<INT>(FirstVertex()));
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
@@ -923,6 +1172,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			}
 		} catch (std::bad_alloc const &) {
 			Log(LogCategory::Resource, "out of memory converting %d indices", count);
+			LogMemoryStatus(LogCategory::Resource, "when index conversion failed");
 			return;
 		}
 		if (maximumIndex == UINT32_MAX || minimumIndex > INT32_MAX) return;
@@ -967,16 +1217,18 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 		if (!convertPrimitive) {
 			DXGI_FORMAT const indexFormat = type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
-			if (sourceIndexBytes > UINT32_MAX) return;
+			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
+			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
+			if (indexBytes > UINT32_MAX) return;
 			bool const uploaded = UploadCachedBuffer(
 				indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 				IndexCacheKey(indexFormat, indices, static_cast<uint32_t>(count)),
-				static_cast<uint32_t>(sourceIndexBytes), D3D11_BIND_INDEX_BUFFER, indices,
+				static_cast<uint32_t>(indexBytes), D3D11_BIND_INDEX_BUFFER, indices,
 				dynamicIndexBuffer, dynamicIndexBufferOffset);
-			if (indexBufferCacheMisses != indexMisses) frameStats.wireIndexNewBytes += sourceIndexBytes;
+			if (indexBufferCacheMisses != indexMisses) frameStats.wireIndexNewBytes += indexBytes;
 			if (!uploaded || !BindGeometryPipeline(primitive)) return;
-			d3dContext->IASetIndexBuffer(dynamicIndexBuffer.Get(), indexFormat, dynamicIndexBufferOffset);
-			d3dContext->DrawIndexed(static_cast<UINT>(count), 0, baseVertex);
+			UINT const firstIndex = BindIndexBuffer(indexFormat);
+			d3dContext->DrawIndexed(static_cast<UINT>(count), firstIndex, baseVertex + static_cast<INT>(FirstVertex()));
 			return;
 		}
 
@@ -985,8 +1237,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (!uploaded || !BindGeometryPipeline(0)) {
 			return;
 		}
-		ID3D11Buffer *indexBuffer = dynamicIndexBuffer.Get();
-		d3dContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, dynamicIndexBufferOffset);
-		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), 0, baseVertex);
+		UINT const firstIndex = BindIndexBuffer(DXGI_FORMAT_R32_UINT);
+		d3dContext->DrawIndexed(static_cast<UINT>(drawIndexScratch.size()), firstIndex,
+		                        baseVertex + static_cast<INT>(FirstVertex()));
 	}
 }

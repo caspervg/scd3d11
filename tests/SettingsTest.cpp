@@ -4,6 +4,7 @@
 #include <string>
 
 using nSCD3D11::Settings::ParseFlag;
+using nSCD3D11::Settings::ParseNumber;
 
 int main() {
 	bool flag = false;
@@ -18,6 +19,15 @@ int main() {
 	}
 	for (char const *bad : {"", "on", "rays,", ",rays", "rays,shadows", "rays terrain"}) {
 		assert(!nSCD3D11::Settings::ParseServerLight(bad, features));
+	}
+
+	uint32_t number = 7;
+	assert(ParseNumber("1", 1, 16, number) && number == 1);
+	assert(ParseNumber("16", 1, 16, number) && number == 16);
+	assert(ParseNumber("08", 1, 16, number) && number == 8);
+	// Out of range or not a plain number leaves the value alone.
+	for (char const *rejected : {"", "0", "17", "-1", "8mb", " 8", "1.5", "9999999999"}) {
+		assert(!ParseNumber(rejected, 1, 16, number) && number == 8);
 	}
 	return 0;
 }

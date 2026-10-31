@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
+#include "Doctor.h"
 #include "SCD3D11Service.h"
 #include "Settings.h"
 #include "ShadowRegistry.h"
@@ -41,6 +42,9 @@ namespace nSCD3D11 {
 		}
 
 		char const *kWindowClassName = "GDriverClass--Direct3D11";
+		// SC4's own drivers name their windows GDriverWindow--<name>, and SC4GraphicsOptions 1.4.1 finds the
+		// game window by that prefix and the GDriverClass one to make it borderless.
+		char const *kWindowName = "GDriverWindow--Direct3D11";
 
 		bool BorderlessFullscreenRequested() {
 			return Settings::Get().borderless;
@@ -151,8 +155,7 @@ namespace nSCD3D11 {
 		depthDescription.MipLevels = 1;
 		depthDescription.ArraySize = 1;
 		// Typeless with a shader view so the scene depth can be handed to ReShade.
-		bool const stencil = depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT;
-		depthDescription.Format = stencil ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_R32_TYPELESS;
+		depthDescription.Format = D3D11DepthTypelessFormat(depthStencilFormat);
 		depthDescription.SampleDesc.Count = 1;
 		depthDescription.Usage = D3D11_USAGE_DEFAULT;
 		depthDescription.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
@@ -167,7 +170,7 @@ namespace nSCD3D11 {
 		}
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC depthViewDescription{};
-		depthViewDescription.Format = stencil ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : DXGI_FORMAT_R32_FLOAT;
+		depthViewDescription.Format = D3D11DepthShaderFormat(depthStencilFormat);
 		depthViewDescription.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
 		depthViewDescription.Texture2D.MipLevels = 1;
 		result = d3dDevice->CreateShaderResourceView(depthStencilTexture.Get(), &depthViewDescription, &depthShaderView);
@@ -378,7 +381,7 @@ namespace nSCD3D11 {
 			window = CreateWindowExA(
 				extendedStyle,
 				kWindowClassName,
-				"SimCity 4 (Direct3D 11)",
+				kWindowName,
 				style,
 				windowX,
 				windowY,
@@ -498,10 +501,10 @@ namespace nSCD3D11 {
 			factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
 		}
 		DXGI_ADAPTER_DESC adapterDescription{};
-		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription)) && remote != nullptr) {
-			remote->SetAdapter(adapterDescription.AdapterLuid);
-		}
-		if (adapter && adapterDescription.Description[0] != 0) {
+		if (adapter && SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
+			if (remote != nullptr) remote->SetAdapter(adapterDescription.AdapterLuid);
+			Doctor::SetActiveDevice((static_cast<uint64_t>(static_cast<uint32_t>(adapterDescription.AdapterLuid.HighPart)) << 32) |
+			                        adapterDescription.AdapterLuid.LowPart, window);
 			char name[sizeof(adapterDescription.Description)]{};
 			WideCharToMultiByte(CP_UTF8, 0, adapterDescription.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
 			// The user-mode driver version, packed as four 16-bit parts, from most to least significant.
@@ -513,21 +516,32 @@ namespace nSCD3D11 {
 			    HIWORD(driverVersion.HighPart), LOWORD(driverVersion.HighPart),
 			    HIWORD(driverVersion.LowPart), LOWORD(driverVersion.LowPart),
 			    static_cast<unsigned>(adapterDescription.DedicatedVideoMemory / (1024 * 1024)),
-			    preferredAdapter ? "high-performance preference" : "system default");
+			    !preferredAdapter ? "system default"
+			    : Settings::Get().gpu.number != 0 ? "GPU setting" : "high-performance preference");
 			if (adapterDescription.VendorId == 0x1AF4) {
 				Log(LogCategory::Initialization,
 				    "adapter: this is the VirtIO GPU driver of a virtual machine. Its 3D support is still experimental, "
 				    "so keep the VM's guest tools up to date if the game crashes or freezes");
 			}
 		}
+		LogMemoryStatus(LogCategory::Initialization, "at startup");
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
 			DXGI_MODE_DESC targetMode = swapChainDescription.BufferDesc;
 			targetMode.RefreshRate = DXGI_RATIONAL{0, 0};
 			result = swapChain->ResizeTarget(&targetMode);
 			if (SUCCEEDED(result)) result = swapChain->SetFullscreenState(TRUE, nullptr);
-			if (SUCCEEDED(result)) lastFullscreenState = TRUE;
-			if (SUCCEEDED(result)) {
+			// DXGI refuses while another window is in front, for example a launcher that keeps the focus or
+			// a player who switches away during startup. Failing the mode here makes SC4 switch to its
+			// software driver for every later start, so the game starts in its window and Flush retries.
+			exclusiveFullscreenPending = result == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+			if (exclusiveFullscreenPending) {
+				Log(LogCategory::SwapChain,
+				    "exclusive fullscreen is not available while another window is in front, retrying once the game is");
+				nextFullscreenAttempt = 0;
+				result = S_OK;
+			} else if (SUCCEEDED(result)) {
+				lastFullscreenState = TRUE;
 				result = swapChain->ResizeBuffers(
 					0, static_cast<UINT>(mode.width), static_cast<UINT>(mode.height),
 					DXGI_FORMAT_UNKNOWN, swapChainFlags);
@@ -603,9 +617,23 @@ namespace nSCD3D11 {
 			RecoverFromDeviceLoss();
 			return;
 		}
+		// The frame's draws are all recorded by now, and Present below submits the fence along with them.
+		EndFrameFence();
+		TrimGeometryCachesIfLow();
 
 		if (presentationMode == PresentationMode::ExclusiveFullscreen) {
 			NoteRenderPhase("Flush: GetFullscreenState");
+			HWND const gameWindow = static_cast<HWND>(windowHandle);
+			ULONGLONG const now = GetTickCount64();
+			if (exclusiveFullscreenPending && now >= nextFullscreenAttempt && GetForegroundWindow() == gameWindow &&
+			    !IsIconic(gameWindow)) {
+				nextFullscreenAttempt = now + 1000;
+				HRESULT const entered = swapChain->SetFullscreenState(TRUE, nullptr);
+				if (entered != DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) {
+					exclusiveFullscreenPending = false;
+					if (FAILED(entered)) LogHRESULT(LogCategory::SwapChain, "enter exclusive fullscreen", entered);
+				}
+			}
 			BOOL fullscreen = FALSE;
 			if (SUCCEEDED(swapChain->GetFullscreenState(&fullscreen, nullptr)) && fullscreen != lastFullscreenState) {
 				HWND const window = static_cast<HWND>(windowHandle);
@@ -613,6 +641,8 @@ namespace nSCD3D11 {
 				    fullscreen ? "fullscreen" : "windowed", IsIconic(window) ? 1 : 0,
 				    GetForegroundWindow() == window ? 1 : 0);
 				lastFullscreenState = fullscreen;
+				// Losing it to an alt-tab is not the player's choice: take it back once the window is in front again.
+				if (!fullscreen) exclusiveFullscreenPending = true;
 			}
 		}
 
@@ -640,13 +670,7 @@ namespace nSCD3D11 {
 		NoteRenderPhase("Flush: frame callback");
 		if (InvokeD3D11FrameCallback(frame)) {
 			// The callback owns the immediate context for the duration of the event.
-			// Clear all of its bindings, then restore the output state that SCD3D11 owns.
-			d3dContext->ClearState();
-			InvalidateD3D11StateCache();
-			ID3D11RenderTargetView *restoredRenderTarget = renderTargetView.Get();
-			d3dContext->OMSetRenderTargets(1, &restoredRenderTarget, depthStencilView.Get());
-			if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
-			else SetViewport();
+			RestoreOwnedContextState();
 		}
 
 		bool const vsyncEnabled = Settings::Get().vsync;
@@ -668,6 +692,22 @@ namespace nSCD3D11 {
 			vsyncEnabled ? 1 : 0,
 			!vsyncEnabled && (swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0 ? DXGI_PRESENT_ALLOW_TEARING : 0);
 		NoteRenderPhase("Flush: after Present");
+		if (SUCCEEDED(result) && !deviceLost) {
+			// Overlays and plugins that hook Present draw on this context inside it. One that leaves another
+			// render target bound sends every later frame's draws there, so the city never appears and only
+			// the copies SCD3D11 makes itself still reach the screen. The cached bindings normally survive the
+			// frame, so they are only reset when something did change them.
+			if (char const *const changed = ForeignContextState()) {
+				static bool logged = false;
+				if (!logged) {
+					logged = true;
+					Log(LogCategory::SwapChain,
+					    "an overlay or plugin hooked into Present changed SCD3D11's %s; SCD3D11 restores its own "
+					    "state after each frame where that happens", changed);
+				}
+				RestoreOwnedContextState();
+			}
+		}
 #ifndef NDEBUG
 		LogDebugLayerMessages(d3dDevice.Get());
 #endif
@@ -697,6 +737,70 @@ namespace nSCD3D11 {
 			    raised ? "ok" : "failed", foreground ? "granted" : "refused");
 		}
 		if (NoteDeviceLoss(result) || deviceLost) RecoverFromDeviceLoss();
+	}
+
+	char const *cGDriver::ForeignContextState(void) {
+		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> target;
+		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;
+		d3dContext->OMGetRenderTargets(1, &target, &depth);
+		if (target.Get() != renderTargetView.Get() || depth.Get() != depthStencilView.Get()) {
+			return "render target";
+		}
+
+		// SetViewport set exactly these, and nothing else touches them between frames.
+		D3D11_VIEWPORT viewport{};
+		UINT viewports = 1;
+		d3dContext->RSGetViewports(&viewports, &viewport);
+		int32_t const top = scissorEnabled ? D3D11TopLeftY(windowHeight, viewportY, viewportHeight) : 0;
+		if (viewports != 1 || viewport.TopLeftX != static_cast<float>(scissorEnabled ? viewportX : 0) ||
+		    viewport.TopLeftY != static_cast<float>(top) ||
+		    viewport.Width != static_cast<float>(scissorEnabled ? viewportWidth : windowWidth) ||
+		    viewport.Height != static_cast<float>(scissorEnabled ? viewportHeight : windowHeight)) {
+			return "viewport";
+		}
+
+		if (!geometryPipelineBound) return nullptr;
+		Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex;
+		d3dContext->VSGetShader(&vertex, nullptr, nullptr);
+		Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel;
+		d3dContext->PSGetShader(&pixel, nullptr, nullptr);
+		Microsoft::WRL::ComPtr<ID3D11InputLayout> layout;
+		d3dContext->IAGetInputLayout(&layout);
+		// Flat shading binds its own vertex shader along with the flat pixel shader.
+		ID3D11VertexShader *const expectedVertex =
+			appliedPixelShader == flatPixelShader.Get() ? flatVertexShader.Get() : vertexShader.Get();
+		if (vertex.Get() != expectedVertex || pixel.Get() != appliedPixelShader || layout.Get() != inputLayout.Get()) {
+			return "shaders";
+		}
+		Microsoft::WRL::ComPtr<ID3D11Buffer> vertices;
+		UINT stride = 0;
+		UINT offset = 0;
+		d3dContext->IAGetVertexBuffers(0, 1, &vertices, &stride, &offset);
+		Microsoft::WRL::ComPtr<ID3D11Buffer> indices;
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+		d3dContext->IAGetIndexBuffer(&indices, &format, &offset);
+		if ((appliedVertexBuffer != nullptr && vertices.Get() != appliedVertexBuffer) ||
+		    (appliedIndexBuffer != nullptr && indices.Get() != appliedIndexBuffer)) {
+			return "geometry buffers";
+		}
+		return nullptr;
+	}
+
+	void cGDriver::RestoreOwnedContextState(void) {
+		d3dContext->ClearState();
+		InvalidateD3D11StateCache();
+		ID3D11RenderTargetView *const target = renderTargetView.Get();
+		d3dContext->OMSetRenderTargets(1, &target, depthStencilView.Get());
+		// Reapplies SC4's viewport. It is not a viewport SC4 set, so DrawStats keeps its own count.
+		uint32_t const viewports = frameStats.viewports;
+		uint64_t const viewportPixels = frameStats.viewportPixels;
+		int32_t lastViewport[4];
+		std::memcpy(lastViewport, frameStats.viewport, sizeof(lastViewport));
+		if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+		else SetViewport();
+		frameStats.viewports = viewports;
+		frameStats.viewportPixels = viewportPixels;
+		std::memcpy(frameStats.viewport, lastViewport, sizeof(lastViewport));
 	}
 
 	void cGDriver::SetViewport(void) {
@@ -791,6 +895,11 @@ namespace nSCD3D11 {
 			uint64_t wireNewBytes = 0;
 			uint64_t wireTextureBytes = 0;
 			uint64_t wireMaxFrameBytes = 0;
+			uint64_t terrainDraws = 0;
+			uint64_t terrainStreamBytes = 0;
+			uint64_t terrainStreamRenames = 0;
+			uint64_t cacheUploadBytes = 0;
+			uint64_t cacheRefills = 0;
 			// Live shadow fields summed over the second. shadowStaticMaxMs and shadowWorldCasters are maxima.
 			FrameStats shadows;
 			uint32_t shadowFrames = 0;
@@ -850,6 +959,11 @@ namespace nSCD3D11 {
 		summary.wireNewBytes += frame.wireVertexNewBytes + frame.wireIndexNewBytes;
 		summary.wireTextureBytes += frame.wireTextureBytes;
 		summary.wireMaxFrameBytes = (std::max)(summary.wireMaxFrameBytes, frameNewBytes);
+		summary.terrainDraws += frame.terrainDraws;
+		summary.terrainStreamBytes += frame.terrainStreamBytes;
+		summary.terrainStreamRenames += frame.terrainStreamRenames;
+		summary.cacheUploadBytes += frame.cacheUploadBytes;
+		summary.cacheRefills += frame.cacheRefills;
 		if (shadowFrame) {
 			FrameStats &sum = summary.shadows;
 			++summary.shadowFrames;
@@ -914,6 +1028,16 @@ namespace nSCD3D11 {
 			    static_cast<double>(summary.wireBytes) / 1.0e6, static_cast<double>(summary.wireNewBytes) / 1.0e6,
 			    static_cast<double>(summary.wireTextureBytes) / 1.0e6,
 			    static_cast<double>(summary.wireMaxFrameBytes) / 1.0e6);
+			if (summary.terrainDraws != 0 || summary.cacheUploadBytes != 0) {
+				Log(LogCategory::Stats,
+				    "geometry: %llu terrain draws, %.1f MB streamed (%llu renamed); "
+				    "cache uploaded %.1f MB, %llu segment refills",
+				    static_cast<unsigned long long>(summary.terrainDraws),
+				    static_cast<double>(summary.terrainStreamBytes) / 1.0e6,
+				    static_cast<unsigned long long>(summary.terrainStreamRenames),
+				    static_cast<double>(summary.cacheUploadBytes) / 1.0e6,
+				    static_cast<unsigned long long>(summary.cacheRefills));
+			}
 			FrameStats const &shadow = summary.shadows;
 			if (summary.shadowFrames != 0 || shadow.shadowHashedDraws != 0) {
 				double const renders = shadow.shadowMapRenders != 0 ? shadow.shadowMapRenders : 1.0;

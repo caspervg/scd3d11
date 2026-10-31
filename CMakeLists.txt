@@ -21,6 +21,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The C++ runtime is linked into the DLL, so SC4 loads it without the Visual C++ Redistributable. Every
+# target, the vendored libraries included, must use the same one.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 if (NOT CMAKE_HOST_WIN32 AND NOT CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR "SCD3D11 targets SimCity 4, a 32-bit Windows application, and must be cross-compiled.")
 endif ()
@@ -138,6 +142,8 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp
         scd3d11/Diagnostics.cpp
+        scd3d11/Doctor.cpp
+        scd3d11/DoctorScan.cpp
         scd3d11/SCD3D11Service.cpp
         scd3d11/Settings.cpp
         scd3d11/TextureUploadUtils.cpp
@@ -178,12 +184,12 @@ set(SCD3D11_DRIVER_INCLUDES "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
 target_include_directories(SCD3D11 PRIVATE ${SCD3D11_DRIVER_INCLUDES})
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
-target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32)
+target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32 wininet advapi32)
 
 # Replays a Record=<file> capture into the driver outside the game and saves frames as PNG.
 add_executable(SCDReplay scd3d11/replay/SCDReplay.cpp ${SCD3D11_DRIVER_SOURCES})
 target_include_directories(SCDReplay PRIVATE ${SCD3D11_DRIVER_INCLUDES})
-target_link_libraries(SCDReplay PRIVATE scd3d11_common d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32)
+target_link_libraries(SCDReplay PRIVATE scd3d11_common d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32 wininet advapi32)
 target_link_options(SCDReplay PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/ENTRY:wmainCRTStartup>)
 
 include(CTest)
@@ -240,6 +246,10 @@ if (BUILD_TESTING)
             scd3d11/Settings.cpp
             scd3d11/Diagnostics.cpp)
 
+    scd3d11_add_test(DoctorTest
+            tests/DoctorTest.cpp
+            scd3d11/Doctor.cpp)
+
     scd3d11_add_test(TerrainShadowMapTest
             tests/TerrainShadowMapTest.cpp
             scd3d11/TerrainShadowMap.cpp)
@@ -270,7 +280,7 @@ if (BUILD_TESTING)
     target_include_directories(cGDriverTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
     # Enables the fault injection points the tests use.
     target_compile_definitions(cGDriverTest PRIVATE SCD3D11_TESTING)
-    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32)
+    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32 wininet advapi32)
     # No usable D3D11 device skips instead of failing.
     set_tests_properties(cGDriverTest PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -278,6 +288,6 @@ if (BUILD_TESTING)
     scd3d11_add_test(WireTest tests/WireTest.cpp ${SCD3D11_DRIVER_SOURCES})
     target_include_directories(WireTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
     target_compile_definitions(WireTest PRIVATE SCD3D11_TESTING)
-    target_link_libraries(WireTest PRIVATE d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32)
+    target_link_libraries(WireTest PRIVATE d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32 wininet advapi32)
     set_tests_properties(WireTest PROPERTIES SKIP_RETURN_CODE 77)
 endif ()

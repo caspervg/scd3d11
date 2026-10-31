@@ -26,6 +26,7 @@
 #include "Diagnostics.h"
 #include "DrawOwnerHooks.h"
 #include "FreeCamera.h"
+#include "Doctor.h"
 #include "LiveShadowHooks.h"
 #include "OccupantTracker.h"
 #include "Settings.h"
@@ -85,7 +86,10 @@ namespace nSCD3D11
 			return true;
 		}
 
+		// SC4 has picked its driver and screen mode by now, so the doctor can see what it ended up with.
 		bool PostAppInit() {
+			cIGZFrameWork* const pFramework = RZGetFrameWork();
+			Doctor::Run(pFramework != nullptr ? pFramework->CommandLine() : nullptr);
 			OccupantTracker::Install();
 			FreeCamera::Install();
 			RecordGameFolders();

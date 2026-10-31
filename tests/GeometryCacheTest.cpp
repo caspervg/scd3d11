@@ -108,8 +108,38 @@ int main() {
         Check(flat, reference, universe);
     }
 
+    // Shrinking keeps every entry and only ever makes the table smaller.
+    for (GeometryCacheKey const &key: universe) {
+        Value const value{3, key.count};
+        flat.insert_or_assign(key, value);
+        reference.insert_or_assign(key, value);
+    }
+    size_t const grown = flat.bucket_count();
+    flat.shrink_to_fit();
+    assert(flat.bucket_count() == grown);
+    for (size_t index = 0; index < universe.size(); index += 1 + index % 5) {
+        if (auto *const found = flat.find(universe[index]); found != flat.end()) {
+            flat.erase(found);
+            reference.erase(universe[index]);
+        }
+    }
+    for (size_t index = 0; index + 200 < universe.size(); ++index) {
+        if (auto *const found = flat.find(universe[index]); found != flat.end()) {
+            flat.erase(found);
+            reference.erase(universe[index]);
+        }
+    }
+    flat.shrink_to_fit();
+    assert(flat.bucket_count() < grown && flat.bucket_count() >= flat.size() * 2);
+    Check(flat, reference, universe);
+    flat.insert_or_assign(universe[0], Value{4, 1});
+    reference.insert_or_assign(universe[0], Value{4, 1});
+    Check(flat, reference, universe);
+
     flat.clear();
     assert(flat.empty() && flat.size() == 0 && flat.find(universe[0]) == flat.end());
+    flat.shrink_to_fit();
+    assert(flat.bucket_count() == 0);
     flat.insert_or_assign(universe[0], Value{2, 7});
     assert(flat.size() == 1 && flat.find(universe[0])->second.offset == 7);
 

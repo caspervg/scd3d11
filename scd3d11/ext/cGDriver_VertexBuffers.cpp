@@ -51,7 +51,6 @@ namespace nSCD3D11 {
 		}
 		extensionVertexStart = extensionVertexCursor;
 		extensionVertexCursor += count;
-		++extensionVertexGeneration;
 		extensionVerticesLocked = true;
 		return reinterpret_cast<uint32_t>(
 			extensionVertexData.data() + static_cast<size_t>(extensionVertexStart) * stride);
@@ -78,25 +77,29 @@ namespace nSCD3D11 {
 		       byteSize / stride <= extensionVertexCursor - extensionVertexStart;
 	}
 
-	bool cGDriver::UploadExtensionVertices(uint32_t byteSize) {
+	// SC4 reserves nearly the whole buffer for every terrain draw, draws about 15 vertices from it once, and
+	// never draws them again. Only the vertices a draw reads are streamed: no cache entry could ever hit.
+	bool cGDriver::UploadExtensionVertices(uint32_t first, uint32_t count) {
 		uint32_t const format = kGDVertexFormat_V3F_C4UB_2T2F;
 		uint32_t const stride = RZVertexFormatStride(format);
-		size_t const offset = static_cast<size_t>(extensionVertexStart) * stride;
-		if (!ExtensionReservationHolds(byteSize)) return false;
-		uint8_t const *source = extensionVertexData.data() + offset;
-		// The reservation generation stands in for the contents: they can only change under GetVertices.
-		GeometryCacheKey key;
-		key.digest.low64 = extensionVertexGeneration;
-		key.count = byteSize / stride;
-		key.format = format;
-		key.generation = true;
-		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
-		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
-		if (!ConvertVertices(format, stride, source, byteSize / stride, vertexScratch)) return false;
-		return UploadCachedBuffer(
-			vertexBufferSegments, activeVertexBufferSegment, vertexBufferCache,
-			key, static_cast<uint32_t>(vertexScratch.size() * sizeof(D3D11Vertex)),
-			D3D11_BIND_VERTEX_BUFFER, vertexScratch.data(), dynamicVertexBuffer, dynamicVertexBufferOffset);
+		uint8_t const *source = extensionVertexData.data() + (static_cast<size_t>(extensionVertexStart) + first) * stride;
+		try {
+			if (!ConvertVertices(format, stride, source, count, vertexScratch)) return false;
+		} catch (std::bad_alloc const &) {
+			Log(LogCategory::Resource, "out of memory converting %u terrain vertices", count);
+			LogMemoryStatus(LogCategory::Resource, "when terrain vertex conversion failed");
+			return false;
+		}
+		ID3D11Buffer *buffer = nullptr;
+		uint32_t offset = 0;
+		if (!StreamUpload(terrainVertexStream, TERRAIN_VERTEX_STREAM_BYTES, D3D11_BIND_VERTEX_BUFFER, vertexScratch.data(),
+		                  static_cast<uint32_t>(vertexScratch.size() * sizeof(D3D11Vertex)), buffer, offset)) {
+			return false;
+		}
+		dynamicVertexBuffer = buffer;
+		dynamicVertexBufferOffset = offset;
+		++frameStats.terrainDraws;
+		return true;
 	}
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
@@ -112,7 +115,9 @@ namespace nSCD3D11 {
 			                               RZVertexFormatElementOffset(kGDVertexFormat_V3F_C4UB_2T2F,
 			                                                           kGDElementType_Vertices, 0),
 			                    extensionStride, byteSize / extensionStride);
-		if (!culled && !UploadExtensionVertices(byteSize)) return;
+		if (!culled && (!ExtensionReservationHolds(byteSize) || !UploadExtensionVertices(0, byteSize / extensionStride))) {
+			return;
+		}
 		NoteLiveShadowTerrainView();
 		// The terrain reservation path never went through MatchesLiveShadowMesh,
 		// so bracketed network draws issued here were silently dropped.
@@ -146,7 +151,7 @@ namespace nSCD3D11 {
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
-			d3dContext->Draw(byteSize / RZVertexFormatStride(interleavedFormat), 0);
+			d3dContext->Draw(byteSize / RZVertexFormatStride(interleavedFormat), FirstVertex());
 		}
 		interleavedFormat = previousFormat;
 	}
@@ -175,7 +180,10 @@ namespace nSCD3D11 {
 			                               RZVertexFormatElementOffset(kGDVertexFormat_V3F_C4UB_2T2F,
 			                                                           kGDElementType_Vertices, 0),
 			                    extensionStride, static_cast<uint32_t>(maximumIndex - minimumIndex) + 1);
-		if (!culled && !UploadExtensionVertices(byteSize)) return;
+		uint32_t const drawnVertices = static_cast<uint32_t>(maximumIndex - minimumIndex) + 1;
+		if (!culled && (!ExtensionReservationHolds(byteSize) || !UploadExtensionVertices(minimumIndex, drawnVertices))) {
+			return;
+		}
 		NoteLiveShadowTerrainView();
 		if (!culled && !UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
@@ -212,9 +220,9 @@ namespace nSCD3D11 {
 		uint32_t const previousFormat = interleavedFormat;
 		interleavedFormat = kGDVertexFormat_V3F_C4UB_2T2F;
 		if (BindGeometryPipeline(primitive)) {
-			d3dContext->IASetIndexBuffer(
-				dynamicIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, dynamicIndexBufferOffset);
-			d3dContext->DrawIndexed(count, 0, 0);
+			UINT const firstIndex = BindIndexBuffer(DXGI_FORMAT_R16_UINT);
+			// The upload starts at minimumIndex, so the unchanged (and cached) indices are offset back to it.
+			d3dContext->DrawIndexed(count, firstIndex, static_cast<INT>(FirstVertex()) - minimumIndex);
 		}
 		interleavedFormat = previousFormat;
 	}

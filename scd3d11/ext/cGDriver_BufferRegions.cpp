@@ -21,7 +21,7 @@ namespace nSCD3D11 {
 		description.Height = static_cast<UINT>(windowHeight);
 		description.MipLevels = 1;
 		description.ArraySize = 1;
-		description.Format = DXGI_FORMAT_R24G8_TYPELESS;
+		description.Format = D3D11DepthTypelessFormat(depthStencilFormat);
 		description.SampleDesc.Count = 1;
 		description.Usage = D3D11_USAGE_DEFAULT;
 
@@ -50,7 +50,7 @@ namespace nSCD3D11 {
 		description.MipLevels = 1;
 		description.ArraySize = 1;
 		// Depth regions stay typeless so partial copies never involve a depth-stencil resource.
-		description.Format = type == 0 ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R24G8_TYPELESS;
+		description.Format = type == 0 ? DXGI_FORMAT_R8G8B8A8_UNORM : D3D11DepthTypelessFormat(depthStencilFormat);
 		description.SampleDesc.Count = 1;
 		description.Usage = D3D11_USAGE_DEFAULT;
 

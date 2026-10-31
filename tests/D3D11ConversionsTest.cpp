@@ -12,6 +12,11 @@ int main() {
     assert(nSCD3D11::D3D11DepthStencilClearFlags(0x1000) == D3D11_CLEAR_DEPTH);
     assert(nSCD3D11::D3D11DepthStencilClearFlags(0x2000) == D3D11_CLEAR_STENCIL);
     assert(nSCD3D11::D3D11DepthStencilClearFlags(0x7000) == (D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL));
+    using nSCD3D11::D3D11DepthBias;
+    assert(D3D11DepthBias(0).units == 0 && D3D11DepthBias(0).slopeScale == 0.0f);
+    assert(D3D11DepthBias(2).units == -2 && D3D11DepthBias(2).slopeScale == -2.0f);
+    assert(D3D11DepthBias(16).units == -16 && D3D11DepthBias(40).units == -16);
+    assert(D3D11DepthBias(-1).units == 0 && D3D11DepthBias(-1).slopeScale == 0.0f);
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 100) == 980);
     assert(nSCD3D11::D3D11TopLeftY(1080, 980, 100) == 0);
     assert(nSCD3D11::D3D11TopLeftY(1080, 0, 1080) == 0);
@@ -69,6 +74,25 @@ int main() {
     nSCD3D11::GeometryCacheKey generationKey = wideKey;
     generationKey.generation = true;
     assert(!(generationKey == wideKey));
+
+    // Sequential indices are keyed by primitive and vertex count alone, never like the indices' bytes,
+    // and their count is known without building them.
+    using nSCD3D11::SequentialIndexKey;
+    std::vector<uint32_t> sequential;
+    for (uint32_t primitive = 0; primitive < 9; ++primitive) {
+        for (uint32_t count = 0; count < 13; ++count) {
+            bool const built = nSCD3D11::BuildSequentialIndices(primitive, count, sequential);
+            assert(nSCD3D11::SequentialIndexCount(primitive, count) == (built ? sequential.size() : 0u));
+            if (built) {
+                assert(!(SequentialIndexKey(primitive, count) ==
+                         nSCD3D11::IndexCacheKey(DXGI_FORMAT_R32_UINT, sequential.data(),
+                                                 static_cast<uint32_t>(sequential.size()))));
+            }
+        }
+    }
+    assert(SequentialIndexKey(2, 4) == SequentialIndexKey(2, 4));
+    assert(!(SequentialIndexKey(2, 4) == SequentialIndexKey(6, 4)) && !(SequentialIndexKey(2, 4) == SequentialIndexKey(2, 5)));
+    assert(nSCD3D11::SequentialIndexCount(2, UINT32_MAX) == (uint64_t{UINT32_MAX} - 2) * 3);
 
     struct SourceVertex {
         float position[3];

@@ -64,8 +64,10 @@ namespace nSCD3D11 {
 
 	constexpr size_t MAX_BUFFER_REGIONS = sizeof(uint8_t) * 8U;
 	constexpr size_t MAX_TEXTURE_UNITS = 2;
-	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 8;
-	constexpr size_t CONSTANT_BUFFER_COUNT = 8;
+	// The most segments a geometry cache can have. VertexCacheSegments picks how many the vertex cache uses.
+	constexpr size_t GEOMETRY_CACHE_SEGMENTS = 16;
+	// Segment size of the terrain vertex stream, which has four. A terrain draw streams about 15 vertices.
+	constexpr uint32_t TERRAIN_VERTEX_STREAM_BYTES = 2u * 1024u * 1024u;
 
 	struct cGDriverTestAccess;
 
@@ -190,12 +192,35 @@ namespace nSCD3D11 {
 		};
 
 		using GeometryCache = FlatGeometryCache<GeometryCacheEntry>;
+		static_assert(sizeof(GeometryCache::Slot) == 32);
 
 		struct GeometryCacheSegment {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
 			uint32_t capacity = 0;
 			uint32_t cursor = 0;
+			// The last frame that uploaded to or drew from it. 0 for a buffer nothing has used yet.
+			uint64_t lastUseFrame = 0;
 			std::vector<GeometryCacheKey> keys;
+		};
+
+		// One D3D11_QUERY_EVENT per recent frame, ended by Flush.
+		struct FrameFence {
+			Microsoft::WRL::ComPtr<ID3D11Query> query;
+			uint64_t frame = 0;
+		};
+
+		// Terrain vertices are drawn once and never again, so they stream through a ring of their own. In
+		// the geometry cache they would only evict models that are drawn again.
+		struct StreamSegment {
+			Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+			uint32_t cursor = 0;
+			// The last frame that appended to it. 0 for a buffer nothing has used yet.
+			uint64_t lastUseFrame = 0;
+		};
+
+		struct StreamRing {
+			StreamSegment segments[4];
+			uint8_t active = 0;
 		};
 
 		void *windowHandle;
@@ -208,6 +233,10 @@ namespace nSCD3D11 {
 		// Last observed swap chain state, so only changes are logged.
 		HRESULT lastPresentResult = S_OK;
 		BOOL lastFullscreenState = FALSE;
+		// Exclusive fullscreen was refused at startup because another window was in front. Flush tries
+		// again, no more than once a second, while the game is the foreground window.
+		bool exclusiveFullscreenPending = false;
+		ULONGLONG nextFullscreenAttempt = 0;
 		bool presentationPaused = false;
 		// Borderless: raise the window after the first frame it presents, so the taskbar drops behind it.
 		bool raiseWindowAfterPresent = false;
@@ -405,25 +434,46 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11VertexShader> flatVertexShader;
 		ID3D11PixelShader *appliedPixelShader;
 		Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> transformBuffers[CONSTANT_BUFFER_COUNT];
-		uint8_t activeTransformBuffer;
-		ID3D11Buffer *appliedTransformBuffer;
+		// The model-view and normal matrix (b0) change with nearly every object, so they are uploaded
+		// apart from the rest of the constants (b1). One buffer each: WRITE_DISCARD already renames them,
+		// so the bindings never change.
+		Microsoft::WRL::ComPtr<ID3D11Buffer> drawConstantBuffer;
+		Microsoft::WRL::ComPtr<ID3D11Buffer> stateConstantBuffer;
+		bool constantBuffersBound;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicVertexBuffer;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicIndexBuffer;
 		GeometryCacheSegment vertexBufferSegments[GEOMETRY_CACHE_SEGMENTS];
 		GeometryCacheSegment indexBufferSegments[GEOMETRY_CACHE_SEGMENTS];
 		uint8_t activeVertexBufferSegment;
 		uint8_t activeIndexBufferSegment;
+		// VertexCacheSegments and VertexCacheSize, read when the driver is created.
+		uint8_t vertexCacheSegments;
+		uint32_t vertexCacheSegmentBytes;
+		// Set while low address space keeps a cache's ring trimmed.
+		bool vertexCacheTrimmed;
+		bool indexCacheTrimmed;
+		ULONGLONG nextAddressSpaceCheck = 0;
 		uint32_t dynamicVertexBufferOffset;
 		uint32_t dynamicIndexBufferOffset;
 		ID3D11Buffer *appliedVertexBuffer;
-		uint32_t appliedVertexBufferOffset;
+		ID3D11Buffer *appliedIndexBuffer;
+		DXGI_FORMAT appliedIndexFormat;
 		GeometryCache vertexBufferCache;
 		GeometryCache indexBufferCache;
 		uint64_t vertexBufferCacheHits;
 		uint64_t vertexBufferCacheMisses;
 		uint64_t indexBufferCacheHits;
 		uint64_t indexBufferCacheMisses;
+		// A full segment is refilled with WRITE_NO_OVERWRITE once the GPU has finished its last frame.
+		// WRITE_DISCARD renames the buffer, and some drivers (VirtIO) keep every renamed copy's address
+		// space until the buffer itself is released. Frames count from 1, and every frame up to
+		// completedFrame is known to be done.
+		FrameFence frameFences[8];
+		uint64_t currentFrame;
+		uint64_t completedFrame;
+		uint64_t segmentRefills;
+		uint64_t segmentRefillDiscards;
+		StreamRing terrainVertexStream;
 		bool geometryPipelineBound;
 		bool textureBindingsValid;
 		D3D11_PRIMITIVE_TOPOLOGY appliedTopology;
@@ -466,6 +516,13 @@ namespace nSCD3D11 {
 			uint64_t wireIndexBytes = 0;
 			uint64_t wireIndexNewBytes = 0;
 			uint64_t wireTextureBytes = 0;
+			// Geometry uploads: terrain draws and the bytes streamed for them, and what the geometry cache
+			// uploaded and how often it refilled a segment.
+			uint32_t terrainDraws = 0;
+			uint64_t terrainStreamBytes = 0;
+			uint32_t terrainStreamRenames = 0;
+			uint64_t cacheUploadBytes = 0;
+			uint32_t cacheRefills = 0;
 			// Live shadows. Static passes run at DrawPostStaticView, full window or one dirty rectangle.
 			uint32_t shadowFullPasses = 0;
 			uint32_t shadowPartialPasses = 0;
@@ -516,17 +573,17 @@ namespace nSCD3D11 {
 		std::vector<uint32_t> sourceIndexScratch;
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
-		// The constants last uploaded to transformBuffers[activeTransformBuffer]. Losing the binding
-		// (ClearState) keeps them valid. Only destroying the buffers clears this.
+		// The constants last uploaded to stateConstantBuffer. Losing the binding (ClearState) keeps them
+		// valid. Only destroying the buffer clears this.
 		std::vector<uint8_t> constantBufferCache;
-		// Set by every setter feeding the shader constants.
+		// Set by every setter feeding the shader constants, except the model-view (drawConstantsDirty).
 		bool constantsDirty;
+		bool drawConstantsDirty;
 		// Texture and lighting flag inputs the cached constants were built with.
 		uint32_t constantsFlagInputs;
 		std::vector<uint8_t> extensionVertexData;
 		uint32_t extensionVertexCursor;
 		uint32_t extensionVertexStart;
-		uint64_t extensionVertexGeneration;
 		bool extensionVerticesLocked;
 		std::unordered_map<uint32_t, TextureResource> textures;
 		std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11SamplerState> > samplerStates;
@@ -656,10 +713,16 @@ namespace nSCD3D11 {
 			--fault.remaining;
 			return fault.result;
 		}
+
+		// Non-zero: the free address space the geometry cache sees instead of the real one.
+		uint64_t injectedAvailableAddressSpace = 0;
 #else
 		// The tests make D3D11 calls at these boundaries fail. The DLL never does.
 		static HRESULT TakeInjectedFault(FaultPoint) { return S_OK; }
 #endif
+
+		// Free 32-bit address space, or UINT64_MAX when Windows cannot say.
+		uint64_t AvailableAddressSpace() const;
 
 		HRESULT CreateGeometryPipeline();
 
@@ -682,6 +745,19 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
 			uint32_t &offset);
 
+		// Ends the current frame with an event query from frameFences.
+		void EndFrameFence();
+
+		// Whether the GPU has finished every command of a frame. Never waits or flushes.
+		bool FrameCompleted(uint64_t frame);
+
+		// Shrinks a cache to TRIMMED_CACHE_SEGMENTS for low address space and returns its new ring size.
+		uint8_t TrimCache(GeometryCacheSegment *segments, GeometryCache &cache, bool vertices, uint64_t available);
+
+		// Uploads check for low address space only when a segment fills, which a view that only hits the
+		// cache never does. Flush checks here as well, at most once a second.
+		void TrimGeometryCachesIfLow();
+
 		// Forgets a segment's cache entries. Release also frees its buffer and bookkeeping.
 		void ClearCacheSegment(GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release);
 
@@ -690,9 +766,21 @@ namespace nSCD3D11 {
 		bool UploadIndices(std::vector<uint32_t> const &indices);
 
 		bool BindGeometryPipeline(uint32_t primitive);
+
+		// The first vertex of the current vertex upload in its segment, which stays bound at offset 0.
+		UINT FirstVertex() const;
+
+		// Binds the current index segment at offset 0, unless it already is with this format, and returns
+		// the first index of the current upload.
+		UINT BindIndexBuffer(DXGI_FORMAT format);
 		ID3D11ShaderResourceView *BoundTextureView(uint32_t stage);
 
-		bool UploadExtensionVertices(uint32_t byteSize);
+		// Appends bytes to a stream ring and returns the buffer and byte offset they landed at.
+		bool StreamUpload(StreamRing &ring, uint32_t segmentBytes, uint32_t bindFlags, void const *data,
+		                  uint32_t bytes, ID3D11Buffer *&buffer, uint32_t &offset);
+
+		// Streams reservation vertices [first, first + count) and makes them the current vertex upload.
+		bool UploadExtensionVertices(uint32_t first, uint32_t count);
 
 		// Whether [extensionVertexStart, +byteSize) is a drawable part of the current reservation.
 		bool ExtensionReservationHolds(uint32_t byteSize) const;
@@ -714,6 +802,15 @@ namespace nSCD3D11 {
 		bool ApplyRenderStates();
 
 		void InvalidateD3D11StateCache();
+
+		// Clears every binding of the immediate context and restores the output state SCD3D11 owns: its render
+		// target, depth view and viewport. For code that shares the context: the frame callback, and overlays
+		// and plugins that hook Present.
+		void RestoreOwnedContextState();
+		// What something else changed on the immediate context that SCD3D11's cached bindings rely on, or null
+		// when it is still as SCD3D11 left it: the output targets, the viewport, and the geometry pipeline
+		// while it counts as bound.
+		char const *ForeignContextState();
 
 		enum class BlitAlpha { Opaque, Source, Constant, SourceModulated };
 

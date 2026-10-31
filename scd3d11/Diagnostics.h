@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <windows.h>
 
 namespace nSCD3D11
@@ -26,13 +27,20 @@ namespace nSCD3D11
 		Window,
 		// DrawStats frame reports.
 		Stats,
+		// Doctor findings about the rest of the installation.
+		Doctor,
 		Count
 	};
 
 	void Log(LogCategory category, char const* format, ...);
+	// The Logs folder of the user directory, next to the Plugins folder holding SCD3D11.dll. Empty when the
+	// module path is unavailable, which puts the log in the working directory.
+	std::filesystem::path LogDirectory();
 	// Only written with LogLevel=trace.
 	void LogTrace(LogCategory category, char const* format, ...);
 	void LogHRESULT(LogCategory category, char const* operation, HRESULT result);
+	// Free address space, RAM and page file, to tell which one ran out when allocations fail.
+	void LogMemoryStatus(LogCategory category, char const* when);
 	// The DrawStats and LogLevel=trace settings, handed over by Settings::Load.
 	void SetDiagnostics(bool drawStats, bool traceLog);
 	bool DrawStatsEnabled();

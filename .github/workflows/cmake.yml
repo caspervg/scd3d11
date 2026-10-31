@@ -59,6 +59,17 @@ jobs:
     - name: Build
       run: cmake --build build
 
+    # The C++ runtime is linked in, so players need no Visual C++ Redistributable. A dependency that
+    # brings back /MD would make SC4 skip the DLL without a word on machines that lack it.
+    - name: Check for runtime imports
+      shell: pwsh
+      run: |
+        $imports = dumpbin /nologo /dependents build/SCD3D11.dll |
+          Select-String -Pattern '^\s+(\S+\.dll)\s*$' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+        if (-not $imports) { throw "dumpbin listed no imports for SCD3D11.dll" }
+        $runtime = @($imports | Where-Object { $_ -match '^(msvcp|vcruntime|concrt|ucrtbase|api-ms-win-crt-)' })
+        if ($runtime) { throw "SCD3D11.dll imports the C++ runtime: $($runtime -join ', ')" }
+
     - name: Test
       run: ctest --test-dir build --output-on-failure
 
@@ -123,3 +134,21 @@ jobs:
         if [[ -f "$notesFile" ]]; then notes=(--notes-file "$notesFile"); fi
         gh release create "$GITHUB_REF_NAME" "$archive" dist/SCD3D11.pdb dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json \
           --verify-tag --generate-notes "${notes[@]}" $prerelease
+
+  # Points the sc4pac package at the new release on a branch of caspervg/simtropolis-channel, and
+  # links to a prefilled pull request in the job summary. Prereleases never reach sc4pac, so they
+  # don't get the fork token either.
+  sc4pac:
+    if: ${{ !contains(github.ref_name, '-') }}
+    needs: release
+    runs-on: ubuntu-latest
+    environment: sc4pac
+    concurrency: sc4pac-caspervg-scd3d11
+
+    steps:
+    - uses: caspervg/sc4pac-release-action@v1
+      with:
+        channel: sebamarynissen/simtropolis-channel
+        asset-id: caspervg-scd3d11
+        asset-name: SCD3D11-${{ github.ref_name }}.zip
+        token: ${{ secrets.SC4PAC_FORK_TOKEN }}

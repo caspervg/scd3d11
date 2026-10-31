@@ -33,6 +33,15 @@ namespace nSCD3D11 {
         return key;
     }
 
+    GeometryCacheKey SequentialIndexKey(uint32_t primitive, uint32_t vertexCount) {
+        GeometryCacheKey key;
+        key.digest.low64 = primitive;
+        key.count = vertexCount;
+        key.format = DXGI_FORMAT_R32_UINT;
+        key.generation = true;
+        return key;
+    }
+
     GeometryCacheKey VertexCacheKey(uint32_t format, uint32_t stride, void const *vertices, uint32_t count) {
         uint32_t const packedStride = RZVertexFormatStride(format);
         uint8_t const *source = static_cast<uint8_t const *>(vertices);
@@ -128,33 +137,34 @@ namespace nSCD3D11 {
         return true;
     }
 
+    uint64_t SequentialIndexCount(uint32_t primitive, uint32_t vertexCount) {
+        if (primitive == 2) return vertexCount < 3 ? 0 : (static_cast<uint64_t>(vertexCount) - 2) * 3;
+        if (primitive == 6) return vertexCount < 4 || vertexCount % 4 != 0 ? 0 : static_cast<uint64_t>(vertexCount) / 4 * 6;
+        if (primitive == 7) {
+            return vertexCount < 4 || vertexCount % 2 != 0 ? 0 : (static_cast<uint64_t>(vertexCount) - 2) * 3;
+        }
+        return 0;
+    }
+
     bool BuildSequentialIndices(uint32_t primitive, uint32_t vertexCount, std::vector<uint32_t> &indices) {
         indices.clear();
+        uint64_t const count = SequentialIndexCount(primitive, vertexCount);
+        if (count == 0 || count > indices.max_size()) return false;
+        indices.reserve(static_cast<size_t>(count));
         if (primitive == 2) {
-            if (vertexCount < 3) return false;
-            indices.reserve((vertexCount - 2) * 3);
             for (uint32_t i = 1; i + 1 < vertexCount; ++i) {
                 indices.insert(indices.end(), {0, i, i + 1});
             }
-            return true;
-        }
-        if (primitive == 6) {
-            if (vertexCount < 4 || (vertexCount % 4) != 0) return false;
-            indices.reserve(vertexCount / 4 * 6);
+        } else if (primitive == 6) {
             for (uint32_t i = 0; i < vertexCount; i += 4) {
                 indices.insert(indices.end(), {i, i + 1, i + 2, i, i + 2, i + 3});
             }
-            return true;
-        }
-        if (primitive == 7) {
-            if (vertexCount < 4 || (vertexCount % 2) != 0) return false;
-            indices.reserve((vertexCount - 2) * 3);
+        } else {
             for (uint32_t i = 0; i + 3 < vertexCount; i += 2) {
                 indices.insert(indices.end(), {i, i + 1, i + 2, i + 2, i + 1, i + 3});
             }
-            return true;
         }
-        return false;
+        return true;
     }
 
     bool ConvertPrimitiveIndices(

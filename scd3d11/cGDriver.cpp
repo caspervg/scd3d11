@@ -24,6 +24,7 @@
 #include "ShadowRegistry.h"
 #include "VertexFormatUtils.h"
 
+#include <cmath>
 #include <cstring>
 
 cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() {
@@ -68,20 +69,28 @@ namespace nSCD3D11 {
 	                       swapChainFlags(0),
 	                       depthStencilFormat(DXGI_FORMAT_D24_UNORM_S8_UINT),
 	                       depthRegionScratchValid(false),
-	                       activeTransformBuffer(0),
-	                       appliedTransformBuffer(nullptr),
+	                       constantBuffersBound(false),
 	                       vertexBufferSegments{},
 	                       indexBufferSegments{},
 	                       activeVertexBufferSegment(0),
 	                       activeIndexBufferSegment(0),
+	                       vertexCacheSegments(static_cast<uint8_t>(Settings::Get().vertexCacheSegments)),
+	                       vertexCacheSegmentBytes(Settings::Get().vertexCacheSizeMB * 1024u * 1024u),
+	                       vertexCacheTrimmed(false),
+	                       indexCacheTrimmed(false),
 	                       dynamicVertexBufferOffset(0),
 	                       dynamicIndexBufferOffset(0),
 	                       appliedVertexBuffer(nullptr),
-	                       appliedVertexBufferOffset(UINT32_MAX),
+	                       appliedIndexBuffer(nullptr),
+	                       appliedIndexFormat(DXGI_FORMAT_UNKNOWN),
 	                       vertexBufferCacheHits(0),
 	                       vertexBufferCacheMisses(0),
 	                       indexBufferCacheHits(0),
 	                       indexBufferCacheMisses(0),
+	                       currentFrame(1),
+	                       completedFrame(0),
+	                       segmentRefills(0),
+	                       segmentRefillDiscards(0),
 	                       geometryPipelineBound(false),
 	                       appliedPixelShader(nullptr),
 	                       textureBindingsValid(false),
@@ -101,10 +110,10 @@ namespace nSCD3D11 {
 	                       normalMatrix{},
 	                       normalMatrixDirty(true),
 	                       constantsDirty(true),
+	                       drawConstantsDirty(true),
 	                       constantsFlagInputs(0),
 	                       extensionVertexCursor(0),
 	                       extensionVertexStart(0),
-	                       extensionVertexGeneration(0),
 	                       extensionVerticesLocked(false),
 	                       nextTextureId(1),
 	                       boundTextures{},
@@ -229,6 +238,8 @@ namespace nSCD3D11 {
 
 	void cGDriver::ClearDepth(GLclampd depth) {
 		clearDepth = static_cast<float>(depth < 0.0 ? 0.0 : (depth > 1.0 ? 1.0 : depth));
+		// On Depth16's grid too, rounded the same way as the pixel shader, so a draw at the clear depth ties.
+		if (Settings::Get().depth16) clearDepth = std::ceil(clearDepth * 65536.0f) / 65536.0f;
 	}
 
 	void cGDriver::ClearStencil(GLint s) {
@@ -388,9 +399,13 @@ namespace nSCD3D11 {
 	void cGDriver::LoadMatrix(GLfloat const *m) {
 		if (m == nullptr || memcmp(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode])) == 0) return;
 		memcpy(matrices[activeMatrixMode], m, sizeof(matrices[activeMatrixMode]));
-		constantsDirty = true;
-		if (activeMatrixMode == MODEL_VIEW) normalMatrixDirty = true;
-		else ShadowRegistry::NoteProjection(m);
+		if (activeMatrixMode == MODEL_VIEW) {
+			drawConstantsDirty = true;
+			normalMatrixDirty = true;
+		} else {
+			constantsDirty = true;
+			ShadowRegistry::NoteProjection(m);
+		}
 		clipRowsDirty = true;
 	}
 
@@ -456,5 +471,17 @@ namespace nSCD3D11 {
 
 	void cGDriver::PolygonOffset(int32_t offset) {
 		polygonOffset = offset;
+
+		// Which offsets SC4 uses, to check D3D11DepthBias against them. Each value is logged once.
+		static int32_t logged[8];
+		static size_t loggedCount = 0;
+		for (size_t i = 0; i < loggedCount; ++i) {
+			if (logged[i] == offset) return;
+		}
+		if (loggedCount == std::size(logged)) return;
+		logged[loggedCount++] = offset;
+		DepthBias const bias = D3D11DepthBias(offset);
+		Log(LogCategory::Capabilities, "polygon offset %d: depth bias %d, slope scale %.0f", offset, bias.units,
+		    bias.slopeScale);
 	}
 }

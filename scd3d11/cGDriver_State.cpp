@@ -18,8 +18,9 @@ namespace nSCD3D11 {
         geometryPipelineBound = false;
 		appliedPixelShader = nullptr;
 		appliedVertexBuffer = nullptr;
-		appliedTransformBuffer = nullptr;
-        appliedVertexBufferOffset = UINT32_MAX;
+		constantBuffersBound = false;
+        appliedIndexBuffer = nullptr;
+        appliedIndexFormat = DXGI_FORMAT_UNKNOWN;
         textureBindingsValid = false;
         appliedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
         appliedTextureViews[0] = appliedTextureViews[1] = nullptr;
@@ -116,7 +117,9 @@ namespace nSCD3D11 {
                 description.FillMode = D3D11_FILL_SOLID;
                 description.CullMode = enabledCapabilities[kGDCapability_CullFace] ? D3D11_CULL_BACK : D3D11_CULL_NONE;
                 description.FrontCounterClockwise = TRUE;
-                description.DepthBias = polygonOffset;
+                DepthBias const bias = D3D11DepthBias(polygonOffset);
+                description.DepthBias = bias.units;
+                description.SlopeScaledDepthBias = bias.slopeScale;
                 description.DepthClipEnable = TRUE;
                 description.ScissorEnable = scissorEnabled;
 
@@ -132,10 +135,6 @@ namespace nSCD3D11 {
             appliedRasterizerStateKey = rasterizerKey;
         }
 
-        if (shadeModel == 0) {
-            Log(LogCategory::Unsupported,
-                "flat shading requested; generic pipeline currently uses smooth interpolation");
-        }
         return true;
     }
 }

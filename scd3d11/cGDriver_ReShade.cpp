@@ -112,22 +112,32 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				// cSC43DRender+0x8c owns cSC4CameraControl. Its current zoom and
 				// rotation are the integers at +0x108/+0x10c, written by
 				// cSC4CameraControl::SetZoomAndRotation before Draw is entered.
-				// Detect them here, before RestoreBackingStore can reuse pixels made
-				// with the previous projection.
+				// Camera plugins (3D Camera, SC4-ModernCamera, sc4-modern-camera)
+				// also turn the view freely by writing the yaw and pitch floats at
+				// +0x118/+0x11c. Detect all four here, before RestoreBackingStore can
+				// reuse pixels made with the previous projection.
 				static void *lastRender = nullptr;
 				static int32_t lastZoom = 0;
 				static int32_t lastRotation = 0;
+				static uint32_t lastYaw = 0;
+				static uint32_t lastPitch = 0;
 				static bool haveCameraState = false;
 				auto *const camera = *reinterpret_cast<uint8_t **>(bytes + 0x8C);
 				bool cameraChanged = false;
 				if (camera != nullptr) {
 					int32_t const zoom = *reinterpret_cast<int32_t const *>(camera + 0x108);
 					int32_t const rotation = *reinterpret_cast<int32_t const *>(camera + 0x10C);
+					// Compared as bits, so any change counts and NaN cannot hide one.
+					uint32_t const yaw = *reinterpret_cast<uint32_t const *>(camera + 0x118);
+					uint32_t const pitch = *reinterpret_cast<uint32_t const *>(camera + 0x11C);
 					cameraChanged = haveCameraState && lastRender == self &&
-					                (zoom != lastZoom || rotation != lastRotation);
+					                (zoom != lastZoom || rotation != lastRotation || yaw != lastYaw ||
+					                 pitch != lastPitch);
 					lastRender = self;
 					lastZoom = zoom;
 					lastRotation = rotation;
+					lastYaw = yaw;
+					lastPitch = pitch;
 					haveCameraState = true;
 				}
 
@@ -143,7 +153,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 					if (cameraChanged && !loggedCameraInvalidation) {
 						loggedCameraInvalidation = true;
 						Log(LogCategory::Initialization,
-						    "live shadows: zoom/rotation changes force a clean static redraw");
+						    "live shadows: camera zoom, rotation, yaw and pitch changes force a clean static redraw");
 					}
 				}
 			}

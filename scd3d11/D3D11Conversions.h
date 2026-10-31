@@ -27,6 +27,36 @@ namespace nSCD3D11 {
                ((mask & 0x2000) != 0 ? D3D11_CLEAR_STENCIL : 0);
     }
 
+    // PolygonOffset is taken as D3D7's ZBIAS, as SimGLDX7 would pass it on: 0 to 16, higher drawing nearer the
+    // viewer. D3D11's DepthBias runs the other way in single depth units, so passing the offset straight
+    // through pushed geometry a hair behind the ground it lies on, and it z-fought the ground in stripes.
+    // Wine runs D3D7 ZBIAS as glPolygonOffset(-zbias, -zbias): a pull toward the viewer that also scales with
+    // the depth slope, which the tilted camera gives every flat surface. This does the same.
+    struct DepthBias {
+        INT units;
+        FLOAT slopeScale;
+    };
+
+    constexpr DepthBias D3D11DepthBias(int32_t polygonOffset) {
+        int32_t const zbias = polygonOffset < 0 ? 0 : (polygonOffset > 16 ? 16 : polygonOffset);
+        return {-zbias, -static_cast<FLOAT>(zbias)};
+    }
+
+    // The typeless format of a depth texture that takes a view of this depth-stencil format, so region copies
+    // and the scratch copy always match the depth buffer.
+    constexpr DXGI_FORMAT D3D11DepthTypelessFormat(DXGI_FORMAT depthStencilFormat) {
+        return depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT ? DXGI_FORMAT_R24G8_TYPELESS
+             : depthStencilFormat == DXGI_FORMAT_D16_UNORM         ? DXGI_FORMAT_R16_TYPELESS
+                                                                    : DXGI_FORMAT_R32_TYPELESS;
+    }
+
+    // The format a shader reads that depth texture through.
+    constexpr DXGI_FORMAT D3D11DepthShaderFormat(DXGI_FORMAT depthStencilFormat) {
+        return depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS
+             : depthStencilFormat == DXGI_FORMAT_D16_UNORM         ? DXGI_FORMAT_R16_UNORM
+                                                                    : DXGI_FORMAT_R32_FLOAT;
+    }
+
     constexpr int32_t D3D11TopLeftY(int32_t targetHeight, int32_t y, int32_t height) {
         return targetHeight - y - height;
     }
@@ -54,9 +84,11 @@ namespace nSCD3D11 {
     // only overwhelmingly likely, not proof, that the contents are equal.
     struct GeometryCacheKey {
         XXH128_hash_t digest{};
-        uint32_t count = 0;
+        // Never 0 for a real key, and below 2^31 because every upload's byte size fits 32 bits. The flag
+        // shares its word, which keeps a key at 24 bytes.
+        uint32_t count : 31 = 0;
+        uint32_t generation : 1 = 0;
         uint32_t format = 0; // SimGL vertex format or DXGI index format
-        bool generation = false;
 
         bool operator==(GeometryCacheKey const &other) const {
             // Not XXH128_isEqual, which is an out-of-line call on every cache probe.
@@ -65,8 +97,12 @@ namespace nSCD3D11 {
         }
     };
 
-    // The only way index keys are built: format, count and the exact bytes uploaded.
+    // Index keys are built from format, count and the exact bytes uploaded, except SequentialIndexKey.
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count);
+
+    // The 32-bit indices BuildSequentialIndices makes depend only on the primitive and the vertex count,
+    // so their key is those two, as a generation key that no content key can equal.
+    GeometryCacheKey SequentialIndexKey(uint32_t primitive, uint32_t vertexCount);
 
     // Content key of interleaved vertices. Only the bytes the format consumes are hashed, so padding
     // between strided vertices never affects it and packed and padded copies of a mesh share a key.
@@ -80,6 +116,9 @@ namespace nSCD3D11 {
         void const *source,
         uint32_t count,
         std::vector<D3D11Vertex> &destination);
+
+    // How many indices BuildSequentialIndices makes, 0 for a primitive or count it rejects.
+    uint64_t SequentialIndexCount(uint32_t primitive, uint32_t vertexCount);
 
     bool BuildSequentialIndices(uint32_t primitive, uint32_t vertexCount, std::vector<uint32_t> &indices);
 

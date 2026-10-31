@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <vector>
 
 #include "D3D11Conversions.h"
@@ -22,9 +23,10 @@ namespace nSCD3D11 {
     // cache line. Deletion shifts the following entries back instead of leaving tombstones, because
     // recycling a segment erases thousands of keys at once.
     //
-    // The table stays at most half full, which keeps lookups that miss as short as hits. The cache
-    // holds at most GEOMETRY_CACHE_SEGMENTS * MAX_CACHE_ENTRIES_PER_SEGMENT (262144) keys, so it never
-    // grows past 2^19 slots, about 24 MB, against about 17 MB for std::unordered_map at that size.
+    // The table stays at most half full, which keeps lookups that miss as short as hits. With the
+    // default 8 segments the cache holds at most 8 * MAX_CACHE_ENTRIES_PER_SEGMENT (262144) keys, so it
+    // never grows past 2^19 slots of 32 bytes, 16 MB, against about 17 MB for std::unordered_map at that
+    // size. VertexCacheSegments=16 doubles that. A key's count is never 0, so an empty slot needs no flag.
     //
     // It offers the part of std::unordered_map the driver uses. find() returns a pointer to the slot,
     // with the key in first and the value in second, and end() is null. Inserting or erasing
@@ -35,14 +37,15 @@ namespace nSCD3D11 {
         struct Slot {
             GeometryCacheKey first{};
             Value second{};
-            bool used = false;
+
+            bool used() const { return first.count != 0; }
         };
 
         Slot *find(GeometryCacheKey const &key) {
             if (entries == 0) return nullptr;
             for (size_t index = Home(key);; index = (index + 1) & mask) {
                 Slot &slot = slots[index];
-                if (!slot.used) return nullptr;
+                if (!slot.used()) return nullptr;
                 if (slot.first == key) return &slot;
             }
         }
@@ -51,15 +54,17 @@ namespace nSCD3D11 {
 
         size_t count(GeometryCacheKey const &key) { return find(key) != nullptr ? 1 : 0; }
 
-        // May throw std::bad_alloc when the table grows; the table is unchanged if it does.
+        // May throw std::bad_alloc when the table grows; the table is unchanged if it does. The key's
+        // count must not be 0.
         void insert_or_assign(GeometryCacheKey const &key, Value const &value) {
-            if ((static_cast<uint64_t>(entries) + 1) * 2 > static_cast<uint64_t>(slots.size())) Grow();
+            if ((static_cast<uint64_t>(entries) + 1) * 2 > static_cast<uint64_t>(slots.size())) {
+                Rehash(slots.empty() ? kInitialSlots : slots.size() * 2);
+            }
             for (size_t index = Home(key);; index = (index + 1) & mask) {
                 Slot &slot = slots[index];
-                if (!slot.used) {
+                if (!slot.used()) {
                     slot.first = key;
                     slot.second = value;
-                    slot.used = true;
                     ++entries;
                     return;
                 }
@@ -74,7 +79,7 @@ namespace nSCD3D11 {
             size_t hole = static_cast<size_t>(slot - slots.data());
             // Pull back every later entry of the run that may sit at the hole without being moved past
             // its home slot, so lookups never need to step over an empty slot.
-            for (size_t next = (hole + 1) & mask; slots[next].used; next = (next + 1) & mask) {
+            for (size_t next = (hole + 1) & mask; slots[next].used(); next = (next + 1) & mask) {
                 size_t const home = Home(slots[next].first);
                 if (((next - home) & mask) >= ((next - hole) & mask)) {
                     slots[hole] = slots[next];
@@ -87,12 +92,29 @@ namespace nSCD3D11 {
 
         size_t size() const { return entries; }
         bool empty() const { return entries == 0; }
+        size_t bucket_count() const { return slots.size(); }
 
         void clear() {
             std::vector<Slot>().swap(slots);
             entries = 0;
             mask = 0;
             shift = 32;
+        }
+
+        // The table never shrinks as entries go, so a trimmed cache gives the slots back here. Keeps the
+        // larger table if the smaller one cannot be allocated.
+        void shrink_to_fit() {
+            if (entries == 0) {
+                clear();
+                return;
+            }
+            size_t capacity = kInitialSlots;
+            while (capacity < entries * 2) capacity *= 2;
+            if (capacity >= slots.size()) return;
+            try {
+                Rehash(capacity);
+            } catch (std::bad_alloc const &) {
+            }
         }
 
     private:
@@ -107,8 +129,8 @@ namespace nSCD3D11 {
             return static_cast<size_t>(bits >> shift);
         }
 
-        void Grow() {
-            size_t const capacity = slots.empty() ? kInitialSlots : slots.size() * 2;
+        // capacity is a power of two at least twice the entries, so reinserting never rehashes again.
+        void Rehash(size_t capacity) {
             std::vector<Slot> old(capacity);
             old.swap(slots);
             mask = capacity - 1;
@@ -116,7 +138,7 @@ namespace nSCD3D11 {
             for (size_t bits = capacity; bits > 1; bits >>= 1) --shift;
             entries = 0;
             for (Slot const &slot: old) {
-                if (slot.used) insert_or_assign(slot.first, slot.second);
+                if (slot.used()) insert_or_assign(slot.first, slot.second);
             }
         }
 
