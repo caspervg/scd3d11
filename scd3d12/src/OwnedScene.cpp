@@ -525,6 +525,8 @@ namespace nSCD3D12 {
 			std::vector<uint32_t> buckets;
 			// This frame's instances.
 			uint32_t instanceCount = 0, instanceFirst = 0;
+			// In order, which a group made again under a freed one's index is not until it is merged in.
+			bool ordered = false;
 		};
 
 		// World space triangles of one state, part of a bucket.
@@ -660,6 +662,14 @@ namespace nSCD3D12 {
 			std::vector<float> cpuMilliseconds, gpuMilliseconds;
 		};
 
+		// Times for PrintTotals: all of them up to 2^17, after that the most recent 2^17 to 2^18, so a long session's
+		// samples stay bounded.
+		void Sample(std::vector<float> &samples, float value) {
+			constexpr size_t kKeep = size_t{1} << 17;
+			if (samples.size() >= 2 * kKeep) samples.erase(samples.begin(), samples.begin() + static_cast<std::ptrdiff_t>(kKeep));
+			samples.push_back(value);
+		}
+
 		// The camera's motion of every pixel, from its depth and the two frames' cameras.
 		char const kMotionShader[] = R"(
 cbuffer Motion : register(b0)
@@ -702,6 +712,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::vector<uint32_t> freeGroups;
 		std::unordered_multimap<uint64_t, uint32_t> groupsByHash;
 		std::vector<uint32_t> order;
+		// Groups made since order was last brought up to date.
+		std::vector<uint32_t> unordered;
 		bool orderDirty = true;
 		uint64_t gridRank = 0;
 
@@ -1145,6 +1157,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		bool captureInverseKnown = false, captureInverseValid = false;
 		// A terrain draw's vertices as placed in the cell piece they went to (UINT32_MAX for none yet), and which were.
 		std::vector<uint32_t> terrainRemap, terrainTouched;
+		std::vector<uint32_t> keptScratch;
 		std::vector<Fresh> freshGrid;
 		// Grid draws per 16 metre spot in this redraw.
 		std::unordered_map<uint64_t, uint32_t> spots;
@@ -1372,8 +1385,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			queryReadback->Unmap(0, &none);
 			if (end <= begin) return;
 			float const milliseconds = static_cast<float>(static_cast<double>(end - begin) * tickMilliseconds);
-			totals.gpuMilliseconds.push_back(milliseconds);
-			zooms[slotZoom[slot]].gpuMilliseconds.push_back(milliseconds);
+			Sample(totals.gpuMilliseconds, milliseconds);
+			Sample(zooms[slotZoom[slot]].gpuMilliseconds, milliseconds);
 		}
 
 		// Groups
@@ -1536,6 +1549,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			groupsByHash.emplace(hash, index);
 			unused.push_back(index);
+			unordered.push_back(index);
 			orderDirty = true;
 			return index;
 		}
@@ -1993,7 +2007,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			if (!freshCells.empty()) ++cellsVersion;
 			for (auto &[key, list]: freshCells) {
 				Cell &cell = cells[key];
-				std::vector<uint32_t> kept;
+				std::vector<uint32_t> &kept = keptScratch;
+				kept.clear();
 				bool changed = false;
 				for (Fresh &fresh: list) {
 					uint32_t match = UINT32_MAX;
@@ -2021,7 +2036,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 						changed = true;
 					}
 				}
-				cell.pieces = std::move(kept);
+				// The cell's old list becomes the scratch, so neither is allocated again.
+				cell.pieces.swap(kept);
 				cell.extent = {};
 				for (uint32_t piece: cell.pieces) {
 					pieces[piece].serial = serial;
@@ -2419,11 +2435,21 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 
 			if (orderDirty) {
-				order.clear();
-				for (uint32_t g = 0; g < groups.size(); ++g) {
-					if (groups[g].alive) order.push_back(g);
-				}
-				std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return groups[a].rank < groups[b].rank; });
+				// The order a stable sort by rank of every living group by index gives, kept up to date instead: the
+				// groups that went drop out, the new ones are sorted by rank and index alone and merged in.
+				auto const before = [&](uint32_t a, uint32_t b) {
+					return groups[a].rank < groups[b].rank || (groups[a].rank == groups[b].rank && a < b);
+				};
+				std::erase_if(order, [&](uint32_t g) { return !groups[g].alive || !groups[g].ordered; });
+				std::erase_if(unordered, [&](uint32_t g) { return !groups[g].alive || groups[g].ordered; });
+				std::sort(unordered.begin(), unordered.end());
+				unordered.erase(std::unique(unordered.begin(), unordered.end()), unordered.end());
+				std::sort(unordered.begin(), unordered.end(), before);
+				for (uint32_t g: unordered) groups[g].ordered = true;
+				size_t const kept = order.size();
+				order.insert(order.end(), unordered.begin(), unordered.end());
+				std::inplace_merge(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(kept), order.end(), before);
+				unordered.clear();
 				orderDirty = false;
 				++orderVersion;
 			}
@@ -2593,12 +2619,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			float const milliseconds = static_cast<float>(
 				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-			totals.cpuMilliseconds.push_back(milliseconds);
+			Sample(totals.cpuMilliseconds, milliseconds);
 			Zoom &z = zooms[zoom];
 			++z.frames;
 			z.draws += draws;
 			z.instances += instances;
-			z.cpuMilliseconds.push_back(milliseconds);
+			Sample(z.cpuMilliseconds, milliseconds);
 		}
 	};
 
