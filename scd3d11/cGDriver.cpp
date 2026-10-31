@@ -27,12 +27,6 @@
 #include <cmath>
 #include <cstring>
 
-cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() {
-}
-
-cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension() {
-}
-
 /*static_assert(sizeof(sGDMode) == 56U).
 static_assert(offsetof(sGDMode, fullscreen) == 0x20).
 static_assert(offsetof(sGDMode, is3DAccelerated) == 0x22).

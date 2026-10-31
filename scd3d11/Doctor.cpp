@@ -208,6 +208,12 @@ namespace nSCD3D11::Doctor {
 					                    driver.c_str());
 				}
 			}
+			// SCD3D12 is this project's renderer in another process, which takes over when it is installed.
+			if (!environment.activeDriverBuiltIn && Lower(name) == "scd3d12.dll") {
+				findings.push_back({Severity::Note, "SimCity 4 is drawing with SCD3D12.dll, which takes over from "
+				                                    "SCD3D11 when both are installed. Remove SCD3D12.dll to use SCD3D11."});
+				return;
+			}
 			// scvk is a renderer of its own that people pick on purpose, so it is only noted in the log.
 			if (!environment.activeDriverBuiltIn && Lower(name) == "scvk.dll") {
 				findings.push_back({Severity::Note, Format("SimCity 4 is drawing with scvk.dll. To use SCD3D11, %s.",

@@ -50,3 +50,5 @@ public:
 	virtual bool FinalRelease(void) = 0;
 	virtual bool DeleteAllBufferRegions(void) = 0;
 };
+
+inline cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() {}

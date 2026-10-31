@@ -19,6 +19,14 @@
 #include <thread>
 #include <unordered_set>
 
+// The log this DLL writes and the tag on each line: SCD3D11.log, or SCD3D12.log for SCD3D12.dll.
+#ifndef SCD3D11_LOG_FILE
+#define SCD3D11_LOG_FILE L"SCD3D11.log"
+#endif
+#ifndef SCD3D11_LOG_TAG
+#define SCD3D11_LOG_TAG "SC4D3D11"
+#endif
+
 namespace nSCD3D11
 {
 	namespace
@@ -37,7 +45,7 @@ namespace nSCD3D11
 		// SCD3D11.dll, where other plugins keep their logs too. Falls back to the working directory if
 		// the module path is unavailable.
 		void WriteLogLine(char const* message) {
-			static std::filesystem::path const logPath = LogDirectory() / L"SCD3D11.log";
+			static std::filesystem::path const logPath = LogDirectory() / SCD3D11_LOG_FILE;
 
 			// _wfopen_s does not share the file, so a concurrent writer (the watchdog) would lose its line.
 			static std::mutex mutex;
@@ -67,12 +75,12 @@ namespace nSCD3D11
 
 			char message[1024]{};
 			if (count == kMessagesPerCategory[index]) {
-				sprintf_s(message, "[SC4D3D11][%s] further messages suppressed\n", CategoryName(category));
+				sprintf_s(message, "[" SCD3D11_LOG_TAG "][%s] further messages suppressed\n", CategoryName(category));
 			}
 			else {
 				char detail[896]{};
 				vsnprintf_s(detail, sizeof(detail), _TRUNCATE, format, arguments);
-				sprintf_s(message, "[SC4D3D11][%s] %s\n", CategoryName(category), detail);
+				sprintf_s(message, "[" SCD3D11_LOG_TAG "][%s] %s\n", CategoryName(category), detail);
 			}
 
 			OutputDebugStringA(message);
@@ -150,7 +158,7 @@ namespace nSCD3D11
 
 		static char const* names[] = { "render-state", "vertex-format", "texture-format" };
 		char message[128]{};
-		sprintf_s(message, "[SC4D3D11][state] %s=0x%016llX\n", names[index], static_cast<unsigned long long>(value));
+		sprintf_s(message, "[" SCD3D11_LOG_TAG "][state] %s=0x%016llX\n", names[index], static_cast<unsigned long long>(value));
 		WriteLogLine(message);
 #else
 		(void)category;

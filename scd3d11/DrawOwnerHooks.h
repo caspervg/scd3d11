@@ -13,7 +13,8 @@
 // Marks which game object each of SC4's draws belongs to, in the stream SCD3D11 writes (Record or
 // Renderer=server). See DrawOwnerHooks.cpp for the patch sites.
 namespace nSCD3D11::DrawOwnerHooks {
-	bool Install();
+	// Only when the game's draws are streamed (SCD3D12, or SCD3D11 with Record or Renderer=server).
+	bool Install(bool streamed);
 	void Uninstall();
 	// The game is about to read its own frame (a snapshot, the region thumbnail): draw every model for a while.
 	void DrawAllModels();

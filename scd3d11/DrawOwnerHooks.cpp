@@ -301,11 +301,10 @@ namespace nSCD3D11::DrawOwnerHooks {
 		}
 	}
 
-	bool Install() {
+	bool Install(bool streamed) {
 #if defined(_MSC_VER) && defined(_M_IX86)
 		if (gInstalled) return true;
-		Settings::Values const &settings = Settings::Get();
-		if (!settings.server && settings.record.empty()) return false;
+		if (!streamed) return false;
 		if (!IsGameVersion641()) {
 			Log(LogCategory::Initialization, "draw owners: requires SimCity 4 1.1.641, skipping");
 			return false;

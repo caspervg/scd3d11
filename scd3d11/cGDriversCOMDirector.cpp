@@ -29,6 +29,7 @@
 #include "DrawOwnerHooks.h"
 #include "FreeCamera.h"
 #include "Doctor.h"
+#include "GameFolders.h"
 #include "RemoteRenderer.h"
 #include "LiveShadowHooks.h"
 #include "OccupantTracker.h"
@@ -41,40 +42,23 @@ namespace nSCD3D11
 {
 	static const uint32_t kSCVKGDriverPluginCOMDirectorID = 0xCB6EC543;
 
-	// Tells the server which folders SC4 read its packages from, so its asset store holds the same data.
-	static void RecordGameFolders()
-	{
-		cGDriverWire* const wire = cGDriverWire::Current();
-		cISC4AppPtr app;
-		if (wire == nullptr || !app) return;
-		cRZBaseString paths[static_cast<size_t>(nSCDWire::GameFolder::Count)];
-		// The same calls cSC4App::SetupResources (0x004572B0) makes. What they return is not a reliable flag,
-		// so a folder counts as named when its path is not empty.
-		app->GetDataDirectory(paths[0], -1);
-		app->GetDataDirectory(paths[1], 0);
-		app->GetSkuSpecificDirectory(paths[2]);
-		app->GetPluginDirectory(paths[3]);
-		app->GetUserPluginDirectory(paths[4]);
-		if (paths[0].Strlen() == 0) {
-			Log(LogCategory::Initialization, "server: SC4 did not name its install folder");
-			return;
-		}
-		std::wstring folders[static_cast<size_t>(nSCDWire::GameFolder::Count)];
-		for (size_t i = 0; i < std::size(paths); ++i) {
-			// SC4 keeps paths in the ANSI code page, with a trailing separator.
-			std::string path(paths[i].ToChar(), paths[i].Strlen());
-			while (!path.empty() && (path.back() == '\\' || path.back() == '/')) path.pop_back();
-			Log(LogCategory::Initialization, "server: game folder %zu is %s", i, path.c_str());
-			int const units = MultiByteToWideChar(CP_ACP, 0, path.data(), static_cast<int>(path.size()), nullptr, 0);
-			folders[i].resize(units);
-			MultiByteToWideChar(CP_ACP, 0, path.data(), static_cast<int>(path.size()), folders[i].data(), units);
-		}
-		wire->RecordGameFolders(folders);
-	}
-
 	// The GZCOM factory for the driver class. With Record=<file> the driver comes wrapped in cGDriverWire
 	// writing to that file, and with Renderer=server it draws through SCD3D12Server.
+	// Whether SC4 created this driver. When another one won the class ID (SCD3D12.dll claims it with a higher
+	// version), SCD3D11 stays out of the game: none of its hooks go in.
+	static bool gDriverCreated = false;
+
+	static void InstallHooks() {
+		if (gDriverCreated) return;
+		gDriverCreated = true;
+		LiveShadowHooks::Install();
+		if (LiveShadowHooks::Enabled()) ShadowRegistry::Install();
+		TerrainShadows::Install();
+		DrawOwnerHooks::Install(Settings::Get().server || !Settings::Get().record.empty());
+	}
+
 	static bool CreateDriver(uint32_t riid, void **ppvObj) {
+		InstallHooks();
 		Settings::Values const &settings = Settings::Get();
 		std::unique_ptr<RemoteRenderer> remote;
 		if (settings.server) {
@@ -133,6 +117,7 @@ namespace nSCD3D11
 		bool PostAppInit() {
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			Doctor::Run(pFramework != nullptr ? pFramework->CommandLine() : nullptr);
+			if (!gDriverCreated) return true;
 			OccupantTracker::Install();
 			FreeCamera::Install();
 			RecordGameFolders();
@@ -153,10 +138,6 @@ namespace nSCD3D11
 		bool OnStart(cIGZCOM* pCOM) {
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			Settings::Load(pFramework != nullptr ? pFramework->CommandLine() : nullptr);
-			LiveShadowHooks::Install();
-			if (LiveShadowHooks::Enabled()) ShadowRegistry::Install();
-			TerrainShadows::Install();
-			DrawOwnerHooks::Install();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePreAppInit) {
 					pFramework->AddHook(this);

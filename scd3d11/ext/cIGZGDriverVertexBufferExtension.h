@@ -49,3 +49,5 @@ public:
 
     virtual ~cIGZGDriverVertexBufferExtension(void) = 0;
 };
+
+inline cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension() {}

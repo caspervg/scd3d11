@@ -25,6 +25,11 @@
 
 #include <windows.h>
 
+// The ini section this DLL reads: [SCD3D11] in SCD3D11.ini, [SCD3D12] in SCD3D12.ini.
+#ifndef SCD3D11_SETTINGS_SECTION
+#define SCD3D11_SETTINGS_SECTION "SCD3D11"
+#endif
+
 namespace nSCD3D11::Settings {
 	namespace {
 		char Lower(char character) {
@@ -49,7 +54,7 @@ namespace nSCD3D11::Settings {
 				if (!std::filesystem::exists(path)) return std::nullopt;
 				IniReader const reader(path);
 				Log(LogCategory::Initialization, "settings read from %s", path.string().c_str());
-				return reader.get_section_optional("SCD3D11");
+				return reader.get_section_optional(SCD3D11_SETTINGS_SECTION);
 			} catch (std::exception const &error) {
 				Log(LogCategory::Initialization, "SCD3D11.ini ignored: %s", error.what());
 				return std::nullopt;
@@ -139,7 +144,7 @@ namespace nSCD3D11::Settings {
 		T Resolve(Sources const &sources, char const *name, bool (*parse)(std::string_view, T &), T fallback) {
 			std::pair<char const *, std::optional<std::string>> const candidates[]{
 				{"command line", FromCommandLine(sources.commandLine, name)},
-				{"SCD3D11.ini", FromIni(sources.ini, name)}
+				{SCD3D11_SETTINGS_SECTION ".ini", FromIni(sources.ini, name)}
 			};
 			for (auto const &[source, value] : candidates) {
 				if (!value) continue;
