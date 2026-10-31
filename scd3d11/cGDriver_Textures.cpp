@@ -139,7 +139,11 @@ namespace nSCD3D11 {
         description.AddressV = stage.wrapV == 2 ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_WRAP;
         description.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
         description.ComparisonFunc = D3D11_COMPARISON_NEVER;
-        description.MaxLOD = FLT_MAX;
+        // GL_NEAREST and GL_LINEAR (0 and 1) mean "no mipmapping": only the base level is sampled.
+        // A D3D11 POINT mip filter still walks the chain, so clamp the LOD instead. S3D materials
+        // pick these modes, and some custom FSHes carry mips that don't match their base level
+        // (an automata texture whose mips are another car entirely).
+        description.MaxLOD = stage.minFilter < 4 ? 0.0f : FLT_MAX;
 
         uint32_t const key = stage.magFilter |
                               (static_cast<uint32_t>(stage.minFilter) << 8) |
