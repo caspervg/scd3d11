@@ -667,6 +667,7 @@ namespace nSCD3D12 {
 			// a pixel, too much to draw again, the kept view could not be restored. fractionSum adds up how far from
 			// whole pixels the part-pixel moves were.
 			uint64_t drawnWhole[8]{};
+			uint64_t tooMuchRedrawn = 0, tooMuchChanged = 0;
 			double fractionSum = 0.0;
 		};
 
@@ -1165,12 +1166,30 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		void Changed(Extent const &e) {
 			if (e.Empty() || changedAll) return;
 			// So many that the whole view is drawn anyway (a full redraw adds every piece).
-			if (changed.size() >= 65536) {
+			if (changed.size() >= (1u << 20)) {
 				changedAll = true;
 				changed.clear();
 				return;
 			}
 			changed.push_back(e);
+		}
+		// What a piece covers, for Changed: its box, or for one spread wider than a bin (SC4 draws some overlays,
+		// shadows among them, as one draw of triangles across the whole view) each triangle's, so a strip SC4
+		// redraws does not mark the whole screen.
+		void ChangedPiece(std::vector<D3D11Vertex> const &vertices, std::vector<uint32_t> const &indices,
+		                  Extent const &extent, float const *view) {
+			if (extent.Empty()) return;
+			if (extent.v[2] - extent.v[0] <= kBinMetres && extent.v[3] - extent.v[1] <= kBinMetres) {
+				Changed(extent);
+				return;
+			}
+			for (size_t i = 0; i + 2 < indices.size() && !changedAll; i += 3) {
+				Extent triangle;
+				for (size_t k = 0; k < 3; ++k) {
+					if (indices[i + k] < vertices.size()) triangle.Add(view, vertices[indices[i + k]].position);
+				}
+				Changed(triangle);
+			}
 		}
 		std::vector<nSCDWire::DrawOwner> owners;
 		int32_t lastPass = -1;
@@ -1656,7 +1675,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					hi[a] = (std::max)(hi[a], v.position[a]);
 				}
 			}
-			Changed(p.extent);
+			ChangedPiece(p.vertices, p.indices, p.extent, captureView);
 			Use(group);
 			int32_t const tx = static_cast<int32_t>(std::floor((lo[0] + hi[0]) * 0.5f / kTileMetres));
 			int32_t const tz = static_cast<int32_t>(std::floor((lo[2] + hi[2]) * 0.5f / kTileMetres));
@@ -1700,10 +1719,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		bool Refit(uint32_t index) {
 			Piece &p = pieces[index];
 			if (std::memcmp(p.view, captureView, sizeof(p.view)) == 0) return false;
-			Changed(p.extent);
+			ChangedPiece(p.vertices, p.indices, p.extent, p.view);
 			p.extent = {};
 			for (D3D11Vertex const &v: p.vertices) p.extent.Add(captureView, v.position);
-			Changed(p.extent);
+			ChangedPiece(p.vertices, p.indices, p.extent, captureView);
 			std::memcpy(p.view, captureView, sizeof(p.view));
 			buckets[p.bucket].extent.Add(p.extent);
 			return true;
@@ -1712,7 +1731,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		void RemovePiece(uint32_t index, uint32_t reason) {
 			Piece &p = pieces[index];
 			if (!p.alive) return;
-			Changed(p.extent);
+			ChangedPiece(p.vertices, p.indices, p.extent, p.view);
 			Bucket &bucket = buckets[p.bucket];
 			uint32_t const last = bucket.pieces.back();
 			bucket.pieces[p.place] = last;
@@ -2437,13 +2456,19 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				mark(static_cast<float>(v[0]), static_cast<float>(height - v[3]), static_cast<float>(v[2]),
 				     static_cast<float>(height - v[1]));
 			}
+			size_t byRedraws = 0;
+			for (uint8_t tile: tiles) byRedraws += tile;
 			for (Extent const &e: changed) {
 				Rect const r = ToScreen(e, now);
 				mark(r.left, r.top, r.right, r.bottom);
 			}
 			size_t marked = 0;
 			for (uint8_t tile: tiles) marked += tile;
-			if (marked * 2 > tiles.size()) return false;
+			if (marked * 2 > tiles.size()) {
+				// SC4's redraws and the scroll alone, or the scene's changes.
+				++(byRedraws * 2 > tiles.size() ? totals.tooMuchRedrawn : totals.tooMuchChanged);
+				return false;
+			}
 			// Runs of tiles per row, and runs that repeat on the rows below as one rectangle.
 			parts.clear();
 			std::vector<D3D12_RECT> open;
@@ -3242,10 +3267,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		            static_cast<double>(t.appendedBytes) / (1 << 20), u(t.rebuilds));
 		std::printf("owned: drawn whole because: %llu not SC4's plain camera, %llu nothing kept, %llu everything changed, %llu "
 		            "another view, %llu depth moved; %llu moved by part of a pixel and snapped (%.3f px on average); %llu too much "
-		            "changed, %llu not restored\n",
+		            "changed (%llu by SC4's redraws and the scroll, %llu by the scene's changes), %llu not restored\n",
 		            u(t.drawnWhole[0]), u(t.drawnWhole[1]), u(t.drawnWhole[2]), u(t.drawnWhole[3]), u(t.drawnWhole[4]),
 		            u(t.drawnWhole[5]), t.drawnWhole[5] ? t.fractionSum / static_cast<double>(t.drawnWhole[5]) : 0.0,
-		            u(t.drawnWhole[6]), u(t.drawnWhole[7]));
+		            u(t.drawnWhole[6]), u(t.tooMuchRedrawn), u(t.tooMuchChanged), u(t.drawnWhole[7]));
 		std::printf("owned: %llu composites from the kept view in place, %llu moved by a scroll (%llu scrolls changed depth "
 		            "and were drawn whole); %.2f parts drawn per such composite, %.1f%% of the screen\n",
 		            u(t.keptInPlace), u(t.keptMoved), u(t.depthMoves),
