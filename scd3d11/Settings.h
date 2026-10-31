@@ -40,6 +40,10 @@ namespace nSCD3D11::Settings {
 		bool flipModel = true;
 		GpuChoice gpu;
 		bool viewportCull = true;
+		// Depth16=on: round every depth onto a 16-bit grid before it is tested and written, as SC4's DirectX 7
+		// driver got a 16-bit depth buffer. SC4 layers the ground's overlays 1/65536 apart and relies on
+		// near-equal depths tying, so a finer buffer lets them z-fight. The stencil stays.
+		bool depth16 = true;
 		bool reshade = true;
 		bool drawStats = false;
 		// LogLevel=trace.

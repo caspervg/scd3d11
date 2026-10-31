@@ -11,6 +11,7 @@
 #include "cGDriver.h"
 #include "Diagnostics.h"
 #include "LiveShadowHooks.h"
+#include "Settings.h"
 #include "VertexFormatUtils.h"
 
 #include <cstddef>
@@ -37,6 +38,13 @@ namespace nSCD3D11 {
 		char const kShaderSource[] = R"(
 #ifndef SCD3D11_INTERPOLATION
 #define SCD3D11_INTERPOLATION
+#endif
+// A pixel shader that promises SV_DepthGreaterEqual must read the position centroid. Without multisampling that
+// is still the pixel centre.
+#ifdef SCD3D11_DEPTH_SEMANTIC
+#define SCD3D11_POSITION_INTERPOLATION centroid
+#else
+#define SCD3D11_POSITION_INTERPOLATION
 #endif
 struct StageState
 {
@@ -93,7 +101,7 @@ struct VSInput
 
 struct PSInput
 {
-	float4 position : SV_POSITION;
+	SCD3D11_POSITION_INTERPOLATION float4 position : SV_POSITION;
 	SCD3D11_INTERPOLATION float3 normal : NORMAL;
 	SCD3D11_INTERPOLATION float4 color : COLOR0;
 	SCD3D11_INTERPOLATION float3 viewPosition : TEXCOORD3;
@@ -170,8 +178,20 @@ float4 ApplyStage(StageState state, float4 textureColor, float4 previous, float4
 	return result;
 }
 
+// SCD3D11_DEPTH_SEMANTIC, when defined, rounds each depth up onto a 16-bit grid before it is tested and written.
+// SC4's DirectX 7 driver kept the first depth format Direct3D listed, a 16-bit one, and SC4 layers the ground's
+// overlays (shadows, decals, network and lot textures) 1/65536 apart, relying on near-equal depths to tie under
+// its LESSEQUAL test. A 24-bit buffer resolves those ties into per-pixel z-fighting. 65536 is a power of two, so
+// every grid value is an exact float. Rounding up keeps SV_DepthGreaterEqual true, so early depth rejection stays.
+#ifdef SCD3D11_DEPTH_SEMANTIC
+float4 PSMain(PSInput input, out float depth : SCD3D11_DEPTH_SEMANTIC) : SV_TARGET
+#else
 float4 PSMain(PSInput input) : SV_TARGET
+#endif
 {
+#ifdef SCD3D11_DEPTH_SEMANTIC
+	depth = ceil(input.position.z * 65536.0f) * (1.0f / 65536.0f);
+#endif
 	float4 primary = input.color;
 	if ((flags & 4) != 0)
 	{
@@ -299,10 +319,24 @@ float4 PSMain(PSInput input) : SV_TARGET
 			LogHRESULT(LogCategory::Resource, "D3DCompile(VSMain)", result);
 			return result;
 		}
-		D3D_SHADER_MACRO const flatMacros[] = {{"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
+		// Depth16 writes the depth from the pixel shader. Feature level 11 can promise it only moves away from
+		// the viewer, which keeps early depth rejection; 10.x gets a plain depth output.
+		bool const shaderModel5 = featureLevel >= D3D_FEATURE_LEVEL_11_0;
+		char const *const pixelProfile = shaderModel5 ? "ps_5_0" : "ps_4_0";
+		char const *const depthSemantic =
+			!Settings::Get().depth16 ? nullptr : (shaderModel5 ? "SV_DepthGreaterEqual" : "SV_Depth");
+		D3D_SHADER_MACRO const flatMacros[] = {
+			{"SCD3D11_INTERPOLATION", "nointerpolation"},
+			{depthSemantic != nullptr ? "SCD3D11_DEPTH_SEMANTIC" : nullptr, depthSemantic},
+			{nullptr, nullptr}
+		};
+		D3D_SHADER_MACRO const smoothMacros[] = {
+			{depthSemantic != nullptr ? "SCD3D11_DEPTH_SEMANTIC" : nullptr, depthSemantic},
+			{nullptr, nullptr}
+		};
 		result = D3DCompile(
 			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", flatMacros, nullptr,
-			"PSMain", "ps_4_0", compileFlags, 0, &flatPixelBytecode, &messages);
+			"PSMain", pixelProfile, compileFlags, 0, &flatPixelBytecode, &messages);
 		if (messages) messages.Reset();
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "D3DCompile(PSMain flat)", result);
@@ -310,8 +344,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		result = D3DCompile(
-			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", nullptr, nullptr,
-			"PSMain", "ps_4_0", compileFlags, 0, &pixelBytecode, &messages);
+			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", smoothMacros, nullptr,
+			"PSMain", pixelProfile, compileFlags, 0, &pixelBytecode, &messages);
 		if (messages) {
 			Log(LogCategory::Resource, "pixel shader compiler: %s",
 			    static_cast<char const *>(messages->GetBufferPointer()));
