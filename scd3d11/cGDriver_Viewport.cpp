@@ -621,6 +621,8 @@ namespace nSCD3D11 {
 				    fullscreen ? "fullscreen" : "windowed", IsIconic(window) ? 1 : 0,
 				    GetForegroundWindow() == window ? 1 : 0);
 				lastFullscreenState = fullscreen;
+				// Losing it to an alt-tab is not the player's choice: take it back once the window is in front again.
+				if (!fullscreen) exclusiveFullscreenPending = true;
 			}
 		}
 
