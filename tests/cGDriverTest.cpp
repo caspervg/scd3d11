@@ -537,6 +537,58 @@ namespace nSCD3D11 {
 			assert(SCD3D11UnregisterFrameCallback(ClobberingCallback, this));
 		}
 
+		// A plugin that hooks IDXGISwapChain::Present the way old dgVoodoo-era overlays do: it draws inside the
+		// call and leaves its own render target bound, with no depth view. Every later frame must still reach
+		// SCD3D11's back buffer.
+		using PresentFunction = HRESULT(STDMETHODCALLTYPE *)(IDXGISwapChain *, UINT, UINT);
+		static inline PresentFunction originalPresent = nullptr;
+		static inline ID3D11RenderTargetView *foreignTarget = nullptr;
+
+		static HRESULT STDMETHODCALLTYPE StealingPresent(IDXGISwapChain *swapChain, UINT interval, UINT flags) {
+			ComPtr<ID3D11Device> device;
+			ComPtr<ID3D11DeviceContext> context;
+			if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&device)))) device->GetImmediateContext(&context);
+			if (context) context->OMSetRenderTargets(1, &foreignTarget, nullptr);
+			return originalPresent(swapChain, interval, flags);
+		}
+
+		void PresentHookCannotStealTheRenderTarget() {
+			D3D11_TEXTURE2D_DESC description{};
+			description.Width = description.Height = 4;
+			description.MipLevels = description.ArraySize = 1;
+			description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			description.SampleDesc.Count = 1;
+			description.BindFlags = D3D11_BIND_RENDER_TARGET;
+			ComPtr<ID3D11Texture2D> texture;
+			assert(SUCCEEDED(d.d3dDevice->CreateTexture2D(&description, nullptr, &texture)));
+			ComPtr<ID3D11RenderTargetView> target;
+			assert(SUCCEEDED(d.d3dDevice->CreateRenderTargetView(texture.Get(), nullptr, &target)));
+			foreignTarget = target.Get();
+
+			// IDXGISwapChain::Present is slot 8 of the vtable every swap chain of this kind shares.
+			void **const vtable = *reinterpret_cast<void ***>(d.swapChain.Get());
+			DWORD protection = 0;
+			assert(VirtualProtect(&vtable[8], sizeof(void *), PAGE_READWRITE, &protection));
+			originalPresent = reinterpret_cast<PresentFunction>(vtable[8]);
+			vtable[8] = reinterpret_cast<void *>(&StealingPresent);
+
+			d.SetViewport();
+			DrawFullscreen(0, 0, 255);
+			d.Flush();
+			DrawFullscreen(255, 0, 0);
+			bool const drawnToBackBuffer = Pixel(1, 1) == 0xff0000ff;
+
+			vtable[8] = reinterpret_cast<void *>(originalPresent);
+			DWORD ignored = 0;
+			VirtualProtect(&vtable[8], sizeof(void *), protection, &ignored);
+			foreignTarget = nullptr;
+			assert(drawnToBackBuffer);
+
+			// Without a hook, the cached bindings still survive the frame.
+			d.Flush();
+			assert(d.geometryPipelineBound);
+		}
+
 		// Uploads a width x height rectangle whose source rows are rowLength texels wide (0 = width),
 		// then checks the whole level against a CPU model of the texture.
 		void UploadAndCompare(uint32_t texture, std::vector<uint8_t> &model, uint32_t textureWidth,
@@ -1277,6 +1329,7 @@ namespace nSCD3D11 {
 			CachedVerticesFollowTheirSource();
 			TerrainDrawsReadTheirIndexRange();
 			FrameCallbackCleanupOnlyWhenNeeded();
+			PresentHookCannotStealTheRenderTarget();
 			TextureUploadsHonorRowPitch();
 			NormalMatrixFollowsModelView();
 			MatchesDirect3D7Lighting();

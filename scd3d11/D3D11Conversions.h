@@ -27,6 +27,21 @@ namespace nSCD3D11 {
                ((mask & 0x2000) != 0 ? D3D11_CLEAR_STENCIL : 0);
     }
 
+    // PolygonOffset is taken as D3D7's ZBIAS, as SimGLDX7 would pass it on: 0 to 16, higher drawing nearer the
+    // viewer. D3D11's DepthBias runs the other way in single depth units, so passing the offset straight
+    // through pushed geometry a hair behind the ground it lies on, and it z-fought the ground in stripes.
+    // Wine runs D3D7 ZBIAS as glPolygonOffset(-zbias, -zbias): a pull toward the viewer that also scales with
+    // the depth slope, which the tilted camera gives every flat surface. This does the same.
+    struct DepthBias {
+        INT units;
+        FLOAT slopeScale;
+    };
+
+    constexpr DepthBias D3D11DepthBias(int32_t polygonOffset) {
+        int32_t const zbias = polygonOffset < 0 ? 0 : (polygonOffset > 16 ? 16 : polygonOffset);
+        return {-zbias, -static_cast<FLOAT>(zbias)};
+    }
+
     constexpr int32_t D3D11TopLeftY(int32_t targetHeight, int32_t y, int32_t height) {
         return targetHeight - y - height;
     }

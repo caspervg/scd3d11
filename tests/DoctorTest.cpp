@@ -45,6 +45,7 @@ int main() {
 	}
 	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
 	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
+	assert(IsWatched("C:\\SC4\\Plugins\\SC4AdvancedLotPlop.dll"));
 	assert(ReleaseVersion(R"({"url":"x","tag_name": "v0.3.3","name":"SCD3D11 0.3.3"})") == "0.3.3");
 	assert(ReleaseVersion(R"({"message":"Not Found"})").empty());
 	assert(ReleaseVersion(R"({"tag_name":"latest"})").empty());
@@ -227,6 +228,17 @@ int main() {
 		           "vcruntime140.dll from the Microsoft Visual C++ Redistributable. Install its x86 version"));
 	}
 	{
+		// A debug build, which needs the runtime's debug DLLs. The Redistributable does not have those.
+		Environment environment = Clean();
+		environment.pluginsMissingDebugRuntime = {"SC4WebInterface.dll"};
+		environment.missingDebugRuntimeDlls = {"msvcp140d.dll", "ucrtbased.dll", "vcruntime140d.dll"};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Problem,
+		           "SC4 skips SC4WebInterface.dll, because it is a debug build that needs msvcp140d.dll, ucrtbased.dll, "
+		           "vcruntime140d.dll. Only Visual Studio installs those"));
+		assert(!Has(findings, Severity::Problem, "Install its x86 version"));
+	}
+	{
 		// No 4GB patch, Wine, and a ReShade too old for the add-on.
 		Environment environment = Clean();
 		environment.largeAddressAware = false;
@@ -294,6 +306,7 @@ int main() {
 		                       {"C:\\SC4\\Plugins\\memo.3dcamera.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\SC4-ModernCamera.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\SC4SingleCPU.dll", "", ""},
+		                       {"C:\\SC4\\Plugins\\SC4AdvancedLotPlop.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\scvk.dll", "", ""},
 		                       {"C:\\Steam\\GameOverlayRenderer.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\sc4_painter.dll", "", ""},
@@ -313,6 +326,7 @@ int main() {
 		assert(!Has(findings, Severity::Warning, "version.dll is loaded twice"));
 		assert(!Has(findings, Severity::Warning, "turn the camera"));
 		assert(Has(findings, Severity::Warning, "sc4singlecpu.dll is replaced by SC4CPUOptions"));
+		assert(Has(findings, Severity::Problem, "Remove SC4AdvancedLotPlop.dll"));
 		assert(Has(findings, Severity::Note, "scvk.dll is installed too"));
 		assert(Has(findings, Severity::Note, "Overlays in the game: Steam overlay"));
 		assert(!Has(findings, Severity::Warning, "SCD3D11 used the screen's own"));

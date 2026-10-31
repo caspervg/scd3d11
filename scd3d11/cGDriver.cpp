@@ -468,5 +468,17 @@ namespace nSCD3D11 {
 
 	void cGDriver::PolygonOffset(int32_t offset) {
 		polygonOffset = offset;
+
+		// Which offsets SC4 uses, to check D3D11DepthBias against them. Each value is logged once.
+		static int32_t logged[8];
+		static size_t loggedCount = 0;
+		for (size_t i = 0; i < loggedCount; ++i) {
+			if (logged[i] == offset) return;
+		}
+		if (loggedCount == std::size(logged)) return;
+		logged[loggedCount++] = offset;
+		DepthBias const bias = D3D11DepthBias(offset);
+		Log(LogCategory::Capabilities, "polygon offset %d: depth bias %d, slope scale %.0f", offset, bias.units,
+		    bias.slopeScale);
 	}
 }

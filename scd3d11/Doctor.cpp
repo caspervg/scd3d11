@@ -441,6 +441,16 @@ namespace nSCD3D11::Doctor {
 					"Install its x86 version from https://aka.ms/vs/17/release/vc_redist.x86.exe, also on 64-bit Windows.",
 					plugins.c_str(), dlls.c_str())});
 			}
+			if (!environment.pluginsMissingDebugRuntime.empty()) {
+				std::string plugins, dlls;
+				for (std::string const &plugin : environment.pluginsMissingDebugRuntime) plugins += (plugins.empty() ? "" : ", ") + plugin;
+				for (std::string const &dll : environment.missingDebugRuntimeDlls) dlls += (dlls.empty() ? "" : ", ") + dll;
+				bool const one = environment.pluginsMissingDebugRuntime.size() == 1;
+				findings.push_back({Severity::Problem, Format(
+					"SC4 skips %s, because %s a debug build that needs %s. Only Visual Studio installs those, the "
+					"Visual C++ Redistributable does not have them. Ask %s author for a release build.", plugins.c_str(),
+					one ? "it is" : "they are", dlls.c_str(), one ? "its" : "their")});
+			}
 
 			for (char const *rival : {"scvk.dll", "scgl.dll"}) {
 				if (FindModule(environment, rival) != nullptr) {
@@ -461,6 +471,14 @@ namespace nSCD3D11::Doctor {
 			if (FindModule(environment, "sc4fullscreen32bit.dll") != nullptr) {
 				findings.push_back({Severity::Note, "SC4FullScreen32Bit.dll only changes SC4's DirectX 7 driver and "
 				                                    "does nothing with SCD3D11. It can be removed."});
+			}
+			if (FindModule(environment, "sc4advancedlotplop.dll") != nullptr) {
+				// Its Direct3D 11 overlay was made for dgVoodoo: it patches IDXGISwapChain::Present for every
+				// swap chain in the game, SCD3D11's included, and draws its own windows on SCD3D11's device.
+				findings.push_back({Severity::Problem,
+				                    "Remove SC4AdvancedLotPlop.dll: with SCD3D11 it keeps a city from appearing "
+				                    "after it loads, and the loading screen stays. It is an old version of SC4 Plop "
+				                    "and Paint made for dgVoodoo, and SC4PlopAndPaint.dll replaces it."});
 			}
 			for (char const *old : {"sc4singlecpu.dll", "sc4cpupriority.dll"}) {
 				if (FindModule(environment, old) != nullptr) {
@@ -714,7 +732,7 @@ namespace nSCD3D11::Doctor {
 			"scd3d11.dll", "sc4graphicsoptions.dll", "sc4cpuoptions.dll", "sc4renderservices.dll", "sc4_painter.dll",
 			"memo.3dcamera.dll", "sc4-moderncamera.dll", "sc4moderncamera.dll", "memo.thumbnail-fix.dll",
 			"sc4disablefpslimits.dll", "scvk.dll", "scgl.dll", "sc4fullscreen32bit.dll", "sc4singlecpu.dll",
-			"sc4cpupriority.dll", "sc4plopandpaint.dll", "sc4terrainextensions.dll",
+			"sc4cpupriority.dll", "sc4plopandpaint.dll", "sc4advancedlotplop.dll", "sc4terrainextensions.dll",
 		};
 		std::string const name = FileName(path);
 		return std::any_of(std::begin(kWatched), std::end(kWatched), [&](char const *watched) { return name == watched; });
