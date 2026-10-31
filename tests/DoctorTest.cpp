@@ -123,9 +123,15 @@ int main() {
 		environment.activeDriverModule = "C:\\SC4\\Plugins\\scvk.dll";
 		environment.arguments = {"-d:OpenGL"};
 		auto const findings = Diagnose(environment);
-		assert(Has(findings, Severity::Problem, "drawing with scvk.dll"));
-		assert(Has(findings, Severity::Problem, "-d:OpenGL picks it"));
-		assert(findings.front().severity == Severity::Problem);
+		// scvk is picked on purpose: a note in the log, not SC4's problem dialog.
+		assert(Has(findings, Severity::Note, "drawing with scvk.dll"));
+		assert(Has(findings, Severity::Note, "To use SCD3D11, start SimCity 4 with -d:DirectX instead of -d:OpenGL."));
+		assert(!Has(findings, Severity::Problem, "drawing with"));
+
+		environment.activeDriverModule = "C:\\SC4\\Plugins\\scgl.dll";
+		auto const otherFindings = Diagnose(environment);
+		assert(Has(otherFindings, Severity::Problem, "drawing with scgl.dll"));
+		assert(otherFindings.front().severity == Severity::Problem);
 
 		environment.arguments.clear();
 		environment.graphicsOptions = std::map<std::string, std::string>{{"driver", "Software"}};
