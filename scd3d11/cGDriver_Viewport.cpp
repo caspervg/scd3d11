@@ -755,7 +755,7 @@ namespace nSCD3D11 {
 			clamped = true;
 		}
 		static uint32_t loggedCalls = 0;
-		if (diagnose && loggedCalls < 40) {
+		if (diagnose && insideCityDraw && loggedCalls < 40) {
 			++loggedCalls;
 			Log(LogCategory::Diag, "SetViewport(%d, %d, %d, %d): top %lld in a %dx%d window", x, y, width, height,
 			    static_cast<long long>(windowHeight) - y - height, windowWidth, windowHeight);

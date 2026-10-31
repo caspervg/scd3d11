@@ -568,6 +568,9 @@ namespace nSCD3D11 {
 		DrawDiagnosticCounts drawDiagnosticsAtDraw;
 		uint32_t diagnosedDraws = 0;
 		uint32_t diagnosedStaticPasses = 0;
+		// Between DiagnoseDrawBegin and DiagnoseDrawEnd: clears and viewports are SC4's city view's, not the
+		// loading screen's or the UI's, and only those are logged.
+		bool insideCityDraw = false;
 		LARGE_INTEGER lastFrameTime{};
 		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
 		float normalMatrix[16];

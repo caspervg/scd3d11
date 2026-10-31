@@ -118,6 +118,7 @@ namespace nSCD3D11 {
 	void cGDriver::DiagnoseDrawBegin(void *render) {
 		drawDiagnosticsAtDraw = drawDiagnostics;
 		drawDiagnosticsMark = drawDiagnostics;
+		insideCityDraw = true;
 		if (!DrawStatsEnabled() || render == nullptr) return;
 		++diagnosedDraws;
 		if (diagnosedDraws == 1) DiagnoseWindowGeometry("at the first city-view Draw");
@@ -128,9 +129,10 @@ namespace nSCD3D11 {
 		bool const changed = !haveLast || !SameDecisions(state, last);
 		last = state;
 		haveLast = true;
-		if (diagnosedDraws > 40 && !changed) return;
+		// The first few, then whenever something that decides the path changes.
+		if (diagnosedDraws > 3 && !changed) return;
 		char heading[64]{};
-		sprintf_s(heading, "Draw #%u begins%s", diagnosedDraws, diagnosedDraws > 40 ? " (state changed)" : "");
+		sprintf_s(heading, "Draw #%u begins%s", diagnosedDraws, diagnosedDraws > 3 ? " (state changed)" : "");
 		LogRenderState(heading, state, static_cast<cIGZGBufferRegionExtension *>(this), windowWidth, windowHeight);
 	}
 
@@ -233,16 +235,23 @@ namespace nSCD3D11 {
 		DrawDiagnosticCounts const whole = drawDiagnosticsAtDraw;
 		DrawDiagnosticCounts const tail = drawDiagnosticsMark;
 		drawDiagnosticsMark = drawDiagnostics;
+		insideCityDraw = false;
 		if (!DrawStatsEnabled() || render == nullptr) return;
 
 		uint64_t const received = now.received - whole.received;
 		uint64_t const issued = now.issued - whole.issued;
 		bool const nothingIssued = received > 0 && issued == 0;
 		RenderState const state = ReadRenderState(render);
+		// A Draw that only put the backing store back is the steady state and says nothing. One that drew,
+		// saved the store or copied a scroll is reported, the first 40 of them, and every odd one after.
+		bool const worked = received > 0 || now.regionReads != whole.regionReads ||
+		                    now.viewports != whole.viewports || now.colorClears != whole.colorClears ||
+		                    now.depthClears != whole.depthClears;
+		static uint32_t loggedWorked = 0;
 		static uint32_t loggedNothingIssued = 0;
 		static uint32_t loggedInvalid = 0;
 		bool const invalid = state.flags[5] == 0 && state.storeEnabled != 0;
-		if (diagnosedDraws > 40 && !(nothingIssued && loggedNothingIssued++ < 100) &&
+		if (!(worked && loggedWorked++ < 40) && !(nothingIssued && loggedNothingIssued++ < 100) &&
 		    !(invalid && loggedInvalid++ < 50)) {
 			return;
 		}

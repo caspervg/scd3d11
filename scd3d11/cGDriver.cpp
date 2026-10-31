@@ -219,7 +219,7 @@ namespace nSCD3D11 {
 		if ((ClearsColor(mask) && !renderTargetView) || (depthStencilFlags != 0 && !depthStencilView)) {
 			++drawDiagnostics.clearsWithoutView;
 		}
-		if (DrawStatsEnabled()) {
+		if (insideCityDraw && DrawStatsEnabled()) {
 			static uint32_t logged = 0;
 			if (logged < 40) {
 				++logged;
