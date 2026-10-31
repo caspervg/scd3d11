@@ -19,8 +19,9 @@ namespace nSCD3D11 {
 	namespace {
 		// The stream's buffer in shared memory. It counts against SC4's 32-bit address space.
 		constexpr uint64_t kRingBytes = 64ull << 20;
-		// How long a frame may take before the server counts as stuck.
-		constexpr DWORD kFrameTimeoutMs = 3000;
+		// How long a frame may take before the server counts as stuck. Loading a region or a city at 4K with a large
+		// plugin set keeps it busy (and the game from sending frames) for seconds.
+		constexpr DWORD kFrameTimeoutMs = 10000;
 		// PF_AVX2_INSTRUCTIONS_AVAILABLE, which older SDKs do not name.
 		constexpr DWORD kAvx2Feature = 40;
 
@@ -194,7 +195,7 @@ namespace nSCD3D11 {
 				return false;
 			}
 			if (GetTickCount64() > deadline) {
-				Stop("the server fell more than 3 seconds behind");
+				Stop("the server fell more than 10 seconds behind");
 				return false;
 			}
 			// A resize brings new textures and fences.

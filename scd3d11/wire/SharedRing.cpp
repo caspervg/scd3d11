@@ -17,7 +17,7 @@ namespace nSCDWire {
 	namespace {
 		constexpr DWORD kWaitSliceMs = 50;
 		constexpr size_t kReadChunk = 1u << 20;
-		constexpr ULONGLONG kStalledReaderMs = 3000;
+		constexpr ULONGLONG kStalledReaderMs = 10000;
 	}
 
 	SharedRing::~SharedRing() {
@@ -83,10 +83,17 @@ namespace nSCDWire {
 		uint64_t const capacity = control->capacity;
 		// The reader cannot read what is not published, so a record a whole ring long never finds room.
 		if (at - control->written.load(std::memory_order_relaxed) >= capacity) return nullptr;
-		// A reader that takes nothing for this long is stuck, even if its process still runs.
-		ULONGLONG const deadline = GetTickCount64() + kStalledReaderMs;
+		// A reader that said it is ready and then takes nothing for this long is stuck, even if its process still
+		// runs. One still starting (creating its device, say) is waited for as long as it lives.
+		ULONGLONG deadline = GetTickCount64() + kStalledReaderMs;
+		uint64_t lastRead = control->read.load(std::memory_order_acquire);
 		for (;;) {
-			uint64_t const free = capacity - (at - control->read.load(std::memory_order_acquire));
+			uint64_t const read = control->read.load(std::memory_order_acquire);
+			if (read != lastRead || control->serverReady.load(std::memory_order_acquire) == 0) {
+				lastRead = read;
+				deadline = GetTickCount64() + kStalledReaderMs;
+			}
+			uint64_t const free = capacity - (at - read);
 			if (free != 0) {
 				uint64_t const offset = at % capacity;
 				length = static_cast<size_t>((std::min)(free, capacity - offset));
