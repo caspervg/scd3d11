@@ -648,13 +648,7 @@ namespace nSCD3D11 {
 		NoteRenderPhase("Flush: frame callback");
 		if (InvokeD3D11FrameCallback(frame)) {
 			// The callback owns the immediate context for the duration of the event.
-			// Clear all of its bindings, then restore the output state that SCD3D11 owns.
-			d3dContext->ClearState();
-			InvalidateD3D11StateCache();
-			ID3D11RenderTargetView *restoredRenderTarget = renderTargetView.Get();
-			d3dContext->OMSetRenderTargets(1, &restoredRenderTarget, depthStencilView.Get());
-			if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
-			else SetViewport();
+			RestoreOwnedContextState();
 		}
 
 		bool const vsyncEnabled = Settings::Get().vsync;
@@ -665,6 +659,22 @@ namespace nSCD3D11 {
 		result = TakeInjectedFault(FAULT_PRESENT);
 		if (SUCCEEDED(result)) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
 		NoteRenderPhase("Flush: after Present");
+		if (SUCCEEDED(result) && !deviceLost) {
+			// Overlays and plugins that hook Present draw on this context inside it. One that leaves another
+			// render target bound sends every later frame's draws there, so the city never appears and only
+			// the copies SCD3D11 makes itself still reach the screen. The cached bindings normally survive the
+			// frame, so they are only reset when something did change them.
+			if (char const *const changed = ForeignContextState()) {
+				static bool logged = false;
+				if (!logged) {
+					logged = true;
+					Log(LogCategory::SwapChain,
+					    "an overlay or plugin hooked into Present changed SCD3D11's %s; SCD3D11 restores its own "
+					    "state after each frame where that happens", changed);
+				}
+				RestoreOwnedContextState();
+			}
+		}
 #ifndef NDEBUG
 		LogDebugLayerMessages(d3dDevice.Get());
 #endif
@@ -694,6 +704,67 @@ namespace nSCD3D11 {
 			    raised ? "ok" : "failed", foreground ? "granted" : "refused");
 		}
 		if (NoteDeviceLoss(result) || deviceLost) RecoverFromDeviceLoss();
+	}
+
+	char const *cGDriver::ForeignContextState(void) {
+		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> target;
+		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;
+		d3dContext->OMGetRenderTargets(1, &target, &depth);
+		if (target.Get() != renderTargetView.Get() || depth.Get() != depthStencilView.Get()) {
+			return "render target";
+		}
+
+		// SetViewport set exactly these, and nothing else touches them between frames.
+		D3D11_VIEWPORT viewport{};
+		UINT viewports = 1;
+		d3dContext->RSGetViewports(&viewports, &viewport);
+		int32_t const top = scissorEnabled ? D3D11TopLeftY(windowHeight, viewportY, viewportHeight) : 0;
+		if (viewports != 1 || viewport.TopLeftX != static_cast<float>(scissorEnabled ? viewportX : 0) ||
+		    viewport.TopLeftY != static_cast<float>(top) ||
+		    viewport.Width != static_cast<float>(scissorEnabled ? viewportWidth : windowWidth) ||
+		    viewport.Height != static_cast<float>(scissorEnabled ? viewportHeight : windowHeight)) {
+			return "viewport";
+		}
+
+		if (!geometryPipelineBound) return nullptr;
+		Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex;
+		d3dContext->VSGetShader(&vertex, nullptr, nullptr);
+		Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel;
+		d3dContext->PSGetShader(&pixel, nullptr, nullptr);
+		Microsoft::WRL::ComPtr<ID3D11InputLayout> layout;
+		d3dContext->IAGetInputLayout(&layout);
+		if (vertex.Get() != vertexShader.Get() || pixel.Get() != appliedPixelShader || layout.Get() != inputLayout.Get()) {
+			return "shaders";
+		}
+		Microsoft::WRL::ComPtr<ID3D11Buffer> vertices;
+		UINT stride = 0;
+		UINT offset = 0;
+		d3dContext->IAGetVertexBuffers(0, 1, &vertices, &stride, &offset);
+		Microsoft::WRL::ComPtr<ID3D11Buffer> indices;
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+		d3dContext->IAGetIndexBuffer(&indices, &format, &offset);
+		if ((appliedVertexBuffer != nullptr && vertices.Get() != appliedVertexBuffer) ||
+		    (appliedIndexBuffer != nullptr && indices.Get() != appliedIndexBuffer)) {
+			return "geometry buffers";
+		}
+		return nullptr;
+	}
+
+	void cGDriver::RestoreOwnedContextState(void) {
+		d3dContext->ClearState();
+		InvalidateD3D11StateCache();
+		ID3D11RenderTargetView *const target = renderTargetView.Get();
+		d3dContext->OMSetRenderTargets(1, &target, depthStencilView.Get());
+		// Reapplies SC4's viewport. It is not a viewport SC4 set, so DrawStats keeps its own count.
+		uint32_t const viewports = frameStats.viewports;
+		uint64_t const viewportPixels = frameStats.viewportPixels;
+		int32_t lastViewport[4];
+		std::memcpy(lastViewport, frameStats.viewport, sizeof(lastViewport));
+		if (scissorEnabled) SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+		else SetViewport();
+		frameStats.viewports = viewports;
+		frameStats.viewportPixels = viewportPixels;
+		std::memcpy(frameStats.viewport, lastViewport, sizeof(lastViewport));
 	}
 
 	void cGDriver::SetViewport(void) {

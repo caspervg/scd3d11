@@ -777,6 +777,15 @@ namespace nSCD3D11 {
 
 		void InvalidateD3D11StateCache();
 
+		// Clears every binding of the immediate context and restores the output state SCD3D11 owns: its render
+		// target, depth view and viewport. For code that shares the context: the frame callback, and overlays
+		// and plugins that hook Present.
+		void RestoreOwnedContextState();
+		// What something else changed on the immediate context that SCD3D11's cached bindings rely on, or null
+		// when it is still as SCD3D11 left it: the output targets, the viewport, and the geometry pipeline
+		// while it counts as bound.
+		char const *ForeignContextState();
+
 		enum class BlitAlpha { Opaque, Source, Constant, SourceModulated };
 
 		// Shared body of the BitBlt/StretchBlt family: SC4 hands over a CPU pixel rectangle that is
