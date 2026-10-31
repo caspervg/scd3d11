@@ -199,6 +199,15 @@ namespace nSCD3D12 {
 			bool Empty() const { return v[0] > v[2]; }
 		};
 
+		// Where a kept item is in OwnedScene::Impl's screen index: in a bin (place 1, the bin's key in bin), in the
+		// large list (place 2), or nowhere yet (0). Indexing an item again where it already is adds nothing, so the
+		// lists hold no copies to sort out. gathered is the redraw search that last took the item.
+		struct Indexed {
+			uint8_t place = 0;
+			uint64_t bin = 0;
+			uint64_t gathered = 0;
+		};
+
 		// A screen rectangle in pixels from the top left: left, top, right, bottom.
 		struct Rect {
 			float left, top, right, bottom;
@@ -252,6 +261,8 @@ namespace nSCD3D12 {
 			bool Allocate(uint64_t bytes, uint32_t &chunk, uint64_t &offset) {
 				bytes = Align(bytes, 256);
 				for (uint32_t i = 0; i < chunks.size(); ++i) {
+					// A chunk without that much free in all can hold no free block of it either.
+					if (chunks[i].freeBytes < bytes) continue;
 					auto &free = chunks[i].free;
 					for (auto it = free.begin(); it != free.end(); ++it) {
 						if (it->second < bytes) continue;
@@ -260,6 +271,7 @@ namespace nSCD3D12 {
 						uint64_t const rest = it->second - bytes;
 						free.erase(it);
 						if (rest != 0) free.emplace(offset + bytes, rest);
+						chunks[i].freeBytes -= bytes;
 						used += bytes;
 						return true;
 					}
@@ -278,6 +290,7 @@ namespace nSCD3D12 {
 				                                                    IID_PPV_ARGS(&fresh.buffer)))) return false;
 				fresh.state = D3D12_RESOURCE_STATE_COPY_DEST;
 				if (fresh.size > bytes) fresh.free.emplace(bytes, fresh.size - bytes);
+				fresh.freeBytes = fresh.size - bytes;
 				chunks.push_back(std::move(fresh));
 				chunk = static_cast<uint32_t>(chunks.size() - 1);
 				offset = 0;
@@ -294,6 +307,7 @@ namespace nSCD3D12 {
 					Freed const f = freed.front();
 					freed.pop_front();
 					used -= f.bytes;
+					chunks[f.chunk].freeBytes += f.bytes;
 					auto &free = chunks[f.chunk].free;
 					uint64_t offset = f.offset, bytes = f.bytes;
 					auto next = free.lower_bound(offset);
@@ -324,8 +338,8 @@ namespace nSCD3D12 {
 			uint64_t Flush() {
 				if (copies.empty()) return 0;
 				ID3D12GraphicsCommandList *const list = driver.CommandList();
-				std::sort(copies.begin(), copies.end(), [](CopyJob const &a, CopyJob const &b) { return a.chunk < b.chunk; });
-				std::vector<D3D12_RESOURCE_BARRIER> barriers;
+				// Stable, so copies into the same bytes (a hole zeroed, then a piece written there) keep their order.
+				std::stable_sort(copies.begin(), copies.end(), [](CopyJob const &a, CopyJob const &b) { return a.chunk < b.chunk; });
 				auto const transitions = [&](D3D12_RESOURCE_STATES to) {
 					barriers.clear();
 					uint32_t last = UINT32_MAX;
@@ -366,11 +380,41 @@ namespace nSCD3D12 {
 			uint64_t Used() const { return used; }
 			size_t ChunkCount() const { return chunks.size(); }
 
+			// Writes bytes of zeros at offset, copied from a buffer of zeros made once rather than uploaded each time.
+			bool Zero(uint32_t chunk, uint64_t offset, uint64_t bytes) {
+				if (!zeros) {
+					D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_UPLOAD};
+					D3D12_RESOURCE_DESC description{};
+					description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+					description.Width = kZeroBytes;
+					description.Height = description.DepthOrArraySize = description.MipLevels = 1;
+					description.SampleDesc.Count = 1;
+					description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+					void *cpu = nullptr;
+					D3D12_RANGE const none{0, 0};
+					if (FAILED(driver.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+					                                                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+					                                                    IID_PPV_ARGS(&zeros))) ||
+					    FAILED(zeros->Map(0, &none, &cpu))) {
+						zeros.Reset();
+						return false;
+					}
+					std::memset(cpu, 0, kZeroBytes);
+					zeros->Unmap(0, nullptr);
+				}
+				for (uint64_t done = 0; done < bytes; done += kZeroBytes) {
+					Copy(chunk, offset + done, zeros.Get(), 0, (std::min)(kZeroBytes, bytes - done));
+				}
+				return true;
+			}
+
 		private:
 			struct Chunk {
 				ComPtr<ID3D12Resource> buffer;
 				uint64_t size = 0;
 				std::map<uint64_t, uint64_t> free;
+				// The sum of free's blocks.
+				uint64_t freeBytes = 0;
 				D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
 			};
 			struct Freed {
@@ -383,10 +427,13 @@ namespace nSCD3D12 {
 				ID3D12Resource *source;
 				uint64_t sourceOffset, bytes;
 			};
+			static constexpr uint64_t kZeroBytes = 256u << 10;
 			cGDriver12 &driver;
 			std::vector<Chunk> chunks;
 			std::deque<Freed> freed;
 			std::vector<CopyJob> copies;
+			std::vector<D3D12_RESOURCE_BARRIER> barriers;
+			ComPtr<ID3D12Resource> zeros;
 			uint64_t used = 0;
 		};
 
@@ -494,6 +541,7 @@ namespace nSCD3D12 {
 			// View objects: what it draws, and the redraw that last drew it.
 			uint64_t hash = 0;
 			uint64_t serial = 0, frame = 0;
+			Indexed index;
 		};
 
 		// The pieces of one state in one tile, in one buffer that grows in place: vertices, then indices. A
@@ -517,6 +565,7 @@ namespace nSCD3D12 {
 			std::vector<uint32_t> pieces;
 			uint64_t serial = 0, frame = 0;
 			Extent extent;
+			Indexed index;
 		};
 
 		// A drawable of the static grid that is not a model the lane stands in for.
@@ -526,6 +575,7 @@ namespace nSCD3D12 {
 			uint64_t serial = 0, frame = 0;
 			bool orphan = false;
 			Extent extent;
+			Indexed index;
 		};
 
 		struct ModelKey {
@@ -557,6 +607,11 @@ namespace nSCD3D12 {
 			uint32_t rotation = 0;
 			nSCDWire::ModelInstance instance{};
 			cGDriver12::DrawState state{};
+			Indexed index;
+			// view x world for the first three rows without the view's translation term, as of the view rotation
+			// partialRotation names (0 for none). A scroll only moves the view, so each frame adds that term alone.
+			float partial[12]{};
+			uint64_t partialRotation = 0;
 		};
 
 		// The models an occupant shows from the kept camera (OwnedScene::KeepView), picked from its exemplar: each
@@ -891,20 +946,40 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 
 		// Where everything kept lies on screen, so a redraw only looks at what is near it: each item in the bin of
 		// its extent's middle, or in the large list when it is bigger than a bin. Entries are not removed when an
-		// item goes or moves: a lookup that finds the item gone or elsewhere drops the entry then.
+		// item goes or moves: a search that finds the item gone or elsewhere drops the entry then. Each item knows
+		// where it is indexed (Indexed), so indexing it again in place adds no copy.
+		//
+		// An item SC4 removes when a redraw holds it whole (Inside) has its middle inside the redraw, so only the
+		// bins the redraw covers can hold it. One removed when a redraw overlaps it (Overlaps: view pieces, and
+		// models and grid items whose occupant left) can have its middle up to half a bin outside, so the ring of
+		// bins around is searched for those too. Orphans are indexed again in orphanBins when their occupant leaves,
+		// so the ring needs no lookup of every model and grid item in it.
 		struct Entry {
 			uint8_t kind; // 0 model, 1 grid, 2 cell, 3 view piece
 			uint64_t key;
 			uint32_t group, instance; // the rest of a model's key
-			bool operator==(Entry const &) const = default;
-			bool operator<(Entry const &other) const {
-				return std::tie(kind, key, group, instance) < std::tie(other.kind, other.key, other.group, other.instance);
-			}
 		};
 		static constexpr float kBinMetres = 64.0f;
 		std::unordered_map<uint64_t, std::vector<Entry> > bins;
+		std::unordered_map<uint64_t, std::vector<Entry> > orphanBins;
 		std::vector<Entry> large;
-		std::vector<Entry> candidates;
+
+		// What an entry names, found once per search.
+		struct Found {
+			Extent const *extent = nullptr;
+			Indexed *index = nullptr;
+			void *item = nullptr; // the Model, GridItem or Cell
+			uint32_t piece = 0;   // a view piece's index in pieces
+			bool orphan = false;
+		};
+		struct Candidate {
+			Entry entry;
+			Found found;
+		};
+		std::vector<Candidate> candidates;
+		uint64_t gatherSerial = 0;
+		std::vector<uint64_t> coreBins, ringBins;
+		std::vector<std::pair<Rect, uint64_t> > killRects;
 
 		static uint64_t BinKey(int32_t x, int32_t y) {
 			return static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32 | static_cast<uint32_t>(y);
@@ -918,68 +993,129 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			return true;
 		}
 
-		void Index(Entry const &entry, Extent const &extent) {
+		void Index(Entry const &entry, Extent const &extent, Indexed &where) {
 			int32_t x, y;
-			std::vector<Entry> &list = BinOf(extent, x, y) ? bins[BinKey(x, y)] : large;
-			list.push_back(entry);
-			// An item indexed again in the same place leaves a copy behind: drop them as the list doubles.
-			if (list.size() >= 64 && (list.size() & (list.size() - 1)) == 0) Unique(list);
+			bool const binned = BinOf(extent, x, y);
+			uint8_t const place = binned ? 1 : 2;
+			uint64_t const bin = binned ? BinKey(x, y) : 0;
+			if (where.place == place && where.bin == bin) return;
+			where.place = place;
+			where.bin = bin;
+			(binned ? bins[bin] : large).push_back(entry);
 		}
 
-		static void Unique(std::vector<Entry> &list) {
-			std::sort(list.begin(), list.end());
-			list.erase(std::unique(list.begin(), list.end()), list.end());
+		// An item whose occupant left, so the ring around a redraw finds it. Large ones are in the large list anyway.
+		void IndexOrphan(Entry const &entry, Extent const &extent) {
+			int32_t x, y;
+			if (BinOf(extent, x, y)) orphanBins[BinKey(x, y)].push_back(entry);
 		}
 
-		// The item an entry names, by its extent, or null when it is gone.
-		Extent const *Find(Entry const &entry) {
+		Found Resolve(Entry const &entry) {
+			Found found;
 			switch (entry.kind) {
 				case 0: {
-					auto const found = models.find({entry.key, entry.group, entry.instance});
-					return found == models.end() ? nullptr : &found->second.extent;
+					auto const it = models.find({entry.key, entry.group, entry.instance});
+					if (it != models.end()) found = {&it->second.extent, &it->second.index, &it->second, 0, it->second.orphan};
+					break;
 				}
 				case 1: {
-					auto const found = grid.find(entry.key);
-					return found == grid.end() ? nullptr : &found->second.extent;
+					auto const it = grid.find(entry.key);
+					if (it != grid.end()) found = {&it->second.extent, &it->second.index, &it->second, 0, it->second.orphan};
+					break;
 				}
 				case 2: {
-					auto const found = cells.find(entry.key);
-					return found == cells.end() ? nullptr : &found->second.extent;
+					auto const it = cells.find(entry.key);
+					if (it != cells.end()) found = {&it->second.extent, &it->second.index, &it->second, 0, false};
+					break;
 				}
 				default: {
-					auto const found = viewPieces.find(entry.key);
-					return found == viewPieces.end() ? nullptr : &pieces[found->second].extent;
+					auto const it = viewPieces.find(entry.key);
+					if (it != viewPieces.end()) {
+						Piece &piece = pieces[it->second];
+						found = {&piece.extent, &piece.index, nullptr, it->second, false};
+					}
+					break;
 				}
 			}
+			return found;
 		}
 
-		// Everything that may lie in a screen rectangle: the bins around it, then the large list. Drops the entries
-		// that no longer say where their item is.
-		void Gather(Rect const &rect) {
+		// Takes what an entry of bin (binned) or of the large list names as a candidate, once per search. False when
+		// the entry should go: its item is gone or lies elsewhere now, or it repeats one this list already gave.
+		// Orphan lists are searched last, after the item may have come from its main entry, so theirs stay.
+		bool Visit(Entry const &entry, bool binned, uint64_t bin, bool orphans) {
+			Found const found = Resolve(entry);
+			if (found.extent == nullptr || (orphans && !found.orphan)) return false;
+			int32_t x, y;
+			bool const fits = BinOf(*found.extent, x, y);
+			if (binned ? !fits || BinKey(x, y) != bin : fits) {
+				// An item that still counts itself as indexed here is indexed afresh when it is next drawn.
+				if (!orphans && found.index->place == (binned ? 1 : 2) && found.index->bin == (binned ? bin : 0)) {
+					found.index->place = 0;
+				}
+				return false;
+			}
+			if (found.index->gathered == gatherSerial) return orphans;
+			found.index->gathered = gatherSerial;
+			candidates.push_back({entry, found});
+			return true;
+		}
+
+		void Sweep(std::vector<Entry> &list, uint64_t bin, bool viewPiecesOnly, bool orphans) {
+			std::erase_if(list, [&](Entry const &entry) {
+				if (viewPiecesOnly && entry.kind != 3) return false;
+				return !Visit(entry, true, bin, orphans);
+			});
+		}
+
+		// Everything that may lie in this frame's redraw rectangles (killRects), once each, in candidates.
+		void Gather() {
+			++gatherSerial;
+			candidates.clear();
+			coreBins.clear();
+			ringBins.clear();
 			float const *p = camera.projection, *v = camera.view;
 			float const w = static_cast<float>(camera.width) * 0.5f, h = static_cast<float>(camera.height) * 0.5f;
-			// ToScreen backwards: pixels to the view's rotated x and y.
-			float const x0 = ((rect.left / w - 1.0f) - p[12]) / p[0] - v[12];
-			float const x1 = ((rect.right / w - 1.0f) - p[12]) / p[0] - v[12];
-			float const y0 = ((1.0f - rect.bottom / h) - p[13]) / p[5] - v[13];
-			float const y1 = ((1.0f - rect.top / h) - p[13]) / p[5] - v[13];
-			// An item's middle lies at most half a bin outside what it overlaps.
-			int32_t const bx0 = static_cast<int32_t>(std::floor(x0 / kBinMetres)) - 1;
-			int32_t const bx1 = static_cast<int32_t>(std::floor(x1 / kBinMetres)) + 1;
-			int32_t const by0 = static_cast<int32_t>(std::floor(y0 / kBinMetres)) - 1;
-			int32_t const by1 = static_cast<int32_t>(std::floor(y1 / kBinMetres)) + 1;
-			for (int32_t bx = bx0; bx <= bx1; ++bx) {
-				for (int32_t by = by0; by <= by1; ++by) {
-					auto const found = bins.find(BinKey(bx, by));
-					if (found == bins.end()) continue;
-					Unique(found->second);
-					std::erase_if(found->second, [&](Entry const &entry) {
-						Extent const *const extent = Find(entry);
-						int32_t x, y;
-						if (extent == nullptr || !BinOf(*extent, x, y) || x != bx || y != by) return true;
-						candidates.push_back(entry);
-						return false;
-					});
+			for (auto const &[rect, serial]: killRects) {
+				// ToScreen backwards: pixels to the view's rotated x and y.
+				float const xa = ((rect.left / w - 1.0f) - p[12]) / p[0] - v[12];
+				float const xb = ((rect.right / w - 1.0f) - p[12]) / p[0] - v[12];
+				float const ya = ((1.0f - rect.bottom / h) - p[13]) / p[5] - v[13];
+				float const yb = ((1.0f - rect.top / h) - p[13]) / p[5] - v[13];
+				int32_t const bx0 = static_cast<int32_t>(std::floor((std::min)(xa, xb) / kBinMetres));
+				int32_t const bx1 = static_cast<int32_t>(std::floor((std::max)(xa, xb) / kBinMetres));
+				int32_t const by0 = static_cast<int32_t>(std::floor((std::min)(ya, yb) / kBinMetres));
+				int32_t const by1 = static_cast<int32_t>(std::floor((std::max)(ya, yb) / kBinMetres));
+				for (int32_t bx = bx0 - 1; bx <= bx1 + 1; ++bx) {
+					for (int32_t by = by0 - 1; by <= by1 + 1; ++by) {
+						bool const core = bx >= bx0 && bx <= bx1 && by >= by0 && by <= by1;
+						(core ? coreBins : ringBins).push_back(BinKey(bx, by));
+					}
+				}
+			}
+			auto const unique = [](std::vector<uint64_t> &keys) {
+				std::sort(keys.begin(), keys.end());
+				keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+			};
+			unique(coreBins);
+			unique(ringBins);
+			// A bin another redraw covers is searched whole.
+			std::erase_if(ringBins, [&](uint64_t key) { return std::binary_search(coreBins.begin(), coreBins.end(), key); });
+			for (uint64_t key: coreBins) {
+				auto const found = bins.find(key);
+				if (found != bins.end()) Sweep(found->second, key, false, false);
+			}
+			for (uint64_t key: ringBins) {
+				auto const found = bins.find(key);
+				if (found != bins.end()) Sweep(found->second, key, true, false);
+			}
+			std::erase_if(large, [&](Entry const &entry) { return !Visit(entry, false, 0, false); });
+			for (std::vector<uint64_t> const *keys: {&coreBins, &ringBins}) {
+				for (uint64_t key: *keys) {
+					auto const found = orphanBins.find(key);
+					if (found == orphanBins.end()) continue;
+					Sweep(found->second, key, false, true);
+					if (found->second.empty()) orphanBins.erase(found);
 				}
 			}
 		}
@@ -1016,6 +1152,18 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::map<int32_t, Zoom> zooms;
 		std::vector<uint8_t> staging;
 		std::vector<InstanceRows> instanceScratch;
+		// What the instance rows in instanceScratch were made from, so a frame where none of it changed (the camera at
+		// rest) uses them again. orderVersion counts rebuilds of order, modelTakes the models SC4 drew.
+		struct InstanceSource {
+			bool valid = false;
+			uint32_t camera = 0;
+			uint64_t modelChanges = 0, modelTakes = 0, order = 0;
+			size_t models = 0;
+		} instanceSource;
+		uint64_t orderVersion = 0, modelTakes = 0;
+		// The rotation part of the last view the instances were made with, and a serial for it.
+		float instanceView[12]{};
+		uint64_t viewRotationId = 0;
 		std::vector<std::pair<InstanceRows, std::vector<uint32_t> const *> > drawList;
 
 		// GPU timing of the composite.
@@ -1509,7 +1657,10 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 				bool const fits = bucket.chunk != UINT32_MAX && bucket.vertexUsed + addVertices <= bucket.vertexCapacity &&
 				                  bucket.indexUsed + addIndices <= bucket.indexCapacity;
-				if (!fits || bucket.deadIndices * 2 > bucket.indexUsed) Rebuild(bucket);
+				// Holes cost only degenerate triangles, so a bucket is built again when its new pieces do not fit
+				// (which compacts it) or when dead indices fill three quarters of it, not each time half its indices
+				// went: strips of a scroll replace the same cells and lots over and over.
+				if (!fits || bucket.deadIndices * 4 > bucket.indexCapacity * 3) Rebuild(bucket);
 				else Append(bucket);
 				bucket.pending.clear();
 				bucket.holes.clear();
@@ -1556,14 +1707,17 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		}
 
 		void Append(Bucket &bucket) {
-			// Zeroed indices make degenerate triangles of the pieces that went.
-			for (auto const &[first, count]: bucket.holes) {
-				staging.assign(static_cast<size_t>(count) * 4, 0);
-				ID3D12Resource *source = nullptr;
-				uint64_t sourceOffset = 0;
-				if (!driver.Upload(staging.data(), staging.size(), source, sourceOffset)) continue;
-				pool.Copy(bucket.chunk, bucket.offset + IndexOffset(bucket) + static_cast<uint64_t>(first) * 4, source,
-				          sourceOffset, staging.size());
+			// Zeroed indices make degenerate triangles of the pieces that went. Holes side by side are zeroed
+			// in one copy.
+			std::sort(bucket.holes.begin(), bucket.holes.end());
+			uint64_t const indices = bucket.offset + IndexOffset(bucket);
+			for (size_t i = 0; i < bucket.holes.size();) {
+				uint32_t const first = bucket.holes[i].first;
+				uint32_t end = first + bucket.holes[i].second;
+				for (++i; i < bucket.holes.size() && bucket.holes[i].first <= end; ++i) {
+					end = (std::max)(end, bucket.holes[i].first + bucket.holes[i].second);
+				}
+				pool.Zero(bucket.chunk, indices + static_cast<uint64_t>(first) * 4, static_cast<uint64_t>(end - first) * 4);
 			}
 			Write(bucket, bucket.pending);
 		}
@@ -1721,12 +1875,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				if (found != viewPieces.end()) {
 					pieces[found->second].serial = serial;
 					pieces[found->second].frame = frame;
-					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent);
+					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent, pieces[found->second].index);
 					DropUnused(group);
 				} else {
 					uint32_t const piece = AddPiece(group, std::move(world), std::vector<uint32_t>(indices, indices + indexCount), hash);
 					viewPieces.emplace(hash, piece);
-					Index({3, hash, 0, 0}, pieces[piece].extent);
+					Index({3, hash, 0, 0}, pieces[piece].extent, pieces[piece].index);
 				}
 				++totals.captured[kView];
 				return owning;
@@ -1800,7 +1954,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 				cell.serial = serial;
 				cell.frame = frame;
-				if (changed) Index({2, key, 0, 0}, cell.extent);
+				if (changed) Index({2, key, 0, 0}, cell.extent, cell.index);
 				++(changed ? totals.cellsChanged : totals.cellsKept);
 			}
 			freshCells.clear();
@@ -1836,7 +1990,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				if (owner.occupant != 0) gridByOccupant[owner.occupant].push_back(owner.drawable);
 				item.occupant = owner.occupant;
 			}
-			if (!same) Index({1, owner.drawable, 0, 0}, item.extent);
+			if (!same) Index({1, owner.drawable, 0, 0}, item.extent, item.index);
 			item.serial = serial;
 			item.frame = frame;
 			item.orphan = false;
@@ -1890,12 +2044,12 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				if (found != viewPieces.end()) {
 					pieces[found->second].serial = serial;
 					pieces[found->second].frame = frame;
-					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent);
+					if (Refit(found->second)) Index({3, hash, 0, 0}, pieces[found->second].extent, pieces[found->second].index);
 					DropUnused(fresh.group);
 				} else {
 					uint32_t const piece = AddPiece(fresh.group, std::move(fresh.vertices), std::move(fresh.indices), hash);
 					viewPieces.emplace(hash, piece);
-					Index({3, hash, 0, 0}, pieces[piece].extent);
+					Index({3, hash, 0, 0}, pieces[piece].extent, pieces[piece].index);
 				}
 				++totals.captured[kBackground];
 			}
@@ -1966,33 +2120,26 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		// What each redraw of this frame says is gone.
 		void Kill() {
 			if (redraws.empty()) return;
-			std::vector<std::pair<Rect, uint64_t> > rects;
+			killRects.clear();
 			for (Redraw const &redraw: redraws) {
 				float const height = static_cast<float>(camera.height);
-				rects.push_back({{static_cast<float>(redraw.viewport[0]), height - static_cast<float>(redraw.viewport[3]),
-				                  static_cast<float>(redraw.viewport[2]), height - static_cast<float>(redraw.viewport[1])},
-				                 redraw.serial});
+				killRects.push_back({{static_cast<float>(redraw.viewport[0]), height - static_cast<float>(redraw.viewport[3]),
+				                      static_cast<float>(redraw.viewport[2]), height - static_cast<float>(redraw.viewport[1])},
+				                     redraw.serial});
 			}
-			// Only what lies near a redraw can be gone.
-			candidates.clear();
-			for (auto const &[rect, serial]: rects) Gather(rect);
-			Unique(large);
-			std::erase_if(large, [&](Entry const &entry) { return Find(entry) == nullptr; });
-			candidates.insert(candidates.end(), large.begin(), large.end());
-			std::sort(candidates.begin(), candidates.end());
-			candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-			for (Entry const &entry: candidates) {
-				Extent const *const extent = Find(entry);
-				if (extent == nullptr) continue;
-				Rect const r = ToScreen(*extent, camera);
+			// Only what lies near a redraw can be gone. Each candidate's item was found once, and nothing below
+			// removes another candidate's item, so the pointers hold.
+			Gather();
+			for (Candidate const &candidate: candidates) {
+				Entry const &entry = candidate.entry;
+				Rect const r = ToScreen(*candidate.found.extent, camera);
 				switch (entry.kind) {
 					case 0: {
-						ModelKey const key{entry.key, entry.group, entry.instance};
-						Model const &model = models.find(key)->second;
+						Model const &model = *static_cast<Model const *>(candidate.found.item);
 						if (model.frame == frame) break;
-						for (auto const &[rect, serial]: rects) {
+						for (auto const &[rect, serial]: killRects) {
 							if (model.orphan ? Overlaps(r, rect) : Inside(r, rect)) {
-								EraseModel(key);
+								EraseModel({entry.key, entry.group, entry.instance});
 								++totals.removed[0];
 								break;
 							}
@@ -2000,9 +2147,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 						break;
 					}
 					case 1: {
-						GridItem const &item = grid.find(entry.key)->second;
+						GridItem const &item = *static_cast<GridItem const *>(candidate.found.item);
 						if (item.frame == frame) break;
-						for (auto const &[rect, serial]: rects) {
+						for (auto const &[rect, serial]: killRects) {
 							if (item.orphan ? Overlaps(r, rect) : Inside(r, rect)) {
 								EraseGrid(entry.key);
 								break;
@@ -2011,25 +2158,97 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 						break;
 					}
 					case 2: {
-						auto const found = cells.find(entry.key);
+						Cell const &cell = *static_cast<Cell const *>(candidate.found.item);
 						bool gone = false;
-						for (auto const &[rect, redrawSerial]: rects) gone |= found->second.serial < redrawSerial && Inside(r, rect);
+						for (auto const &[rect, redrawSerial]: killRects) gone |= cell.serial < redrawSerial && Inside(r, rect);
 						if (!gone) break;
-						for (uint32_t piece: found->second.pieces) RemovePiece(piece, 2);
-						cells.erase(found);
+						for (uint32_t piece: cell.pieces) RemovePiece(piece, 2);
+						cells.erase(entry.key);
 						++cellsVersion;
 						break;
 					}
 					default: {
-						auto const found = viewPieces.find(entry.key);
-						Piece const &p = pieces[found->second];
+						Piece const &piece = pieces[candidate.found.piece];
 						bool gone = false;
-						for (auto const &[rect, redrawSerial]: rects) gone |= p.serial < redrawSerial && Overlaps(r, rect);
+						for (auto const &[rect, redrawSerial]: killRects) gone |= piece.serial < redrawSerial && Overlaps(r, rect);
 						if (!gone) break;
-						RemovePiece(found->second, 3);
-						viewPieces.erase(found);
+						RemovePiece(candidate.found.piece, 3);
+						viewPieces.erase(entry.key);
 						break;
 					}
+				}
+			}
+		}
+
+		// Every visible model's rows per mesh group, then one record for all world geometry, into instanceScratch.
+		// The free camera is not culled, as extents hold SC4's rotation.
+		void BuildInstances(Camera const &now, bool everywhere, bool looking, bool usePicks, bool turned) {
+			bool const plain = !everywhere && !looking;
+			if (plain && std::memcmp(instanceView, now.view, sizeof(instanceView)) != 0) {
+				std::memcpy(instanceView, now.view, sizeof(instanceView));
+				++viewRotationId;
+			}
+			float const *const a = now.view;
+			drawList.clear();
+			for (auto &[key, model]: models) {
+				if (usePicks && picked.count(key.occupant) != 0) continue;
+				if (!everywhere && !OnScreen(ToScreen(model.extent, camera), camera)) {
+					++totals.culled;
+					continue;
+				}
+				if (model.camera == cameraId && plain) {
+					drawList.push_back({Rows(model.modelView), &model.meshes});
+				} else if (plain) {
+					// Multiply's sums in its order, the last term added per frame: the same rows to the bit.
+					float const *const b = model.world;
+					if (model.partialRotation != viewRotationId) {
+						for (int row = 0; row < 3; ++row) {
+							for (int c = 0; c < 4; ++c) {
+								model.partial[row * 4 + c] = a[row] * b[c * 4] + a[4 + row] * b[c * 4 + 1] + a[8 + row] * b[c * 4 + 2];
+							}
+						}
+						model.partialRotation = viewRotationId;
+					}
+					InstanceRows rows;
+					for (int row = 0; row < 3; ++row) {
+						for (int c = 0; c < 4; ++c) rows.rows[row * 4 + c] = model.partial[row * 4 + c] + a[12 + row] * b[c * 4 + 3];
+					}
+					drawList.push_back({rows, &model.meshes});
+				} else {
+					float modelView[16];
+					Multiply(now.view, model.world, modelView);
+					drawList.push_back({Rows(modelView), &model.meshes});
+				}
+				pickTotals.kept += turned;
+			}
+			if (usePicks) {
+				for (auto const &[occupant, list]: picked) {
+					if (modelsByOccupant.count(occupant) == 0) continue;
+					for (PickedModel const &model: list) {
+						float modelView[16];
+						Multiply(now.view, model.world, modelView);
+						drawList.push_back({Rows(modelView), &model.meshes});
+					}
+				}
+			}
+			for (uint32_t g: order) groups[g].instanceCount = 0;
+			uint32_t instanceTotal = 1;
+			for (auto const &[rows, meshes]: drawList) {
+				for (uint32_t group: *meshes) ++groups[group].instanceCount;
+				instanceTotal += static_cast<uint32_t>(meshes->size());
+			}
+			instanceScratch.resize(instanceTotal);
+			instanceScratch[0] = Rows(now.view);
+			uint32_t next = 1;
+			for (uint32_t g: order) {
+				groups[g].instanceFirst = next;
+				next += groups[g].instanceCount;
+				groups[g].instanceCount = 0;
+			}
+			for (auto const &[rows, meshes]: drawList) {
+				for (uint32_t group: *meshes) {
+					Group &g = groups[group];
+					instanceScratch[g.instanceFirst + g.instanceCount++] = rows;
 				}
 			}
 		}
@@ -2129,6 +2348,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				}
 				std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return groups[a].rank < groups[b].rank; });
 				orderDirty = false;
+				++orderVersion;
 			}
 
 			// Looking somewhere else (SetLook): what is kept is drawn from a camera moved along the screen, while
@@ -2152,48 +2372,17 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			// The free camera is not culled either, as extents hold SC4's rotation.
 			bool const everywhere = turned || freeOn;
 			bool const usePicks = turned || freePicks;
-			drawList.clear();
-			for (auto &[key, model]: models) {
-				if (usePicks && picked.count(key.occupant) != 0) continue;
-				if (!everywhere && !OnScreen(ToScreen(model.extent, camera), camera)) {
-					++totals.culled;
-					continue;
-				}
-				float modelView[16];
-				if (model.camera == cameraId && !looking && !everywhere) std::memcpy(modelView, model.modelView, sizeof(modelView));
-				else Multiply(now.view, model.world, modelView);
-				drawList.push_back({Rows(modelView), &model.meshes});
-				pickTotals.kept += turned;
-			}
-			if (usePicks) {
-				for (auto const &[occupant, list]: picked) {
-					if (modelsByOccupant.count(occupant) == 0) continue;
-					for (PickedModel const &model: list) {
-						float modelView[16];
-						Multiply(now.view, model.world, modelView);
-						drawList.push_back({Rows(modelView), &model.meshes});
-					}
-				}
-			}
-			for (uint32_t g: order) groups[g].instanceCount = 0;
-			uint32_t instanceTotal = 1;
-			for (auto const &[rows, meshes]: drawList) {
-				for (uint32_t group: *meshes) ++groups[group].instanceCount;
-				instanceTotal += static_cast<uint32_t>(meshes->size());
-			}
-			instanceScratch.resize(instanceTotal);
-			instanceScratch[0] = Rows(now.view);
-			uint32_t next = 1;
-			for (uint32_t g: order) {
-				groups[g].instanceFirst = next;
-				next += groups[g].instanceCount;
-				groups[g].instanceCount = 0;
-			}
-			for (auto const &[rows, meshes]: drawList) {
-				for (uint32_t group: *meshes) {
-					Group &g = groups[group];
-					instanceScratch[g.instanceFirst + g.instanceCount++] = rows;
-				}
+			// SC4's own camera, as it is most of the time: the rows can come from SC4's modelviews and the cache below.
+			bool const plain = !everywhere && !looking && !usePicks;
+			InstanceSource const source{true, cameraId, modelChanges, modelTakes, orderVersion, models.size()};
+			bool const reuse = plain && instanceSource.valid && instanceSource.camera == source.camera &&
+			                   instanceSource.modelChanges == source.modelChanges &&
+			                   instanceSource.modelTakes == source.modelTakes && instanceSource.order == source.order &&
+			                   instanceSource.models == source.models && !instanceScratch.empty();
+			if (!reuse) {
+				BuildInstances(now, everywhere, looking, usePicks, turned);
+				instanceSource = source;
+				instanceSource.valid = plain;
 			}
 			ID3D12Resource *instanceBuffer = nullptr;
 			uint64_t instanceOffset = 0;
@@ -2403,11 +2592,21 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		if (event.kind == nSCDWire::OccupantEventKind::Remove) d.exemplars.erase(event.id);
 		auto const models = d.modelsByOccupant.find(event.id);
 		if (models != d.modelsByOccupant.end()) {
-			for (ModelKey const &key: models->second) d.models[key].orphan = true;
+			for (ModelKey const &key: models->second) {
+				auto const found = d.models.find(key);
+				if (found == d.models.end() || found->second.orphan) continue;
+				found->second.orphan = true;
+				d.IndexOrphan({0, key.occupant, key.group, key.instance}, found->second.extent);
+			}
 		}
 		auto const drawables = d.gridByOccupant.find(event.id);
 		if (drawables != d.gridByOccupant.end()) {
-			for (uint64_t drawable: drawables->second) d.grid[drawable].orphan = true;
+			for (uint64_t drawable: drawables->second) {
+				auto const found = d.grid.find(drawable);
+				if (found == d.grid.end() || found->second.orphan) continue;
+				found->second.orphan = true;
+				d.IndexOrphan({1, drawable, 0, 0}, found->second.extent);
+			}
 		}
 	}
 
@@ -2443,6 +2642,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		d.terrainField.VideoMode();
 		d.KillAll(false);
 		d.bins.clear();
+		d.orphanBins.clear();
 		d.large.clear();
 		d.camera = {};
 		d.owning = false;
@@ -2641,13 +2841,15 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			std::memcpy(model.modelView, state.constants + cGDriver12::kModelViewOffset, sizeof(model.modelView));
 			model.frame = d.frame;
 			model.camera = 0;
+			model.partialRotation = 0;
+			++d.modelTakes;
 			model.orphan = false;
 			for (uint32_t group: model.meshes) d.Release(group);
 			d.retaken.swap(model.meshes);
 			model.meshes.clear();
 			d.modelsThisFrame.push_back(key);
 			if (added || std::memcmp(&before, &model.extent, sizeof(before)) != 0) {
-				d.Index({0, key.occupant, key.group, key.instance}, model.extent);
+				d.Index({0, key.occupant, key.group, key.instance}, model.extent, model.index);
 			}
 			d.capturing = &model;
 			d.capturingDrawable = owner.drawable;
