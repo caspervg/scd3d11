@@ -547,6 +547,9 @@ namespace nSCD3D12 {
 			uint64_t hash = 0;
 			uint64_t serial = 0, frame = 0;
 			Indexed index;
+			// When it was added. A bucket draws its pieces in this order whether built again or added to, so pieces
+			// that overlap and blend (shadows of one state) do not change order with when their bucket was rebuilt.
+			uint64_t order = 0;
 		};
 
 		// The pieces of one state in one tile, in one buffer that grows in place: vertices, then indices. A
@@ -719,6 +722,9 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 
 		std::vector<Piece> pieces;
 		std::vector<uint32_t> freePieces;
+		uint64_t nextPieceOrder = 0;
+		// Rebuild's pieces, by order.
+		std::vector<uint32_t> rebuildOrder;
 		std::vector<Bucket> buckets;
 		std::vector<uint32_t> freeBuckets;
 		std::unordered_map<uint64_t, uint32_t> bucketsByKey;
@@ -1613,6 +1619,7 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			p.hash = hash;
 			p.serial = serial;
 			p.frame = frame;
+			p.order = nextPieceOrder++;
 			float lo[3]{1e30f, 1e30f, 1e30f}, hi[3]{-1e30f, -1e30f, -1e30f};
 			std::memcpy(p.view, captureView, sizeof(p.view));
 			for (D3D11Vertex const &v: p.vertices) {
@@ -1802,7 +1809,11 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				bucket.chunk = UINT32_MAX;
 				return;
 			}
-			Write(bucket, bucket.pieces);
+			// bucket.pieces is out of order once a piece went (the last one takes its place).
+			rebuildOrder.assign(bucket.pieces.begin(), bucket.pieces.end());
+			std::sort(rebuildOrder.begin(), rebuildOrder.end(),
+			          [&](uint32_t a, uint32_t b) { return pieces[a].order < pieces[b].order; });
+			Write(bucket, rebuildOrder);
 		}
 
 		// Capture
