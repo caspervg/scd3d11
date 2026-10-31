@@ -48,6 +48,15 @@ namespace nSCD3D11 {
 		bool Composite(HWND window);
 		// Once per Flush, whether or not CopyFrame ran, so the server can reuse the texture of `frame`.
 		void EndFrame(ID3D11Device *device, ID3D11DeviceContext *context, uint64_t frame);
+
+		// Without waiting for a given frame (SCD3D12): the newest frame the server finished, false before one at
+		// the current size.
+		bool LatestFrame(ID3D11Device *device, uint64_t &frame);
+		// Waits until the server finished `frame` or a later one. While it waits it lets go of every finished frame
+		// but the newest, which the server waits for before it reuses their textures. False when it did not come.
+		bool WaitForFrame(ID3D11Device *device, ID3D11DeviceContext *context, uint64_t frame);
+		// Copies a frame the server finished into target. False when the sizes differ.
+		bool CopyFinished(ID3D11DeviceContext *context, ID3D11Texture2D *target, uint64_t frame);
 		// How often the server asked for SC4 to redraw the whole view.
 		uint32_t RedrawRequests() const {
 			return ring.Control() != nullptr ? ring.Control()->redrawRequests.load(std::memory_order_acquire) : 0;
@@ -66,6 +75,9 @@ namespace nSCD3D11 {
 		HANDLE job = nullptr;
 		bool active = false;
 		uint32_t generation = 0;
+		// The last value this side signalled consumedFence to, which only goes up.
+		uint64_t consumedSignalled = 0;
+		void SignalConsumed(ID3D11DeviceContext *context, uint64_t value);
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> textures[2];
 		Microsoft::WRL::ComPtr<ID3D11Fence> frameFence;
 		Microsoft::WRL::ComPtr<ID3D11Fence> consumedFence;

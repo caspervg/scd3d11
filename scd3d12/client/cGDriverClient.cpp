@@ -675,6 +675,18 @@ namespace nSCD3D12 {
 		return SUCCEEDED(CreateFrameTarget(clientWidth, clientHeight));
 	}
 
+	void cGDriverClient::ShowLatestServerFrame() {
+		if (remote == nullptr || !remote->Active()) return;
+		// Every frame ahead of the server is latency, and the ring would fill anyway.
+		if (frame >= generationFrame + kFramesAhead &&
+		    !remote->WaitForFrame(device.Get(), context.Get(), frame - kFramesAhead)) return;
+		uint64_t latest = 0;
+		if (!remote->LatestFrame(device.Get(), latest) || latest < generationFrame || latest >= frame || latest == frameShown) {
+			return;
+		}
+		if (remote->CopyFinished(context.Get(), frameTarget.Get(), latest)) frameShown = latest;
+	}
+
 	bool cGDriverClient::CopyServerFrame(uint64_t serverFrame) {
 		if (remote == nullptr || !remote->Active() || serverFrame < generationFrame) return false;
 		if (frameShown == serverFrame) return true;
@@ -694,8 +706,7 @@ namespace nSCD3D12 {
 				if (entered != DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) exclusivePending = false;
 			}
 			if (FollowWindowSize()) {
-				// The server's last finished frame: it draws one frame while the game builds the next.
-				if (frame > 0) CopyServerFrame(frame - 1);
+				ShowLatestServerFrame();
 				Microsoft::WRL::ComPtr<ID3D11Texture2D> buffer;
 				if (SUCCEEDED(swapChain->GetBuffer(0, IID_PPV_ARGS(&buffer)))) context->CopyResource(buffer.Get(), frameTarget.Get());
 				bool const composited = remote != nullptr && remote->Active() && remote->Composite(window);
@@ -707,7 +718,8 @@ namespace nSCD3D12 {
 					if (FAILED(result)) LogHRESULT(LogCategory::SwapChain, "IDXGISwapChain::Present", result);
 				}
 			}
-			if (remote != nullptr && frame > 0) remote->EndFrame(device.Get(), context.Get(), frame - 1);
+			// Lets go of the frame shown and every one before it.
+			if (remote != nullptr && frameShown != UINT64_MAX) remote->EndFrame(device.Get(), context.Get(), frameShown);
 		}
 		++frame;
 		// The server's scene started after SC4's last full redraw, so it would hold only what SC4 draws from now.

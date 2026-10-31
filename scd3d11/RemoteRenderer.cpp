@@ -135,6 +135,7 @@ namespace nSCD3D11 {
 		uint32_t const current = control->frameGeneration.load(std::memory_order_acquire);
 		if (current == generation) return frameFence != nullptr;
 		generation = current;
+		consumedSignalled = 0;
 		for (auto &texture: textures) texture.Reset();
 		frameFence.Reset();
 		consumedFence.Reset();
@@ -241,7 +242,63 @@ namespace nSCD3D11 {
 
 	void RemoteRenderer::EndFrame(ID3D11Device *device, ID3D11DeviceContext *context, uint64_t frame) {
 		if (!active || !OpenGeneration(device)) return;
+		SignalConsumed(context, frame + 1);
+	}
+
+	void RemoteRenderer::SignalConsumed(ID3D11DeviceContext *context, uint64_t value) {
+		if (value <= consumedSignalled || !consumedFence) return;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context4;
-		if (SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&context4)))) context4->Signal(consumedFence.Get(), frame + 1);
+		if (FAILED(context->QueryInterface(IID_PPV_ARGS(&context4)))) return;
+		context4->Signal(consumedFence.Get(), value);
+		consumedSignalled = value;
+	}
+
+	bool RemoteRenderer::LatestFrame(ID3D11Device *device, uint64_t &frame) {
+		if (!active || !OpenGeneration(device)) return false;
+		uint64_t const finished = frameFence->GetCompletedValue();
+		if (finished == 0) return false;
+		frame = finished - 1;
+		return true;
+	}
+
+	bool RemoteRenderer::WaitForFrame(ID3D11Device *device, ID3D11DeviceContext *context, uint64_t frame) {
+		if (!active) return false;
+		if (!ServerAlive()) {
+			Stop("the server exited");
+			return false;
+		}
+		ULONGLONG const deadline = GetTickCount64() + kFrameTimeoutMs;
+		while (!OpenGeneration(device)) {
+			if (!active || GetTickCount64() > deadline) return false;
+			Sleep(1);
+		}
+		for (;;) {
+			uint64_t const finished = frameFence->GetCompletedValue();
+			if (finished >= frame + 1) return true;
+			// The server writes frame k only once frame k - 2 is let go, so keep only the newest finished one.
+			if (finished >= 1) SignalConsumed(context, finished - 1);
+			context->Flush();
+			WaitForSingleObject(ring.FrameEvent(), 50);
+			if (!ServerAlive()) {
+				Stop("the server exited");
+				return false;
+			}
+			if (GetTickCount64() > deadline) {
+				Stop("the server fell more than 10 seconds behind");
+				return false;
+			}
+			// A resize brings new textures and fences.
+			if (ring.Control()->frameGeneration.load(std::memory_order_acquire) != generation) return false;
+		}
+	}
+
+	bool RemoteRenderer::CopyFinished(ID3D11DeviceContext *context, ID3D11Texture2D *target, uint64_t frame) {
+		if (!active || !textures[frame % 2]) return false;
+		D3D11_TEXTURE2D_DESC source{}, destination{};
+		textures[frame % 2]->GetDesc(&source);
+		target->GetDesc(&destination);
+		if (source.Width != destination.Width || source.Height != destination.Height) return false;
+		context->CopyResource(target, textures[frame % 2].Get());
+		return true;
 	}
 }

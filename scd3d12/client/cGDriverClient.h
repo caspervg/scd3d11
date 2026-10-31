@@ -209,6 +209,10 @@ namespace nSCD3D12 {
 		bool FollowWindowSize();
 		// Copies the server's frame `frame` into frameTarget, waiting for it.
 		bool CopyServerFrame(uint64_t frame);
+		// Shows the newest frame the server finished, waiting only when the game is more than kFramesAhead frames
+		// ahead of it: the game and the server each go at their own pace.
+		void ShowLatestServerFrame();
+		static constexpr uint64_t kFramesAhead = 2;
 		// Starts a server in place of one that stopped, at most every few seconds.
 		void RestartServer();
 
