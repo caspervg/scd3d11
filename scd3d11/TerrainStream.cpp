@@ -154,4 +154,9 @@ namespace nSCD3D11::TerrainStream {
 		std::swap(gSent, gScratch);
 		wire.RecordTerrainField(gField, gSent.data());
 	}
+
+	void Resend() {
+		gTerrain = nullptr;
+		gLastRead = 0;
+	}
 }

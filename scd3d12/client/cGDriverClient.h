@@ -241,6 +241,7 @@ namespace nSCD3D12 {
 		uint64_t generationFrame = 0;
 		uint64_t frameShown = UINT64_MAX;
 		ULONGLONG nextRestart = 0;
+		uint32_t redrawRequestsSeen = 0;
 		uint32_t restarts = 0;
 
 		// Texture names, and whether each has an image yet.

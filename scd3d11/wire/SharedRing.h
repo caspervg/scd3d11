@@ -67,7 +67,10 @@ namespace nSCDWire {
 		// Set by the server while it draws the static view itself (ServerScene=owned), so the shim may leave out the
 		// game's own draws of what the server keeps (ServerSkipModels).
 		std::atomic<uint32_t> serverOwnsView;
-		uint32_t reserved[3];
+		// Counted up by the server when it wants SC4 to redraw the whole view: when its scene starts, which may be
+		// after SC4's last full redraw (a large plugin set to index, a server started again).
+		std::atomic<uint32_t> redrawRequests;
+		uint32_t reserved[2];
 	};
 	constexpr uint32_t kPresentCopy = 0;
 	constexpr uint32_t kPresentComposition = 1;

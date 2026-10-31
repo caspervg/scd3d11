@@ -17,6 +17,10 @@
 #include <cRZBaseUnknown.h>
 
 #include <cstring>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace nSCD3D11 {
 	class RemoteRenderer;
@@ -72,6 +76,7 @@ namespace nSCD3D11 {
 		}
 		// One folder per nSCDWire::GameFolder kind.
 		void RecordGameFolders(std::wstring const *folders) {
+			gameFolders.assign(folders, folders + static_cast<size_t>(nSCDWire::GameFolder::Count));
 			writer.Begin(nSCDWire::Op::GameFolders);
 			for (size_t i = 0; i < static_cast<size_t>(nSCDWire::GameFolder::Count); ++i) {
 				writer.Put(static_cast<uint32_t>(folders[i].size()));
@@ -232,7 +237,54 @@ namespace nSCD3D11 {
 			writer.Begin(op);
 			(writer.Put(fields), ...);
 			writer.End();
+			if constexpr (sizeof...(Fields) != 0) {
+				if (IsState(op)) {
+					uint8_t bytes[(sizeof(Fields) + ...)];
+					size_t size = 0;
+					((std::memcpy(bytes + size, &fields, sizeof(fields)), size += sizeof(fields)), ...);
+					Remember(op, bytes, size);
+				}
+			} else if (IsState(op)) {
+				Remember(op, nullptr, 0);
+			}
 		}
+
+		// What a server started in place of one that stopped must be told before the game's next frame: the
+		// video mode, the textures and buffer regions that exist, and the last call of each kind of state setter
+		// (per capability, texture stage, matrix mode, light and parameter). Kept as the calls go by.
+		static bool IsState(nSCDWire::Op op);
+		void Remember(nSCDWire::Op op, uint8_t const *fields, size_t size);
+		// After TakeRestartedOutput: writes the stream from the start again, to the new server.
+		void Restart(std::unique_ptr<nSCDWire::Output> output);
+		struct StateCall {
+			nSCDWire::Op op;
+			// The texture stage or matrix mode the call acts on, or kAny.
+			uint8_t stage, mode;
+			std::vector<uint8_t> fields;
+			// When it was last made: replayed in that order, as some calls change what others set.
+			uint64_t sequence;
+		};
+		uint64_t stateSequence = 0;
+		static constexpr uint8_t kAny = 0xFF;
+		std::map<uint64_t, StateCall> stateCalls;
+		struct TextureState {
+			// Made by CreateTexture (with format, size, levels and hints), or by GenTextures and given an image by
+			// TexImage2D (with its internal format, size, and the format and type of its pixels).
+			bool created = false, image = false;
+			uint32_t format = 0, width = 0, height = 0, levels = 0, hints = 0, sourceFormat = 0, sourceType = 0;
+		};
+		std::map<uint32_t, TextureState> textures;
+		uint32_t boundTextures[2]{};
+		// Buffer regions by number, with their type.
+		std::map<uint32_t, int32_t> bufferRegions;
+		bool initialized = false;
+		struct {
+			bool set = false;
+			int32_t index = 0;
+			bool show = false, fourth = false;
+			sGDMode mode{};
+		} videoMode;
+		std::vector<std::wstring> gameFolders;
 
 		// State setters the game repeats a lot, each with a slot that remembers its last recorded call. A call
 		// that repeats it changes nothing on the other side and is not recorded. Calls that change the same

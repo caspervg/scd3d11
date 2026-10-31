@@ -80,17 +80,18 @@ namespace nSCD3D12 {
 			return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 		}
 
-		// What SC4's DirectX driver posts after it restores a lost device: upload every texture again, then
-		// redraw the whole view. Static, as the message server only keeps a pointer.
-		void PostRestoreMessages() {
+		// What SC4's DirectX driver posts after it restores a lost device: 0x8ACAA95F uploads every texture again,
+		// 0x6ACB92A9 redraws the whole view. Static, as the message server only keeps a pointer.
+		constexpr uint32_t kRestoreTextures = 0x8ACAA95F, kFullRedraw = 0x6ACB92A9;
+
+		void PostGameMessage(uint32_t type) {
 			static cRZMessage2Standard restoreTextures;
-			static cRZMessage2Standard forceFullRedraw;
+			static cRZMessage2Standard fullRedraw;
 			cIGZMessageServer2Ptr messageServer;
 			if (!messageServer) return;
-			restoreTextures.SetType(0x8ACAA95F);
-			forceFullRedraw.SetType(0x6ACB92A9);
-			messageServer->MessagePost(static_cast<cIGZMessage2Standard *>(&restoreTextures), false);
-			messageServer->MessagePost(static_cast<cIGZMessage2Standard *>(&forceFullRedraw), false);
+			cRZMessage2Standard &message = type == kRestoreTextures ? restoreTextures : fullRedraw;
+			message.SetType(type);
+			messageServer->MessagePost(static_cast<cIGZMessage2Standard *>(&message), false);
 		}
 	}
 
@@ -704,6 +705,11 @@ namespace nSCD3D12 {
 			if (remote != nullptr && frame > 0) remote->EndFrame(device.Get(), context.Get(), frame - 1);
 		}
 		++frame;
+		// The server's scene started after SC4's last full redraw, so it would hold only what SC4 draws from now.
+		if (remote != nullptr && remote->Active() && remote->RedrawRequests() != redrawRequestsSeen) {
+			redrawRequestsSeen = remote->RedrawRequests();
+			PostGameMessage(kFullRedraw);
+		}
 		RestartServer();
 	}
 
@@ -730,8 +736,10 @@ namespace nSCD3D12 {
 		remote = std::move(server);
 		frame = generationFrame = 0;
 		frameShown = UINT64_MAX;
+		redrawRequestsSeen = 0;
 		Log(LogCategory::Initialization, "server: started again; asking the game for its textures and a full redraw");
-		PostRestoreMessages();
+		PostGameMessage(kRestoreTextures);
+		PostGameMessage(kFullRedraw);
 	}
 
 	// The snapshot: the server's last finished frame, read back through a staging copy.

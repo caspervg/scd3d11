@@ -32,9 +32,6 @@
 using Microsoft::WRL::ComPtr;
 using namespace nSCD3D11;
 
-// The SDK declares these destructors pure. SCD3D11 defines them in cGDriver.cpp, the server here.
-cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension() {}
-cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension() {}
 
 namespace nSCD3D12 {
 	namespace {

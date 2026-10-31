@@ -144,6 +144,8 @@ namespace nSCD3D12 {
 					std::printf("scene: %s from frame %llu\n", owned ? "owning the static view" : "substituting",
 					            static_cast<unsigned long long>(frame));
 					std::fflush(stdout);
+					// It only holds what SC4 draws from now on.
+					control.redrawRequests.fetch_add(1, std::memory_order_release);
 				}
 				uint64_t const index = frame++;
 				if (frameFence) Publish(index);

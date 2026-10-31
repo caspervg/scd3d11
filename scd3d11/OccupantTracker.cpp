@@ -214,4 +214,8 @@ namespace nSCD3D11::OccupantTracker {
 		}
 		gInstalled = false;
 	}
+
+	void Relist(cGDriverWire &wire) {
+		if (gInstalled) RecordCity(wire);
+	}
 }

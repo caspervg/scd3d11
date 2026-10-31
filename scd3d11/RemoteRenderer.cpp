@@ -42,7 +42,11 @@ namespace nSCD3D11 {
 
 	bool RemoteRenderer::Start() {
 		DWORD const self = GetCurrentProcessId();
-		std::wstring const name = L"Local\\SCD3D12-" + std::to_wstring(self);
+		// A server started in place of one that stopped gets a ring of its own: the old one stays open until the
+		// stream has moved over.
+		static uint32_t starts = 0;
+		std::wstring name = L"Local\\SCD3D12-" + std::to_wstring(self);
+		if (starts++ != 0) name += L"-" + std::to_wstring(starts);
 		if (!ring.Create(name, kRingBytes)) {
 			Log(LogCategory::Initialization, "server: cannot create the shared ring");
 			return false;
@@ -95,7 +99,7 @@ namespace nSCD3D11 {
 	void RemoteRenderer::Stop(char const *reason) {
 		if (!active) return;
 		active = false;
-		Log(LogCategory::Initialization, "server: %s, drawing locally from now on", reason);
+		Log(LogCategory::Initialization, "server: %s, stopping it", reason);
 		if (ring.Control() != nullptr) ring.Close();
 		if (process != nullptr) TerminateProcess(process, 1);
 	}

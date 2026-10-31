@@ -13,8 +13,14 @@
 // Tells the renderer on the other end of the stream which occupants exist: SC4's occupant manager posts a
 // message when one is inserted, removed or moved, and each becomes an Occupant record (wire/Wire.h).
 // Only does anything while a driver writes a stream (Record or Renderer=server).
+namespace nSCD3D11 {
+	class cGDriverWire;
+}
+
 namespace nSCD3D11::OccupantTracker {
 	// Subscribes to the occupant messages. Needs SC4's message server, so call it from PostAppInit or later.
 	void Install();
 	void Uninstall();
+	// Lists every occupant of the city again, for a server started in place of one that stopped.
+	void Relist(cGDriverWire &wire);
 }

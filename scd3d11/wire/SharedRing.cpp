@@ -17,6 +17,7 @@ namespace nSCDWire {
 	namespace {
 		constexpr DWORD kWaitSliceMs = 50;
 		constexpr size_t kReadChunk = 1u << 20;
+		constexpr ULONGLONG kStalledReaderMs = 3000;
 	}
 
 	SharedRing::~SharedRing() {
@@ -82,6 +83,8 @@ namespace nSCDWire {
 		uint64_t const capacity = control->capacity;
 		// The reader cannot read what is not published, so a record a whole ring long never finds room.
 		if (at - control->written.load(std::memory_order_relaxed) >= capacity) return nullptr;
+		// A reader that takes nothing for this long is stuck, even if its process still runs.
+		ULONGLONG const deadline = GetTickCount64() + kStalledReaderMs;
 		for (;;) {
 			uint64_t const free = capacity - (at - control->read.load(std::memory_order_acquire));
 			if (free != 0) {
@@ -90,7 +93,10 @@ namespace nSCDWire {
 				return bytes + offset;
 			}
 			SetEvent(dataEvent);
-			if (WaitForSingleObject(spaceEvent, kWaitSliceMs) == WAIT_TIMEOUT && !alive()) return nullptr;
+			if (WaitForSingleObject(spaceEvent, kWaitSliceMs) == WAIT_TIMEOUT &&
+			    (!alive() || GetTickCount64() > deadline)) {
+				return nullptr;
+			}
 		}
 	}
 

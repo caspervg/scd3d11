@@ -14,6 +14,7 @@
 #include "RemoteRenderer.h"
 #include "Diagnostics.h"
 #include "DrawOwnerHooks.h"
+#include "OccupantTracker.h"
 #include "Settings.h"
 #include "TerrainStream.h"
 #include "TextureUploadUtils.h"
@@ -255,6 +256,7 @@ namespace nSCD3D11 {
 	void cGDriverWire::BindTexture(uint32_t target, uint32_t texture) {
 		Record(Op::BindTexture, target, texture);
 		Forget(kTextureSlot, 2);
+		if (target == 0 && (texture == 0 || textures.count(texture) != 0)) boundTextures[activeStage] = texture;
 		driver->BindTexture(target, texture);
 	}
 
@@ -274,6 +276,17 @@ namespace nSCD3D11 {
 		writer.PutBlob(pixels,
 		               pixels != nullptr ? SourceImageBytes(format, type, width, height, unpackRowLength) : 0);
 		writer.End();
+		if (level == 0) {
+			auto const found = textures.find(boundTextures[activeStage]);
+			if (found != textures.end() && !found->second.created) {
+				found->second.image = true;
+				found->second.format = static_cast<uint32_t>(internalFormat);
+				found->second.width = static_cast<uint32_t>(width);
+				found->second.height = static_cast<uint32_t>(height);
+				found->second.sourceFormat = format;
+				found->second.sourceType = type;
+			}
+		}
 		driver->TexImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
 	}
 
@@ -338,6 +351,7 @@ namespace nSCD3D11 {
 		writer.Put(count);
 		writer.PutBytes(names, static_cast<size_t>(count) * sizeof(uint32_t));
 		writer.End();
+		for (int32_t i = 0; i < count; ++i) textures[names[i]] = TextureState{};
 	}
 
 	void cGDriverWire::DeleteTextures(int32_t count, uint32_t const *names) {
@@ -347,6 +361,10 @@ namespace nSCD3D11 {
 			writer.Put(count);
 			writer.PutBytes(names, static_cast<size_t>(count) * sizeof(uint32_t));
 			writer.End();
+			for (int32_t i = 0; i < count; ++i) {
+				textures.erase(names[i]);
+				for (uint32_t &bound: boundTextures) if (bound == names[i]) bound = 0;
+			}
 		}
 		driver->DeleteTextures(count, names);
 	}
@@ -396,6 +414,7 @@ namespace nSCD3D11 {
 			recordedWidth = dimensions[0];
 			recordedHeight = dimensions[1];
 		}
+		if (std::unique_ptr<nSCDWire::Output> restarted = driver->TakeRestartedOutput()) Restart(std::move(restarted));
 	}
 
 	void cGDriverWire::Enable(uint32_t state) {
@@ -438,6 +457,13 @@ namespace nSCD3D11 {
 		writer.Put(flags);
 		if (matrix != nullptr) writer.PutBytes(matrix, 16 * sizeof(float));
 		writer.End();
+		uint8_t bytes[1 + 3 * sizeof(uint32_t) + sizeof(values.v)];
+		bytes[0] = matrix != nullptr;
+		std::memcpy(bytes + 1, &rows, sizeof(rows));
+		std::memcpy(bytes + 5, &columns, sizeof(columns));
+		std::memcpy(bytes + 9, &flags, sizeof(flags));
+		std::memcpy(bytes + 13, values.v, sizeof(values.v));
+		Remember(Op::TexStageMatrix, bytes, matrix != nullptr ? sizeof(bytes) : 13);
 		driver->TexStageMatrix(matrix, rows, columns, flags);
 	}
 	void cGDriverWire::TexStageCombine(eGDTextureStageCombineScaleParamType parameter,
@@ -463,6 +489,7 @@ namespace nSCD3D11 {
 	void cGDriverWire::SetTexture(uint32_t texture, uint32_t stage) {
 		if (stage < 2) RecordState(kTextureSlot + stage, Op::SetTexture, texture, stage);
 		else Record(Op::SetTexture, texture, stage);
+		if (stage < 2 && (texture == 0 || textures.count(texture) != 0)) boundTextures[stage] = texture;
 		driver->SetTexture(texture, stage);
 	}
 	intptr_t cGDriverWire::GetTexture(uint32_t stage) { return driver->GetTexture(stage); }
@@ -472,6 +499,11 @@ namespace nSCD3D11 {
 		intptr_t const name = driver->CreateTexture(internalFormat, width, height, levels, hints);
 		Record(Op::CreateTexture, internalFormat, width, height, levels, hints, static_cast<uint32_t>(name));
 		Forget(kTextureSlot, 2);
+		if (name != 0) {
+			TextureState &texture = textures[static_cast<uint32_t>(name)];
+			texture = TextureState{true, true, internalFormat, width, height, levels, hints};
+			boundTextures[activeStage] = static_cast<uint32_t>(name);
+		}
 		return name;
 	}
 
@@ -503,6 +535,10 @@ namespace nSCD3D11 {
 		writer.PutBytes(&combiner, sizeof(combiner));
 		writer.Put(stage);
 		writer.End();
+		uint8_t bytes[sizeof(combiner) + sizeof(stage)];
+		std::memcpy(bytes, &combiner, sizeof(combiner));
+		std::memcpy(bytes + sizeof(combiner), &stage, sizeof(stage));
+		Remember(Op::SetCombiner, bytes, sizeof(bytes));
 		driver->SetCombiner(combiner, stage);
 	}
 
@@ -519,6 +555,11 @@ namespace nSCD3D11 {
 			driver->GetVideoModeInfo(static_cast<uint32_t>(index), mode);
 		}
 		Record(Op::SetVideoMode, index, show, fourth, mode.width, mode.height, mode.isFullscreen);
+		videoMode.set = index >= 0;
+		videoMode.index = index;
+		videoMode.show = show;
+		videoMode.fourth = fourth;
+		videoMode.mode = mode;
 		recordedWidth = static_cast<int32_t>(mode.width);
 		recordedHeight = static_cast<int32_t>(mode.height);
 		Forget(0, kSlotCount);
@@ -617,11 +658,14 @@ namespace nSCD3D11 {
 	bool cGDriverWire::Init(void) {
 		Record(Op::Init);
 		Forget(0, kSlotCount);
+		initialized = true;
 		return driver->Init();
 	}
 	bool cGDriverWire::Shutdown(void) {
 		Record(Op::Shutdown);
 		Forget(0, kSlotCount);
+		initialized = false;
+		videoMode.set = false;
 		writer.Flush();
 		return driver->Shutdown();
 	}
@@ -705,10 +749,12 @@ namespace nSCD3D11 {
 	uint32_t cGDriverWire::NewBufferRegion(int32_t type) {
 		uint32_t const region = driver->NewBufferRegion(type);
 		Record(Op::NewBufferRegion, type, region);
+		if (region != 0) bufferRegions[region] = type;
 		return region;
 	}
 	bool cGDriverWire::DeleteBufferRegion(int32_t region) {
 		Record(Op::DeleteBufferRegion, region);
+		bufferRegions.erase(static_cast<uint32_t>(region));
 		return driver->DeleteBufferRegion(region);
 	}
 	bool cGDriverWire::ReadBufferRegion(uint32_t region, int32_t a, int32_t b, int32_t c, int32_t d, int32_t e,
@@ -726,6 +772,7 @@ namespace nSCD3D11 {
 	bool cGDriverWire::CanDoOffsetReads(void) { return driver->CanDoOffsetReads(); }
 	bool cGDriverWire::DeleteAllBufferRegions(void) {
 		Record(Op::DeleteAllBufferRegions);
+		bufferRegions.clear();
 		return driver->DeleteAllBufferRegions();
 	}
 
@@ -791,6 +838,193 @@ namespace nSCD3D11 {
 }
 
 namespace nSCD3D11 {
+	// A server started again.
+
+	bool cGDriverWire::IsState(Op op) {
+		switch (op) {
+			case Op::Enable: case Op::Disable: case Op::ColorMask: case Op::DepthFunc: case Op::DepthMask:
+			case Op::StencilFunc: case Op::StencilMask: case Op::StencilOp: case Op::BlendFunc: case Op::AlphaFunc:
+			case Op::ShadeModel: case Op::PolygonOffset: case Op::ClearColor: case Op::ClearDepth: case Op::ClearStencil:
+			case Op::PixelStore: case Op::TexEnvInt: case Op::TexEnvFloat: case Op::TexParameter: case Op::FogInt:
+			case Op::FogFloat: case Op::ColorMultiplier: case Op::AlphaMultiplier: case Op::EnableVertexColors:
+			case Op::MatrixMode: case Op::LoadMatrix: case Op::LoadIdentity: case Op::TexStage: case Op::TexStageCoord:
+			case Op::TexStageMatrix: case Op::TexStageCombineScale: case Op::TexStageCombineOperand:
+			case Op::TexStageCombineSource: case Op::TexStageCombineMode: case Op::SetCombiner: case Op::BindTexture:
+			case Op::SetTexture: case Op::EnableLighting: case Op::EnableLight: case Op::LightModelAmbient:
+			case Op::LightColor: case Op::LightColors: case Op::LightPosition: case Op::LightDirection:
+			case Op::MaterialColor: case Op::MaterialColors: case Op::SetViewport: case Op::SetViewportFull:
+			case Op::PuntBlitSourceAlpha:
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	void cGDriverWire::Remember(Op op, uint8_t const *fields, size_t size) {
+		auto const word = [&](size_t index) {
+			uint32_t value = 0;
+			if (size >= (index + 1) * sizeof(uint32_t)) std::memcpy(&value, fields + index * sizeof(uint32_t), sizeof(value));
+			return value;
+		};
+		// A later call with the same key replaces this one: its op group, what it sets and the stage it sets it on.
+		// stage is also what the replay selects before the call, unless the call names its stage itself.
+		Op group = op;
+		uint32_t which = 0;
+		uint8_t stage = kAny, mode = kAny, keyStage = kAny;
+		switch (op) {
+			case Op::Enable:
+			case Op::Disable:
+				group = Op::Enable;
+				which = word(0);
+				if (which == kGDCapability_Texture2D) stage = static_cast<uint8_t>(activeStage);
+				break;
+			case Op::PixelStore: case Op::FogInt: case Op::FogFloat: case Op::EnableLight: case Op::LightColors:
+			case Op::LightPosition: case Op::LightDirection: case Op::MaterialColor:
+				which = word(0);
+				break;
+			case Op::LightColor:
+				which = word(0) << 16 | (word(1) & 0xFFFF);
+				break;
+			case Op::TexEnvInt: case Op::TexEnvFloat: case Op::TexParameter:
+				which = word(0) << 16 | (word(1) & 0xFFFF);
+				stage = static_cast<uint8_t>(activeStage);
+				break;
+			case Op::TexStageCombineScale: case Op::TexStageCombineOperand: case Op::TexStageCombineSource:
+			case Op::TexStageCombineMode:
+				which = word(0);
+				stage = static_cast<uint8_t>(activeStage);
+				break;
+			case Op::TexStageCoord: case Op::TexStageMatrix:
+				stage = static_cast<uint8_t>(activeStage);
+				break;
+			case Op::SetCombiner:
+				if (size >= sizeof(uint32_t)) std::memcpy(&which, fields + size - sizeof(uint32_t), sizeof(which));
+				break;
+			case Op::BindTexture:
+				stage = static_cast<uint8_t>(activeStage);
+				break;
+			case Op::SetTexture:
+				// Names its stage itself, and replaces a BindTexture on that stage.
+				group = Op::BindTexture;
+				keyStage = static_cast<uint8_t>(word(1));
+				break;
+			case Op::LoadMatrix:
+			case Op::LoadIdentity:
+				group = Op::LoadMatrix;
+				which = matrixMode;
+				mode = static_cast<uint8_t>(matrixMode);
+				break;
+			case Op::SetViewportFull:
+				group = Op::SetViewport;
+				break;
+			default:
+				break;
+		}
+		if (keyStage == kAny) keyStage = stage;
+		uint64_t const key = static_cast<uint64_t>(group) << 40 | static_cast<uint64_t>(keyStage) << 32 | which;
+		StateCall &call = stateCalls[key];
+		call.op = op;
+		call.stage = stage;
+		call.mode = mode;
+		call.fields.assign(fields, fields + size);
+		call.sequence = ++stateSequence;
+	}
+
+	void cGDriverWire::Restart(std::unique_ptr<nSCDWire::Output> output) {
+		writer = nSCDWire::Writer(std::move(output));
+		Forget(0, kSlotCount);
+		// Written as they are: the calls replayed here are remembered already.
+		auto const raw = [this](Op op, auto const &... fields) {
+			writer.Begin(op);
+			(writer.Put(fields), ...);
+			writer.End();
+		};
+		if (initialized) raw(Op::Init);
+		recordedWidth = recordedHeight = 0;
+		if (videoMode.set) {
+			sGDMode const &mode = videoMode.mode;
+			raw(Op::SetVideoMode, videoMode.index, videoMode.show, videoMode.fourth, mode.width, mode.height,
+			    mode.isFullscreen);
+			recordedWidth = static_cast<int32_t>(mode.width);
+			recordedHeight = static_cast<int32_t>(mode.height);
+			int32_t dimensions[2]{};
+			driver->BackBufferSize(dimensions[0], dimensions[1]);
+			if (dimensions[0] > 0 && dimensions[1] > 0 &&
+			    (dimensions[0] != recordedWidth || dimensions[1] != recordedHeight)) {
+				raw(Op::Resize, static_cast<uint32_t>(dimensions[0]), static_cast<uint32_t>(dimensions[1]));
+				recordedWidth = dimensions[0];
+				recordedHeight = dimensions[1];
+			}
+		}
+		// Every texture with its size and format but without its pixels, which the game uploads again when asked.
+		for (auto const &[name, texture]: textures) {
+			if (texture.created) {
+				raw(Op::CreateTexture, texture.format, texture.width, texture.height, texture.levels, texture.hints, name);
+				continue;
+			}
+			raw(Op::GenTextures, int32_t{1}, name);
+			if (!texture.image) continue;
+			raw(Op::BindTexture, uint32_t{0}, name);
+			writer.Begin(Op::TexImage2D);
+			writer.Put(uint32_t{0});
+			writer.Put(int32_t{0});
+			writer.Put(static_cast<int32_t>(texture.format));
+			writer.Put(static_cast<int32_t>(texture.width));
+			writer.Put(static_cast<int32_t>(texture.height));
+			writer.Put(int32_t{0});
+			writer.Put(texture.sourceFormat);
+			writer.Put(texture.sourceType);
+			writer.Put(false);
+			writer.PutBlob(nullptr, 0);
+			writer.End();
+		}
+		for (auto const &[region, type]: bufferRegions) raw(Op::NewBufferRegion, type, region);
+		// The state, in the order it was set, each call on its stage and matrix mode.
+		std::vector<StateCall const *> calls;
+		calls.reserve(stateCalls.size());
+		for (auto const &entry: stateCalls) calls.push_back(&entry.second);
+		std::sort(calls.begin(), calls.end(), [](StateCall const *a, StateCall const *b) { return a->sequence < b->sequence; });
+		uint32_t stage = 0, mode = 0;
+		raw(Op::TexStage, stage);
+		raw(Op::MatrixMode, mode);
+		for (StateCall const *call: calls) {
+			auto const word = [call](size_t index) {
+				uint32_t value = 0;
+				if (call->fields.size() >= (index + 1) * sizeof(uint32_t)) {
+					std::memcpy(&value, call->fields.data() + index * sizeof(uint32_t), sizeof(value));
+				}
+				return value;
+			};
+			// A binding of a texture that is gone since.
+			uint32_t const bound = call->op == Op::BindTexture ? word(1) : call->op == Op::SetTexture ? word(0) : 0;
+			if (bound != 0 && textures.count(bound) == 0) continue;
+			if (call->stage != kAny && call->stage != stage) {
+				stage = call->stage;
+				raw(Op::TexStage, stage);
+			}
+			if (call->mode != kAny && call->mode != mode) {
+				mode = call->mode;
+				raw(Op::MatrixMode, mode);
+			}
+			writer.Begin(call->op);
+			writer.PutBytes(call->fields.data(), call->fields.size());
+			writer.End();
+			if (call->op == Op::TexStage) stage = word(0);
+			if (call->op == Op::MatrixMode) mode = word(0);
+		}
+		raw(Op::TexStage, activeStage);
+		raw(Op::MatrixMode, matrixMode);
+		if (!gameFolders.empty()) {
+			std::vector<std::wstring> const folders = gameFolders;
+			RecordGameFolders(folders.data());
+		}
+		OccupantTracker::Relist(*this);
+		TerrainStream::Resend();
+		writer.Flush();
+		Log(LogCategory::Initialization, "server: told the new one about %zu textures, %zu buffer regions and %zu state calls",
+		    textures.size(), bufferRegions.size(), calls.size());
+	}
+
 	void cGDriverReplayHooks::VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) {
 		int32_t match = -1;
 		sGDMode mode{};

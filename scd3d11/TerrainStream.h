@@ -20,4 +20,6 @@ namespace nSCD3D11::TerrainStream {
 	// At the end of each frame, on the render thread. Reads the terrain at most once a second and records it when it
 	// differs from what was sent.
 	void Poll(cGDriverWire &wire);
+	// Sends the whole terrain again at the next Poll, for a server started in place of one that stopped.
+	void Resend();
 }
