@@ -11,7 +11,7 @@
 // SCD3D12Server: SimCity 4's renderer as a separate 64-bit process.
 //
 //   SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]
-//                        [--relight <sun> [--light <features>]] [--until <frame>]
+//                        [--relight <sun> [--light <features>]] [--until <frame>] [--depth16 on|off]
 //                        [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]]
 //                        [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]
 //                        [--present window|composition|surface [--into <window>]] [--fps <n>]
@@ -38,7 +38,7 @@
 //       and zoomed in by zoom, each chosen frame turned yaw step degrees further than the one before. Without it
 //       the capture's own FreeCamera records apply. The dynamic passes are drawn from the free camera too.
 //   SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun> [--light <features>]]
-//                       [--stats on] [--scene substitute|check|owned]
+//                       [--stats on] [--scene substitute|check|owned] [--depth16 on|off]
 //       Draws the game live. SCD3D11 starts it this way with Renderer=server. --stats on logs the frame
 //       rate and the CPU and GPU time per frame every second. --scene works as for replay, with the data
 //       from the folders the game names, indexed while the game draws on.
@@ -135,6 +135,7 @@ namespace {
 		bool last = false;
 		bool warp = false;
 		bool relight = false;
+		bool depth16 = true;
 		Sun sun;
 		uint64_t until = UINT64_MAX;
 		bool substitute = false;
@@ -203,6 +204,7 @@ namespace {
 				if (!ParseLight(argv[++i], options.worldLight, options.light, options.sun)) return false;
 			}
 			else if (argument == L"--until" && hasValue) options.until = _wtoi64(argv[++i]);
+			else if (argument == L"--depth16" && hasValue) options.depth16 = std::wstring(argv[++i]) != L"off";
 			else if (argument == L"--scene" && hasValue) {
 				std::wstring const mode = argv[++i];
 				if (mode != L"substitute" && mode != L"check" && mode != L"retained" && mode != L"owned") return false;
@@ -447,6 +449,7 @@ namespace {
 		CreateDirectoryW(options.out.c_str(), nullptr);
 		nSCD3D12::cGDriver12 driver;
 		if (options.relight) driver.Relight(options.sun);
+		driver.Depth16(options.depth16);
 		// Streamline starts before the device.
 		std::unique_ptr<nSCD3D12::Dlss> dlss = nSCD3D12::Dlss::Start(options.dlss, options.frameGeneration);
 		if (!driver.Create(options.warp)) {
@@ -522,6 +525,7 @@ namespace {
 		bool light = false;
 		nSCD3D12::WorldLight::Options features;
 		bool stats = false;
+		bool depth16 = true;
 		nSCD3D12::SceneMode scene = nSCD3D12::SceneMode::Off;
 		for (int i = 2; i + 1 < argc; i += 2) {
 			std::wstring const argument = argv[i];
@@ -530,6 +534,7 @@ namespace {
 			else if (argument == L"--relight") relight = ParseSun(argv[i + 1], sun);
 			else if (argument == L"--light" && !ParseLight(argv[i + 1], light, features, sun)) light = false;
 			else if (argument == L"--stats") stats = std::wstring(argv[i + 1]) == L"on";
+			else if (argument == L"--depth16") depth16 = std::wstring(argv[i + 1]) != L"off";
 			else if (argument == L"--scene") {
 				std::wstring const mode = argv[i + 1];
 				if (mode == L"substitute") scene = nSCD3D12::SceneMode::Substitute;
@@ -542,7 +547,8 @@ namespace {
 			}
 		}
 		if (ring.empty() || parent == 0) return 2;
-		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats, scene, light ? &features : nullptr);
+		return nSCD3D12::RunServe(ring, parent, relight ? &sun : nullptr, stats, scene, light ? &features : nullptr,
+		                          depth16);
 	}
 
 	int RunFeedCommand(int argc, wchar_t **argv) {
@@ -603,13 +609,13 @@ int wmain(int argc, wchar_t **argv) {
 	if (result == 2) {
 		std::puts("SCD3D12Server replay <capture.scdw> [--out <folder>] [--every <n>] [--frames <a,b,c>] [--last] [--warp]");
 		std::puts("                     [--relight <hour or azimuth,elevation> [--light rays,terrain,lamps,world|none]]"
-		          " [--until <frame>]");
+		          " [--until <frame>] [--depth16 on|off]");
 		std::puts("                    "
 		          " [--scene substitute|check|retained|owned [--game <SimCity 4 folder>]] [--view-of <frame>] [--free-camera <yaw>,<pitch>,<zoom>[,<yaw step>]]");
 		std::puts("                     [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-generation on|off]"
 		          " [--present window|composition|surface [--into <window>]] [--fps <n>]");
 		std::puts("SCD3D12Server serve --ring <name> --parent <process id> [--log <file>] [--relight <sun> [--light <features>]]"
-		          " [--stats on] [--scene substitute|check|owned]");
+		          " [--stats on] [--scene substitute|check|owned] [--depth16 on|off]");
 		std::puts("SCD3D12Server feed <capture.scdw> [--save <frame> <image.png>] [serve options]");
 		std::puts("SCD3D12Server compare <a.png> <b.png> [--tolerance <n>]");
 	}

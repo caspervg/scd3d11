@@ -65,6 +65,7 @@ namespace nSCD3D11 {
 		std::string const &scene = Settings::Get().serverScene;
 		if (!scene.empty() && scene != "off") command += L" --scene " + std::wstring(scene.begin(), scene.end());
 		if (DrawStatsEnabled()) command += L" --stats on";
+		if (!Settings::Get().depth16) command += L" --depth16 off";
 
 		job = CreateJobObjectW(nullptr, nullptr);
 		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};

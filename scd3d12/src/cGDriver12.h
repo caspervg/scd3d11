@@ -68,6 +68,9 @@ namespace nSCD3D12 {
 		// Turns relighting on, before Create. Each frame is then relit with sun into a frame of its own,
 		// and the back buffer stays SC4's. Without it the back buffer is published as SC4 drew it.
 		void Relight(Sun const &sun);
+		// Depth16 (SCD3D11's setting, on by default), before Create: round every depth onto the 16-bit grid of
+		// SC4's DirectX 7 driver, so the ground's overlays tie with the ground instead of z-fighting it.
+		void Depth16(bool on);
 		// Draws the dynamic passes (3 to 5) from another camera: a draw whose projection is fromProjection in x and
 		// y gets view x inverse(fromView) x its modelview and the other projection's x and y rows. Null turns it off.
 		void SwapCamera(float const *fromView, float const *fromProjection, float const *view, float const *projection);

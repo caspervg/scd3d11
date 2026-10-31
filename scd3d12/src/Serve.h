@@ -25,9 +25,9 @@ namespace nSCD3D12 {
 	// Draws the game whose SCD3D11 created the shared ring ringName, until the game exits. A non-null
 	// relight relights every frame with that sun, and a non-null light adds light from the server's own copy of
 	// the city to it (WorldLight.h). With logStats, logs the frame rate and the CPU and GPU time per frame every
-	// second.
+	// second. depth16 is SCD3D11's Depth16 setting (cGDriver12::Depth16).
 	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats,
-	             SceneMode scene = SceneMode::Off, WorldLight::Options const *light = nullptr);
+	             SceneMode scene = SceneMode::Off, WorldLight::Options const *light = nullptr, bool depth16 = true);
 
 	// Plays a capture into `serve` the way SCD3D11 streams the game, to try the live path offline. It stands in
 	// for the shim: it makes the shared ring, names the adapter, starts this program with serve and the given

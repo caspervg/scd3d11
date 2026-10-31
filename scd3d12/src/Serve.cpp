@@ -392,7 +392,7 @@ namespace nSCD3D12 {
 	}
 
 	int RunServe(std::wstring const &ringName, DWORD parentId, cGDriver12::Sun const *relight, bool logStats,
-	             SceneMode scene, WorldLight::Options const *light) {
+	             SceneMode scene, WorldLight::Options const *light, bool depth16) {
 		HANDLE const parent = OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, FALSE, parentId);
 		if (parent == nullptr) {
 			std::puts("cannot open the game's process");
@@ -423,6 +423,7 @@ namespace nSCD3D12 {
 		LUID const adapter{control.adapterLow, control.adapterHigh};
 		cGDriver12 driver;
 		if (relight != nullptr) driver.Relight(*relight);
+		driver.Depth16(depth16);
 		if (!driver.Create(false, &adapter)) {
 			std::puts("cannot create a Direct3D 12 device on the game's adapter");
 			return 1;

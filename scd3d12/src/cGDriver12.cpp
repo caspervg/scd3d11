@@ -52,7 +52,8 @@ namespace nSCD3D12 {
 		constexpr uint32_t kRegionCount = 8;
 		constexpr uint32_t kExtensionCapacity = 32768;
 		// Sampler heap: 32 filter and wrap combinations, then the blit sampler.
-		constexpr uint32_t kBlitSampler = 32;
+		// The 64 samplers SamplerIndex can name, then the blit's.
+		constexpr uint32_t kBlitSampler = 64;
 		constexpr DXGI_FORMAT kColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 		constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 		constexpr DXGI_FORMAT kDepthTypeless = DXGI_FORMAT_R24G8_TYPELESS;
@@ -61,10 +62,17 @@ namespace nSCD3D12 {
 		// SC4's sun, so relighting leaves them out and casts its own.
 		constexpr uint32_t kShadowViewObjectVtable = 0x00AB39D0;
 
-		// cGDriver_Geometry.cpp's shader, unchanged.
+		// cGDriver_Geometry.cpp's shader, with its Depth16 rounding, plus the instanced vertex shader and the light layer.
 		char const kShaderSource[] = R"(
 #ifndef SCD3D11_INTERPOLATION
 #define SCD3D11_INTERPOLATION
+#endif
+// A pixel shader that promises SV_DepthGreaterEqual must read the position centroid. Without multisampling that
+// is still the pixel centre.
+#ifdef SCD3D11_DEPTH_SEMANTIC
+#define SCD3D11_POSITION_INTERPOLATION centroid
+#else
+#define SCD3D11_POSITION_INTERPOLATION
 #endif
 struct StageState
 {
@@ -117,7 +125,7 @@ struct VSInput
 
 struct PSInput
 {
-	float4 position : SV_POSITION;
+	SCD3D11_POSITION_INTERPOLATION float4 position : SV_POSITION;
 	SCD3D11_INTERPOLATION float3 normal : NORMAL;
 	SCD3D11_INTERPOLATION float4 color : COLOR0;
 	SCD3D11_INTERPOLATION float3 viewPosition : TEXCOORD3;
@@ -274,16 +282,35 @@ float4 Shade(PSInput input)
 	return color;
 }
 
+// SCD3D11_DEPTH_SEMANTIC, when defined, rounds each depth up onto a 16-bit grid before it is tested and written, as
+// cGDriver_Geometry.cpp does for Depth16: SC4 layers the ground's overlays 1/65536 apart and relies on near-equal
+// depths tying under its LESSEQUAL test. Rounding up keeps SV_DepthGreaterEqual true.
+float Depth16(float depth)
+{
+	return ceil(depth * 65536.0f) * (1.0f / 65536.0f);
+}
+
 #ifndef SCD3D12_GBUFFER
+#ifdef SCD3D11_DEPTH_SEMANTIC
+float4 PSMain(PSInput input, out float depth : SCD3D11_DEPTH_SEMANTIC) : SV_TARGET
+{
+	depth = Depth16(input.position.z);
+	return Shade(input);
+}
+#else
 float4 PSMain(PSInput input) : SV_TARGET
 {
 	return Shade(input);
 }
+#endif
 #else
 struct GBufferOutput
 {
 	float4 color : SV_TARGET0;
 	float4 light : SV_TARGET1;
+#ifdef SCD3D11_DEPTH_SEMANTIC
+	float depth : SCD3D11_DEPTH_SEMANTIC;
+#endif
 };
 
 // What SC4's own lighting multiplied into the colour: the colour multiplier and the lights' ambient.
@@ -305,6 +332,9 @@ GBufferOutput PSMain(PSInput input)
 {
 	GBufferOutput output;
 	output.color = Shade(input);
+#ifdef SCD3D11_DEPTH_SEMANTIC
+	output.depth = Depth16(input.position.z);
+#endif
 #if SCD3D12_GBUFFER == 1
 	output.light = float4(LightFactor(), 1.0f);
 #else
@@ -900,6 +930,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		// the relight weight in alpha (1 for the city, 0 for UI), premultiplied by that weight. The
 		// lighting pass writes the published frame into litBuffer, so the back buffer stays SC4's.
 		bool relight = false;
+		// Depth16: round every depth onto SC4's 16-bit grid, as SCD3D11 does by default.
+		bool depth16 = true;
 		cGDriver12::Sun sun;
 		Camera camera;
 		// True once the stream has bracketed a draw with its owner. Streams without owners count every
@@ -1435,8 +1467,11 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			bool const minimumLinear = stage.minFilter == 1 || stage.minFilter == 5 || stage.minFilter == 7;
 			bool const magnificationLinear = stage.magFilter == 1;
 			bool const mipLinear = stage.minFilter == 6 || stage.minFilter == 7;
+			// GL_NEAREST and GL_LINEAR (0 and 1) mean "no mipmapping": only the base level is sampled, as
+			// cGDriver::EnsureSampler clamps the LOD for them.
+			bool const baseLevelOnly = stage.minFilter < 4;
 			return (minimumLinear ? 1u : 0u) | (magnificationLinear ? 2u : 0u) | (mipLinear ? 4u : 0u) |
-			       (stage.wrapU == 2 ? 8u : 0u) | (stage.wrapV == 2 ? 16u : 0u);
+			       (stage.wrapU == 2 ? 8u : 0u) | (stage.wrapV == 2 ? 16u : 0u) | (baseLevelOnly ? 32u : 0u);
 		}
 
 		ID3D12PipelineState *Pipeline(PipelineKey const &key) {
@@ -1532,7 +1567,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 
 				rasterizer.CullMode = ((bits >> 50) & 1) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
 				rasterizer.FrontCounterClockwise = TRUE;
-				rasterizer.DepthBias = key.depthBias;
+				// PolygonOffset as D3D7 ZBIAS (D3D11Conversions.h): toward the viewer, scaled with the depth slope too.
+				nSCD3D11::DepthBias const bias = nSCD3D11::D3D11DepthBias(key.depthBias);
+				rasterizer.DepthBias = bias.units;
+				rasterizer.SlopeScaledDepthBias = bias.slopeScale;
 				description.PrimitiveTopologyType = static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>((bits >> 2) & 3);
 				uint32_t const cut = (bits >> 4) & 3;
 				description.IBStripCutValue = cut == 1 ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF
@@ -2335,11 +2373,11 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			nextView = kLightingViews + kLightingViewCount;
 			for (uint32_t kind = 0; kind < 2; ++kind) {
 				for (uint32_t blended = 0; blended < 2; ++blended) {
-					D3D_SHADER_MACRO const macros[] = {
-						{"SCD3D12_GBUFFER", blended ? "2" : "1"},
-						{kind == 1 ? "SCD3D11_INTERPOLATION" : nullptr, "nointerpolation"},
-						{nullptr, nullptr}
-					};
+					D3D_SHADER_MACRO macros[4] = {{"SCD3D12_GBUFFER", blended ? "2" : "1"}};
+					size_t count = 1;
+					if (kind == 1) macros[count++] = {"SCD3D11_INTERPOLATION", "nointerpolation"};
+					if (depth16) macros[count++] = {"SCD3D11_DEPTH_SEMANTIC", "SV_DepthGreaterEqual"};
+					macros[count] = {nullptr, nullptr};
 					if (!compile(kShaderSource, sizeof(kShaderSource) - 1, macros, "PSMain", "ps_5_0", compileFlags,
 					             gbufferPixelShaders[kind][blended])) return false;
 				}
@@ -2550,7 +2588,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			}
 			description.MaxAnisotropy = 1;
 			description.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-			description.MaxLOD = FLT_MAX;
+			description.MaxLOD = index != kBlitSampler && (index & 32) != 0 ? 0.0f : FLT_MAX;
 			d.device->CreateSampler(&description, sampler);
 		}
 
@@ -2597,13 +2635,21 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			if (FAILED(result) && messages) std::fprintf(stderr, "%s\n", static_cast<char const *>(messages->GetBufferPointer()));
 			return SUCCEEDED(result);
 		};
-		D3D_SHADER_MACRO const flatMacros[] = {{"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}};
-		D3D_SHADER_MACRO const instancedMacros[2][3] = {
-			{{"SCD3D12_INSTANCED", "1"}, {nullptr, nullptr}, {nullptr, nullptr}},
-			{{"SCD3D12_INSTANCED", "1"}, {"SCD3D11_INTERPOLATION", "nointerpolation"}, {nullptr, nullptr}},
+		// Depth16: the pixel shaders round each depth onto SC4's 16-bit grid (cGDriver_Geometry.cpp). A null name ends
+		// a macro list, so without it the lists stop before the depth entry.
+		char const *const depthSemantic = d.depth16 ? "SV_DepthGreaterEqual" : nullptr;
+		char const *const depthMacro = depthSemantic != nullptr ? "SCD3D11_DEPTH_SEMANTIC" : nullptr;
+		D3D_SHADER_MACRO const smoothMacros[] = {{depthMacro, depthSemantic}, {nullptr, nullptr}};
+		D3D_SHADER_MACRO const flatMacros[] = {
+			{"SCD3D11_INTERPOLATION", "nointerpolation"}, {depthMacro, depthSemantic}, {nullptr, nullptr}};
+		D3D_SHADER_MACRO const instancedMacros[2][4] = {
+			{{"SCD3D12_INSTANCED", "1"}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}},
+			{{"SCD3D12_INSTANCED", "1"}, {"SCD3D11_INTERPOLATION", "nointerpolation"}, {depthMacro, depthSemantic},
+			 {nullptr, nullptr}},
 		};
 		if (!compile(kShaderSource, sizeof(kShaderSource) - 1, nullptr, "VSMain", "vs_5_0", compileFlags, d.vertexShader) ||
-		    !compile(kShaderSource, sizeof(kShaderSource) - 1, nullptr, "PSMain", "ps_5_0", compileFlags, d.pixelShader) ||
+		    !compile(kShaderSource, sizeof(kShaderSource) - 1, smoothMacros, "PSMain", "ps_5_0", compileFlags,
+		             d.pixelShader) ||
 		    !compile(kShaderSource, sizeof(kShaderSource) - 1, flatMacros, "PSMain", "ps_5_0", compileFlags,
 		             d.flatPixelShader) ||
 		    // Compiled with the same modes as its pixel shader, so their registers line up.
@@ -2773,6 +2819,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		impl->relight = true;
 		impl->sun = sun;
 	}
+
+	void cGDriver12::Depth16(bool on) { impl->depth16 = on; }
 
 	ID3D12Resource *cGDriver12::Output() const {
 		return impl->relight ? impl->litBuffer.Get() : impl->backBuffer.Get();
@@ -2984,6 +3032,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	}
 	void cGDriver12::ClearDepth(double depth) {
 		impl->clearDepth = static_cast<float>(depth < 0.0 ? 0.0 : (depth > 1.0 ? 1.0 : depth));
+		// On Depth16's grid too, rounded as the pixel shader rounds, so a draw at the clear depth ties.
+		if (impl->depth16) impl->clearDepth = std::ceil(impl->clearDepth * 65536.0f) / 65536.0f;
 	}
 	void cGDriver12::ClearStencil(int32_t stencil) { impl->clearStencil = static_cast<uint8_t>(stencil); }
 
