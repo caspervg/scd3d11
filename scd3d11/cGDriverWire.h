@@ -257,23 +257,70 @@ namespace nSCD3D11 {
 		// After TakeRestartedOutput: writes the stream from the start again, to the new server.
 		void Restart(std::unique_ptr<nSCDWire::Output> output);
 		struct StateCall {
-			nSCDWire::Op op;
+			uint64_t key = 0;
+			// When it was last made: replayed in that order, as some calls change what others set. 0 for a free slot.
+			uint64_t sequence = 0;
+			nSCDWire::Op op{};
 			// The texture stage or matrix mode the call acts on, or kAny.
-			uint8_t stage, mode;
-			std::vector<uint8_t> fields;
-			// When it was last made: replayed in that order, as some calls change what others set.
-			uint64_t sequence;
+			uint8_t stage = 0, mode = 0, size = 0;
+			uint8_t fields[96];
 		};
 		uint64_t stateSequence = 0;
 		static constexpr uint8_t kAny = 0xFF;
-		std::map<uint64_t, StateCall> stateCalls;
+		// Open addressing by key, the fields inline: a state call costs no allocation and no tree walk. Grows at
+		// half full; calls are never removed, as there is one per kind of state at most.
+		std::vector<StateCall> stateCalls = std::vector<StateCall>(1024);
+		size_t stateCallCount = 0;
+		StateCall &StateCallFor(uint64_t key) {
+			if ((stateCallCount + 1) * 2 > stateCalls.size()) {
+				std::vector<StateCall> old(stateCalls.size() * 2);
+				old.swap(stateCalls);
+				stateCallCount = 0;
+				for (StateCall const &call: old) {
+					if (call.sequence != 0) {
+						StateCall &moved = StateCallFor(call.key);
+						if (moved.sequence == 0) ++stateCallCount;
+						moved = call;
+					}
+				}
+			}
+			size_t const mask = stateCalls.size() - 1;
+			for (size_t at = static_cast<size_t>((key * 0x9E3779B97F4A7C15ull) >> 32) & mask;; at = (at + 1) & mask) {
+				StateCall &call = stateCalls[at];
+				if (call.sequence == 0 || call.key == key) return call;
+			}
+		}
 		struct TextureState {
 			// Made by CreateTexture (with format, size, levels and hints), or by GenTextures and given an image by
 			// TexImage2D (with its internal format, size, and the format and type of its pixels).
 			bool created = false, image = false;
 			uint32_t format = 0, width = 0, height = 0, levels = 0, hints = 0, sourceFormat = 0, sourceType = 0;
+			bool live = false;
 		};
-		std::map<uint32_t, TextureState> textures;
+		// By name: drivers hand out names counting up from 1, so a vector holds them without lookups.
+		struct TextureTable {
+			// Names past this are not kept (a driver handing out other names): a restart then lacks them.
+			static constexpr uint32_t kMaxName = 1u << 22;
+			std::vector<TextureState> slots;
+			size_t live = 0;
+			bool Has(uint32_t name) const { return name < slots.size() && slots[name].live; }
+			TextureState *Find(uint32_t name) { return Has(name) ? &slots[name] : nullptr; }
+			// A fresh state for name, or null for a name past kMaxName.
+			TextureState *Make(uint32_t name) {
+				if (name >= kMaxName) return nullptr;
+				if (name >= slots.size()) slots.resize((std::max)(static_cast<size_t>(name) + 1, slots.size() * 2));
+				if (!slots[name].live) ++live;
+				slots[name] = TextureState{};
+				slots[name].live = true;
+				return &slots[name];
+			}
+			void Erase(uint32_t name) {
+				if (!Has(name)) return;
+				slots[name].live = false;
+				--live;
+			}
+		};
+		TextureTable textures;
 		uint32_t boundTextures[2]{};
 		// Buffer regions by number, with their type.
 		std::map<uint32_t, int32_t> bufferRegions;
@@ -321,18 +368,19 @@ namespace nSCD3D11 {
 		// the caller then records.
 		template<typename... Fields>
 		bool Unchanged(uint32_t slot, nSCDWire::Op op, Fields const &... fields) {
-			static_assert(sizeof(op) + (sizeof(Fields) + ... + 0) <= sizeof(SentState::bytes));
-			uint8_t bytes[sizeof(SentState::bytes)];
-			uint32_t size = 0;
-			auto const put = [&](void const *data, uint32_t count) {
-				std::memcpy(bytes + size, data, count);
-				size += count;
-			};
-			put(&op, sizeof(op));
-			(put(&fields, sizeof(fields)), ...);
+			constexpr uint32_t size = static_cast<uint32_t>(sizeof(op) + (sizeof(Fields) + ... + 0));
+			static_assert(size <= sizeof(SentState::bytes));
 			SentState &sent = sentState[slot];
-			if (sent.known && sent.size == size && std::memcmp(sent.bytes, bytes, size) == 0) return true;
-			std::memcpy(sent.bytes, bytes, size);
+			// Compared in place, field by field (each a compare of known size), and copied only when it changed.
+			if (sent.known && sent.size == size) {
+				uint32_t at = sizeof(op);
+				bool same = std::memcmp(sent.bytes, &op, sizeof(op)) == 0;
+				((same = same && std::memcmp(sent.bytes + at, &fields, sizeof(fields)) == 0, at += sizeof(fields)), ...);
+				if (same) return true;
+			}
+			uint32_t at = sizeof(op);
+			std::memcpy(sent.bytes, &op, sizeof(op));
+			((std::memcpy(sent.bytes + at, &fields, sizeof(fields)), at += sizeof(fields)), ...);
 			sent.size = size;
 			sent.known = true;
 			return false;

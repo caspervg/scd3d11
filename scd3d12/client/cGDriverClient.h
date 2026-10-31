@@ -40,6 +40,9 @@ namespace nSCD3D12 {
 		cGDriverClient();
 		~cGDriverClient() override;
 
+		// No window, device or server: answers the game's queries only. For timing the recording (SCD3D12Bench).
+		void SetHeadless(bool on) { headless = on; }
+
 		// Starts the server and returns where the stream to it goes, the file too when recording. Without a
 		// server the stream goes nowhere until one starts.
 		std::unique_ptr<nSCDWire::Output> Connect(std::shared_ptr<std::FILE> record);
@@ -210,6 +213,7 @@ namespace nSCD3D12 {
 		void RestartServer();
 
 		bool initialized = false;
+		bool headless = false;
 		Error lastError = Error::OK;
 		std::string driverInfo;
 
@@ -244,8 +248,9 @@ namespace nSCD3D12 {
 		uint32_t redrawRequestsSeen = 0;
 		uint32_t restarts = 0;
 
-		// Texture names, and whether each has an image yet.
-		std::unordered_map<uint32_t, bool> textures;
+		// Texture names by name, which count up from 1: 0 none, 1 a name, 2 a name with an image.
+		std::vector<uint8_t> textures;
+		bool IsName(uint32_t name) const { return name < textures.size() && textures[name] != 0; }
 		uint32_t nextTexture = 1;
 		uint32_t boundTextures[2]{};
 		uint32_t activeStage = 0;

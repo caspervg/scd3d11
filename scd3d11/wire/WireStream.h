@@ -42,6 +42,9 @@ namespace nSCDWire {
 		// Hands the bytes before end to the reader, and with them every span handed out so far. False when the
 		// stream can no longer be written.
 		virtual bool Publish(uint64_t end) = 0;
+		// Whether bytes stay where a span put them until published (a ring), so the writer may write them again
+		// through a pointer. An output that grows a buffer moves them.
+		virtual bool StableSpans() const { return false; }
 	};
 
 	// Keeps the bytes in memory until they are published, then hands them to a function.
@@ -125,6 +128,8 @@ namespace nSCDWire {
 		// The writable bytes at cursor.
 		uint8_t *span = nullptr;
 		size_t spanLeft = 0;
+		// The open record's header, while it can be written through a pointer, else null.
+		uint8_t *header = nullptr;
 		// The open record's bytes so far, while a blob goes in front of it.
 		std::vector<uint8_t> moved;
 		// Least recently used first.

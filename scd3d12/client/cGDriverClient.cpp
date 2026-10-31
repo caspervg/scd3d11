@@ -180,9 +180,10 @@ namespace nSCD3D12 {
 	void cGDriverClient::GenTextures(int32_t count, uint32_t *names) {
 		if (count < 0 || (count > 0 && names == nullptr)) return Fail(Error::INVALID_VALUE);
 		for (int32_t i = 0; i < count; ++i) {
-			while (nextTexture == 0 || textures.count(nextTexture) != 0) ++nextTexture;
+			while (nextTexture == 0 || IsName(nextTexture)) ++nextTexture;
+			if (nextTexture >= textures.size()) textures.resize((std::max)(static_cast<size_t>(nextTexture) + 1, textures.size() * 2));
 			names[i] = nextTexture;
-			textures.emplace(nextTexture++, false);
+			textures[nextTexture++] = 1;
 		}
 	}
 
@@ -190,14 +191,11 @@ namespace nSCD3D12 {
 		if (count < 0 || (count > 0 && names == nullptr)) return Fail(Error::INVALID_VALUE);
 		for (int32_t i = 0; i < count; ++i) {
 			for (uint32_t &bound: boundTextures) if (bound == names[i]) bound = 0;
-			textures.erase(names[i]);
+			if (names[i] < textures.size()) textures[names[i]] = 0;
 		}
 	}
 
-	bool cGDriverClient::IsTexture(uint32_t name) {
-		auto const found = textures.find(name);
-		return found != textures.end() && found->second;
-	}
+	bool cGDriverClient::IsTexture(uint32_t name) { return name < textures.size() && textures[name] == 2; }
 
 	bool cGDriverClient::AreTexturesResident(int32_t count, uint32_t const *names, bool *resident) {
 		if (count < 0 || (count > 0 && (names == nullptr || resident == nullptr))) {
@@ -210,17 +208,17 @@ namespace nSCD3D12 {
 	}
 
 	void cGDriverClient::BindTexture(uint32_t target, uint32_t texture) {
-		if (target != 0 || (texture != 0 && textures.count(texture) == 0)) return Fail(Error::INVALID_VALUE);
+		if (target != 0 || (texture != 0 && !IsName(texture))) return Fail(Error::INVALID_VALUE);
 		boundTextures[activeStage] = texture;
 	}
 
 	void cGDriverClient::TexImage2D(uint32_t target, int32_t level, int32_t, int32_t imageWidth, int32_t imageHeight,
 	                                int32_t border, uint32_t, uint32_t, void const *) {
-		auto const found = textures.find(boundTextures[activeStage]);
-		if (target != 0 || level < 0 || border != 0 || imageWidth <= 0 || imageHeight <= 0 || found == textures.end()) {
+		uint32_t const bound = boundTextures[activeStage];
+		if (target != 0 || level < 0 || border != 0 || imageWidth <= 0 || imageHeight <= 0 || !IsName(bound)) {
 			return Fail(Error::INVALID_VALUE);
 		}
-		if (level == 0) found->second = true;
+		if (level == 0) textures[bound] = 2;
 	}
 
 	void cGDriverClient::PixelStore(uint32_t parameter, int32_t value) {
@@ -234,7 +232,7 @@ namespace nSCD3D12 {
 	}
 
 	void cGDriverClient::SetTexture(uint32_t texture, uint32_t stage) {
-		if (stage >= 2 || (texture != 0 && textures.count(texture) == 0)) return Fail(Error::INVALID_VALUE);
+		if (stage >= 2 || (texture != 0 && !IsName(texture))) return Fail(Error::INVALID_VALUE);
 		boundTextures[stage] = texture;
 	}
 
@@ -254,7 +252,7 @@ namespace nSCD3D12 {
 		}
 		uint32_t name = 0;
 		GenTextures(1, &name);
-		textures[name] = true;
+		textures[name] = 2;
 		boundTextures[activeStage] = name;
 		return name;
 	}
@@ -496,6 +494,13 @@ namespace nSCD3D12 {
 		}
 		if (index < 0 || static_cast<size_t>(index) >= videoModes.size()) return Fail(Error::OUT_OF_RANGE);
 		sGDMode const mode = videoModes[index];
+		if (headless) {
+			currentVideoMode = index;
+			width = static_cast<int32_t>(mode.width);
+			height = static_cast<int32_t>(mode.height);
+			lastError = Error::OK;
+			return;
+		}
 		DestroyDevice();
 		if (window != nullptr) {
 			DestroyWindow(window);
@@ -714,7 +719,7 @@ namespace nSCD3D12 {
 	}
 
 	void cGDriverClient::RestartServer() {
-		if (remote != nullptr && remote->Active()) return;
+		if (headless || (remote != nullptr && remote->Active())) return;
 		ULONGLONG const now = GetTickCount64();
 		if (now < nextRestart) return;
 		// Two seconds, then longer between attempts that keep failing, up to half a minute.

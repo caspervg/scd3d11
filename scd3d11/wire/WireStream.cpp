@@ -57,6 +57,7 @@ namespace nSCDWire {
 		uint8_t const *bytes = static_cast<uint8_t const *>(data);
 		while (size != 0 && !failed) {
 			if (spanLeft == 0) {
+				if (!output->StableSpans()) header = nullptr;
 				span = output->Span(cursor, spanLeft);
 				if (span == nullptr) {
 					failed = true;
@@ -78,11 +79,13 @@ namespace nSCDWire {
 		cursor = position;
 		span = nullptr;
 		spanLeft = 0;
+		header = nullptr;
 	}
 
 	void Writer::Begin(Op op) {
 		current = op;
 		recordStart = cursor;
+		header = spanLeft >= sizeof(RecordHeader) ? span : nullptr;
 		// The size is filled in by End.
 		Put(RecordHeader{static_cast<uint16_t>(op), 0, 0});
 	}
@@ -122,9 +125,10 @@ namespace nSCDWire {
 
 	void Writer::End() {
 		if (!failed) {
-			RecordHeader const header{static_cast<uint16_t>(current), 0,
+			RecordHeader const filled{static_cast<uint16_t>(current), 0,
 			                          static_cast<uint32_t>(cursor - recordStart - sizeof(RecordHeader))};
-			output->Overwrite(recordStart, &header, sizeof(header));
+			if (header != nullptr) std::memcpy(header, &filled, sizeof(filled));
+			else output->Overwrite(recordStart, &filled, sizeof(filled));
 		}
 		current = Op::Count;
 		PublishIfLarge();

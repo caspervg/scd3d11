@@ -132,6 +132,7 @@ namespace nSCDWire {
 		void Read(uint64_t at, void *data, size_t size) const override;
 		void Overwrite(uint64_t at, void const *data, size_t size) override;
 		bool Publish(uint64_t end) override;
+		bool StableSpans() const override { return true; }
 
 	private:
 		bool Fail();

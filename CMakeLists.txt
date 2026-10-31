@@ -206,9 +206,8 @@ target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi dcom
 # SCD3D12.dll: SC4's driver when SCD3D12Server draws everything. It keeps no renderer of its own, only the state
 # the game asks about, the stream to the server and a Direct3D 11 swap chain to show the server's frames on. It
 # claims SCD3D11's class ID with a higher version, so it wins when both are installed.
-add_library(SCD3D12 SHARED
+set(SCD3D12_CLIENT_SOURCES
         scd3d12/client/cGDriverClient.cpp
-        scd3d12/client/SCD3D12Director.cpp
         scd3d11/cGDriverWire.cpp
         scd3d11/RemoteRenderer.cpp
         scd3d11/wire/ImageFile.cpp
@@ -229,6 +228,7 @@ add_library(SCD3D12 SHARED
         scd3d11/VertexFormatUtils.cpp
         scd3d11/VideoModeUtils.cpp
 )
+add_library(SCD3D12 SHARED scd3d12/client/SCD3D12Director.cpp ${SCD3D12_CLIENT_SOURCES})
 set_target_properties(SCD3D12 PROPERTIES PREFIX "")
 target_include_directories(SCD3D12 PRIVATE scd3d12/client)
 target_compile_definitions(SCD3D12 PRIVATE
@@ -236,6 +236,14 @@ target_compile_definitions(SCD3D12 PRIVATE
 target_link_libraries(SCD3D12 PRIVATE scd3d11_common d3d11 dxgi dcomp version ole32)
 target_compile_options(SCD3D12 PRIVATE $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Zi;/FS>)
 target_link_options(SCD3D12 PRIVATE $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/DEBUG;/OPT:REF;/OPT:ICF>)
+
+# Times what SCD3D12.dll's recording costs SC4's render thread, from a capture, without the game or a server.
+add_executable(SCD3D12Bench scd3d12/client/SCD3D12Bench.cpp scd3d12/client/SCD3D12Director.cpp ${SCD3D12_CLIENT_SOURCES})
+target_include_directories(SCD3D12Bench PRIVATE scd3d12/client)
+target_compile_definitions(SCD3D12Bench PRIVATE
+        SCD3D11_SETTINGS_SECTION="SCD3D12" SCD3D11_LOG_FILE=L"SCD3D12Bench.log" SCD3D11_LOG_TAG="SCD3D12")
+target_link_libraries(SCD3D12Bench PRIVATE scd3d11_common d3d11 dxgi dcomp version ole32)
+target_link_options(SCD3D12Bench PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/ENTRY:wmainCRTStartup>)
 
 # Replays a Record=<file> capture into the driver outside the game and saves frames as PNG.
 add_executable(SCDReplay scd3d11/replay/SCDReplay.cpp ${SCD3D11_DRIVER_SOURCES})
