@@ -23,8 +23,11 @@
 #include "wire/WireReplay.h"
 
 #include <windows.h>
+#include <dbghelp.h>
 
+#include <algorithm>
 #include <atomic>
+#include <map>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -32,6 +35,58 @@
 #include <vector>
 
 namespace {
+	// --profile: which functions the replaying thread is in, sampled about every millisecond.
+	struct Sampler {
+		std::atomic<bool> stop{false};
+		std::thread thread;
+		std::map<DWORD, uint64_t> hits;
+
+		void Start(HANDLE target) {
+			thread = std::thread([this, target] {
+				timeBeginPeriod(1);
+				while (!stop.load()) {
+					if (SuspendThread(target) != static_cast<DWORD>(-1)) {
+						CONTEXT context{};
+						context.ContextFlags = CONTEXT_CONTROL;
+						if (GetThreadContext(target, &context)) ++hits[context.Eip];
+						ResumeThread(target);
+					}
+					Sleep(1);
+				}
+				timeEndPeriod(1);
+			});
+		}
+
+		void Report() {
+			stop = true;
+			thread.join();
+			HANDLE const process = GetCurrentProcess();
+			SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+			SymInitialize(process, nullptr, TRUE);
+			std::map<std::string, uint64_t> functions;
+			uint64_t total = 0;
+			for (auto const &[address, count]: hits) {
+				alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256]{};
+				auto *const symbol = reinterpret_cast<SYMBOL_INFO *>(buffer);
+				symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+				symbol->MaxNameLen = 255;
+				DWORD64 displacement = 0;
+				std::string name = SymFromAddr(process, address, &displacement, symbol) ? symbol->Name : "?";
+				functions[name] += count;
+				total += count;
+			}
+			std::vector<std::pair<uint64_t, std::string>> sorted;
+			for (auto const &[name, count]: functions) sorted.emplace_back(count, name);
+			std::sort(sorted.rbegin(), sorted.rend());
+			std::printf("samples: %llu\n", static_cast<unsigned long long>(total));
+			for (size_t i = 0; i < sorted.size() && i < 40; ++i) {
+				std::printf("  %5.1f%%  %s\n", 100.0 * static_cast<double>(sorted[i].first) / static_cast<double>(total),
+				            sorted[i].second.substr(0, 110).c_str());
+			}
+		}
+	};
+	bool gProfile = false;
+
 	struct Times {
 		double wall = 0.0, thread = 0.0;
 		uint64_t records = 0, frames = 0;
@@ -89,6 +144,12 @@ namespace {
 		LARGE_INTEGER frequency, start, end;
 		QueryPerformanceFrequency(&frequency);
 		double const threadStart = ThreadSeconds();
+		Sampler sampler;
+		HANDLE self = nullptr;
+		if (gProfile && wire) {
+			DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &self, 0, FALSE, DUPLICATE_SAME_ACCESS);
+			sampler.Start(self);
+		}
 		QueryPerformanceCounter(&start);
 		bool ok;
 		if (recorder != nullptr) {
@@ -100,9 +161,21 @@ namespace {
 		}
 		QueryPerformanceCounter(&end);
 		times.thread = ThreadSeconds() - threadStart;
+		if (self != nullptr) {
+			sampler.Report();
+			CloseHandle(self);
+		}
 		times.wall = static_cast<double>(end.QuadPart - start.QuadPart) / static_cast<double>(frequency.QuadPart);
 		times.records = stats.records;
 		times.frames = stats.frames;
+		if (!wire) {
+			for (size_t op = 1; op < static_cast<size_t>(nSCDWire::Op::Count); ++op) {
+				if (stats.opCounts[op] * 100 >= stats.records) {
+					std::printf("  %-24s %6.2f per frame\n", nSCDWire::OpName(static_cast<nSCDWire::Op>(op)),
+					            static_cast<double>(stats.opCounts[op]) / static_cast<double>(stats.frames));
+				}
+			}
+		}
 		if (recorder != nullptr) {
 			recorder->Release();
 			ring.Close();
@@ -128,6 +201,7 @@ int wmain(int argc, wchar_t **argv) {
 		if (argument == L"--client") client = true;
 		else if (argument == L"--wire") wire = true;
 		else if (argument == L"--save" && i + 1 < argc) save = argv[++i];
+		else if (argument == L"--profile") gProfile = true;
 	}
 	if (!client && !wire) client = wire = true;
 	Times alone, recorded;

@@ -242,7 +242,9 @@ add_executable(SCD3D12Bench scd3d12/client/SCD3D12Bench.cpp scd3d12/client/SCD3D
 target_include_directories(SCD3D12Bench PRIVATE scd3d12/client)
 target_compile_definitions(SCD3D12Bench PRIVATE
         SCD3D11_SETTINGS_SECTION="SCD3D12" SCD3D11_LOG_FILE=L"SCD3D12Bench.log" SCD3D11_LOG_TAG="SCD3D12")
-target_link_libraries(SCD3D12Bench PRIVATE scd3d11_common d3d11 dxgi dcomp version ole32)
+target_link_libraries(SCD3D12Bench PRIVATE scd3d11_common d3d11 dxgi dcomp version ole32 dbghelp winmm)
+target_compile_options(SCD3D12Bench PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Zi>)
+target_link_options(SCD3D12Bench PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/DEBUG;/OPT:REF;/OPT:ICF>)
 target_link_options(SCD3D12Bench PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/ENTRY:wmainCRTStartup>)
 
 # Replays a Record=<file> capture into the driver outside the game and saves frames as PNG.
