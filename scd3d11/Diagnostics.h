@@ -29,6 +29,8 @@ namespace nSCD3D11
 		Stats,
 		// Doctor findings about the rest of the installation.
 		Doctor,
+		// City-view draw diagnostics, written with DrawStats.
+		Diag,
 		Count
 	};
 

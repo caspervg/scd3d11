@@ -125,6 +125,41 @@ namespace nSCD3D11 {
 			d.frameStats = {};
 		}
 
+		// A viewport reaching past the window is refused and keeps the previous one, unless ViewportClamp is
+		// on: then it keeps its projection and is scissored to the window, and one with no area is the window.
+		void ViewportClampTakesWhatWasRefused() {
+			for (uint32_t mode: {0u, 1u}) {
+				d.MatrixMode(mode);
+				d.LoadIdentity();
+			}
+			d.MatrixMode(0);
+			int32_t const half = d.windowHeight / 2;
+
+			d.SetViewport(0, 0, d.windowWidth, half);
+			d.SetViewport(0, -half, d.windowWidth, d.windowHeight);
+			assert(d.viewportY == 0 && d.viewportHeight == half);
+			assert(d.drawDiagnostics.viewportRejects == 1);
+
+			d.viewportClamp = true;
+			d.ClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+			d.SetViewport();
+			d.Clear(0x4000);
+			// A window-sized viewport moved down by half the window (GL's y grows upwards): only the bottom half
+			// of the window lies inside it, and the fullscreen triangle fills exactly that part.
+			d.SetViewport(0, -half, d.windowWidth, d.windowHeight);
+			assert(d.viewportY == -half && d.scissorEnabled);
+			assert(d.drawDiagnostics.viewportClamps == 1);
+			DrawFullscreen(255, 0, 0);
+			assert(Pixel(1, 1) == 0x0000ffff);
+			assert(Pixel(1, half - 1) == 0x0000ffff);
+			assert(Pixel(1, half + 1) == 0xff0000ff);
+			assert(Pixel(1, d.windowHeight - 2) == 0xff0000ff);
+			d.SetViewport(5, 5, 0, -3);
+			assert(!d.scissorEnabled && d.viewportWidth == d.windowWidth);
+			d.viewportClamp = false;
+			d.SetViewport();
+		}
+
 		std::vector<uint8_t> ReadBuffer(ID3D11Buffer *buffer, uint32_t offset, uint32_t size) {
 			D3D11_BUFFER_DESC description{};
 			buffer->GetDesc(&description);
@@ -1270,6 +1305,7 @@ namespace nSCD3D11 {
 			DrawsGeometry();
 			DrawsStartAtTheirUpload();
 			ViewportCullsOutsideDraws();
+			ViewportClampTakesWhatWasRefused();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();
 			OversizedInputsFailBeforeReading();

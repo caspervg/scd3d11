@@ -120,6 +120,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Textures.cpp
         scd3d11/cGDriver_Unknown.cpp
         scd3d11/cGDriver_Blit.cpp
+        scd3d11/cGDriver_DrawDiagnostics.cpp
         scd3d11/cGDriver_ReShade.cpp
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp

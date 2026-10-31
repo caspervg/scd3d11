@@ -103,6 +103,7 @@ namespace nSCD3D11 {
 	                       activeMatrixMode(0),
 	                       matrices{},
 	                       viewportCullActive(false),
+	                       viewportClamp(Settings::Get().viewportClamp),
 	                       clipRowsDirty(true),
 	                       clipRows{},
 	                       viewportCullBounds{},
@@ -214,15 +215,31 @@ namespace nSCD3D11 {
 			return;
 		}
 
+		UINT const depthStencilFlags = D3D11DepthStencilClearFlags(mask);
+		if ((ClearsColor(mask) && !renderTargetView) || (depthStencilFlags != 0 && !depthStencilView)) {
+			++drawDiagnostics.clearsWithoutView;
+		}
+		if (DrawStatsEnabled()) {
+			static uint32_t logged = 0;
+			if (logged < 40) {
+				++logged;
+				Log(LogCategory::Diag, "Clear(0x%X): colour %d depth/stencil 0x%X, render target %d, depth view %d, "
+				    "colour %.2f %.2f %.2f %.2f, depth %.3f, partial viewport %d", mask, ClearsColor(mask) ? 1 : 0,
+				    depthStencilFlags, renderTargetView ? 1 : 0, depthStencilView ? 1 : 0, clearColor[0],
+				    clearColor[1], clearColor[2], clearColor[3], clearDepth, scissorEnabled ? 1 : 0);
+			}
+		}
+
 		if (ClearsColor(mask) && renderTargetView) {
 			++frameStats.colorClears;
+			++drawDiagnostics.colorClears;
 			if (!viewportCullActive) ++frameStats.fullClears;
 			d3dContext->ClearRenderTargetView(renderTargetView.Get(), clearColor);
 			reshadeEffectsInBackBuffer = false;
 		}
 
-		UINT const depthStencilFlags = D3D11DepthStencilClearFlags(mask);
 		if (depthStencilFlags != 0 && depthStencilView) {
+			++drawDiagnostics.depthClears;
 			d3dContext->ClearDepthStencilView(depthStencilView.Get(), depthStencilFlags, clearDepth, clearStencil);
 			depthRegionScratchValid = false;
 		}

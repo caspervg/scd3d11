@@ -83,6 +83,20 @@ namespace nSCD3D11 {
 				case WM_ACTIVATEAPP:
 					Log(LogCategory::Window, "%p WM_ACTIVATEAPP %s (other thread %lu)%s", window,
 					    wParam ? "activated" : "deactivated", static_cast<unsigned long>(lParam), stale);
+					if (!wParam && DrawStatsEnabled()) {
+						// Who took the focus, for focus losses while a city loads.
+						HWND const foreground = GetForegroundWindow();
+						char title[128]{};
+						char kind[64]{};
+						if (foreground != nullptr) {
+							GetWindowTextA(foreground, title, sizeof(title));
+							GetClassNameA(foreground, kind, sizeof(kind));
+						}
+						DWORD process = 0;
+						if (foreground != nullptr) GetWindowThreadProcessId(foreground, &process);
+						Log(LogCategory::Diag, "focus went to %p '%s' (class %s, process %lu)", foreground, title, kind,
+						    static_cast<unsigned long>(process));
+					}
 					break;
 				case WM_ACTIVATE: {
 					WORD const state = LOWORD(wParam);

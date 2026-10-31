@@ -21,6 +21,7 @@
 #include <cIGZMessageServer2.h>
 #include <cRZMessage2Standard.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -573,6 +574,7 @@ namespace nSCD3D11 {
 			UpdateWindow(window);
 		}
 		StartRenderWatchdog(window);
+		DiagnoseWindowGeometry("after SetVideoMode");
 		SetLastError(DriverError::OK);
 	}
 
@@ -699,6 +701,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::SetViewport(void) {
+		++drawDiagnostics.viewportResets;
 		scissorEnabled = false;
 		viewportX = viewportY = 0;
 		viewportWidth = windowWidth;
@@ -715,12 +718,47 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::SetViewport(int32_t x, int32_t y, int32_t width, int32_t height) {
+		++drawDiagnostics.viewports;
+		bool const diagnose = DrawStatsEnabled();
 		// The scissor rectangle's right and bottom edges must stay representable.
-		if (x < 0 || y < 0 || width < 0 || height < 0 ||
-		    !RangeFits(static_cast<uint32_t>(x), static_cast<uint32_t>(width), INT32_MAX) ||
-		    !RangeFits(static_cast<uint32_t>(y), static_cast<uint32_t>(height), INT32_MAX)) {
-			SetLastError(DriverError::INVALID_VALUE);
-			return;
+		bool const representable = x >= 0 && y >= 0 && width >= 0 && height >= 0 &&
+		                           RangeFits(static_cast<uint32_t>(x), static_cast<uint32_t>(width), INT32_MAX) &&
+		                           RangeFits(static_cast<uint32_t>(y), static_cast<uint32_t>(height), INT32_MAX);
+		bool clamped = false;
+		if (!representable) {
+			if (!viewportClamp) {
+				++drawDiagnostics.viewportRejects;
+				static uint32_t loggedRejects = 0;
+				if (diagnose && loggedRejects < 50) {
+					++loggedRejects;
+					Log(LogCategory::Diag,
+					    "SetViewport(%d, %d, %d, %d) refused (window %dx%d), %s viewport %d,%d %dx%d stays", x, y,
+					    width, height, windowWidth, windowHeight, scissorEnabled ? "the partial" : "the full",
+					    viewportX, viewportY, viewportWidth, viewportHeight);
+				}
+				SetLastError(DriverError::INVALID_VALUE);
+				return;
+			}
+			// ViewportClamp: as scvk does. A rectangle with no area is the whole window, any other keeps its
+			// projection and is scissored to the part inside the window.
+			++drawDiagnostics.viewportClamps;
+			static uint32_t loggedClamps = 0;
+			if (diagnose && loggedClamps < 50) {
+				++loggedClamps;
+				Log(LogCategory::Diag, "SetViewport(%d, %d, %d, %d) clamped (window %dx%d)%s", x, y, width, height,
+				    windowWidth, windowHeight, width <= 0 || height <= 0 ? ": the whole window" : "");
+			}
+			if (width <= 0 || height <= 0) {
+				SetViewport();
+				return;
+			}
+			clamped = true;
+		}
+		static uint32_t loggedCalls = 0;
+		if (diagnose && loggedCalls < 40) {
+			++loggedCalls;
+			Log(LogCategory::Diag, "SetViewport(%d, %d, %d, %d): top %lld in a %dx%d window", x, y, width, height,
+			    static_cast<long long>(windowHeight) - y - height, windowWidth, windowHeight);
 		}
 		scissorEnabled = true;
 		viewportX = x;
@@ -735,7 +773,36 @@ namespace nSCD3D11 {
 		frameStats.viewport[3] = height;
 		frameStats.viewportPixels += static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
 
-		if (d3dContext) {
+		if (d3dContext && clamped) {
+			// Viewport origins may lie outside the target within D3D11's bounds. The scissor is cut to the
+			// window, and is empty when nothing of the rectangle is inside it.
+			int64_t const viewportSize = D3D11_VIEWPORT_BOUNDS_MAX;
+			int64_t const clampedWidth = (std::min)(static_cast<int64_t>(width), viewportSize);
+			int64_t const clampedHeight = (std::min)(static_cast<int64_t>(height), viewportSize);
+			int64_t const top = static_cast<int64_t>(windowHeight) - y - height;
+			auto const origin = [](int64_t value, int64_t size) {
+				return (std::max)(static_cast<int64_t>(D3D11_VIEWPORT_BOUNDS_MIN),
+				                  (std::min)(value, static_cast<int64_t>(D3D11_VIEWPORT_BOUNDS_MAX) - size));
+			};
+			D3D11_VIEWPORT viewport{};
+			viewport.TopLeftX = static_cast<float>(origin(x, clampedWidth));
+			viewport.TopLeftY = static_cast<float>(origin(top, clampedHeight));
+			viewport.Width = static_cast<float>(clampedWidth);
+			viewport.Height = static_cast<float>(clampedHeight);
+			viewport.MinDepth = 0.0f;
+			viewport.MaxDepth = 1.0f;
+			d3dContext->RSSetViewports(1, &viewport);
+			int64_t const left = (std::max)(static_cast<int64_t>(x), int64_t{0});
+			int64_t const upper = (std::max)(top, int64_t{0});
+			int64_t const right = (std::min)(static_cast<int64_t>(x) + width, static_cast<int64_t>(windowWidth));
+			int64_t const lower = (std::min)(top + height, static_cast<int64_t>(windowHeight));
+			D3D11_RECT scissor{};
+			if (right > left && lower > upper) {
+				scissor = D3D11_RECT{static_cast<LONG>(left), static_cast<LONG>(upper), static_cast<LONG>(right),
+				                     static_cast<LONG>(lower)};
+			}
+			d3dContext->RSSetScissorRects(1, &scissor);
+		} else if (d3dContext) {
 			int32_t const top = D3D11TopLeftY(windowHeight, y, height);
 			D3D11_VIEWPORT viewport{};
 			viewport.TopLeftX = static_cast<float>(x);

@@ -83,10 +83,15 @@ namespace nSCD3D11 {
 	uint32_t cGDriver::NewBufferRegion(int32_t type) {
 		int const index = FindFreeBufferRegionIndex();
 		if (index < 0 || type < 0 || type > 1) {
+			if (DrawStatsEnabled()) Log(LogCategory::Diag, "NewBufferRegion(%d) refused: %s", type, index < 0 ? "no free region" : "unknown type");
 			SetLastError(type < 0 || type > 1 ? DriverError::INVALID_ENUM : DriverError::OUT_OF_RANGE);
 			return 0;
 		}
 		HRESULT const result = CreateBufferRegionResource(static_cast<uint32_t>(index), type);
+		if (DrawStatsEnabled()) {
+			Log(LogCategory::Diag, "NewBufferRegion(%s): %s, region %d at %dx%d", type == 0 ? "colour" : "depth",
+			    FAILED(result) ? "failed" : "created", index + 1, windowWidth, windowHeight);
+		}
 		if (FAILED(result)) {
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return 0;
@@ -101,6 +106,7 @@ namespace nSCD3D11 {
 			return false;
 		}
 		uint32_t const index = static_cast<uint32_t>(region - 1);
+		if (DrawStatsEnabled()) Log(LogCategory::Diag, "DeleteBufferRegion(%d)", region);
 		bufferRegions[index].texture.Reset();
 		bufferRegionFlags &= static_cast<uint8_t>(~(1u << index));
 		return true;
@@ -113,17 +119,26 @@ namespace nSCD3D11 {
 		    sourceX < 0 || sourceY < 0 ||
 		    !RangeFits(destinationX, width, windowWidth) || !RangeFits(destinationY, height, windowHeight) ||
 		    !RangeFits(sourceX, width, windowWidth) || !RangeFits(sourceY, height, windowHeight)) {
-			static bool logged = false;
-			if (!logged) {
-				Log(LogCategory::Unsupported, "ReadBufferRegion rejected: region %u dst %d,%d src %d,%d %dx%d window %dx%d",
-				    region, destinationX, destinationY, sourceX, sourceY, width, height, windowWidth, windowHeight);
-				logged = true;
+			++drawDiagnostics.regionRejects;
+			static uint32_t logged = 0;
+			if (logged == 0 || (DrawStatsEnabled() && logged < 50)) {
+				++logged;
+				Log(LogCategory::Unsupported, "ReadBufferRegion rejected: region %u (%s) dst %d,%d src %d,%d %dx%d window %dx%d",
+				    region, IsBufferRegion(region) ? "exists" : "unknown", destinationX, destinationY, sourceX, sourceY,
+				    width, height, windowWidth, windowHeight);
 			}
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
 
 		++frameStats.regionReads;
+		++drawDiagnostics.regionReads;
+		static uint32_t loggedReads = 0;
+		if (DrawStatsEnabled() && loggedReads < 30) {
+			++loggedReads;
+			Log(LogCategory::Diag, "ReadBufferRegion(%u, dst %d,%d, %dx%d, src %d,%d) in a %dx%d window", region,
+			    destinationX, destinationY, width, height, sourceX, sourceY, windowWidth, windowHeight);
+		}
 		if (sourceX != destinationX || sourceY != destinationY) {
 			++frameStats.offsetCopies;
 			frameStats.offsetX = destinationX - sourceX;
@@ -167,17 +182,26 @@ namespace nSCD3D11 {
 		    sourceX < 0 || sourceY < 0 ||
 		    !RangeFits(destinationX, width, windowWidth) || !RangeFits(destinationY, height, windowHeight) ||
 		    !RangeFits(sourceX, width, windowWidth) || !RangeFits(sourceY, height, windowHeight)) {
-			static bool logged = false;
-			if (!logged) {
-				Log(LogCategory::Unsupported, "DrawBufferRegion rejected: region %u src %d,%d dst %d,%d %dx%d window %dx%d",
-				    region, sourceX, sourceY, destinationX, destinationY, width, height, windowWidth, windowHeight);
-				logged = true;
+			++drawDiagnostics.regionRejects;
+			static uint32_t logged = 0;
+			if (logged == 0 || (DrawStatsEnabled() && logged < 50)) {
+				++logged;
+				Log(LogCategory::Unsupported, "DrawBufferRegion rejected: region %u (%s) src %d,%d dst %d,%d %dx%d window %dx%d",
+				    region, IsBufferRegion(region) ? "exists" : "unknown", sourceX, sourceY, destinationX, destinationY,
+				    width, height, windowWidth, windowHeight);
 			}
 			SetLastError(DriverError::INVALID_VALUE);
 			return false;
 		}
 
 		++frameStats.regionDraws;
+		++drawDiagnostics.regionDraws;
+		static uint32_t loggedDraws = 0;
+		if (DrawStatsEnabled() && loggedDraws < 30) {
+			++loggedDraws;
+			Log(LogCategory::Diag, "DrawBufferRegion(%u, src %d,%d, %dx%d, dst %d,%d) in a %dx%d window", region,
+			    sourceX, sourceY, width, height, destinationX, destinationY, windowWidth, windowHeight);
+		}
 		if (sourceX != destinationX || sourceY != destinationY) {
 			++frameStats.offsetCopies;
 			frameStats.offsetX = destinationX - sourceX;

@@ -40,6 +40,9 @@ namespace nSCD3D11::Settings {
 		bool flipModel = true;
 		GpuChoice gpu;
 		bool viewportCull = true;
+		// ViewportClamp=on: take SetViewport rectangles that reach past the window or have no area the way
+		// scvk does (clamped scissor, full window for an empty one) instead of refusing them.
+		bool viewportClamp = false;
 		bool reshade = true;
 		bool drawStats = false;
 		// LogLevel=trace.

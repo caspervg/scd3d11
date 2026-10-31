@@ -338,6 +338,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		d3dContext->PSSetSamplers(0, 1, &sampler);
 		d3dContext->PSSetConstantBuffers(0, 1, &constantBuffer);
 		d3dContext->Draw(4, 0);
+		++drawDiagnostics.blits;
 
 		if (viewportCount == 1) d3dContext->RSSetViewports(1, &savedViewport);
 		// Every binding above belongs to the geometry pipeline's caches. Force it to rebind.

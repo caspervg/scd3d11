@@ -469,6 +469,8 @@ namespace nSCD3D11 {
 		// Viewport cull (ViewportCull.h). Only active while a scissored viewport covers under 90% of the
 		// window, so ordinary draws pay a single branch. The clip rows follow LoadMatrix lazily.
 		bool viewportCullActive;
+		// ViewportClamp, read once so the tests can turn it on.
+		bool viewportClamp;
 		bool clipRowsDirty;
 		ClipRows clipRows;
 		ClipBounds viewportCullBounds;
@@ -539,6 +541,33 @@ namespace nSCD3D11 {
 			// Static passes whose gather culled under another projection than the pass composited with.
 			uint32_t shadowProjectionMismatches = 0;
 		} frameStats;
+		// Never reset, so cGDriver_DrawDiagnostics.cpp can report what happened between two points inside
+		// one cSC43DRender::Draw. Counted always, logged with DrawStats.
+		struct DrawDiagnosticCounts {
+			// Geometry draw calls from SC4, those the viewport cull skipped, those that reached the GPU, and
+			// those BindGeometryPipeline refused. The rest were dropped before binding (arguments, uploads).
+			uint64_t received = 0;
+			uint64_t culled = 0;
+			uint64_t issued = 0;
+			uint64_t bindFailures = 0;
+			uint64_t colorClears = 0;
+			uint64_t depthClears = 0;
+			// Clears that found no render target or depth view to clear.
+			uint64_t clearsWithoutView = 0;
+			uint64_t viewports = 0;
+			uint64_t viewportRejects = 0;
+			uint64_t viewportClamps = 0;
+			uint64_t viewportResets = 0;
+			uint64_t regionReads = 0;
+			uint64_t regionDraws = 0;
+			uint64_t regionRejects = 0;
+			uint64_t blits = 0;
+		} drawDiagnostics;
+		// The counts when the last report was written, and when the current cSC43DRender::Draw began.
+		DrawDiagnosticCounts drawDiagnosticsMark;
+		DrawDiagnosticCounts drawDiagnosticsAtDraw;
+		uint32_t diagnosedDraws = 0;
+		uint32_t diagnosedStaticPasses = 0;
 		LARGE_INTEGER lastFrameTime{};
 		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
 		float normalMatrix[16];
@@ -739,7 +768,10 @@ namespace nSCD3D11 {
 
 		bool UploadIndices(std::vector<uint32_t> const &indices);
 
+		// Binds the pipeline for a geometry draw. A false result means the draw is skipped. Counts both for
+		// the city-view diagnostics around BindGeometryPipelineState, which does the work.
 		bool BindGeometryPipeline(uint32_t primitive);
+		bool BindGeometryPipelineState(uint32_t primitive);
 
 		// The first vertex of the current vertex upload in its segment, which stays bound at offset 0.
 		UINT FirstVertex() const;
@@ -847,6 +879,16 @@ namespace nSCD3D11 {
 		uint32_t ConsumeLiveShadowCleanRedraw(void);
 		// DrawStats: DrawHook invalidated the backing store for these causes.
 		void CountForcedStaticRedraw(uint32_t causes);
+		// DrawStats: the city-view diagnostics. DrawHook calls the first before and the second after
+		// cSC43DRender::Draw, and DrawPostStaticViewHook calls the third after each static pass. render is
+		// the cSC43DRender.
+		void DiagnoseDrawBegin(void *render);
+		void DiagnoseDrawEnd(void *render, bool drawn);
+		void DiagnoseStaticPass(void *render);
+		// DrawStats: why BindGeometryPipeline refused a draw, for the first few.
+		void DiagnoseBindFailure(uint32_t primitive);
+		// DrawStats: the window, its client area and DPI as SC4 sees them, logged once a video mode is set.
+		void DiagnoseWindowGeometry(char const *when);
 
 		cGDriver();
 

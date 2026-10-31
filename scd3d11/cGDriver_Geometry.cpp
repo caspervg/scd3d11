@@ -793,6 +793,16 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	bool cGDriver::BindGeometryPipeline(uint32_t primitive) {
+		if (BindGeometryPipelineState(primitive)) {
+			++drawDiagnostics.issued;
+			return true;
+		}
+		++drawDiagnostics.bindFailures;
+		DiagnoseBindFailure(primitive);
+		return false;
+	}
+
+	bool cGDriver::BindGeometryPipelineState(uint32_t primitive) {
 		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
 		if (!IsDeviceReady() || deviceLost || !vertexShader || !pixelShader || !flatPixelShader || !inputLayout ||
 		    !stateConstantBuffer || !drawConstantBuffer || !dynamicVertexBuffer ||
@@ -987,6 +997,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		if (!AllVerticesOutside(clipRows, viewportCullBounds, positions, stride, count)) return false;
 		++frameStats.culledDraws;
+		++drawDiagnostics.culled;
 		return true;
 	}
 
@@ -1004,6 +1015,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	void cGDriver::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
 		++frameStats.draws;
+		++drawDiagnostics.received;
 		if (first < 0 || count <= 0) return;
 		// A culled draw skips the upload and the draw, but live shadows still see it below.
 		bool const culled = viewportCullActive &&
@@ -1088,6 +1100,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
 		++frameStats.draws;
+		++drawDiagnostics.received;
 		if (count == 0) return;
 		if (count < 0 || indices == nullptr || (type != 3 && type != 5)) {
 			Log(LogCategory::Unsupported, "invalid indexed draw type %u count %d pointer %p", type, count, indices);

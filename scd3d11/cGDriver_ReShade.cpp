@@ -96,6 +96,8 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		}
 
 		bool __fastcall DrawHook(void *self, void *edx) {
+			// SC4's own state, before the live shadow code below may invalidate the backing store.
+			if (gDriver != nullptr) gDriver->DiagnoseDrawBegin(self);
 			// A scroll (AttemptTranslatedViewUpdate) shifts the backing store and
 			// redraws only the exposed strips. With ShadowRegistry every caster that
 			// reaches them is known, so scrolling keeps that fast path. Without it,
@@ -163,6 +165,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				static_cast<uint8_t *>(self)[0x65] = 0; // cSC43DRender::mbBackingStoreValid
 			}
 			bool const drawn = gOriginalDraw(self, edx);
+			if (gDriver != nullptr) gDriver->DiagnoseDrawEnd(self, drawn);
 			if (drawn && gDriver != nullptr) gDriver->RenderSceneEffects();
 			return drawn;
 		}
@@ -180,6 +183,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 
 		void __fastcall DrawPostStaticViewHook(void *self, void *edx) {
 			DrawPostStaticViewOriginal(self, edx);
+			if (gDriver != nullptr) gDriver->DiagnoseStaticPass(self);
 			if (gDriver != nullptr) gDriver->RenderLivePropShadows(true);
 		}
 #endif

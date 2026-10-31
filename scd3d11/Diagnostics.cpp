@@ -24,12 +24,12 @@ namespace nSCD3D11
 	namespace
 	{
 		// Window and swap chain events repeat on every focus change, so they get a larger budget.
-		constexpr unsigned int kMessagesPerCategory[] = { 128, 128, 1024, 128, 128, 128, 1024, 1u << 20, 1024 };
+		constexpr unsigned int kMessagesPerCategory[] = { 128, 128, 1024, 128, 128, 128, 1024, 1u << 20, 1024, 4096 };
 		std::atomic<unsigned int> messageCounts[static_cast<unsigned int>(LogCategory::Count)]{};
 		std::unordered_set<uint64_t> observed[static_cast<unsigned int>(ObservedCategory::Count)];
 
 		char const* CategoryName(LogCategory category) {
-			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported", "window", "stats", "doctor" };
+			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported", "window", "stats", "doctor", "diag" };
 			return names[static_cast<unsigned int>(category)];
 		}
 
