@@ -233,6 +233,9 @@ namespace nSCD3D12 {
 		bool RestoreStaticView(int32_t dx, int32_t dy);
 		void DropStaticView();
 		bool Relighting() const;
+		// Textures made since the start, how many of them were recycled ones, the bytes placed in texture heaps and
+		// the bytes of recycled textures waiting for another use.
+		void TextureCounts(uint64_t &made, uint64_t &recycled, uint64_t &placed, uint64_t &waiting) const;
 		// The camera the kept draws were drawn with, for relighting: a view that only turns about world up and
 		// tilts, and the full window's projection. Without it the lighting pass learns the camera from the
 		// game's static draws, which the owned scene keeps from the driver.

@@ -179,7 +179,14 @@ namespace nSCD3D12 {
 				            static_cast<double>(now - reportStart) / 1000.0,
 				            static_cast<double>(cpu - reportCpu) / 1.0e4 / reportFrames,
 				            gpuFrames != 0 ? gpu / gpuFrames : 0.0);
-				if (++reports % 10 == 0) PrintTotals();
+				if (++reports % 10 == 0) {
+					uint64_t made = 0, reused = 0, heapBytes = 0, recycledBytes = 0;
+					driver.TextureCounts(made, reused, heapBytes, recycledBytes);
+					std::printf("textures: %llu made, %llu of them recycled; %.0f MB placed in heaps, %.0f MB waiting to be "
+					            "used again\n", static_cast<unsigned long long>(made), static_cast<unsigned long long>(reused),
+					            static_cast<double>(heapBytes) / (1 << 20), static_cast<double>(recycledBytes) / (1 << 20));
+					PrintTotals();
+				}
 				std::fflush(stdout);
 				reportStart = now;
 				reportCpu = cpu;

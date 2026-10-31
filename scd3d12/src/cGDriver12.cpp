@@ -894,6 +894,23 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		std::vector<TextureHeap> textureHeaps;
 		std::unordered_map<ID3D12Resource *, TextureBlock> placedTextures;
 		uint64_t placedBytes = 0, placedCount = 0;
+		// Placed textures nothing uses any more, kept whole for the next texture of the same format, size and mip
+		// count: SC4 drops and makes textures of a few sizes over and over, and taking one back costs neither a
+		// creation nor a destruction. Up to kRecycleBytes of them, in the state they were left in.
+		static constexpr uint64_t kRecycleBytes = 1ull << 30;
+		struct Recycled {
+			ComPtr<ID3D12Resource> resource;
+			D3D12_RESOURCE_STATES state;
+		};
+		std::unordered_map<uint64_t, std::vector<Recycled> > recycled;
+		uint64_t recycledBytes = 0, recycledTaken = 0, texturesMade = 0;
+		// The state each texture was retired in, until its last reference goes (ReleasePlaced).
+		std::unordered_map<ID3D12Resource *, D3D12_RESOURCE_STATES> retiredStates;
+
+		static uint64_t RecycleKey(D3D12_RESOURCE_DESC const &description) {
+			return static_cast<uint64_t>(description.Format) | static_cast<uint64_t>(description.Width) << 8 |
+			       static_cast<uint64_t>(description.Height) << 24 | static_cast<uint64_t>(description.MipLevels) << 40;
+		}
 		ComPtr<ID3D12CommandQueue> queue;
 		ComPtr<ID3D12GraphicsCommandList> list;
 		ComPtr<ID3D12Fence> fence;
@@ -1434,6 +1451,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			}
 			if (texture.view != 0) frames[frameIndex].freedViews.push_back(texture.view);
 			texture.view = 0;
+			if (texture.resource && placedTextures.count(texture.resource.Get()) != 0) {
+				retiredStates[texture.resource.Get()] = texture.state;
+			}
 			Retire(texture.resource);
 		}
 
@@ -1516,6 +1536,20 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		void ReleasePlaced(ComPtr<ID3D12Resource> &resource) {
 			if (!resource) return;
 			auto const found = placedTextures.find(resource.Get());
+			if (found != placedTextures.end()) {
+				// The only reference left is this one: nothing (a pin) still draws with it.
+				resource->AddRef();
+				bool const last = resource->Release() == 1;
+				auto const state = retiredStates.find(resource.Get());
+				if (last && state != retiredStates.end() && recycledBytes + (1ull << found->second.order) <= kRecycleBytes) {
+					D3D12_RESOURCE_STATES const left = state->second;
+					retiredStates.erase(state);
+					recycledBytes += 1ull << found->second.order;
+					recycled[RecycleKey(resource->GetDesc())].push_back({std::move(resource), left});
+					return;
+				}
+				if (last && state != retiredStates.end()) retiredStates.erase(state);
+			}
 			ID3D12Resource *const raw = resource.Detach();
 			if (raw->Release() != 0 || found == placedTextures.end()) return;
 			placedBytes -= 1ull << found->second.order;
@@ -1541,18 +1575,27 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
 			D3D12_RESOURCE_DESC const description = TextureDescription(format, width, height, levels);
 			ComPtr<ID3D12Resource> resource;
-			if (!CreatePlacedTexture(description, resource) &&
-			    FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
-			                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-			                                           IID_PPV_ARGS(&resource)))) {
+			D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+			auto const reuse = recycled.find(RecycleKey(description));
+			if (reuse != recycled.end() && !reuse->second.empty()) {
+				resource = std::move(reuse->second.back().resource);
+				state = reuse->second.back().state;
+				reuse->second.pop_back();
+				recycledBytes -= 1ull << placedTextures[resource.Get()].order;
+				++recycledTaken;
+			} else if (!CreatePlacedTexture(description, resource) &&
+			           FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+			                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+			                                                  IID_PPV_ARGS(&resource)))) {
 				return false;
 			}
+			++texturesMade;
 			uint32_t const view = CreateView(resource.Get(), format, levels);
 			if (view == 0) return false;
 			ReleaseTexture(texture);
 			texture.resource = std::move(resource);
 			texture.view = view;
-			texture.state = D3D12_RESOURCE_STATE_COPY_DEST;
+			texture.state = state;
 			texture.format = format;
 			texture.width = width;
 			texture.height = height;
@@ -4321,6 +4364,13 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	void cGDriver12::DropStaticView() { impl->staticValid = false; }
 
 	bool cGDriver12::Relighting() const { return impl->relight; }
+
+	void cGDriver12::TextureCounts(uint64_t &made, uint64_t &recycled, uint64_t &placed, uint64_t &waiting) const {
+		made = impl->texturesMade;
+		recycled = impl->recycledTaken;
+		placed = impl->placedBytes;
+		waiting = impl->recycledBytes;
+	}
 
 	void cGDriver12::RetainedCamera(float const *view, float const *projection) {
 		Impl &d = *impl;
