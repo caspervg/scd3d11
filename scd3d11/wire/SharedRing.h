@@ -10,10 +10,14 @@
 
 #pragma once
 
+#include "WireStream.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -79,6 +83,7 @@ namespace nSCDWire {
 		bool Open(std::wstring const &name);
 
 		RingControl *Control() const { return control; }
+		uint8_t const *Data() const { return bytes; }
 		// Set by the server when a frame is ready. A Direct3D 11 fence does not wake its own waiters for
 		// signals from another process, so the server's Direct3D 12 fence sets this one instead.
 		HANDLE FrameEvent() const { return frameEvent; }
@@ -87,6 +92,15 @@ namespace nSCDWire {
 		// ends the wait. False when the reader is gone.
 		bool Write(void const *data, size_t size, std::function<bool()> const &alive);
 		void Close();
+
+		// Writer, in place: positions count ring bytes from the first ever written. Bytes past `written` are the
+		// writer's until Publish hands them over, so they can be read back and overwritten.
+		// Free bytes in one piece from at, waiting for the reader. Null when alive returns false while waiting,
+		// or when at lies a whole ring past `written`, which no reading can make room for.
+		uint8_t *WriteSpan(uint64_t at, size_t &length, std::function<bool()> const &alive);
+		void CopyOut(uint64_t at, void *data, size_t size) const;
+		void CopyIn(uint64_t at, void const *data, size_t size);
+		void Publish(uint64_t end);
 
 		// Reader. Fills exactly size bytes, waiting for the writer. False when the writer closed the
 		// stream, or when alive returns false while waiting.
@@ -102,5 +116,28 @@ namespace nSCDWire {
 		// The reader takes bytes out in chunks, so it signals the writer once per chunk.
 		std::vector<uint8_t> chunk;
 		size_t chunkOffset = 0;
+	};
+
+	// A Writer's output written straight into the ring. With a file, what is published is also appended to it
+	// (Record= while the server draws).
+	class RingOutput final : public Output {
+	public:
+		// alive says whether the reader still reads. failed is called once when the stream cannot go on.
+		RingOutput(SharedRing &ring, std::function<bool()> alive, std::function<void()> failed,
+		           std::shared_ptr<std::FILE> file = nullptr);
+		uint8_t *Span(uint64_t at, size_t &length) override;
+		void Read(uint64_t at, void *data, size_t size) const override;
+		void Overwrite(uint64_t at, void const *data, size_t size) override;
+		bool Publish(uint64_t end) override;
+
+	private:
+		bool Fail();
+
+		SharedRing &ring;
+		std::function<bool()> alive;
+		std::function<void()> failed;
+		std::shared_ptr<std::FILE> file;
+		// The ring's position of the stream's first byte.
+		uint64_t origin;
 	};
 }

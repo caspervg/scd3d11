@@ -78,6 +78,97 @@ namespace nSCDWire {
 		return true;
 	}
 
+	uint8_t *SharedRing::WriteSpan(uint64_t at, size_t &length, std::function<bool()> const &alive) {
+		uint64_t const capacity = control->capacity;
+		// The reader cannot read what is not published, so a record a whole ring long never finds room.
+		if (at - control->written.load(std::memory_order_relaxed) >= capacity) return nullptr;
+		for (;;) {
+			uint64_t const free = capacity - (at - control->read.load(std::memory_order_acquire));
+			if (free != 0) {
+				uint64_t const offset = at % capacity;
+				length = static_cast<size_t>((std::min)(free, capacity - offset));
+				return bytes + offset;
+			}
+			SetEvent(dataEvent);
+			if (WaitForSingleObject(spaceEvent, kWaitSliceMs) == WAIT_TIMEOUT && !alive()) return nullptr;
+		}
+	}
+
+	void SharedRing::CopyOut(uint64_t at, void *data, size_t size) const {
+		uint64_t const capacity = control->capacity;
+		uint8_t *target = static_cast<uint8_t *>(data);
+		while (size != 0) {
+			uint64_t const offset = at % capacity;
+			size_t const count = static_cast<size_t>((std::min)(static_cast<uint64_t>(size), capacity - offset));
+			std::memcpy(target, bytes + offset, count);
+			target += count;
+			at += count;
+			size -= count;
+		}
+	}
+
+	void SharedRing::CopyIn(uint64_t at, void const *data, size_t size) {
+		uint64_t const capacity = control->capacity;
+		uint8_t const *source = static_cast<uint8_t const *>(data);
+		while (size != 0) {
+			uint64_t const offset = at % capacity;
+			size_t const count = static_cast<size_t>((std::min)(static_cast<uint64_t>(size), capacity - offset));
+			std::memcpy(bytes + offset, source, count);
+			source += count;
+			at += count;
+			size -= count;
+		}
+	}
+
+	void SharedRing::Publish(uint64_t end) {
+		control->written.store(end, std::memory_order_release);
+		SetEvent(dataEvent);
+	}
+
+	RingOutput::RingOutput(SharedRing &ring, std::function<bool()> alive, std::function<void()> failed,
+	                       std::shared_ptr<std::FILE> file)
+		: ring(ring), alive(std::move(alive)), failed(std::move(failed)), file(std::move(file)),
+		  origin(ring.Control()->written.load(std::memory_order_relaxed)) {}
+
+	bool RingOutput::Fail() {
+		if (failed) {
+			auto const call = std::move(failed);
+			failed = nullptr;
+			call();
+		}
+		return false;
+	}
+
+	uint8_t *RingOutput::Span(uint64_t at, size_t &length) {
+		uint8_t *const span = alive() ? ring.WriteSpan(origin + at, length, alive) : nullptr;
+		if (span == nullptr) Fail();
+		return span;
+	}
+
+	void RingOutput::Read(uint64_t at, void *data, size_t size) const { ring.CopyOut(origin + at, data, size); }
+
+	void RingOutput::Overwrite(uint64_t at, void const *data, size_t size) { ring.CopyIn(origin + at, data, size); }
+
+	bool RingOutput::Publish(uint64_t end) {
+		if (!alive()) return Fail();
+		uint64_t const from = ring.Control()->written.load(std::memory_order_relaxed);
+		uint64_t const to = origin + end;
+		if (file != nullptr) {
+			// From the ring, before the reader can free those bytes for the next ones (only this side writes).
+			uint64_t const capacity = ring.Control()->capacity;
+			bool ok = true;
+			for (uint64_t at = from; at < to && ok;) {
+				uint64_t const offset = at % capacity;
+				size_t const count = static_cast<size_t>((std::min)(to - at, capacity - offset));
+				ok = std::fwrite(ring.Data() + offset, 1, count, file.get()) == count;
+				at += count;
+			}
+			if (!ok || std::fflush(file.get()) != 0) return Fail();
+		}
+		ring.Publish(to);
+		return true;
+	}
+
 	void SharedRing::Close() {
 		control->closed.store(1, std::memory_order_release);
 		SetEvent(dataEvent);

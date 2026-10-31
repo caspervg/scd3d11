@@ -10,6 +10,8 @@
 
 #include "WireStream.h"
 
+#include <algorithm>
+
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
@@ -19,21 +21,70 @@ namespace nSCDWire {
 		return BlobKey{hash.low64, hash.high64, size};
 	}
 
-	Writer::Writer(Sink sink, uint64_t blobBudget) : sink(std::move(sink)), blobBudget(blobBudget) {
+	namespace {
+		constexpr uint64_t kPublishBytes = 8u << 20;
+	}
+
+	uint8_t *SinkOutput::Span(uint64_t at, size_t &length) {
+		size_t const offset = static_cast<size_t>(at - base);
+		if (offset >= buffer.size()) buffer.resize((std::max)(buffer.size() * 2, offset + (1u << 20)));
+		length = buffer.size() - offset;
+		return buffer.data() + offset;
+	}
+
+	void SinkOutput::Read(uint64_t at, void *data, size_t size) const {
+		std::memcpy(data, buffer.data() + (at - base), size);
+	}
+
+	void SinkOutput::Overwrite(uint64_t at, void const *data, size_t size) {
+		std::memcpy(buffer.data() + (at - base), data, size);
+	}
+
+	bool SinkOutput::Publish(uint64_t end) {
+		// The writer publishes up to where it writes, so nothing stays behind.
+		size_t const size = static_cast<size_t>(end - base);
+		base = end;
+		return sink(buffer.data(), size);
+	}
+
+	Writer::Writer(std::unique_ptr<Output> output, uint64_t blobBudget)
+		: output(std::move(output)), blobBudget(blobBudget) {
 		StreamHeader const header{};
-		pending.insert(pending.end(), reinterpret_cast<uint8_t const *>(&header),
-		               reinterpret_cast<uint8_t const *>(&header) + sizeof(header));
+		Put(header);
+	}
+
+	void Writer::Write(void const *data, size_t size) {
+		uint8_t const *bytes = static_cast<uint8_t const *>(data);
+		while (size != 0 && !failed) {
+			if (spanLeft == 0) {
+				span = output->Span(cursor, spanLeft);
+				if (span == nullptr) {
+					failed = true;
+					spanLeft = 0;
+					return;
+				}
+			}
+			size_t const count = (std::min)(size, spanLeft);
+			std::memcpy(span, bytes, count);
+			span += count;
+			spanLeft -= count;
+			cursor += count;
+			bytes += count;
+			size -= count;
+		}
+	}
+
+	void Writer::Seek(uint64_t position) {
+		cursor = position;
+		span = nullptr;
+		spanLeft = 0;
 	}
 
 	void Writer::Begin(Op op) {
 		current = op;
-		record.clear();
-	}
-
-	void Writer::PutBytes(void const *data, size_t size) {
-		if (size == 0) return;
-		uint8_t const *bytes = static_cast<uint8_t const *>(data);
-		record.insert(record.end(), bytes, bytes + size);
+		recordStart = cursor;
+		// The size is filled in by End.
+		Put(RecordHeader{static_cast<uint16_t>(op), 0, 0});
 	}
 
 	void Writer::PutBlob(void const *data, uint32_t size) {
@@ -42,7 +93,11 @@ namespace nSCDWire {
 			auto const found = blobs.find(key);
 			if (found != blobs.end()) {
 				blobOrder.splice(blobOrder.end(), blobOrder, found->second);
-			} else {
+			} else if (!failed) {
+				// The blob's record goes in front of the open one, whose bytes so far move behind it.
+				moved.resize(static_cast<size_t>(cursor - recordStart));
+				output->Read(recordStart, moved.data(), moved.size());
+				Seek(recordStart);
 				// Make room first. Blobs this record already uses were just moved to the back, so they go last.
 				while (blobBytesHeld + size > blobBudget && !blobOrder.empty()) {
 					BlobKey const victim = blobOrder.front();
@@ -51,14 +106,12 @@ namespace nSCDWire {
 					blobBytesHeld -= victim.size;
 					Append(Op::ForgetBlob, &victim, sizeof(victim));
 				}
-				RecordHeader const header{static_cast<uint16_t>(Op::Blob), 0, static_cast<uint32_t>(sizeof(key) + size)};
-				uint8_t const *head = reinterpret_cast<uint8_t const *>(&header);
-				uint8_t const *keyBytes = reinterpret_cast<uint8_t const *>(&key);
-				uint8_t const *bytes = static_cast<uint8_t const *>(data);
-				pending.insert(pending.end(), head, head + sizeof(header));
-				pending.insert(pending.end(), keyBytes, keyBytes + sizeof(key));
-				pending.insert(pending.end(), bytes, bytes + size);
-				if (pending.size() >= (8u << 20)) Flush();
+				Put(RecordHeader{static_cast<uint16_t>(Op::Blob), 0, static_cast<uint32_t>(sizeof(key) + size)});
+				Put(key);
+				PutBytes(data, size);
+				PublishIfLarge();
+				recordStart = cursor;
+				PutBytes(moved.data(), moved.size());
 				blobs.emplace(key, blobOrder.insert(blobOrder.end(), key));
 				blobBytesHeld += size;
 				blobBytesSent += size;
@@ -68,25 +121,31 @@ namespace nSCDWire {
 	}
 
 	void Writer::End() {
-		Append(current, record.data(), record.size());
+		if (!failed) {
+			RecordHeader const header{static_cast<uint16_t>(current), 0,
+			                          static_cast<uint32_t>(cursor - recordStart - sizeof(RecordHeader))};
+			output->Overwrite(recordStart, &header, sizeof(header));
+		}
 		current = Op::Count;
+		PublishIfLarge();
 	}
 
 	void Writer::Append(Op op, void const *data, size_t size) {
-		RecordHeader const header{static_cast<uint16_t>(op), 0, static_cast<uint32_t>(size)};
-		uint8_t const *head = reinterpret_cast<uint8_t const *>(&header);
-		pending.insert(pending.end(), head, head + sizeof(header));
-		uint8_t const *bytes = static_cast<uint8_t const *>(data);
-		if (size != 0) pending.insert(pending.end(), bytes, bytes + size);
-		// Large uploads go out at once rather than piling up until the end of the frame.
-		if (pending.size() >= (8u << 20)) Flush();
+		Put(RecordHeader{static_cast<uint16_t>(op), 0, static_cast<uint32_t>(size)});
+		PutBytes(data, size);
+	}
+
+	void Writer::PublishIfLarge() {
+		if (cursor - published >= kPublishBytes) Flush();
 	}
 
 	bool Writer::Flush() {
-		if (pending.empty()) return !failed;
-		if (!failed && !sink(pending.data(), pending.size())) failed = true;
-		bytesWritten += pending.size();
-		pending.clear();
+		if (failed) return false;
+		if (cursor == published) return true;
+		if (!output->Publish(cursor)) failed = true;
+		published = cursor;
+		// The output may put the next bytes elsewhere.
+		Seek(cursor);
 		return !failed;
 	}
 

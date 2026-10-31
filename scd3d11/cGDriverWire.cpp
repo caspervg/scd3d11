@@ -53,8 +53,8 @@ namespace nSCD3D11 {
 		cGDriverWire *gCurrent = nullptr;
 	}
 
-	cGDriverWire::cGDriverWire(cGDriver *driver, nSCDWire::Writer::Sink sink)
-		: driver(driver), writer(std::move(sink)) {
+	cGDriverWire::cGDriverWire(cGDriver *driver, std::unique_ptr<nSCDWire::Output> output)
+		: driver(driver), writer(std::move(output)) {
 		driver->AddRef();
 		gCurrent = this;
 	}
@@ -808,14 +808,16 @@ namespace nSCD3D11 {
 		if (remote == nullptr && output == nullptr) return cGDriver::FactoryFunctionPtr2(riid, ppvObj);
 
 		auto *const driver = new cGDriver();
-		nSCDWire::Writer::Sink const toServer = remote != nullptr ? remote->Sink() : nSCDWire::Writer::Sink{};
-		if (remote != nullptr) driver->SetRemote(remote.get());
-		auto *const wire = new cGDriverWire(driver, [toServer, output](void const *data, size_t size) {
-			bool ok = true;
-			if (output != nullptr) ok = std::fwrite(data, 1, size, output.get()) == size && std::fflush(output.get()) == 0;
-			if (toServer) ok = toServer(data, size) && ok;
-			return ok;
-		});
+		std::unique_ptr<nSCDWire::Output> stream;
+		if (remote != nullptr) {
+			driver->SetRemote(remote.get());
+			stream = remote->MakeOutput(output);
+		} else {
+			stream = std::make_unique<nSCDWire::SinkOutput>([output](void const *data, size_t size) {
+				return std::fwrite(data, 1, size, output.get()) == size && std::fflush(output.get()) == 0;
+			});
+		}
+		auto *const wire = new cGDriverWire(driver, std::move(stream));
 		wire->remote = std::move(remote);
 		if (!wire->QueryInterface(riid, ppvObj)) {
 			delete wire;

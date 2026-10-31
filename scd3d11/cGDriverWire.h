@@ -33,7 +33,9 @@ namespace nSCD3D11 {
 			public cRZBaseUnknown {
 	public:
 		// Takes a reference on driver.
-		cGDriverWire(cGDriver *driver, nSCDWire::Writer::Sink sink);
+		cGDriverWire(cGDriver *driver, std::unique_ptr<nSCDWire::Output> output);
+		cGDriverWire(cGDriver *driver, nSCDWire::Writer::Sink sink)
+			: cGDriverWire(driver, std::make_unique<nSCDWire::SinkOutput>(std::move(sink))) {}
 		~cGDriverWire();
 
 		cGDriver &Inner() { return *driver; }

@@ -18,6 +18,8 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <memory>
 
 namespace nSCD3D11 {
 	// Renderer=server: SCD3D12Server.exe, next to SCD3D11.dll, draws the game in its own process. This side
@@ -33,8 +35,8 @@ namespace nSCD3D11 {
 		bool Active() const { return active; }
 		void Stop(char const *reason);
 
-		// Where cGDriverWire writes the stream.
-		nSCDWire::Writer::Sink Sink();
+		// Where cGDriverWire writes the stream: in place in the ring, and with file also into that file.
+		std::unique_ptr<nSCDWire::Output> MakeOutput(std::shared_ptr<std::FILE> file);
 		// The adapter SC4's device runs on. The server waits for it before creating its own device.
 		void SetAdapter(LUID adapter);
 

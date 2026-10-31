@@ -290,4 +290,7 @@ if (BUILD_TESTING)
     target_compile_definitions(WireTest PRIVATE SCD3D11_TESTING)
     target_link_libraries(WireTest PRIVATE d3d11 d3dcompiler dxgi dcomp version windowscodecs ole32 wininet advapi32)
     set_tests_properties(WireTest PROPERTIES SKIP_RETURN_CODE 77)
+
+    # The stream writer against a plain encoding of the format, through a buffer and a shared ring.
+    scd3d11_add_test(WireStreamTest tests/WireStreamTest.cpp scd3d11/wire/WireStream.cpp scd3d11/wire/SharedRing.cpp)
 endif ()

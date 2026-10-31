@@ -104,15 +104,10 @@ namespace nSCD3D11 {
 		return process != nullptr && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
 	}
 
-	nSCDWire::Writer::Sink RemoteRenderer::Sink() {
-		return [this](void const *data, size_t size) {
-			if (!active) return false;
-			if (!ring.Write(data, size, [this] { return ServerAlive(); })) {
-				Stop("the server stopped reading");
-				return false;
-			}
-			return true;
-		};
+	std::unique_ptr<nSCDWire::Output> RemoteRenderer::MakeOutput(std::shared_ptr<std::FILE> file) {
+		return std::make_unique<nSCDWire::RingOutput>(
+			ring, [this] { return active && ServerAlive(); }, [this] { Stop("the server stopped reading"); },
+			std::move(file));
 	}
 
 	void RemoteRenderer::SetAdapter(LUID adapter) {
