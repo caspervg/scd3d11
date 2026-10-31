@@ -1399,6 +1399,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		}
 
 		void ReleaseTexture(Texture &texture) {
+			++textureGeneration;
 			if (texture.resource && !pinOf.empty()) {
 				auto const pinned = pinOf.find(texture.resource.Get());
 				if (pinned != pinOf.end() && !pins[pinned->second - 1].orphan) {
@@ -1413,6 +1414,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		}
 
 		// cGDriver::CreateTextureResource
+		// Counts the times a texture name's image was made or let go, for TextureGeneration.
+		uint64_t textureGeneration = 1;
+
 		bool CreateTextureResource(Texture &texture, uint32_t internalFormat, uint32_t width, uint32_t height,
 		                           uint32_t levels) {
 			DXGI_FORMAT const format = D3D11TextureFormat(internalFormat);
@@ -4008,6 +4012,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 	}
 
 	bool cGDriver12::CaptureState(uint32_t format, CapturedState &state) { return impl->CaptureState(format, state); }
+
+	uint64_t cGDriver12::TextureGeneration() const { return impl->textureGeneration; }
 
 	uint32_t cGDriver12::PinTexture(uint32_t name) {
 		Impl &d = *impl;

@@ -1140,6 +1140,11 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		uint32_t drawOrdinal = 0;
 		// The open bracket's fresh triangles: terrain by cell, a grid drawable's as they come.
 		std::unordered_map<uint64_t, std::vector<Fresh> > freshCells;
+		// ToWorld's inverse of captureView, for the view in captureInverseOf.
+		float captureInverseOf[16]{}, captureInverse[16]{};
+		bool captureInverseKnown = false, captureInverseValid = false;
+		// A terrain draw's vertices as placed in the cell piece they went to (UINT32_MAX for none yet), and which were.
+		std::vector<uint32_t> terrainRemap, terrainTouched;
 		std::vector<Fresh> freshGrid;
 		// Grid draws per 16 metre spot in this redraw.
 		std::unordered_map<uint64_t, uint32_t> spots;
@@ -1409,8 +1414,42 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		// The group for a state captured with captureView (and for a model, its mesh). The state is made
 		// independent of the camera: no modelview, the projection's depth row only, and stages with coordinates
 		// from view positions anchored to the world. Pins its textures.
+		// The last state GroupFor was asked for without a mesh, and the group it gave. SC4 draws runs of one state (the
+		// terrain's layers, a lot's cells), which then skip the copy, the hash and pinning their textures again. The
+		// texture generation says the names in the state still stand for the same images.
+		struct LastGroup {
+			bool valid = false;
+			cGDriver12::CapturedState state{};
+			float view[16]{};
+			uint32_t layer = 0;
+			uint64_t textures = 0, hash = 0;
+			uint32_t group = 0;
+		} lastGroup;
+
 		uint32_t GroupFor(cGDriver12::CapturedState const &captured, float const *view, D3D12_VERTEX_BUFFER_VIEW const *vertices,
 		                  D3D12_INDEX_BUFFER_VIEW const *indices, uint32_t count, uint64_t rank, uint32_t layer) {
+			uint64_t const textureGeneration = driver.TextureGeneration();
+			if (vertices == nullptr && lastGroup.valid && lastGroup.layer == layer && lastGroup.textures == textureGeneration &&
+			    groups[lastGroup.group].alive && groups[lastGroup.group].hash == lastGroup.hash &&
+			    std::memcmp(lastGroup.view, view, sizeof(lastGroup.view)) == 0 &&
+			    std::memcmp(&lastGroup.state, &captured, sizeof(captured)) == 0) {
+				return lastGroup.group;
+			}
+			uint32_t const group = FindGroup(captured, view, vertices, indices, count, rank, layer);
+			if (vertices == nullptr) {
+				lastGroup.valid = true;
+				lastGroup.state = captured;
+				std::memcpy(lastGroup.view, view, sizeof(lastGroup.view));
+				lastGroup.layer = layer;
+				lastGroup.textures = textureGeneration;
+				lastGroup.hash = groups[group].hash;
+				lastGroup.group = group;
+			}
+			return group;
+		}
+
+		uint32_t FindGroup(cGDriver12::CapturedState const &captured, float const *view, D3D12_VERTEX_BUFFER_VIEW const *vertices,
+		                   D3D12_INDEX_BUFFER_VIEW const *indices, uint32_t count, uint64_t rank, uint32_t layer) {
 			cGDriver12::CapturedState state = captured;
 			float *const modelView = ConstantMatrix(state, cGDriver12::kModelViewOffset);
 			std::memset(modelView, 0, 16 * sizeof(float));
@@ -1774,9 +1813,15 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			out.assign(vertices, vertices + vertexCount);
 			float const *const modelView = reinterpret_cast<float const *>(state.constants + cGDriver12::kModelViewOffset);
 			if (std::memcmp(modelView, captureView, 16 * sizeof(float)) == 0) return;
-			float inverse[16], world[16];
-			if (!Invert(captureView, inverse)) return;
-			Multiply(inverse, modelView, world);
+			// The same view for every draw of a redraw, so its inverse is made once.
+			if (!captureInverseKnown || std::memcmp(captureInverseOf, captureView, sizeof(captureInverseOf)) != 0) {
+				std::memcpy(captureInverseOf, captureView, sizeof(captureInverseOf));
+				captureInverseValid = Invert(captureView, captureInverse);
+				captureInverseKnown = true;
+			}
+			if (!captureInverseValid) return;
+			float world[16];
+			Multiply(captureInverse, modelView, world);
 			for (D3D11Vertex &v: out) {
 				float const p[3]{v.position[0], v.position[1], v.position[2]};
 				float const n[3]{v.normal[0], v.normal[1], v.normal[2]};
@@ -1853,19 +1898,44 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 				uint32_t const group = RankedGroup(state, kTerrain, pass);
 				groups[group].blendedTerrain |= blended;
 				++drawOrdinal;
-				// Each triangle goes to the cell under its middle.
+				// Each triangle goes to the cell under its middle. Triangles of a cell come in runs, so the cell's list
+				// is looked up once a run, and a vertex the run's triangles share stays one vertex in the piece.
+				// A piece is named by its cell and its place in the cell's list, which only grows during the draw.
+				std::vector<Fresh> *list = nullptr;
+				uint64_t listKey = 0;
+				uint64_t mappedKey = 0;
+				size_t mappedPlace = SIZE_MAX;
+				terrainRemap.assign(vertexCount, UINT32_MAX);
+				terrainTouched.clear();
 				for (uint32_t i = 0; i + 2 < indexCount; i += 3) {
+					if (indices[i] >= vertexCount || indices[i + 1] >= vertexCount || indices[i + 2] >= vertexCount) continue;
 					D3D11Vertex const &a = world[indices[i]], &b = world[indices[i + 1]], &c = world[indices[i + 2]];
 					int32_t const x = static_cast<int32_t>(std::floor((a.position[0] + b.position[0] + c.position[0]) / (3.0f * kCellMetres)));
 					int32_t const z = static_cast<int32_t>(std::floor((a.position[2] + b.position[2] + c.position[2]) / (3.0f * kCellMetres)));
 					uint64_t const key = static_cast<uint64_t>(pass) << 48 | (static_cast<uint64_t>(x) & 0xFFFFFF) << 24 |
 					                     (static_cast<uint64_t>(z) & 0xFFFFFF);
-					std::vector<Fresh> &list = freshCells[key];
-					if (list.empty() || list.back().group != group) list.push_back({group, {}, {}});
-					Fresh &fresh = list.back();
-					uint32_t const base = static_cast<uint32_t>(fresh.vertices.size());
-					fresh.vertices.insert(fresh.vertices.end(), {a, b, c});
-					fresh.indices.insert(fresh.indices.end(), {base, base + 1, base + 2});
+					if (list == nullptr || key != listKey) {
+						list = &freshCells[key];
+						listKey = key;
+					}
+					if (list->empty() || list->back().group != group) list->push_back({group, {}, {}});
+					Fresh &fresh = list->back();
+					size_t const place = list->size() - 1;
+					if (key != mappedKey || place != mappedPlace) {
+						for (uint32_t touched: terrainTouched) terrainRemap[touched] = UINT32_MAX;
+						terrainTouched.clear();
+						mappedKey = key;
+						mappedPlace = place;
+					}
+					for (uint32_t k = 0; k < 3; ++k) {
+						uint32_t const source = indices[i + k];
+						if (terrainRemap[source] == UINT32_MAX) {
+							terrainRemap[source] = static_cast<uint32_t>(fresh.vertices.size());
+							fresh.vertices.push_back(world[source]);
+							terrainTouched.push_back(source);
+						}
+						fresh.indices.push_back(terrainRemap[source]);
+					}
 				}
 				++totals.captured[kTerrain];
 				return owning;

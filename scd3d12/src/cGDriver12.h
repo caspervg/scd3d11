@@ -146,6 +146,9 @@ namespace nSCD3D12 {
 		};
 		void SaveTransform(Transform &transform) const;
 		void RestoreTransform(Transform const &transform);
+		// Changes whenever a texture name gets another image or loses one, so a capture that holds texture names can
+		// tell the images they stood for are still theirs.
+		uint64_t TextureGeneration() const;
 		// What PolygonOffset set last.
 		int32_t GetPolygonOffset() const;
 		// The depth buffer, in the DEPTH_WRITE state between calls, and its view.
