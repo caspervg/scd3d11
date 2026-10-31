@@ -155,6 +155,16 @@ namespace nSCD3D11::Doctor {
 			return name.starts_with("msvcp140") || name.starts_with("vcruntime140") || name == "concrt140.dll";
 		}
 
+		// The debug runtime a debug build imports instead: msvcp140d.dll, vcruntime140d.dll, vcruntime140_1d.dll,
+		// msvcp140d_atomic_wait.dll, concrt140d.dll and ucrtbased.dll. No Redistributable has them, only Visual
+		// Studio does.
+		bool IsDebugVisualCppRuntime(std::string const &name) {
+			if (name == "ucrtbased.dll") return true;
+			if (!IsVisualCppRuntime(name) && name != "concrt140d.dll") return false;
+			std::string_view const stem = std::string_view(name).substr(0, name.size() - 4);
+			return name.ends_with(".dll") && (stem.ends_with('d') || stem.find("140d") != std::string_view::npos);
+		}
+
 		// Whether the loader finds a DLL by name, searching where it would for a plugin's imports.
 		bool CanLoad(std::string const &name) {
 			std::wstring const wide(name.begin(), name.end());
@@ -167,19 +177,28 @@ namespace nSCD3D11::Doctor {
 
 		void ReadPlugins(Environment &environment, std::filesystem::path const &userFolder) {
 			std::set<std::string> missing;
+			std::set<std::string> missingDebug;
 			for (std::filesystem::path const &plugin : PluginDlls(userFolder)) {
 				std::string const name = Utf8(plugin.filename().wstring());
 				bool needsMissingRuntime = false;
+				bool needsMissingDebugRuntime = false;
 				for (std::string const &import : Imports(plugin)) {
 					if (import == "imgui.dll") environment.imguiPlugins.push_back(name);
-					if (IsVisualCppRuntime(import) && !CanLoad(import)) {
+					if (IsDebugVisualCppRuntime(import)) {
+						if (!CanLoad(import)) {
+							missingDebug.insert(import);
+							needsMissingDebugRuntime = true;
+						}
+					} else if (IsVisualCppRuntime(import) && !CanLoad(import)) {
 						missing.insert(import);
 						needsMissingRuntime = true;
 					}
 				}
 				if (needsMissingRuntime) environment.pluginsMissingRuntime.push_back(name);
+				if (needsMissingDebugRuntime) environment.pluginsMissingDebugRuntime.push_back(name);
 			}
 			environment.missingRuntimeDlls.assign(missing.begin(), missing.end());
+			environment.missingDebugRuntimeDlls.assign(missingDebug.begin(), missingDebug.end());
 		}
 
 		std::vector<Module> LoadedModules() {

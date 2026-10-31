@@ -228,6 +228,17 @@ int main() {
 		           "vcruntime140.dll from the Microsoft Visual C++ Redistributable. Install its x86 version"));
 	}
 	{
+		// A debug build, which needs the runtime's debug DLLs. The Redistributable does not have those.
+		Environment environment = Clean();
+		environment.pluginsMissingDebugRuntime = {"SC4WebInterface.dll"};
+		environment.missingDebugRuntimeDlls = {"msvcp140d.dll", "ucrtbased.dll", "vcruntime140d.dll"};
+		auto const findings = Diagnose(environment);
+		assert(Has(findings, Severity::Problem,
+		           "SC4 skips SC4WebInterface.dll, because it is a debug build that needs msvcp140d.dll, ucrtbased.dll, "
+		           "vcruntime140d.dll. Only Visual Studio installs those"));
+		assert(!Has(findings, Severity::Problem, "Install its x86 version"));
+	}
+	{
 		// No 4GB patch, Wine, and a ReShade too old for the add-on.
 		Environment environment = Clean();
 		environment.largeAddressAware = false;

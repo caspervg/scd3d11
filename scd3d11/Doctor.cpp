@@ -441,6 +441,16 @@ namespace nSCD3D11::Doctor {
 					"Install its x86 version from https://aka.ms/vs/17/release/vc_redist.x86.exe, also on 64-bit Windows.",
 					plugins.c_str(), dlls.c_str())});
 			}
+			if (!environment.pluginsMissingDebugRuntime.empty()) {
+				std::string plugins, dlls;
+				for (std::string const &plugin : environment.pluginsMissingDebugRuntime) plugins += (plugins.empty() ? "" : ", ") + plugin;
+				for (std::string const &dll : environment.missingDebugRuntimeDlls) dlls += (dlls.empty() ? "" : ", ") + dll;
+				bool const one = environment.pluginsMissingDebugRuntime.size() == 1;
+				findings.push_back({Severity::Problem, Format(
+					"SC4 skips %s, because %s a debug build that needs %s. Only Visual Studio installs those, the "
+					"Visual C++ Redistributable does not have them. Ask %s author for a release build.", plugins.c_str(),
+					one ? "it is" : "they are", dlls.c_str(), one ? "its" : "their")});
+			}
 
 			for (char const *rival : {"scvk.dll", "scgl.dll"}) {
 				if (FindModule(environment, rival) != nullptr) {
