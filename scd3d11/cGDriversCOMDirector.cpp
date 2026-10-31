@@ -16,6 +16,8 @@
  *  License along with this library; if not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <cstdio>
+#include <memory>
 #include <cIGZFrameWork.h>
 #include <cISC4App.h>
 #include <cRZBaseString.h>
@@ -27,6 +29,7 @@
 #include "DrawOwnerHooks.h"
 #include "FreeCamera.h"
 #include "Doctor.h"
+#include "RemoteRenderer.h"
 #include "LiveShadowHooks.h"
 #include "OccupantTracker.h"
 #include "Settings.h"
@@ -67,6 +70,46 @@ namespace nSCD3D11
 			MultiByteToWideChar(CP_ACP, 0, path.data(), static_cast<int>(path.size()), folders[i].data(), units);
 		}
 		wire->RecordGameFolders(folders);
+	}
+
+	// The GZCOM factory for the driver class. With Record=<file> the driver comes wrapped in cGDriverWire
+	// writing to that file, and with Renderer=server it draws through SCD3D12Server.
+	static bool CreateDriver(uint32_t riid, void **ppvObj) {
+		Settings::Values const &settings = Settings::Get();
+		std::unique_ptr<RemoteRenderer> remote;
+		if (settings.server) {
+			remote = std::make_unique<RemoteRenderer>();
+			if (!remote->Start()) remote.reset();
+		}
+		std::shared_ptr<std::FILE> output;
+		if (!settings.record.empty()) {
+			std::FILE *file = nullptr;
+			if (fopen_s(&file, settings.record.c_str(), "wb") == 0 && file != nullptr) {
+				output.reset(file, std::fclose);
+				Log(LogCategory::Initialization, "record: writing every SimGL call to %s", settings.record.c_str());
+			} else {
+				Log(LogCategory::Initialization, "record: cannot open %s, not recording", settings.record.c_str());
+			}
+		}
+		if (remote == nullptr && output == nullptr) return cGDriver::FactoryFunctionPtr2(riid, ppvObj);
+
+		auto *const driver = new cGDriver();
+		std::unique_ptr<nSCDWire::Output> stream;
+		if (remote != nullptr) {
+			driver->SetRemote(remote.get());
+			stream = remote->MakeOutput(output);
+		} else {
+			stream = std::make_unique<nSCDWire::SinkOutput>([output](void const *data, size_t size) {
+				return std::fwrite(data, 1, size, output.get()) == size && std::fflush(output.get()) == 0;
+			});
+		}
+		auto *const wire = new cGDriverWire(driver, std::move(stream));
+		wire->KeepRemote(std::move(remote));
+		if (!wire->QueryInterface(riid, ppvObj)) {
+			delete wire;
+			return false;
+		}
+		return true;
 	}
 
 	class cGDriversCOMDirector : public cRZCOMDllDirector

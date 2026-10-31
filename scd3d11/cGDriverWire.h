@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include "cGDriver.h"
+#include "cGDriverBase.h"
 #include "wire/WireReplay.h"
 #include "wire/WireStream.h"
 
@@ -19,6 +19,8 @@
 #include <cstring>
 
 namespace nSCD3D11 {
+	class RemoteRenderer;
+
 	// Stands in front of cGDriver: every call goes to the driver, and the calls a renderer elsewhere would
 	// have to repeat are also written to an SCDW stream (wire/Wire.h). SC4 sees this object as its driver.
 	//
@@ -33,12 +35,14 @@ namespace nSCD3D11 {
 			public cRZBaseUnknown {
 	public:
 		// Takes a reference on driver.
-		cGDriverWire(cGDriver *driver, std::unique_ptr<nSCDWire::Output> output);
-		cGDriverWire(cGDriver *driver, nSCDWire::Writer::Sink sink)
+		cGDriverWire(cGDriverBase *driver, std::unique_ptr<nSCDWire::Output> output);
+		cGDriverWire(cGDriverBase *driver, nSCDWire::Writer::Sink sink)
 			: cGDriverWire(driver, std::make_unique<nSCDWire::SinkOutput>(std::move(sink))) {}
 		~cGDriverWire();
 
-		cGDriver &Inner() { return *driver; }
+		cGDriverBase &Inner() { return *driver; }
+		// Renderer=server in SCD3D11: the renderer the driver draws through, released after the driver.
+		void KeepRemote(std::unique_ptr<RemoteRenderer> renderer);
 		// The driver that writes a stream this session, if any. Render thread only, which in SC4 is also the
 		// thread that pumps messages.
 		static cGDriverWire *Current();
@@ -313,11 +317,9 @@ namespace nSCD3D11 {
 		                int32_t sourceWidth, int32_t sourceHeight, uint32_t format, uint32_t type,
 		                void const *pixels, bool colorKeyed, void const *colorKey, uint32_t alpha);
 
-		cGDriver *driver;
+		cGDriverBase *driver;
 		nSCDWire::Writer writer;
-		// Renderer=server. Released after the driver, which draws through it.
 		std::unique_ptr<RemoteRenderer> remote;
-		friend bool CreateDriver(uint32_t riid, void **ppvObj);
 
 		uint32_t vertexFormat = 0;
 		uint32_t vertexStride = 0;
@@ -337,10 +339,6 @@ namespace nSCD3D11 {
 		uint32_t activeStage = 0;
 		uint32_t matrixMode = 0;
 	};
-
-	// The GZCOM factory for the driver class. With Record=<file> the driver comes wrapped in cGDriverWire
-	// writing to that file.
-	bool CreateDriver(uint32_t riid, void **ppvObj);
 
 	// Lets nSCDWire::Replay drive a cGDriver: opens a windowed mode of the recorded size and refills the
 	// terrain vertex buffer.

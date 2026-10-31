@@ -11,6 +11,7 @@
 #include "cGDriverWire.h"
 
 #include "cGDCombiner.h"
+#include "RemoteRenderer.h"
 #include "Diagnostics.h"
 #include "DrawOwnerHooks.h"
 #include "Settings.h"
@@ -53,7 +54,9 @@ namespace nSCD3D11 {
 		cGDriverWire *gCurrent = nullptr;
 	}
 
-	cGDriverWire::cGDriverWire(cGDriver *driver, std::unique_ptr<nSCDWire::Output> output)
+	void cGDriverWire::KeepRemote(std::unique_ptr<RemoteRenderer> renderer) { remote = std::move(renderer); }
+
+	cGDriverWire::cGDriverWire(cGDriverBase *driver, std::unique_ptr<nSCDWire::Output> output)
 		: driver(driver), writer(std::move(output)) {
 		driver->AddRef();
 		gCurrent = this;
@@ -788,44 +791,6 @@ namespace nSCD3D11 {
 }
 
 namespace nSCD3D11 {
-	bool CreateDriver(uint32_t riid, void **ppvObj) {
-		Settings::Values const &settings = Settings::Get();
-		std::unique_ptr<RemoteRenderer> remote;
-		if (settings.server) {
-			remote = std::make_unique<RemoteRenderer>();
-			if (!remote->Start()) remote.reset();
-		}
-		std::shared_ptr<std::FILE> output;
-		if (!settings.record.empty()) {
-			std::FILE *file = nullptr;
-			if (fopen_s(&file, settings.record.c_str(), "wb") == 0 && file != nullptr) {
-				output.reset(file, std::fclose);
-				Log(LogCategory::Initialization, "record: writing every SimGL call to %s", settings.record.c_str());
-			} else {
-				Log(LogCategory::Initialization, "record: cannot open %s, not recording", settings.record.c_str());
-			}
-		}
-		if (remote == nullptr && output == nullptr) return cGDriver::FactoryFunctionPtr2(riid, ppvObj);
-
-		auto *const driver = new cGDriver();
-		std::unique_ptr<nSCDWire::Output> stream;
-		if (remote != nullptr) {
-			driver->SetRemote(remote.get());
-			stream = remote->MakeOutput(output);
-		} else {
-			stream = std::make_unique<nSCDWire::SinkOutput>([output](void const *data, size_t size) {
-				return std::fwrite(data, 1, size, output.get()) == size && std::fflush(output.get()) == 0;
-			});
-		}
-		auto *const wire = new cGDriverWire(driver, std::move(stream));
-		wire->remote = std::move(remote);
-		if (!wire->QueryInterface(riid, ppvObj)) {
-			delete wire;
-			return false;
-		}
-		return true;
-	}
-
 	void cGDriverReplayHooks::VideoMode(bool show, uint32_t width, uint32_t height, bool fullscreen) {
 		int32_t match = -1;
 		sGDMode mode{};

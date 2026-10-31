@@ -25,6 +25,7 @@
 #include <vector>
 #include <wrl/client.h>
 #include <cRZBaseUnknown.h>
+#include "cGDriverBase.h"
 #include "cIGZGDriver.h"
 #include "D3D11Conversions.h"
 #include "GeometryCache.h"
@@ -71,13 +72,7 @@ namespace nSCD3D11 {
 
 	struct cGDriverTestAccess;
 
-	class cGDriver final :
-			public cIGZGDriver,
-			public cIGZGBufferRegionExtension,
-			public cIGZGDriverLightingExtension,
-			public cIGZGDriverVertexBufferExtension,
-			public cIGZGSnapshotExtension,
-			public cRZBaseUnknown {
+	class cGDriver final : public cGDriverBase {
 		friend struct cGDriverTestAccess;
 
 	private:
@@ -889,8 +884,8 @@ namespace nSCD3D11 {
 
 		// Hands drawing to SCD3D12Server. The renderer must outlive the driver.
 		void SetRemote(RemoteRenderer *renderer) { remote = renderer; }
-		bool RemoteOwnsView() const { return RemoteDrawing() && remote->ServerOwnsView(); }
-		void BackBufferSize(int32_t &width, int32_t &height) const {
+		bool RemoteOwnsView() const override { return RemoteDrawing() && remote->ServerOwnsView(); }
+		void BackBufferSize(int32_t &width, int32_t &height) const override {
 			width = windowWidth;
 			height = windowHeight;
 		}
