@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 using Microsoft::WRL::ComPtr;
@@ -873,6 +874,26 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 
 		ComPtr<IDXGIFactory6> factory;
 		ComPtr<ID3D12Device> device;
+		// Textures are placed in large heaps of their own rather than each committed on its own: a committed
+		// texture is a kernel allocation (dxgkrnl's CreateAllocation), and SC4 makes and drops textures at a rate
+		// that spent half the server's CPU time there. Space goes back to its heap once the last reference to the
+		// texture is gone (the frame garbage, which pins go through too), and the heaps stay for the session. Each
+		// heap is a buddy allocator of blocks from 4 KB (small textures) to the whole 64 MB. Declared before
+		// everything that holds textures, so it goes after them.
+		static constexpr uint32_t kTextureBlockOrder = 12, kTextureHeapOrder = 26;
+		struct TextureBlock {
+			uint32_t heap;
+			uint32_t order;
+			uint64_t offset;
+		};
+		struct TextureHeap {
+			ComPtr<ID3D12Heap> heap;
+			// Free blocks by order (log2 of their size).
+			std::vector<std::unordered_set<uint64_t> > free;
+		};
+		std::vector<TextureHeap> textureHeaps;
+		std::unordered_map<ID3D12Resource *, TextureBlock> placedTextures;
+		uint64_t placedBytes = 0, placedCount = 0;
 		ComPtr<ID3D12CommandQueue> queue;
 		ComPtr<ID3D12GraphicsCommandList> list;
 		ComPtr<ID3D12Fence> fence;
@@ -1174,6 +1195,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 				if (chunk.size == kUploadChunkBytes) chunkPool.push_back(std::move(chunk));
 			}
 			slot.chunks.clear();
+			for (ComPtr<ID3D12Resource> &resource: slot.garbage) ReleasePlaced(resource);
 			slot.garbage.clear();
 			freeViews.insert(freeViews.end(), slot.freedViews.begin(), slot.freedViews.end());
 			slot.freedViews.clear();
@@ -1415,6 +1437,93 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			Retire(texture.resource);
 		}
 
+		// A texture in a heap block (see textureHeaps). False when it does not fit one, and it is committed instead.
+		bool CreatePlacedTexture(D3D12_RESOURCE_DESC const &description, ComPtr<ID3D12Resource> &resource) {
+			D3D12_RESOURCE_DESC placed = description;
+			placed.Alignment = D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT;
+			D3D12_RESOURCE_ALLOCATION_INFO info = device->GetResourceAllocationInfo(0, 1, &placed);
+			if (info.Alignment != D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT) {
+				placed.Alignment = 0;
+				info = device->GetResourceAllocationInfo(0, 1, &placed);
+			}
+			uint64_t const bytes = (std::max)(info.SizeInBytes, info.Alignment);
+			if (info.SizeInBytes == UINT64_MAX || bytes > (1ull << kTextureHeapOrder)) return false;
+			uint32_t order = kTextureBlockOrder;
+			while ((1ull << order) < bytes) ++order;
+			TextureBlock block{};
+			if (!AllocateTextureBlock(order, block)) return false;
+			if (FAILED(device->CreatePlacedResource(textureHeaps[block.heap].heap.Get(), block.offset, &placed,
+			                                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&resource)))) {
+				FreeTextureBlock(block);
+				return false;
+			}
+			placedTextures.insert_or_assign(resource.Get(), block);
+			placedBytes += 1ull << order;
+			++placedCount;
+			return true;
+		}
+
+		bool TakeTextureBlock(uint32_t heap, uint32_t order, TextureBlock &block) {
+			std::vector<std::unordered_set<uint64_t> > &free = textureHeaps[heap].free;
+			uint32_t found = order;
+			while (found <= kTextureHeapOrder && free[found].empty()) ++found;
+			if (found > kTextureHeapOrder) return false;
+			uint64_t const offset = *free[found].begin();
+			free[found].erase(free[found].begin());
+			// Halves of a bigger block: the upper one stays free at each step.
+			while (found > order) {
+				--found;
+				free[found].insert(offset + (1ull << found));
+			}
+			block = {heap, order, offset};
+			return true;
+		}
+
+		bool AllocateTextureBlock(uint32_t order, TextureBlock &block) {
+			for (uint32_t heap = 0; heap < textureHeaps.size(); ++heap) {
+				if (TakeTextureBlock(heap, order, block)) return true;
+			}
+			TextureHeap heap;
+			D3D12_HEAP_DESC description{};
+			description.SizeInBytes = 1ull << kTextureHeapOrder;
+			description.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+			description.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+			description.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+			if (FAILED(device->CreateHeap(&description, IID_PPV_ARGS(&heap.heap)))) return false;
+			heap.free.resize(kTextureHeapOrder + 1);
+			heap.free[kTextureHeapOrder].insert(0);
+			textureHeaps.push_back(std::move(heap));
+			return TakeTextureBlock(static_cast<uint32_t>(textureHeaps.size() - 1), order, block);
+		}
+
+		void FreeTextureBlock(TextureBlock const &block) {
+			std::vector<std::unordered_set<uint64_t> > &free = textureHeaps[block.heap].free;
+			uint64_t offset = block.offset;
+			uint32_t order = block.order;
+			// Joined with its buddy as long as that is free too.
+			while (order < kTextureHeapOrder) {
+				auto const buddy = free[order].find(offset ^ (1ull << order));
+				if (buddy == free[order].end()) break;
+				offset = (std::min)(offset, *buddy);
+				free[order].erase(buddy);
+				++order;
+			}
+			free[order].insert(offset);
+		}
+
+		// Drops a reference from the frame garbage. A placed texture's block is free again once nothing else (a pin)
+		// holds it.
+		void ReleasePlaced(ComPtr<ID3D12Resource> &resource) {
+			if (!resource) return;
+			auto const found = placedTextures.find(resource.Get());
+			ID3D12Resource *const raw = resource.Detach();
+			if (raw->Release() != 0 || found == placedTextures.end()) return;
+			placedBytes -= 1ull << found->second.order;
+			--placedCount;
+			FreeTextureBlock(found->second);
+			placedTextures.erase(found);
+		}
+
 		// cGDriver::CreateTextureResource
 		// Counts the times a texture name's image was made or let go, for TextureGeneration.
 		uint64_t textureGeneration = 1;
@@ -1432,7 +1541,8 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			D3D12_HEAP_PROPERTIES const heap{D3D12_HEAP_TYPE_DEFAULT};
 			D3D12_RESOURCE_DESC const description = TextureDescription(format, width, height, levels);
 			ComPtr<ID3D12Resource> resource;
-			if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+			if (!CreatePlacedTexture(description, resource) &&
+			    FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
 			                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
 			                                           IID_PPV_ARGS(&resource)))) {
 				return false;
