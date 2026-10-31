@@ -42,7 +42,20 @@ from pathlib import Path
 import psutil
 
 REPO = Path(__file__).resolve().parent.parent
-GAME_EXE = Path(r"C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe")
+def find_game() -> Path:
+    """The GOG Galaxy install, else the folder SC4's installer wrote to the registry."""
+    default = Path(r"C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\Apps\SimCity 4.exe")
+    if default.exists():
+        return default
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Maxis\SimCity 4") as key:
+            return Path(winreg.QueryValueEx(key, "Install Dir")[0]) / "Apps" / "SimCity 4.exe"
+    except OSError:
+        return default
+
+
+GAME_EXE = find_game()
 LIVE_PLUGINS = Path(r"C:\Users\caspe\OneDrive - Maplix\SimCity 4\Plugins")
 SKIP = re.compile(r"^(SCD3D11\..*|SC4AutoSave\..*|.*\.(log|csv|bak))$", re.IGNORECASE)
 
@@ -84,6 +97,12 @@ def focus(pid: int) -> bool:
     user32.ShowWindow(window, 9)  # SW_RESTORE
     user32.SetForegroundWindow(window)
     user32.AttachThreadInput(own_thread, foreground_thread, False)
+    if user32.GetForegroundWindow() != window.value:
+        # The foreground lock still refuses when the foreground window takes no input from this thread. A key
+        # press counts as the user's input and lifts it for the next call. Alt alone does nothing in SC4.
+        user32.keybd_event(0x12, 0, 0, 0)  # VK_MENU down
+        user32.keybd_event(0x12, 0, 2, 0)  # KEYEVENTF_KEYUP
+        user32.SetForegroundWindow(window)
     return user32.GetForegroundWindow() == window.value
 
 
