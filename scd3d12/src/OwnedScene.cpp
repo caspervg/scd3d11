@@ -511,6 +511,9 @@ namespace nSCD3D12 {
 			bool viewCoordinates = false;
 			float captureView[16]{};
 			float captureMatrices[2][16]{};
+			// Its constants with the matrices brought back to a view, kept while the view stays (the camera at rest).
+			uint32_t viewSlot = UINT32_MAX;
+			float viewSlotView[16]{};
 			bool model = false;
 			// One of the textures SC4 blends over its terrain, which only a cell SC4 drew whole holds.
 			bool blendedTerrain = false;
@@ -1152,6 +1155,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 		std::map<int32_t, Zoom> zooms;
 		std::vector<uint8_t> staging;
 		std::vector<InstanceRows> instanceScratch;
+		// Scratch for a view coordinate group's constants.
+		cGDriver12::CapturedState viewState{};
 		// What the instance rows in instanceScratch were made from, so a frame where none of it changed (the camera at
 		// rest) uses them again. orderVersion counts rebuilds of order, modelTakes the models SC4 drew.
 		struct InstanceSource {
@@ -1512,6 +1517,8 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 			}
 			for (uint32_t pin: g.state.textures) driver.UnpinTexture(pin);
 			if (g.slot != UINT32_MAX) slots.Free(g.slot, frame);
+			if (g.viewSlot != UINT32_MAX) slots.Free(g.viewSlot, frame);
+			g.viewSlot = UINT32_MAX;
 			g.alive = false;
 			g.buckets.clear();
 			freeGroups.push_back(index);
@@ -2439,20 +2446,25 @@ float2 MotionPS(float4 position : SV_POSITION) : SV_TARGET
 					draw.samplers[stage] = group.state.samplers[stage];
 				}
 				if (group.viewCoordinates) {
-					// Back from the world to this frame's view, or as captured with that view.
-					cGDriver12::CapturedState state = group.state;
-					bool const sameView = std::memcmp(now.view, group.captureView, sizeof(now.view)) == 0;
-					for (uint32_t stage = 0; stage < 2; ++stage) {
-						if (!ViewCoordinates(state, stage)) continue;
-						float *const matrix = ConstantMatrix(state, cGDriver12::kTextureMatrixOffset + stage * 64);
-						if (sameView || !inverted) std::memcpy(matrix, group.captureMatrices[stage], 16 * sizeof(float));
-						else Multiply(ConstantMatrix(group.state, cGDriver12::kTextureMatrixOffset + stage * 64), inverseView, matrix);
+					// Back from the world to this frame's view, or as captured with that view. The constants made for a
+					// view stay in a slot of their own until the view changes; a slot the GPU may still read is only
+					// freed, never written again.
+					if (group.viewSlot == UINT32_MAX || std::memcmp(now.view, group.viewSlotView, sizeof(now.view)) != 0) {
+						viewState = group.state;
+						bool const sameView = std::memcmp(now.view, group.captureView, sizeof(now.view)) == 0;
+						for (uint32_t stage = 0; stage < 2; ++stage) {
+							if (!ViewCoordinates(viewState, stage)) continue;
+							float *const matrix = ConstantMatrix(viewState, cGDriver12::kTextureMatrixOffset + stage * 64);
+							if (sameView || !inverted) std::memcpy(matrix, group.captureMatrices[stage], 16 * sizeof(float));
+							else Multiply(ConstantMatrix(group.state, cGDriver12::kTextureMatrixOffset + stage * 64), inverseView, matrix);
+						}
+						uint32_t const fresh = slots.Allocate(viewState.constants);
+						if (fresh == UINT32_MAX) continue;
+						if (group.viewSlot != UINT32_MAX) slots.Free(group.viewSlot, frame);
+						group.viewSlot = fresh;
+						std::memcpy(group.viewSlotView, now.view, sizeof(now.view));
 					}
-					ID3D12Resource *resource = nullptr;
-					uint64_t offset = 0;
-					if (!driver.Upload(state.constants, cGDriver12::kConstantBytes, resource, offset,
-					                   D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)) continue;
-					draw.constants = resource->GetGPUVirtualAddress() + offset;
+					draw.constants = slots.Address(group.viewSlot);
 				} else {
 					draw.constants = slots.Address(group.slot);
 				}

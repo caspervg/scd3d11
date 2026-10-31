@@ -1061,8 +1061,13 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			// the pin keeps it readable on its own.
 			uint32_t name = 0;
 			bool orphan = false;
+			// The textureEpoch it was last made readable in for a retained draw.
+			uint64_t readyEpoch = 0;
 		};
 		std::vector<Pin> pins;
+		// Counts the times a game texture left the shader resource state (an upload, a copy out), so a retained draw
+		// knows a pin it made readable since is still readable without looking the texture up.
+		uint64_t textureEpoch = 1;
 		std::vector<uint32_t> freePins;
 		std::unordered_map<ID3D12Resource *, uint32_t> pinOf;
 
@@ -1451,6 +1456,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			for (uint32_t row = 0; row < rows; ++row) {
 				if (!fill(allocation.cpu + row * pitch, row)) return false;
 			}
+			if (texture.state != D3D12_RESOURCE_STATE_COPY_DEST) ++textureEpoch;
 			Transition(texture.resource.Get(), texture.state, D3D12_RESOURCE_STATE_COPY_DEST);
 			D3D12_TEXTURE_COPY_LOCATION destination{texture.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
 			destination.SubresourceIndex = subresource;
@@ -3257,6 +3263,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 					from.SubresourceIndex = oldLevel;
 					d.list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
 				}
+				if (pinned) d.Transition(old.Get(), oldState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
 			}
 		}
 		if (pixels != nullptr) {
@@ -4028,6 +4035,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 		entry.references = 1;
 		entry.name = name;
 		entry.orphan = false;
+		entry.readyEpoch = 0;
 		d.pinOf.emplace(texture.resource.Get(), pin);
 		return pin;
 	}
@@ -4075,12 +4083,14 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET
 			if (pin == 0 || pin > d.pins.size()) continue;
 			Impl::Pin &entry = d.pins[pin - 1];
 			views[stage] = entry.view;
-			if (entry.orphan) continue;
-			// Still the game's texture: its state is tracked there.
+			if (entry.orphan || entry.readyEpoch == d.textureEpoch) continue;
+			// Still the game's texture: its state is tracked there. Readable by every shader, as BindGeometry and
+			// PinView leave it, so a texture both draw the same frame takes no barrier back and forth.
 			auto const found = d.textures.find(entry.name);
 			if (found != d.textures.end() && found->second.resource == entry.resource) {
-				d.Transition(entry.resource.Get(), found->second.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+				d.Transition(entry.resource.Get(), found->second.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
 			}
+			entry.readyEpoch = d.textureEpoch;
 		}
 		PipelineKey key;
 		key.bits = draw.pipeline | 1ull << 52;
