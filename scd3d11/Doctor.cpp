@@ -462,6 +462,14 @@ namespace nSCD3D11::Doctor {
 				findings.push_back({Severity::Note, "SC4FullScreen32Bit.dll only changes SC4's DirectX 7 driver and "
 				                                    "does nothing with SCD3D11. It can be removed."});
 			}
+			if (FindModule(environment, "sc4advancedlotplop.dll") != nullptr) {
+				// Its Direct3D 11 overlay was made for dgVoodoo: it patches IDXGISwapChain::Present for every
+				// swap chain in the game, SCD3D11's included, and draws its own windows on SCD3D11's device.
+				findings.push_back({Severity::Problem,
+				                    "Remove SC4AdvancedLotPlop.dll: with SCD3D11 it keeps a city from appearing "
+				                    "after it loads, and the loading screen stays. It is an old version of SC4 Plop "
+				                    "and Paint made for dgVoodoo, and SC4PlopAndPaint.dll replaces it."});
+			}
 			for (char const *old : {"sc4singlecpu.dll", "sc4cpupriority.dll"}) {
 				if (FindModule(environment, old) != nullptr) {
 					findings.push_back({Severity::Warning, Format("%s is replaced by SC4CPUOptions. Remove it.", old)});
@@ -714,7 +722,7 @@ namespace nSCD3D11::Doctor {
 			"scd3d11.dll", "sc4graphicsoptions.dll", "sc4cpuoptions.dll", "sc4renderservices.dll", "sc4_painter.dll",
 			"memo.3dcamera.dll", "sc4-moderncamera.dll", "sc4moderncamera.dll", "memo.thumbnail-fix.dll",
 			"sc4disablefpslimits.dll", "scvk.dll", "scgl.dll", "sc4fullscreen32bit.dll", "sc4singlecpu.dll",
-			"sc4cpupriority.dll", "sc4plopandpaint.dll", "sc4terrainextensions.dll",
+			"sc4cpupriority.dll", "sc4plopandpaint.dll", "sc4advancedlotplop.dll", "sc4terrainextensions.dll",
 		};
 		std::string const name = FileName(path);
 		return std::any_of(std::begin(kWatched), std::end(kWatched), [&](char const *watched) { return name == watched; });

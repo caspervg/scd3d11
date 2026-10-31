@@ -45,6 +45,7 @@ int main() {
 	}
 	assert(IsWatched("C:\\SC4\\Plugins\\SC4GraphicsOptions.dll"));
 	assert(!IsWatched("C:\\SC4\\Plugins\\NAM.dll"));
+	assert(IsWatched("C:\\SC4\\Plugins\\SC4AdvancedLotPlop.dll"));
 	assert(ReleaseVersion(R"({"url":"x","tag_name": "v0.3.3","name":"SCD3D11 0.3.3"})") == "0.3.3");
 	assert(ReleaseVersion(R"({"message":"Not Found"})").empty());
 	assert(ReleaseVersion(R"({"tag_name":"latest"})").empty());
@@ -294,6 +295,7 @@ int main() {
 		                       {"C:\\SC4\\Plugins\\memo.3dcamera.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\SC4-ModernCamera.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\SC4SingleCPU.dll", "", ""},
+		                       {"C:\\SC4\\Plugins\\SC4AdvancedLotPlop.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\scvk.dll", "", ""},
 		                       {"C:\\Steam\\GameOverlayRenderer.dll", "", ""},
 		                       {"C:\\SC4\\Plugins\\sc4_painter.dll", "", ""},
@@ -313,6 +315,7 @@ int main() {
 		assert(!Has(findings, Severity::Warning, "version.dll is loaded twice"));
 		assert(!Has(findings, Severity::Warning, "turn the camera"));
 		assert(Has(findings, Severity::Warning, "sc4singlecpu.dll is replaced by SC4CPUOptions"));
+		assert(Has(findings, Severity::Problem, "Remove SC4AdvancedLotPlop.dll"));
 		assert(Has(findings, Severity::Note, "scvk.dll is installed too"));
 		assert(Has(findings, Severity::Note, "Overlays in the game: Steam overlay"));
 		assert(!Has(findings, Severity::Warning, "SCD3D11 used the screen's own"));
