@@ -47,7 +47,7 @@ FetchContent_Declare(streamline
         SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(streamline)
 target_include_directories(SCD3D12Server PRIVATE "${streamline_SOURCE_DIR}/include")
-target_link_libraries(SCD3D12Server PRIVATE wintrust crypt32)
+target_link_libraries(SCD3D12Server PRIVATE wintrust crypt32 dbghelp winmm)
 # Next to the server, where it looks for them. In the game that is Plugins\SCD3D12\, which SC4 loads no DLLs from.
 set(STREAMLINE_RUNTIME
         sl.interposer.dll sl.common.dll sl.dlss.dll sl.dlss_g.dll sl.reflex.dll sl.pcl.dll

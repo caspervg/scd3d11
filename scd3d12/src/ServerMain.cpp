@@ -62,6 +62,7 @@
 #include "OwnedScene.h"
 #include "RetainedScene.h"
 #include "SceneLane.h"
+#include "Sampler.h"
 #include "Serve.h"
 #include "WorldLight.h"
 #include "wire/ImageFile.h"
@@ -129,6 +130,8 @@ namespace {
 
 	struct ReplayOptions {
 		std::wstring capture;
+		// --profile: which functions the replay spends its time in (Sampler.h).
+		bool profile = false;
 		std::wstring out = L".";
 		uint32_t every = 0;
 		std::set<uint64_t> frames;
@@ -193,6 +196,7 @@ namespace {
 					start = end + 1;
 				}
 			} else if (argument == L"--last") options.last = true;
+			else if (argument == L"--profile") options.profile = true;
 			else if (argument == L"--warp") options.warp = true;
 			else if (argument == L"--relight" && hasValue) {
 				options.relight = true;
@@ -482,7 +486,10 @@ namespace {
 		nSCDWire::Reader reader([file](void *data, size_t size) { return std::fread(data, 1, size, file) == size; });
 		nSCDWire::ReplayStats stats;
 		char const *error = nullptr;
+		nSCDTools::Sampler sampler;
+		if (options.profile) sampler.Start();
 		bool const ok = nSCDWire::Replay(reader, driver, hooks, &stats, &error);
+		if (options.profile) sampler.Report();
 		if (options.last) hooks.Save(options.out + L"\\last.png");
 		double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 		std::printf("%s: %llu frames, %llu records, %llu images saved, %.1f s\n", ok ? "done" : error,
