@@ -54,6 +54,12 @@ namespace nSCD3D11::Settings {
 		bool doctorDialog = true;
 		// UpdateCheck=off: do not ask GitHub, at most once a day, whether a newer SCD3D11 is out.
 		bool updateCheck = true;
+		// DriverThreading=off: create the device with D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS,
+		// so the display driver runs SC4's commands on SC4's own thread instead of a worker of its own.
+		bool driverThreading = true;
+		// CrashDump=on: write a full-memory dump to %LOCALAPPDATA%\SCD3D11\CrashDumps on the first crash while
+		// SCD3D11 renders, before SC4's own exception report. Several GB each.
+		bool crashDump = false;
 		// VertexCacheSegments=1-16: how many segments the vertex cache keeps.
 		uint32_t vertexCacheSegments = 8;
 		// VertexCacheSize=4-64: each vertex cache segment's size in MB.

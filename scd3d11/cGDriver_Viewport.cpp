@@ -9,6 +9,7 @@
  */
 
 #include "cGDriver.h"
+#include "CrashDump.h"
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
 #include "Doctor.h"
@@ -418,6 +419,10 @@ namespace nSCD3D11 {
 #ifndef NDEBUG
 		creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
+		if (!Settings::Get().driverThreading) {
+			creationFlags |= D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+			Log(LogCategory::Initialization, "DriverThreading=off: the driver runs commands on SC4's thread");
+		}
 		D3D_FEATURE_LEVEL const requestedLevels[] = {
 			D3D_FEATURE_LEVEL_11_1,
 			D3D_FEATURE_LEVEL_11_0,
@@ -572,6 +577,7 @@ namespace nSCD3D11 {
 			UpdateWindow(window);
 		}
 		StartRenderWatchdog(window);
+		CrashDump::Install();
 		SetLastError(DriverError::OK);
 	}
 

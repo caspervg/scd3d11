@@ -19,6 +19,7 @@
 #include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
+#include "CrashDump.h"
 #include "Doctor.h"
 #include "LiveShadowHooks.h"
 #include "Settings.h"
@@ -59,6 +60,7 @@ namespace nSCD3D11
 			ShadowRegistry::Uninstall();
 			LiveShadowHooks::Uninstall();
 			ThumbnailFocusGuard::Uninstall();
+			CrashDump::Uninstall();
 			return true;
 		}
 

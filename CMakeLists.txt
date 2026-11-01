@@ -109,6 +109,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
         scd3d11/cGDriversCOMDirector.cpp
+        scd3d11/CrashDump.cpp
         scd3d11/LiveShadowHooks.cpp
         scd3d11/ShadowRegistry.cpp
         scd3d11/TerrainShadowMap.cpp
@@ -219,6 +220,12 @@ if (BUILD_TESTING)
 
     scd3d11_add_test(SettingsTest
             tests/SettingsTest.cpp
+            scd3d11/Settings.cpp
+            scd3d11/Diagnostics.cpp)
+
+    scd3d11_add_test(CrashDumpTest
+            tests/CrashDumpTest.cpp
+            scd3d11/CrashDump.cpp
             scd3d11/Settings.cpp
             scd3d11/Diagnostics.cpp)
 

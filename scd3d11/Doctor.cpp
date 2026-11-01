@@ -103,7 +103,8 @@ namespace nSCD3D11::Doctor {
 		// SCD3D11's settings, read from the command line and SCD3D11.ini. They must match Settings::Load.
 		constexpr char const *kSettings[] = {
 			"LiveShadows", "NetworkShadowMasks", "VSync", "Borderless", "FlipModel", "GPU", "ViewportCull", "Depth16", "ReShade",
-			"DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize",
+			"DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "DriverThreading", "CrashDump",
+			"VertexCacheSegments", "VertexCacheSize",
 		};
 
 		// Other switch names SC4 itself and common plugins read, with their usual spelling. SC4's own come
