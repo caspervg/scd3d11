@@ -60,6 +60,8 @@ namespace nSCD3D11::Settings {
 		// CrashDump=on: write a full-memory dump to %LOCALAPPDATA%\SCD3D11\CrashDumps on the first crash while
 		// SCD3D11 renders, before SC4's own exception report. Several GB each.
 		bool crashDump = false;
+		// AMDCrashFix=off: leave AMD's D3D11 driver unpatched. See AmdRingFix.h.
+		bool amdCrashFix = true;
 		// VertexCacheSegments=1-16: how many segments the vertex cache keeps.
 		uint32_t vertexCacheSegments = 8;
 		// VertexCacheSize=4-64: each vertex cache segment's size in MB.

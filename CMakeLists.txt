@@ -108,6 +108,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
+        scd3d11/AmdRingFix.cpp
         scd3d11/cGDriversCOMDirector.cpp
         scd3d11/CrashDump.cpp
         scd3d11/LiveShadowHooks.cpp
@@ -222,6 +223,13 @@ if (BUILD_TESTING)
             tests/SettingsTest.cpp
             scd3d11/Settings.cpp
             scd3d11/Diagnostics.cpp)
+
+    scd3d11_add_test(AmdRingFixTest
+            tests/AmdRingFixTest.cpp
+            scd3d11/AmdRingFix.cpp
+            scd3d11/Settings.cpp
+            scd3d11/Diagnostics.cpp)
+    target_link_libraries(AmdRingFixTest PRIVATE d3d11)
 
     scd3d11_add_test(CrashDumpTest
             tests/CrashDumpTest.cpp

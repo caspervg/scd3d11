@@ -9,6 +9,7 @@
  */
 
 #include "cGDriver.h"
+#include "AmdRingFix.h"
 #include "CrashDump.h"
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
@@ -578,6 +579,7 @@ namespace nSCD3D11 {
 		}
 		StartRenderWatchdog(window);
 		CrashDump::Install();
+		AmdRingFix::Install();
 		SetLastError(DriverError::OK);
 	}
 

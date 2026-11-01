@@ -19,6 +19,7 @@
 #include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
+#include "AmdRingFix.h"
 #include "CrashDump.h"
 #include "Doctor.h"
 #include "LiveShadowHooks.h"
@@ -61,6 +62,7 @@ namespace nSCD3D11
 			LiveShadowHooks::Uninstall();
 			ThumbnailFocusGuard::Uninstall();
 			CrashDump::Uninstall();
+			AmdRingFix::LogCounts();
 			return true;
 		}
 
