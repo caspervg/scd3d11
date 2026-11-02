@@ -12,6 +12,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
+#include <string_view>
+#include <vector>
 #include <windows.h>
 
 namespace nSCD3D11
@@ -33,6 +36,11 @@ namespace nSCD3D11
 	};
 
 	void Log(LogCategory category, char const* format, ...);
+	// Players post their logs in public, and paths name their Windows account, often their real name. Every
+	// log line goes through this: each profile folder becomes %USERPROFILE%, and each account name that is a
+	// folder of its own (D:\name\Games) becomes %USERNAME%. Separators and ASCII letters match in any case.
+	std::string RedactAccount(std::string_view text, std::vector<std::string> const& profiles,
+	                          std::vector<std::string> const& names);
 	// The Logs folder of the user directory, next to the Plugins folder holding SCD3D11.dll. Empty when the
 	// module path is unavailable, which puts the log in the working directory.
 	std::filesystem::path LogDirectory();

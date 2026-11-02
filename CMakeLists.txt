@@ -222,6 +222,10 @@ if (BUILD_TESTING)
             scd3d11/Settings.cpp
             scd3d11/Diagnostics.cpp)
 
+    scd3d11_add_test(DiagnosticsTest
+            tests/DiagnosticsTest.cpp
+            scd3d11/Diagnostics.cpp)
+
     scd3d11_add_test(DoctorTest
             tests/DoctorTest.cpp
             scd3d11/Doctor.cpp)

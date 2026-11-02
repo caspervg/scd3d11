@@ -10,6 +10,7 @@
 
 #include "Diagnostics.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -54,6 +55,97 @@ namespace nSCD3D11
 	}
 
 	namespace {
+		bool IsSeparator(char c) { return c == '\\' || c == '/'; }
+
+		// Where a path component ends: a separator, the end of the text, or a character no file name has
+		// or that the log puts after paths.
+		bool EndsComponent(std::string_view text, size_t at) {
+			return at == text.size() || std::strchr("\\/\"' \t\r\n),;:", text[at]) != nullptr;
+		}
+
+		bool SameAt(std::string_view text, size_t at, std::string_view needle) {
+			if (needle.empty() || text.size() - at < needle.size()) return false;
+			for (size_t index = 0; index < needle.size(); ++index) {
+				char const a = text[at + index], b = needle[index];
+				if (IsSeparator(a) && IsSeparator(b)) continue;
+				auto const lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+				if (lower(a) != lower(b)) return false;
+			}
+			return true;
+		}
+
+		std::string Narrow(std::wstring const& text, UINT codePage) {
+			if (text.empty()) return {};
+			int const size = WideCharToMultiByte(codePage, 0, text.data(), static_cast<int>(text.size()), nullptr, 0,
+			                                     nullptr, nullptr);
+			std::string result(size > 0 ? size : 0, '\0');
+			if (size > 0) {
+				WideCharToMultiByte(codePage, 0, text.data(), static_cast<int>(text.size()), result.data(), size,
+				                    nullptr, nullptr);
+			}
+			return result;
+		}
+
+		// The profile folder and account name in both encodings the log sees: the doctor writes UTF-8,
+		// std::filesystem::path::string() the ANSI code page.
+		struct Account {
+			std::vector<std::string> profiles, names;
+		};
+
+		Account const& CurrentAccount() {
+			static Account const account = [] {
+				Account found;
+				auto const add = [](std::vector<std::string>& list, std::wstring const& text) {
+					for (UINT codePage : {CP_UTF8, CP_ACP}) {
+						std::string narrow = Narrow(text, codePage);
+						while (!narrow.empty() && IsSeparator(narrow.back())) narrow.pop_back();
+						if (!narrow.empty() && std::find(list.begin(), list.end(), narrow) == list.end()) {
+							list.push_back(std::move(narrow));
+						}
+					}
+				};
+				wchar_t buffer[MAX_PATH]{};
+				DWORD length = GetEnvironmentVariableW(L"USERPROFILE", buffer, MAX_PATH);
+				if (length > 0 && length < MAX_PATH) add(found.profiles, buffer);
+				DWORD size = MAX_PATH;
+				if (GetUserNameW(buffer, &size) && size > 1) add(found.names, buffer);
+				return found;
+			}();
+			return account;
+		}
+	}
+
+	std::string RedactAccount(std::string_view text, std::vector<std::string> const& profiles,
+	                          std::vector<std::string> const& names) {
+		std::string result;
+		result.reserve(text.size());
+		size_t at = 0;
+		while (at < text.size()) {
+			bool replaced = false;
+			for (std::string const& profile : profiles) {
+				if (SameAt(text, at, profile) && EndsComponent(text, at + profile.size())) {
+					result += "%USERPROFILE%";
+					at += profile.size();
+					replaced = true;
+					break;
+				}
+			}
+			if (!replaced && at > 0 && IsSeparator(text[at - 1])) {
+				for (std::string const& name : names) {
+					if (SameAt(text, at, name) && EndsComponent(text, at + name.size())) {
+						result += "%USERNAME%";
+						at += name.size();
+						replaced = true;
+						break;
+					}
+				}
+			}
+			if (!replaced) result += text[at++];
+		}
+		return result;
+	}
+
+	namespace {
 		void LogV(LogCategory category, char const* format, va_list arguments) {
 			unsigned int const index = static_cast<unsigned int>(category);
 			if (index >= static_cast<unsigned int>(LogCategory::Count)) {
@@ -75,8 +167,10 @@ namespace nSCD3D11
 				sprintf_s(message, "[SC4D3D11][%s] %s\n", CategoryName(category), detail);
 			}
 
-			OutputDebugStringA(message);
-			WriteLogLine(message);
+			Account const& account = CurrentAccount();
+			std::string const line = RedactAccount(message, account.profiles, account.names);
+			OutputDebugStringA(line.c_str());
+			WriteLogLine(line.c_str());
 		}
 	}
 
