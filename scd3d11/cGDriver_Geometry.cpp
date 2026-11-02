@@ -1152,12 +1152,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
 		// Index keys hash the final upload, so this pass only finds the range and, for primitives
-		// D3D11 lacks, gathers the indices to convert. A separate min/max loop vectorizes.
+		// D3D11 lacks, gathers the indices to convert.
 		auto const scan = [&](auto const *source) {
-			for (int32_t i = 0; i < count; ++i) {
-				minimumIndex = (std::min)(minimumIndex, static_cast<uint32_t>(source[i]));
-				maximumIndex = (std::max)(maximumIndex, static_cast<uint32_t>(source[i]));
-			}
+			IndexRange(source, static_cast<uint32_t>(count), minimumIndex, maximumIndex);
 			if (convertPrimitive) sourceIndexScratch.assign(source, source + count);
 		};
 		try {

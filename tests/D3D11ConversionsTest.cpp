@@ -1,6 +1,7 @@
 #include "D3D11Conversions.h"
 #include "VertexFormatUtils.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <vector>
@@ -161,5 +162,54 @@ int main() {
     assert(nSCD3D11::D3D11StencilOperation(2) == D3D11_STENCIL_OP_REPLACE);
     assert(nSCD3D11::D3D11StencilOperation(5) == D3D11_STENCIL_OP_INVERT);
     assert(nSCD3D11::D3D11StencilOperation(6) == 0);
+
+    // The SSE2 index range matches a plain scan for every tail length and unaligned start, including
+    // indices with the top bit set, which the signed compares only handle through the bias.
+    {
+        uint32_t seed = 12345;
+        auto const next = [&seed] {
+            seed = seed * 1664525u + 1013904223u;
+            return seed;
+        };
+        std::vector<uint16_t> shorts(80);
+        std::vector<uint32_t> longs(80);
+        for (int round = 0; round < 200; ++round) {
+            uint32_t const mask = round % 4 == 0 ? 0xffffffffu : round % 4 == 1 ? 0x7fffu : round % 4 == 2 ? 0xffu : 0x80000003u;
+            for (uint32_t i = 0; i < shorts.size(); ++i) {
+                uint32_t const value = next() & mask;
+                shorts[i] = static_cast<uint16_t>(value | (round % 4 == 3 ? 0x8000u : 0u));
+                longs[i] = value;
+            }
+            for (uint32_t start = 0; start < 4; ++start) {
+                for (uint32_t count = 1; start + count <= shorts.size(); ++count) {
+                    uint32_t minimum = 1, maximum = 1;
+                    nSCD3D11::IndexRange(shorts.data() + start, count, minimum, maximum);
+                    uint32_t lo = UINT32_MAX, hi = 0;
+                    for (uint32_t i = start; i < start + count; ++i) {
+                        lo = (std::min)(lo, static_cast<uint32_t>(shorts[i]));
+                        hi = (std::max)(hi, static_cast<uint32_t>(shorts[i]));
+                    }
+                    assert(minimum == lo && maximum == hi);
+                    nSCD3D11::IndexRange(longs.data() + start, count, minimum, maximum);
+                    lo = UINT32_MAX;
+                    hi = 0;
+                    for (uint32_t i = start; i < start + count; ++i) {
+                        lo = (std::min)(lo, longs[i]);
+                        hi = (std::max)(hi, longs[i]);
+                    }
+                    assert(minimum == lo && maximum == hi);
+                }
+            }
+        }
+        uint16_t const extremes16[]{0xffff, 0, 0x8000, 0x7fff, 1, 0xfffe, 0x8001, 0x7ffe, 0xffff};
+        uint32_t minimum = 0, maximum = 0;
+        nSCD3D11::IndexRange(extremes16, 9, minimum, maximum);
+        assert(minimum == 0 && maximum == 0xffff);
+        uint32_t const extremes32[]{0xffffffffu, 0x80000000u, 0x7fffffffu, 5, 0x80000001u};
+        nSCD3D11::IndexRange(extremes32, 5, minimum, maximum);
+        assert(minimum == 5 && maximum == 0xffffffffu);
+        nSCD3D11::IndexRange(extremes32 + 1, 4, minimum, maximum);
+        assert(minimum == 5 && maximum == 0x80000001u);
+    }
     return 0;
 }

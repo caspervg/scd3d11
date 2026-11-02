@@ -108,6 +108,10 @@ namespace nSCD3D11 {
     // between strided vertices never affects it and packed and padded copies of a mesh share a key.
     GeometryCacheKey VertexCacheKey(uint32_t format, uint32_t stride, void const *vertices, uint32_t count);
 
+    // The smallest and largest of count (at least 1) indices, eight or four at a time with SSE2.
+    void IndexRange(uint16_t const *indices, uint32_t count, uint32_t &minimum, uint32_t &maximum);
+    void IndexRange(uint32_t const *indices, uint32_t count, uint32_t &minimum, uint32_t &maximum);
+
     bool IsSupportedVertexFormat(uint32_t format);
 
     bool ConvertVertices(

@@ -14,7 +14,9 @@
 #include "VertexFormatUtils.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstring>
+#include <emmintrin.h>
 
 namespace nSCD3D11 {
     bool SourceSpanFits(void const *base, uint64_t rows, uint64_t rowPitch, uint64_t lastRowBytes) {
@@ -59,6 +61,68 @@ namespace nSCD3D11 {
         key.count = count;
         key.format = format;
         return key;
+    }
+
+    // SSE2 compares signed lanes only, so the indices are biased by half their range (flipping the top
+    // bit), compared signed, and unbiased at the end.
+    void IndexRange(uint16_t const *indices, uint32_t count, uint32_t &minimum, uint32_t &maximum) {
+        __m128i const bias = _mm_set1_epi16(static_cast<short>(0x8000));
+        __m128i low = _mm_set1_epi16(0x7fff);
+        __m128i high = _mm_set1_epi16(static_cast<short>(0x8000));
+        uint32_t i = 0;
+        for (; i + 8 <= count; i += 8) {
+            __m128i const values = _mm_xor_si128(
+                _mm_loadu_si128(reinterpret_cast<__m128i const *>(indices + i)), bias);
+            low = _mm_min_epi16(low, values);
+            high = _mm_max_epi16(high, values);
+        }
+        // Untouched lanes unbias to 0xffff and 0, the identities, so all eight are safe to fold.
+        alignas(16) int16_t lows[8], highs[8];
+        _mm_store_si128(reinterpret_cast<__m128i *>(lows), low);
+        _mm_store_si128(reinterpret_cast<__m128i *>(highs), high);
+        int32_t smallest = INT16_MAX, largest = INT16_MIN;
+        for (uint32_t lane = 0; lane < 8; ++lane) {
+            smallest = (std::min)(smallest, static_cast<int32_t>(lows[lane]));
+            largest = (std::max)(largest, static_cast<int32_t>(highs[lane]));
+        }
+        uint32_t lo = static_cast<uint32_t>(smallest + 0x8000);
+        uint32_t hi = static_cast<uint32_t>(largest + 0x8000);
+        for (; i < count; ++i) {
+            lo = (std::min)(lo, static_cast<uint32_t>(indices[i]));
+            hi = (std::max)(hi, static_cast<uint32_t>(indices[i]));
+        }
+        minimum = lo;
+        maximum = hi;
+    }
+
+    void IndexRange(uint32_t const *indices, uint32_t count, uint32_t &minimum, uint32_t &maximum) {
+        __m128i const bias = _mm_set1_epi32(static_cast<int>(0x80000000u));
+        __m128i low = _mm_set1_epi32(INT32_MAX);
+        __m128i high = _mm_set1_epi32(INT32_MIN);
+        uint32_t i = 0;
+        for (; i + 4 <= count; i += 4) {
+            __m128i const values = _mm_xor_si128(
+                _mm_loadu_si128(reinterpret_cast<__m128i const *>(indices + i)), bias);
+            __m128i const below = _mm_cmplt_epi32(values, low);
+            low = _mm_or_si128(_mm_and_si128(below, values), _mm_andnot_si128(below, low));
+            __m128i const above = _mm_cmpgt_epi32(values, high);
+            high = _mm_or_si128(_mm_and_si128(above, values), _mm_andnot_si128(above, high));
+        }
+        alignas(16) uint32_t lows[4], highs[4];
+        _mm_store_si128(reinterpret_cast<__m128i *>(lows), _mm_xor_si128(low, bias));
+        _mm_store_si128(reinterpret_cast<__m128i *>(highs), _mm_xor_si128(high, bias));
+        uint32_t lo = UINT32_MAX, hi = 0;
+        // Untouched lanes unbias to UINT32_MAX and 0, the identities, so all four are safe to fold.
+        for (uint32_t lane = 0; lane < 4; ++lane) {
+            lo = (std::min)(lo, lows[lane]);
+            hi = (std::max)(hi, highs[lane]);
+        }
+        for (; i < count; ++i) {
+            lo = (std::min)(lo, indices[i]);
+            hi = (std::max)(hi, indices[i]);
+        }
+        minimum = lo;
+        maximum = hi;
     }
 
     bool IsSupportedVertexFormat(uint32_t format) {
