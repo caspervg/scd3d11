@@ -7,6 +7,8 @@
 #include <cfloat>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <utility>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -908,6 +910,71 @@ namespace nSCD3D11 {
 			d.TexParameter(0, 2, 2);
 			assert(!d.constantsDirty && !d.drawConstantsDirty && !d.normalMatrixDirty && !d.clipRowsDirty);
 			assert(d.textureStages[0].sampler.Get() == sampler);
+
+			// The same for every other setter feeding the constants, one at a time since some overwrite what
+			// others set: set it, draw, then repeat it.
+			float const color[4]{0.1f, 0.2f, 0.3f, 0.4f};
+			float const density = 0.5f, start = 2.0f, end = 3.0f, shininess = 8.0f;
+			cGDCombiner combiner{};
+			combiner.RGBCombineMode = 4;
+			combiner.RGBParams[2].SourceType = 2;
+			std::pair<char const *, std::function<void()>> const setters[]{
+				{"Fog(mode)", [&] { d.Fog(0, 2u); }},
+				{"Fog(source)", [&] { d.Fog(5, 4u); }},
+				{"Fog(color)", [&] { d.Fog(1, color); }},
+				{"Fog(density)", [&] { d.Fog(2, &density); }},
+				{"Fog(start)", [&] { d.Fog(3, &start); }},
+				{"Fog(end)", [&] { d.Fog(4, &end); }},
+				{"ColorMultiplier", [&] { d.ColorMultiplier(0.5f, 0.25f, 0.125f); }},
+				{"AlphaMultiplier", [&] { d.AlphaMultiplier(0.75f); }},
+				{"EnableVertexColors", [&] { d.EnableVertexColors(false, true); }},
+				{"EnableLighting", [&] { d.EnableLighting(true); }},
+				{"EnableLight", [&] { d.EnableLight(1, true); }},
+				{"LightModelAmbient", [&] { d.LightModelAmbient(0.1f, 0.2f, 0.3f, 1.0f); }},
+				{"LightColor(parameter)", [&] { d.LightColor(0, 1, color); }},
+				{"LightColor(all)", [&] { d.LightColor(1, color, color, color); }},
+				{"LightPosition", [&] { d.LightPosition(2, color); }},
+				{"LightDirection", [&] { d.LightDirection(3, color); }},
+				{"MaterialColor(parameter)", [&] { d.MaterialColor(3, color); }},
+				{"MaterialColor(shininess)", [&] { d.MaterialColor(4, &shininess); }},
+				{"MaterialColor(all)", [&] { d.MaterialColor(color, color, color, color, 16.0f); }},
+				{"TexEnv(color)", [&] { d.TexEnv(0, 1, color); }},
+				{"TexStageCombine(mode)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineParamType>(1),
+					                  static_cast<eGDTextureStageCombineModeParam>(3));
+				}},
+				{"TexStageCombine(source)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineSourceParamType>(1),
+					                  static_cast<eGDTextureStageCombineSourceParam>(3));
+				}},
+				{"TexStageCombine(operand)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineOperandType>(4), static_cast<eGDBlend>(3));
+				}},
+				{"TexStageCombine(scale)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineScaleParamType>(0),
+					                  static_cast<eGDTextureStageCombineScaleParam>(2));
+				}},
+				{"SetCombiner", [&] { d.SetCombiner(combiner, 1); }},
+			};
+			for (auto const &[name, setter]: setters) {
+				setter();
+				DrawFull();
+				setter();
+				if (d.constantsDirty) {
+					std::fprintf(stderr, "repeating %s marked the constants dirty\n", name);
+					assert(false);
+				}
+			}
+			// Capabilities that are render states, not constants, never mark them.
+			for (uint32_t capability: {kGDCapability_DepthTest, kGDCapability_StencilTest, kGDCapability_CullFace,
+			                           kGDCapability_Blend}) {
+				bool const enabled = d.IsEnabled(capability);
+				d.SetCapability(capability, !enabled);
+				assert(!d.constantsDirty);
+				d.SetCapability(capability, enabled);
+			}
+			d.EnableLighting(false);
+			DrawFull();
 
 			// Each real change still marks them.
 			d.TexStageMatrix(nullptr, 0, 0, 0);

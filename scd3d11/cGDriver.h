@@ -19,6 +19,7 @@
 #pragma once
 #include <d3d11.h>
 #include <dxgi.h>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -585,8 +586,20 @@ namespace nSCD3D11 {
 		// The constants last uploaded to stateConstantBuffer. Losing the binding (ClearState) keeps them
 		// valid. Only destroying the buffer clears this.
 		std::vector<uint8_t> constantBufferCache;
-		// Set by every setter feeding the shader constants, except the model-view (drawConstantsDirty).
+		// Set by every setter feeding the shader constants, except the model-view (drawConstantsDirty), and
+		// only when the value really changes: SC4 repeats most state calls around every draw.
 		bool constantsDirty;
+		// Stores state the shader constants read, marking them dirty only if its bytes change. Bytes, not
+		// values, because the constant buffer holds the bytes (-0.0 and 0.0 differ there).
+		void SetConstantBytes(void *target, void const *value, size_t size) {
+			if (memcmp(target, value, size) == 0) return;
+			memcpy(target, value, size);
+			constantsDirty = true;
+		}
+		template <typename T>
+		void SetConstant(T &target, T const &value) {
+			SetConstantBytes(&target, &value, sizeof(T));
+		}
 		bool drawConstantsDirty;
 		// Texture and lighting flag inputs the cached constants were built with.
 		uint32_t constantsFlagInputs;

@@ -316,12 +316,12 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, uint32_t gdFogParam) {
-		constantsDirty = true;
 		if (gdFogParamType == 0 && gdFogParam <= 2) {
-			fogMode = static_cast<uint8_t>(gdFogParam);
+			SetConstant(fogMode, static_cast<uint8_t>(gdFogParam));
 			return;
 		}
 		if (gdFogParamType == 5 && (gdFogParam == 3 || gdFogParam == 4)) {
+			// Not a shader constant: fog always uses eye-space depth.
 			fogSource = static_cast<uint8_t>(gdFogParam);
 			if (gdFogParam == 3)
 				Log(LogCategory::Unsupported,
@@ -332,27 +332,26 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::Fog(uint32_t gdFogParamType, GLfloat const *params) {
-		constantsDirty = true;
 		if (params == nullptr) {
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
 		switch (gdFogParamType) {
 			case 1:
-				memcpy(fogColor, params, sizeof(fogColor));
+				SetConstantBytes(fogColor, params, sizeof(fogColor));
 				break;
 			case 2:
 				if (*params < 0.0f) {
 					SetLastError(DriverError::INVALID_VALUE);
 					return;
 				}
-				fogDensity = *params;
+				SetConstant(fogDensity, *params);
 				break;
 			case 3:
-				fogStart = *params;
+				SetConstant(fogStart, *params);
 				break;
 			case 4:
-				fogEnd = *params;
+				SetConstant(fogEnd, *params);
 				break;
 			default:
 				SetLastError(DriverError::INVALID_ENUM);
@@ -364,26 +363,25 @@ namespace nSCD3D11 {
 	// and the multiplier became D3DRS_AMBIENT, the same state LightModelAmbient writes. Mirror that so
 	// the result clamps and follows the ambient material source the same way.
 	void cGDriver::ColorMultiplier(float r, float g, float b) {
-		constantsDirty = true;
-		lightingEnabled = true;
-		materialAmbient[0] = materialAmbient[1] = materialAmbient[2] = 1.0f;
+		SetConstant(lightingEnabled, true);
+		float const white[3]{1.0f, 1.0f, 1.0f};
+		SetConstantBytes(materialAmbient, white, sizeof(white));
 		LightModelAmbient(r, g, b, 1.0f);
 	}
 
 	// Material diffuse alpha. Below 1 it also replaces the vertex alpha, as in SimGLDX7.
 	void cGDriver::AlphaMultiplier(float a) {
-		constantsDirty = true;
-		lightingEnabled = true;
-		materialDiffuse[3] = a;
-		if (a < 1.0f) diffuseFromVertex = false;
-		else if (diffuseVertexColors) diffuseFromVertex = true;
+		SetConstant(lightingEnabled, true);
+		SetConstant(materialDiffuse[3], a);
+		if (a < 1.0f) SetConstant(diffuseFromVertex, false);
+		else if (diffuseVertexColors) SetConstant(diffuseFromVertex, true);
 	}
 
 	void cGDriver::EnableVertexColors(bool ambient, bool diffuse) {
-		constantsDirty = true;
-		ambientVertexColors = ambient;
+		SetConstant(ambientVertexColors, ambient);
+		// Not a shader constant itself: AlphaMultiplier reads it.
 		diffuseVertexColors = diffuse;
-		diffuseFromVertex = diffuse;
+		SetConstant(diffuseFromVertex, diffuse);
 	}
 
 	void cGDriver::MatrixMode(GLenum mode) {
@@ -432,7 +430,9 @@ namespace nSCD3D11 {
 		                                               : enabledCapabilities[gdCap];
 		if (state == enabled) return;
 		state = enabled;
-		constantsDirty = true;
+		// Only these two are constants. Texture2D reaches them through the flag inputs BindGeometryPipeline
+		// compares, and ApplyRenderStates reads the rest straight from enabledCapabilities.
+		if (gdCap == kGDCapability_AlphaTest || gdCap == kGDCapability_Fog) constantsDirty = true;
 	}
 
 	bool cGDriver::IsEnabled(GLenum gdCap) {
