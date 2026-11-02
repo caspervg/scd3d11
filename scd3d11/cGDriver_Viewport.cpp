@@ -949,6 +949,11 @@ namespace nSCD3D11 {
 			    frame.stridedVertexHashes, static_cast<double>(frame.vertexHashBytes) / 1.0e6, frame.indexHashes,
 			    static_cast<double>(frame.indexHashBytes) / 1.0e6, frame.convertedDraws, frame.vertexCacheHits,
 			    frame.vertexCacheMisses, frame.indexCacheHits, frame.indexCacheMisses);
+			uint32_t const *const groups = frame.constantGroupChanges;
+			Log(LogCategory::Stats,
+			    "slow frame constant changes: projection %u, flags/alpha %u, lights %u, material %u, texture stages %u, "
+			    "fog %u, texture factor %u",
+			    groups[0], groups[1], groups[2], groups[3], groups[4], groups[5], groups[6]);
 		}
 
 		if (summary.start.QuadPart == 0) summary.start = now;

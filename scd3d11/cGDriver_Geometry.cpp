@@ -245,35 +245,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			float normalMatrix[16];
 		};
 
-		struct DriverConstants {
-			float projection[16];
-			uint32_t flags;
-			uint32_t alphaFunction;
-			float alphaReference;
-			uint32_t enabledLights;
-			float globalAmbient[4];
-			float lightAmbient[8][4];
-			float lightDiffuse[8][4];
-			float lightSpecular[8][4];
-			float lightPosition[8][4];
-			float materialAmbient[4];
-			float materialDiffuse[4];
-			float materialSpecular[4];
-			float materialEmission[4];
-			float materialParameters[4];
-			float textureMatrices[2][16];
-
-			struct StageConstants {
-				uint32_t modes[4];
-				uint32_t parameters0[4];
-				uint32_t parameters1[4];
-			} stages[2];
-
-			float fogColor[4];
-			float fogParameters[4];
-			float textureFactor[4];
-		};
-
 		void MakeNormalMatrix(float const *m, float *out) {
 			float const a00=m[0], a01=m[4], a02=m[8], a10=m[1], a11=m[5], a12=m[9];
 			float const a20=m[2], a21=m[6], a22=m[10];
@@ -894,62 +865,92 @@ float4 PSMain(PSInput input) : SV_TARGET
 			++frameStats.drawConstantUploads;
 		}
 
-		// Setters mark the constants dirty. The only other inputs are bound textures and whether the vertex
-		// format carries normals, which can change without a setter and are compared here instead.
-		if (constantsDirty || flagInputs != constantsFlagInputs || constantBufferCache.size() != sizeof(DriverConstants)) {
+		// Setters mark the groups of constants they change. The only other inputs are bound textures and
+		// whether the vertex format carries normals, which can change without a setter and are compared
+		// here instead. Only dirty groups are refreshed and compared with what was last uploaded.
+		bool const fullRefresh = constantBufferCache.size() != sizeof(DriverConstants);
+		uint32_t dirty = fullRefresh ? CONSTANTS_ALL : constantsDirty;
+		if (flagInputs != constantsFlagInputs) dirty |= CONSTANTS_HEADER;
+		if (dirty != 0) {
 			++frameStats.stateRebuilds;
-			DriverConstants constants{};
-			constants.flags = flagInputs;
-			memcpy(constants.projection, matrices[PROJECTION], sizeof(constants.projection));
-			constants.alphaFunction = alphaFunction;
-			constants.alphaReference = alphaReference;
-			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
-			memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
-			memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
-			memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
-			memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
-			memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
-			// Snapshot the projection for the ReShade shadow uniforms. Not gated on lighting: SC4 bakes
-			// its lighting into vertex colours and leaves fixed-function lighting off for the city view,
-			// so waiting for a lit draw would never capture anything. RenderSceneEffects runs at the end
-			// of cSC43DRender::Draw, before any UI, so the last projection seen here is the scene's.
-			CaptureShadowUniforms();
-			memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
-			memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
-			memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
-			memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
-			constants.materialParameters[0] = materialShininess;
-			for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
-				TextureStageState const &source = textureStages[stageIndex];
-				DriverConstants::StageConstants &destination = constants.stages[stageIndex];
-				memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
-				destination.modes[0] = source.environmentMode;
-				destination.modes[1] = source.rgbMode;
-				destination.modes[2] = source.alphaMode;
-				destination.modes[3] = source.rgbScale;
-				destination.parameters0[0] = source.alphaScale;
-				for (uint32_t parameter = 0; parameter < 3; ++parameter) {
-					destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
-					destination.parameters1[parameter] = source.alphaParameters[parameter];
+			DriverConstants &constants = driverConstants;
+			if (dirty & CONSTANTS_HEADER) {
+				constants.flags = flagInputs;
+				if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
+				if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
+				constants.alphaFunction = alphaFunction;
+				constants.alphaReference = alphaReference;
+				constants.enabledLights = 0;
+				if (lit) {
+					if (ambientVertexColors) constants.flags |= 32;
+					if (diffuseFromVertex) constants.flags |= 64;
+					for (uint32_t light = 0; light < 8; ++light)
+						if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
 				}
-				destination.parameters1[3] = source.coordinateSource;
 			}
-			if (lit) {
-				if (ambientVertexColors) constants.flags |= 32;
-				if (diffuseFromVertex) constants.flags |= 64;
-				for (uint32_t light = 0; light < 8; ++light)
-					if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
+			if (dirty & CONSTANTS_PROJECTION) {
+				memcpy(constants.projection, matrices[PROJECTION], sizeof(constants.projection));
+				// Snapshot the projection for the ReShade shadow uniforms. Not gated on lighting: SC4 bakes
+				// its lighting into vertex colours and leaves fixed-function lighting off for the city view,
+				// so waiting for a lit draw would never capture anything. RenderSceneEffects runs at the end
+				// of cSC43DRender::Draw, before any UI, so the last projection seen here is the scene's.
+				CaptureShadowUniforms();
 			}
-			if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
-			memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
-			constants.fogParameters[0] = fogDensity;
-			constants.fogParameters[1] = fogStart;
-			constants.fogParameters[2] = fogEnd;
-			constants.fogParameters[3] = static_cast<float>(fogMode);
-			memcpy(constants.textureFactor, textureFactor, sizeof(constants.textureFactor));
+			if (dirty & CONSTANTS_LIGHTS) {
+				memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
+				memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
+				memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
+				memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
+				memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+			}
+			if (dirty & CONSTANTS_MATERIAL) {
+				memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
+				memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
+				memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
+				memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
+				constants.materialParameters[0] = materialShininess;
+			}
+			if (dirty & CONSTANTS_STAGES) {
+				for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
+					TextureStageState const &source = textureStages[stageIndex];
+					DriverConstants::StageConstants &destination = constants.stages[stageIndex];
+					memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
+					destination.modes[0] = source.environmentMode;
+					destination.modes[1] = source.rgbMode;
+					destination.modes[2] = source.alphaMode;
+					destination.modes[3] = source.rgbScale;
+					destination.parameters0[0] = source.alphaScale;
+					for (uint32_t parameter = 0; parameter < 3; ++parameter) {
+						destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
+						destination.parameters1[parameter] = source.alphaParameters[parameter];
+					}
+					destination.parameters1[3] = source.coordinateSource;
+				}
+			}
+			if (dirty & CONSTANTS_FOG) {
+				memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
+				constants.fogParameters[0] = fogDensity;
+				constants.fogParameters[1] = fogStart;
+				constants.fogParameters[2] = fogEnd;
+				constants.fogParameters[3] = static_cast<float>(fogMode);
+			}
+			if (dirty & CONSTANTS_TEXTURE_FACTOR) {
+				memcpy(constants.textureFactor, textureFactor, sizeof(constants.textureFactor));
+			}
 
-			if (constantBufferCache.size() != sizeof(constants) ||
-			    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
+			// A setter can change a value and change it back before the next draw, so a dirty group is
+			// still compared with the upload, over its own bytes only.
+			uint32_t changed = fullRefresh ? CONSTANTS_ALL : 0;
+			if (!fullRefresh) {
+				uint8_t const *const fresh = reinterpret_cast<uint8_t const *>(&constants);
+				for (uint32_t group = 0; group < CONSTANT_GROUP_COUNT; ++group) {
+					if ((dirty & (1u << group)) == 0) continue;
+					ConstantGroupRange const range = ConstantGroupRanges[group];
+					if (memcmp(constantBufferCache.data() + range.offset, fresh + range.offset, range.size) != 0)
+						changed |= 1u << group;
+				}
+			}
+			if (changed != 0) {
 				D3D11_MAPPED_SUBRESOURCE mapping{};
 				HRESULT result = TakeInjectedFault(FAULT_MAP);
 				if (SUCCEEDED(result)) result = d3dContext->Map(
@@ -957,16 +958,20 @@ float4 PSMain(PSInput input) : SV_TARGET
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
 					NoteDeviceLoss(result);
+					// Refreshed but not uploaded: everything is compared again on the next draw.
+					constantBufferCache.clear();
 					return false;
 				}
 				memcpy(mapping.pData, &constants, sizeof(constants));
 				d3dContext->Unmap(stateConstantBuffer.Get(), 0);
 				++frameStats.stateUploads;
+				for (uint32_t group = 0; group < CONSTANT_GROUP_COUNT; ++group)
+					if (changed & (1u << group)) ++frameStats.constantGroupChanges[group];
 				constantBufferCache.assign(
 					reinterpret_cast<uint8_t const *>(&constants),
 					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
 			}
-			constantsDirty = false;
+			constantsDirty = 0;
 			constantsFlagInputs = flagInputs;
 		}
 

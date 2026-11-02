@@ -109,7 +109,7 @@ namespace nSCD3D11 {
 	                       viewportCullBounds{},
 	                       normalMatrix{},
 	                       normalMatrixDirty(true),
-	                       constantsDirty(true),
+	                       constantsDirty(CONSTANTS_ALL),
 	                       drawConstantsDirty(true),
 	                       constantsFlagInputs(0),
 	                       extensionVertexCursor(0),
@@ -302,7 +302,7 @@ namespace nSCD3D11 {
 			return;
 		}
 		if (alphaFunction == func && memcmp(&alphaReference, &ref, sizeof(ref)) == 0) return;
-		constantsDirty = true;
+		constantsDirty |= CONSTANTS_HEADER;
 		alphaFunction = static_cast<uint8_t>(func);
 		alphaReference = ref;
 	}
@@ -317,7 +317,7 @@ namespace nSCD3D11 {
 
 	void cGDriver::Fog(uint32_t gdFogParamType, uint32_t gdFogParam) {
 		if (gdFogParamType == 0 && gdFogParam <= 2) {
-			SetConstant(fogMode, static_cast<uint8_t>(gdFogParam));
+			SetConstant(CONSTANTS_FOG, fogMode, static_cast<uint8_t>(gdFogParam));
 			return;
 		}
 		if (gdFogParamType == 5 && (gdFogParam == 3 || gdFogParam == 4)) {
@@ -338,20 +338,20 @@ namespace nSCD3D11 {
 		}
 		switch (gdFogParamType) {
 			case 1:
-				SetConstantBytes(fogColor, params, sizeof(fogColor));
+				SetConstantBytes(CONSTANTS_FOG, fogColor, params, sizeof(fogColor));
 				break;
 			case 2:
 				if (*params < 0.0f) {
 					SetLastError(DriverError::INVALID_VALUE);
 					return;
 				}
-				SetConstant(fogDensity, *params);
+				SetConstant(CONSTANTS_FOG, fogDensity, *params);
 				break;
 			case 3:
-				SetConstant(fogStart, *params);
+				SetConstant(CONSTANTS_FOG, fogStart, *params);
 				break;
 			case 4:
-				SetConstant(fogEnd, *params);
+				SetConstant(CONSTANTS_FOG, fogEnd, *params);
 				break;
 			default:
 				SetLastError(DriverError::INVALID_ENUM);
@@ -363,25 +363,25 @@ namespace nSCD3D11 {
 	// and the multiplier became D3DRS_AMBIENT, the same state LightModelAmbient writes. Mirror that so
 	// the result clamps and follows the ambient material source the same way.
 	void cGDriver::ColorMultiplier(float r, float g, float b) {
-		SetConstant(lightingEnabled, true);
+		SetConstant(CONSTANTS_HEADER, lightingEnabled, true);
 		float const white[3]{1.0f, 1.0f, 1.0f};
-		SetConstantBytes(materialAmbient, white, sizeof(white));
+		SetConstantBytes(CONSTANTS_MATERIAL, materialAmbient, white, sizeof(white));
 		LightModelAmbient(r, g, b, 1.0f);
 	}
 
 	// Material diffuse alpha. Below 1 it also replaces the vertex alpha, as in SimGLDX7.
 	void cGDriver::AlphaMultiplier(float a) {
-		SetConstant(lightingEnabled, true);
-		SetConstant(materialDiffuse[3], a);
-		if (a < 1.0f) SetConstant(diffuseFromVertex, false);
-		else if (diffuseVertexColors) SetConstant(diffuseFromVertex, true);
+		SetConstant(CONSTANTS_HEADER, lightingEnabled, true);
+		SetConstant(CONSTANTS_MATERIAL, materialDiffuse[3], a);
+		if (a < 1.0f) SetConstant(CONSTANTS_HEADER, diffuseFromVertex, false);
+		else if (diffuseVertexColors) SetConstant(CONSTANTS_HEADER, diffuseFromVertex, true);
 	}
 
 	void cGDriver::EnableVertexColors(bool ambient, bool diffuse) {
-		SetConstant(ambientVertexColors, ambient);
+		SetConstant(CONSTANTS_HEADER, ambientVertexColors, ambient);
 		// Not a shader constant itself: AlphaMultiplier reads it.
 		diffuseVertexColors = diffuse;
-		SetConstant(diffuseFromVertex, diffuse);
+		SetConstant(CONSTANTS_HEADER, diffuseFromVertex, diffuse);
 	}
 
 	void cGDriver::MatrixMode(GLenum mode) {
@@ -401,7 +401,7 @@ namespace nSCD3D11 {
 			drawConstantsDirty = true;
 			normalMatrixDirty = true;
 		} else {
-			constantsDirty = true;
+			constantsDirty |= CONSTANTS_PROJECTION;
 			ShadowRegistry::NoteProjection(m);
 		}
 		clipRowsDirty = true;
@@ -432,7 +432,7 @@ namespace nSCD3D11 {
 		state = enabled;
 		// Only these two are constants. Texture2D reaches them through the flag inputs BindGeometryPipeline
 		// compares, and ApplyRenderStates reads the rest straight from enabledCapabilities.
-		if (gdCap == kGDCapability_AlphaTest || gdCap == kGDCapability_Fog) constantsDirty = true;
+		if (gdCap == kGDCapability_AlphaTest || gdCap == kGDCapability_Fog) constantsDirty |= CONSTANTS_HEADER;
 	}
 
 	bool cGDriver::IsEnabled(GLenum gdCap) {

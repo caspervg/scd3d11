@@ -1004,6 +1004,29 @@ namespace nSCD3D11 {
 			d.EnableLighting(false);
 			DrawFull();
 
+			// A value changed and changed back before the next draw marks its group but uploads nothing,
+			// and a change in one group uploads the whole buffer with the others as they were.
+			uint32_t const uploads = d.frameStats.stateUploads;
+			float const fogEnd = 5.0f, otherEnd = 6.0f;
+			d.Fog(4, &otherEnd);
+			d.Fog(4, &fogEnd);
+			d.Fog(4, &otherEnd);
+			d.Fog(4, &end);
+			assert(d.constantsDirty == CONSTANTS_FOG);
+			DrawFull();
+			assert(d.frameStats.stateUploads == uploads && !d.constantsDirty);
+			std::vector<uint8_t> const beforeFactor = ReadWholeBuffer(d.stateConstantBuffer.Get());
+			float const factor[4]{0.25f, 0.5f, 0.75f, 1.0f};
+			d.TexEnv(0, 1, factor);
+			assert(d.constantsDirty == CONSTANTS_TEXTURE_FACTOR);
+			DrawFull();
+			assert(d.frameStats.stateUploads == uploads + 1 &&
+			       d.frameStats.constantGroupChanges[6] != 0);
+			std::vector<uint8_t> const afterFactor = ReadWholeBuffer(d.stateConstantBuffer.Get());
+			size_t const factorOffset = offsetof(DriverConstants, textureFactor);
+			assert(std::equal(beforeFactor.begin(), beforeFactor.begin() + factorOffset, afterFactor.begin()));
+			assert(memcmp(afterFactor.data() + factorOffset, factor, sizeof(factor)) == 0);
+
 			// Each real change still marks them.
 			d.TexStageMatrix(nullptr, 0, 0, 0);
 			assert(d.constantsDirty);

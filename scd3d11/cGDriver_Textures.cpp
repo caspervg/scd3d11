@@ -287,7 +287,7 @@ namespace nSCD3D11 {
             return;
         }
         if (textureStages[activeTextureStage].environmentMode == value) return;
-        constantsDirty = true;
+        constantsDirty |= CONSTANTS_STAGES;
         textureStages[activeTextureStage].environmentMode = static_cast<uint8_t>(value);
         if (value == 5) Log(LogCategory::Unsupported, "NV combine4 texture environment requested");
     }
@@ -298,7 +298,7 @@ namespace nSCD3D11 {
             return;
         }
         // Not per stage: SC4 often sets it while the other stage is active (e.g. terrain shadows).
-        SetConstantBytes(textureFactor, value, sizeof(textureFactor));
+        SetConstantBytes(CONSTANTS_TEXTURE_FACTOR, textureFactor, value, sizeof(textureFactor));
     }
 
     void cGDriver::TexParameter(uint32_t target, uint32_t parameter, int32_t value) {
@@ -325,7 +325,7 @@ namespace nSCD3D11 {
 
     void cGDriver::TexStageCoord(uint32_t source) {
         if (textureStages[activeTextureStage].coordinateSource == source) return;
-        constantsDirty = true;
+        constantsDirty |= CONSTANTS_STAGES;
         textureStages[activeTextureStage].coordinateSource = source;
         if ((source & 0xfffffff8) != 0 && (source & 0xfffffff8) != 0x10) {
             Log(LogCategory::Unsupported, "texture coordinate source 0x%08X requested", source);
@@ -352,7 +352,7 @@ namespace nSCD3D11 {
         static_assert(sizeof(result) == sizeof(textureStages[0].matrix), "texture matrices are 4x4");
         if (memcmp(destination, result, sizeof(result)) == 0) return;
         memcpy(destination, result, sizeof(result));
-        constantsDirty = true;
+        constantsDirty |= CONSTANTS_STAGES;
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineParamType parameter, eGDTextureStageCombineModeParam value) {
@@ -363,7 +363,8 @@ namespace nSCD3D11 {
             return;
         }
         TextureStageState &stage = textureStages[activeTextureStage];
-        SetConstant(parameterIndex == 0 ? stage.rgbMode : stage.alphaMode, static_cast<uint8_t>(mode));
+        SetConstant(CONSTANTS_STAGES, parameterIndex == 0 ? stage.rgbMode : stage.alphaMode,
+                    static_cast<uint8_t>(mode));
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineSourceParamType parameter,
@@ -382,7 +383,7 @@ namespace nSCD3D11 {
             Log(LogCategory::Unsupported, "fourth texture-combiner source requested");
             return;
         }
-        SetConstant(parameters[index], static_cast<uint8_t>((parameters[index] & 0xf0) | source));
+        SetConstant(CONSTANTS_STAGES, parameters[index], static_cast<uint8_t>((parameters[index] & 0xf0) | source));
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineOperandType parameter, eGDBlend value) {
@@ -400,7 +401,8 @@ namespace nSCD3D11 {
             Log(LogCategory::Unsupported, "fourth texture-combiner operand requested");
             return;
         }
-        SetConstant(parameters[index], static_cast<uint8_t>((parameters[index] & 0x0f) | ((blend - 2) << 4)));
+        SetConstant(CONSTANTS_STAGES, parameters[index],
+                    static_cast<uint8_t>((parameters[index] & 0x0f) | ((blend - 2) << 4)));
     }
 
     void cGDriver::TexStageCombine(eGDTextureStageCombineScaleParamType parameter,
@@ -412,7 +414,8 @@ namespace nSCD3D11 {
             return;
         }
         TextureStageState &stage = textureStages[activeTextureStage];
-        SetConstant(parameterIndex == 0 ? stage.rgbScale : stage.alphaScale, static_cast<uint8_t>(scale));
+        SetConstant(CONSTANTS_STAGES, parameterIndex == 0 ? stage.rgbScale : stage.alphaScale,
+                    static_cast<uint8_t>(scale));
     }
 
     void cGDriver::SetTexture(uint32_t texture, uint32_t stage) {
@@ -580,15 +583,15 @@ namespace nSCD3D11 {
             return;
         }
         TextureStageState &destination = textureStages[stage];
-        SetConstant(destination.environmentMode, static_cast<uint8_t>(4));
-        SetConstant(destination.rgbMode, static_cast<uint8_t>(combiner.RGBCombineMode));
-        SetConstant(destination.alphaMode, static_cast<uint8_t>(combiner.AlphaCombineMode));
-        SetConstant(destination.rgbScale, static_cast<uint8_t>(combiner.RGBScale));
-        SetConstant(destination.alphaScale, static_cast<uint8_t>(combiner.AlphaScale));
+        SetConstant(CONSTANTS_STAGES, destination.environmentMode, static_cast<uint8_t>(4));
+        SetConstant(CONSTANTS_STAGES, destination.rgbMode, static_cast<uint8_t>(combiner.RGBCombineMode));
+        SetConstant(CONSTANTS_STAGES, destination.alphaMode, static_cast<uint8_t>(combiner.AlphaCombineMode));
+        SetConstant(CONSTANTS_STAGES, destination.rgbScale, static_cast<uint8_t>(combiner.RGBScale));
+        SetConstant(CONSTANTS_STAGES, destination.alphaScale, static_cast<uint8_t>(combiner.AlphaScale));
         for (uint32_t index = 0; index < 3; ++index) {
-            SetConstant(destination.rgbParameters[index], static_cast<uint8_t>(
+            SetConstant(CONSTANTS_STAGES, destination.rgbParameters[index], static_cast<uint8_t>(
                 (combiner.RGBParams[index].OperandType << 4) | combiner.RGBParams[index].SourceType));
-            SetConstant(destination.alphaParameters[index], static_cast<uint8_t>(
+            SetConstant(CONSTANTS_STAGES, destination.alphaParameters[index], static_cast<uint8_t>(
                 (combiner.AlphaParams[index].OperandType << 4) | combiner.AlphaParams[index].SourceType));
         }
     }

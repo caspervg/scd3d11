@@ -17,7 +17,7 @@
 namespace nSCD3D11
 {
 	void cGDriver::EnableLighting(bool enabled) {
-		SetConstant(lightingEnabled, enabled);
+		SetConstant(CONSTANTS_HEADER, lightingEnabled, enabled);
 	}
 
 	void cGDriver::EnableLight(uint32_t light, bool enabled) {
@@ -25,14 +25,14 @@ namespace nSCD3D11
 			SetLastError(DriverError::OUT_OF_RANGE);
 			return;
 		}
-		SetConstant(lightsEnabled[light], enabled);
+		SetConstant(CONSTANTS_HEADER, lightsEnabled[light], enabled);
 	}
 
 	// D3DRS_AMBIENT is a D3DCOLOR: clamped to [0, 1], alpha ignored.
 	void cGDriver::LightModelAmbient(float red, float green, float blue, float) {
 		float const ambient[3]{
 			(std::clamp)(red, 0.0f, 1.0f), (std::clamp)(green, 0.0f, 1.0f), (std::clamp)(blue, 0.0f, 1.0f)};
-		SetConstantBytes(globalAmbient, ambient, sizeof(ambient));
+		SetConstantBytes(CONSTANTS_LIGHTS, globalAmbient, ambient, sizeof(ambient));
 	}
 
 	void cGDriver::LightColor(uint32_t light, uint32_t parameter, float const* color) {
@@ -42,7 +42,7 @@ namespace nSCD3D11
 		}
 		float* destination = parameter == 0 ? lightAmbient[light] :
 		                     (parameter == 1 ? lightDiffuse[light] : lightSpecular[light]);
-		SetConstantBytes(destination, color, sizeof(lightAmbient[light]));
+		SetConstantBytes(CONSTANTS_LIGHTS, destination, color, sizeof(lightAmbient[light]));
 	}
 
 	void cGDriver::LightColor(
@@ -58,7 +58,7 @@ namespace nSCD3D11
 			SetLastError(light >= 8 ? DriverError::OUT_OF_RANGE : DriverError::INVALID_VALUE);
 			return;
 		}
-		SetConstantBytes(lightPosition[light], position, sizeof(lightPosition[light]));
+		SetConstantBytes(CONSTANTS_LIGHTS, lightPosition[light], position, sizeof(lightPosition[light]));
 	}
 
 	void cGDriver::LightDirection(uint32_t light, float const* direction) {
@@ -67,7 +67,7 @@ namespace nSCD3D11
 			return;
 		}
 		float const position[4]{direction[0], direction[1], direction[2], 0.0f};
-		SetConstantBytes(lightPosition[light], position, sizeof(position));
+		SetConstantBytes(CONSTANTS_LIGHTS, lightPosition[light], position, sizeof(position));
 	}
 
 	void cGDriver::MaterialColor(uint32_t parameter, float const* color) {
@@ -76,12 +76,12 @@ namespace nSCD3D11
 			return;
 		}
 		if (parameter == 4) {
-			SetConstant(materialShininess, color[0]);
+			SetConstant(CONSTANTS_MATERIAL, materialShininess, color[0]);
 			return;
 		}
 		float* destination = parameter == 0 ? materialAmbient :
 			(parameter == 1 ? materialDiffuse : (parameter == 2 ? materialSpecular : materialEmission));
-		SetConstantBytes(destination, color, sizeof(materialAmbient));
+		SetConstantBytes(CONSTANTS_MATERIAL, destination, color, sizeof(materialAmbient));
 	}
 
 	void cGDriver::MaterialColor(
@@ -91,10 +91,10 @@ namespace nSCD3D11
 		float const* emission,
 		float shininess)
 	{
-		if (ambient) SetConstantBytes(materialAmbient, ambient, sizeof(materialAmbient));
-		if (diffuse) SetConstantBytes(materialDiffuse, diffuse, sizeof(materialDiffuse));
-		if (specular) SetConstantBytes(materialSpecular, specular, sizeof(materialSpecular));
-		if (emission) SetConstantBytes(materialEmission, emission, sizeof(materialEmission));
-		if (shininess >= 0.0f) SetConstant(materialShininess, shininess);
+		if (ambient) SetConstantBytes(CONSTANTS_MATERIAL, materialAmbient, ambient, sizeof(materialAmbient));
+		if (diffuse) SetConstantBytes(CONSTANTS_MATERIAL, materialDiffuse, diffuse, sizeof(materialDiffuse));
+		if (specular) SetConstantBytes(CONSTANTS_MATERIAL, materialSpecular, specular, sizeof(materialSpecular));
+		if (emission) SetConstantBytes(CONSTANTS_MATERIAL, materialEmission, emission, sizeof(materialEmission));
+		if (shininess >= 0.0f) SetConstant(CONSTANTS_MATERIAL, materialShininess, shininess);
 	}
 }

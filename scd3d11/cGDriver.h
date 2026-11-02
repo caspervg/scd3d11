@@ -70,6 +70,71 @@ namespace nSCD3D11 {
 
 	struct cGDriverTestAccess;
 
+	// The shader's DriverConstants (b1), byte for byte.
+	struct DriverConstants {
+		float projection[16];
+		uint32_t flags;
+		uint32_t alphaFunction;
+		float alphaReference;
+		uint32_t enabledLights;
+		float globalAmbient[4];
+		float lightAmbient[8][4];
+		float lightDiffuse[8][4];
+		float lightSpecular[8][4];
+		float lightPosition[8][4];
+		float materialAmbient[4];
+		float materialDiffuse[4];
+		float materialSpecular[4];
+		float materialEmission[4];
+		float materialParameters[4];
+		float textureMatrices[2][16];
+
+		struct StageConstants {
+			uint32_t modes[4];
+			uint32_t parameters0[4];
+			uint32_t parameters1[4];
+		} stages[2];
+
+		float fogColor[4];
+		float fogParameters[4];
+		float textureFactor[4];
+	};
+
+	// Setters mark the groups of DriverConstants they change, so a draw refreshes and compares only
+	// those. Each group is one contiguous byte range of the struct, in order.
+	enum ConstantGroup : uint32_t {
+		CONSTANTS_PROJECTION = 1u << 0,
+		// flags, alphaFunction, alphaReference and enabledLights.
+		CONSTANTS_HEADER = 1u << 1,
+		CONSTANTS_LIGHTS = 1u << 2,
+		CONSTANTS_MATERIAL = 1u << 3,
+		// Texture matrices and stage modes.
+		CONSTANTS_STAGES = 1u << 4,
+		CONSTANTS_FOG = 1u << 5,
+		CONSTANTS_TEXTURE_FACTOR = 1u << 6,
+	};
+	constexpr uint32_t CONSTANT_GROUP_COUNT = 7;
+	constexpr uint32_t CONSTANTS_ALL = (1u << CONSTANT_GROUP_COUNT) - 1;
+
+	struct ConstantGroupRange {
+		uint32_t offset;
+		uint32_t size;
+	};
+	constexpr ConstantGroupRange ConstantGroupRanges[CONSTANT_GROUP_COUNT]{
+		{offsetof(DriverConstants, projection), offsetof(DriverConstants, flags)},
+		{offsetof(DriverConstants, flags), offsetof(DriverConstants, globalAmbient) - offsetof(DriverConstants, flags)},
+		{offsetof(DriverConstants, globalAmbient),
+		 offsetof(DriverConstants, materialAmbient) - offsetof(DriverConstants, globalAmbient)},
+		{offsetof(DriverConstants, materialAmbient),
+		 offsetof(DriverConstants, textureMatrices) - offsetof(DriverConstants, materialAmbient)},
+		{offsetof(DriverConstants, textureMatrices),
+		 offsetof(DriverConstants, fogColor) - offsetof(DriverConstants, textureMatrices)},
+		{offsetof(DriverConstants, fogColor),
+		 offsetof(DriverConstants, textureFactor) - offsetof(DriverConstants, fogColor)},
+		{offsetof(DriverConstants, textureFactor), sizeof(DriverConstants) - offsetof(DriverConstants, textureFactor)},
+	};
+	static_assert(sizeof(DriverConstants) % 16 == 0, "constant buffers are whole float4 rows");
+
 	class cGDriver final :
 			public cIGZGDriver,
 			public cIGZGBufferRegionExtension,
@@ -521,6 +586,8 @@ namespace nSCD3D11 {
 			uint64_t indexHashBytes = 0;
 			// Indexed draws whose primitive (quads, fans) is converted to a triangle list on the CPU.
 			uint32_t convertedDraws = 0;
+			// State uploads in which each ConstantGroup had changed.
+			uint32_t constantGroupChanges[CONSTANT_GROUP_COUNT]{};
 			// Live shadows. Static passes run at DrawPostStaticView, full window or one dirty rectangle.
 			uint32_t shadowFullPasses = 0;
 			uint32_t shadowPartialPasses = 0;
@@ -588,21 +655,24 @@ namespace nSCD3D11 {
 		std::vector<uint32_t> drawIndexScratch;
 		std::vector<uint8_t> textureUploadScratch;
 		// The constants last uploaded to stateConstantBuffer. Losing the binding (ClearState) keeps them
-		// valid. Only destroying the buffer clears this.
+		// valid. Only destroying the buffer clears this, and then the next draw refreshes every group.
 		std::vector<uint8_t> constantBufferCache;
-		// Set by every setter feeding the shader constants, except the model-view (drawConstantsDirty), and
-		// only when the value really changes: SC4 repeats most state calls around every draw.
-		bool constantsDirty;
-		// Stores state the shader constants read, marking them dirty only if its bytes change. Bytes, not
-		// values, because the constant buffer holds the bytes (-0.0 and 0.0 differ there).
-		void SetConstantBytes(void *target, void const *value, size_t size) {
+		// The constants as the dirty groups were last refreshed. Groups not marked dirty are current.
+		DriverConstants driverConstants{};
+		// ConstantGroup bits, set by every setter feeding the shader constants, except the model-view
+		// (drawConstantsDirty), and only when the value really changes: SC4 repeats most state calls
+		// around every draw.
+		uint32_t constantsDirty;
+		// Stores state the shader constants read, marking its group dirty only if its bytes change. Bytes,
+		// not values, because the constant buffer holds the bytes (-0.0 and 0.0 differ there).
+		void SetConstantBytes(uint32_t group, void *target, void const *value, size_t size) {
 			if (memcmp(target, value, size) == 0) return;
 			memcpy(target, value, size);
-			constantsDirty = true;
+			constantsDirty |= group;
 		}
 		template <typename T>
-		void SetConstant(T &target, T const &value) {
-			SetConstantBytes(&target, &value, sizeof(T));
+		void SetConstant(uint32_t group, T &target, T const &value) {
+			SetConstantBytes(group, &target, &value, sizeof(T));
 		}
 		bool drawConstantsDirty;
 		// Texture and lighting flag inputs the cached constants were built with.
