@@ -17,6 +17,12 @@
 #include <climits>
 #include <cstring>
 #include <emmintrin.h>
+#include <wmmintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
 
 namespace nSCD3D11 {
     bool SourceSpanFits(void const *base, uint64_t rows, uint64_t rowPitch, uint64_t lastRowBytes) {
@@ -26,10 +32,97 @@ namespace nSCD3D11 {
         return RangeFits((rows - 1) * rowPitch, lastRowBytes, available);
     }
 
+    namespace {
+        bool DetectAesNi() {
+#if defined(_MSC_VER)
+            int registers[4];
+            __cpuid(registers, 1);
+            return (registers[2] & (1 << 25)) != 0;
+#else
+            unsigned eax, ebx, ecx, edx;
+            return __get_cpuid(1, &eax, &ebx, &ecx, &edx) && (ecx & (1u << 25)) != 0;
+#endif
+        }
+
+        // Decided once, before any draw, so every key in a process comes from the same function.
+        bool const kAesNi = DetectAesNi();
+    }
+
+    bool ContentHashUsesAes() {
+        return kAesNi;
+    }
+
+    // Two AES rounds per 16-byte block, which spreads every byte of the block over the whole state, so
+    // a difference in one block can only be cancelled by a later block matching a 128-bit value. Two
+    // lanes from 32 bytes let the round latencies overlap. The last block is an overlapping load of the
+    // final 16 bytes and inputs under 16 bytes are read with overlapping 8- or 4-byte loads, so nothing
+    // past the end is read; the length, mixed in at the end, makes those overlaps unambiguous.
+#if defined(__GNUC__) || defined(__clang__)
+#define SCD3D11_TARGET_AES __attribute__((target("aes,sse2")))
+#else
+#define SCD3D11_TARGET_AES
+#endif
+    namespace {
+        SCD3D11_TARGET_AES inline void AesAbsorb(__m128i &lane, __m128i block, __m128i k0, __m128i k1) {
+            lane = _mm_aesenc_si128(_mm_xor_si128(lane, block), k0);
+            lane = _mm_aesenc_si128(lane, k1);
+        }
+    }
+
+    SCD3D11_TARGET_AES XXH128_hash_t AesContentHash(void const *data, size_t size) {
+        uint8_t const *bytes = static_cast<uint8_t const *>(data);
+        __m128i const k0 = _mm_set_epi32(0x243f6a88, static_cast<int>(0x85a308d3), 0x13198a2e, 0x03707344);
+        __m128i const k1 = _mm_set_epi32(static_cast<int>(0xa4093822), 0x299f31d0, 0x082efa98, static_cast<int>(0xec4e6c89));
+        __m128i const k2 = _mm_set_epi32(0x452821e6, 0x38d01377, static_cast<int>(0xbe5466cf), 0x34e90c6c);
+        __m128i const k3 = _mm_set_epi32(static_cast<int>(0xc0ac29b7), static_cast<int>(0xc97c50dd), 0x3f84d5b5,
+                                         static_cast<int>(0xb5470917));
+        __m128i a = k2;
+        __m128i b = k3;
+        if (size >= 16) {
+            size_t const blocks = (size + 15) / 16;
+            size_t i = 0;
+            for (; i + 2 <= blocks - 1; i += 2) {
+                AesAbsorb(a, _mm_loadu_si128(reinterpret_cast<__m128i const *>(bytes + i * 16)), k0, k1);
+                AesAbsorb(b, _mm_loadu_si128(reinterpret_cast<__m128i const *>(bytes + i * 16 + 16)), k0, k1);
+            }
+            if (i + 1 < blocks) {
+                AesAbsorb(a, _mm_loadu_si128(reinterpret_cast<__m128i const *>(bytes + i * 16)), k0, k1);
+            }
+            AesAbsorb(b, _mm_loadu_si128(reinterpret_cast<__m128i const *>(bytes + size - 16)), k0, k1);
+        } else if (size >= 8) {
+            uint64_t first, last;
+            memcpy(&first, bytes, 8);
+            memcpy(&last, bytes + size - 8, 8);
+            AesAbsorb(a, _mm_unpacklo_epi64(_mm_loadl_epi64(reinterpret_cast<__m128i const *>(&first)),
+                                         _mm_loadl_epi64(reinterpret_cast<__m128i const *>(&last))), k0, k1);
+        } else if (size >= 4) {
+            uint32_t first, last;
+            memcpy(&first, bytes, 4);
+            memcpy(&last, bytes + size - 4, 4);
+            AesAbsorb(a, _mm_set_epi32(0, 0, static_cast<int>(last), static_cast<int>(first)), k0, k1);
+        } else if (size > 0) {
+            uint32_t const value = bytes[0] | static_cast<uint32_t>(bytes[size / 2]) << 8 |
+                                   static_cast<uint32_t>(bytes[size - 1]) << 16;
+            AesAbsorb(a, _mm_cvtsi32_si128(static_cast<int>(value)), k0, k1);
+        }
+        __m128i hash = _mm_xor_si128(a, _mm_aesenc_si128(b, k0));
+        hash = _mm_xor_si128(hash, _mm_cvtsi32_si128(static_cast<int>(size)));
+        hash = _mm_aesenc_si128(hash, k1);
+        hash = _mm_aesenc_si128(hash, k2);
+        hash = _mm_aesenclast_si128(hash, k3);
+        XXH128_hash_t digest;
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(&digest), hash);
+        return digest;
+    }
+
+    XXH128_hash_t ContentHash(void const *data, size_t size) {
+        return kAesNi && size <= AES_CONTENT_HASH_MAX_BYTES ? AesContentHash(data, size) : XXH3_128bits(data, size);
+    }
+
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count) {
         size_t const indexBytes = format == DXGI_FORMAT_R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t);
         GeometryCacheKey key;
-        key.digest = XXH3_128bits(indices, static_cast<size_t>(count) * indexBytes);
+        key.digest = ContentHash(indices, static_cast<size_t>(count) * indexBytes);
         key.count = count;
         key.format = static_cast<uint32_t>(format);
         return key;
@@ -48,9 +141,19 @@ namespace nSCD3D11 {
         uint32_t const packedStride = RZVertexFormatStride(format);
         uint8_t const *source = static_cast<uint8_t const *>(vertices);
         GeometryCacheKey key;
+        size_t const packedBytes = static_cast<size_t>(count) * packedStride;
         if (stride == packedStride) {
-            key.digest = XXH3_128bits(source, static_cast<size_t>(count) * packedStride);
+            key.digest = ContentHash(source, packedBytes);
+        } else if (kAesNi && packedBytes <= AES_CONTENT_HASH_MAX_BYTES) {
+            // Gathered, so a padded copy hashes the same bytes with the same function as a packed one.
+            alignas(16) uint8_t gathered[AES_CONTENT_HASH_MAX_BYTES];
+            for (uint32_t i = 0; i < count; ++i) {
+                memcpy(gathered + static_cast<size_t>(i) * packedStride, source + static_cast<size_t>(i) * stride,
+                       packedStride);
+            }
+            key.digest = AesContentHash(gathered, packedBytes);
         } else {
+            // Streaming XXH3 equals XXH3 of the packed bytes, which ContentHash uses at this size.
             XXH3_state_t state;
             XXH3_128bits_reset(&state);
             for (uint32_t i = 0; i < count; ++i) {
