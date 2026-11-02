@@ -145,23 +145,21 @@ namespace nSCD3D11 {
         // (an automata texture whose mips are another car entirely).
         description.MaxLOD = stage.minFilter < 4 ? 0.0f : FLT_MAX;
 
-        uint32_t const key = stage.magFilter |
-                              (static_cast<uint32_t>(stage.minFilter) << 8) |
-                              (static_cast<uint32_t>(stage.wrapU) << 16) |
-                              (static_cast<uint32_t>(stage.wrapV) << 24);
-        auto const cached = samplerStates.find(key);
-        if (cached != samplerStates.end()) {
-            stage.sampler = cached->second;
-            return S_OK;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> &cached = samplerStates[SamplerKey(stage)];
+        if (!cached) {
+            HRESULT const result = d3dDevice->CreateSamplerState(&description, &cached);
+            if (FAILED(result)) {
+                LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateSamplerState", result);
+                return result;
+            }
         }
+        stage.sampler = cached.Get();
+        return S_OK;
+    }
 
-        HRESULT const result = d3dDevice->CreateSamplerState(&description, &stage.sampler);
-        if (FAILED(result)) {
-            LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateSamplerState", result);
-        } else {
-            samplerStates.emplace(key, stage.sampler);
-        }
-        return result;
+    void cGDriver::ReleaseSamplerStates() {
+        for (TextureStageState &stage: textureStages) stage.sampler = nullptr;
+        for (auto &sampler: samplerStates) sampler.Reset();
     }
 
     void cGDriver::GenTextures(int32_t count, uint32_t *textureIds) {
@@ -314,7 +312,7 @@ namespace nSCD3D11 {
         // SC4 sets the same filter and wrap modes before most textured draws. Keep the sampler then.
         if (*fields[parameter] == value) return;
         *fields[parameter] = static_cast<uint8_t>(value);
-        stage.sampler.Reset();
+        stage.sampler = nullptr;
     }
 
     void cGDriver::TexStage(uint32_t stage) {

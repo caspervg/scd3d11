@@ -436,7 +436,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		GeometryCacheSegment *segments,
 		GeometryCache &cache,
 		GeometryCacheKey const &key,
-		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+		ID3D11Buffer *&buffer,
 		uint32_t &offset,
 		uint32_t bindFlags) {
 		auto const cached = cache.find(key);
@@ -453,7 +453,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 		GeometryCacheSegment &segment = segments[cached->second.segment];
 		segment.lastUseFrame = currentFrame;
-		buffer = segment.buffer;
+		buffer = segment.buffer.Get();
 		offset = cached->second.offset;
 		return true;
 	}
@@ -466,7 +466,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		uint32_t requiredSize,
 		uint32_t bindFlags,
 		void const *data,
-		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+		ID3D11Buffer *&buffer,
 		uint32_t &offset) {
 		if (!d3dDevice || !d3dContext || deviceLost || data == nullptr || requiredSize == 0) {
 			return false;
@@ -529,7 +529,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 					others -= segments[victim].capacity;
 					ClearCacheSegment(segments, cache, victim, true);
 				}
-				segment->buffer.Reset();
+				ReleaseSegmentBuffer(*segment);
 				segment->capacity = 0;
 
 				// DYNAMIC buffers cost their full size in 32-bit address space (measured 1:1 on NVIDIA),
@@ -551,7 +551,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer for a dynamic segment", result);
 					LogMemoryStatus(LogCategory::Resource, "when the segment allocation failed");
 					Log(LogCategory::Resource, "dropping the other cached segments and retrying");
-					buffer.Reset();
+					buffer = nullptr;
 					for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
 						if (index != activeSegment) ClearCacheSegment(segments, cache, index, true);
 					}
@@ -562,7 +562,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(dynamic segment)", result);
 					NoteDeviceLoss(result);
-					segment->buffer.Reset();
+					ReleaseSegmentBuffer(*segment);
 					return false;
 				}
 				segment->capacity = newCapacity;
@@ -597,7 +597,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		d3dContext->Unmap(segment->buffer.Get(), 0);
 		segment->cursor = (segment->cursor + requiredSize + 3u) & ~3u;
 		segment->lastUseFrame = currentFrame;
-		buffer = segment->buffer;
+		buffer = segment->buffer.Get();
 		// Remembering the upload is optional: if the bookkeeping cannot allocate, it still draws.
 		bool keyed = false;
 		try {
@@ -744,12 +744,20 @@ float4 PSMain(PSInput input) : SV_TARGET
 		segment.cursor = 0;
 		if (release) {
 			std::vector<GeometryCacheKey>().swap(segment.keys);
-			segment.buffer.Reset();
+			ReleaseSegmentBuffer(segment);
 			segment.capacity = 0;
 			segment.lastUseFrame = 0;
 		} else {
 			segment.keys.clear();
 		}
+	}
+
+	void cGDriver::ReleaseSegmentBuffer(GeometryCacheSegment &segment) {
+		ID3D11Buffer *const buffer = segment.buffer.Get();
+		if (buffer == nullptr) return;
+		if (dynamicVertexBuffer == buffer) dynamicVertexBuffer = nullptr;
+		if (dynamicIndexBuffer == buffer) dynamicIndexBuffer = nullptr;
+		segment.buffer.Reset();
 	}
 
 	bool cGDriver::UploadVertices(uint32_t first, uint32_t count) {
@@ -820,7 +828,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	UINT cGDriver::BindIndexBuffer(DXGI_FORMAT format) {
-		ID3D11Buffer *const buffer = dynamicIndexBuffer.Get();
+		ID3D11Buffer *const buffer = dynamicIndexBuffer;
 		if (buffer != appliedIndexBuffer || format != appliedIndexFormat) {
 			d3dContext->IASetIndexBuffer(buffer, format, 0);
 			appliedIndexBuffer = buffer;
@@ -856,7 +864,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			ID3D11ShaderResourceView *const view = BoundTextureView(stage);
 			if (view == nullptr || FAILED(EnsureSampler(textureStages[stage]))) continue;
 			textureViews[stage] = view;
-			samplers[stage] = textureStages[stage].sampler.Get();
+			samplers[stage] = textureStages[stage].sampler;
 			flagInputs |= 1u << stage;
 		}
 		bool const lit = lightingEnabled;
@@ -964,7 +972,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 		UINT const stride = sizeof(D3D11Vertex);
 		UINT const offset = 0;
-		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
+		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer;
 		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
 			d3dContext->IASetInputLayout(inputLayout.Get());

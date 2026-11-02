@@ -404,12 +404,11 @@ namespace nSCD3D11 {
 				entry.second.texture.Reset();
 				entry.second.view.Reset();
 			}
-			for (TextureStageState &stage: textureStages) stage.sampler.Reset();
 		} else {
 			textures.clear();
 			boundTextures[0] = boundTextures[1] = 0;
 		}
-		samplerStates.clear();
+		ReleaseSamplerStates();
 		depthStencilStates.clear();
 		blendStates.clear();
 		rasterizerStates.clear();
@@ -417,8 +416,8 @@ namespace nSCD3D11 {
 		defaultSampler.Reset();
 		depthRegionScratch.Reset();
 		depthRegionScratchValid = false;
-		dynamicIndexBuffer.Reset();
-		dynamicVertexBuffer.Reset();
+		dynamicIndexBuffer = nullptr;
+		dynamicVertexBuffer = nullptr;
 		for (GeometryCacheSegment &segment: indexBufferSegments) segment = {};
 		for (GeometryCacheSegment &segment: vertexBufferSegments) segment = {};
 		indexBufferCache.clear();

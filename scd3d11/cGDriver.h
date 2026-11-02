@@ -169,7 +169,8 @@ namespace nSCD3D11 {
 		};
 
 		struct TextureStageState {
-			Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+			// Owned by samplerStates. Raw, so binding it on every draw never touches a reference count.
+			ID3D11SamplerState *sampler = nullptr;
 			uint8_t magFilter = 1;
 			uint8_t minFilter = 6;
 			uint8_t wrapU = 3;
@@ -422,8 +423,11 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11Buffer> drawConstantBuffer;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> stateConstantBuffer;
 		bool constantBuffersBound;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicVertexBuffer;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> dynamicIndexBuffer;
+		// The buffers the last upload went to, owned by a cache segment or the terrain stream. Raw, so
+		// switching segments between draws never touches a reference count. Releasing a segment buffer
+		// clears them (ReleaseSegmentBuffer).
+		ID3D11Buffer *dynamicVertexBuffer = nullptr;
+		ID3D11Buffer *dynamicIndexBuffer = nullptr;
 		GeometryCacheSegment vertexBufferSegments[GEOMETRY_CACHE_SEGMENTS];
 		GeometryCacheSegment indexBufferSegments[GEOMETRY_CACHE_SEGMENTS];
 		uint8_t activeVertexBufferSegment;
@@ -608,7 +612,16 @@ namespace nSCD3D11 {
 		uint32_t extensionVertexStart;
 		bool extensionVerticesLocked;
 		std::unordered_map<uint32_t, TextureResource> textures;
-		std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11SamplerState> > samplerStates;
+		// Indexed by SamplerKey: three bits each of mag filter, min filter, wrap U and wrap V, which
+		// TexParameter keeps below 8.
+		static constexpr uint32_t SAMPLER_STATE_COUNT = 4096;
+		static uint32_t SamplerKey(TextureStageState const &stage) {
+			return stage.magFilter | (static_cast<uint32_t>(stage.minFilter) << 3) |
+			       (static_cast<uint32_t>(stage.wrapU) << 6) | (static_cast<uint32_t>(stage.wrapV) << 9);
+		}
+		Microsoft::WRL::ComPtr<ID3D11SamplerState> samplerStates[SAMPLER_STATE_COUNT];
+		// Drops every sampler, and the stages' pointers to them.
+		void ReleaseSamplerStates();
 		uint32_t nextTextureId;
 		uint32_t boundTextures[2];
 		// The view each stage's bound texture resolved to, so draws skip the texture map lookup. Every
@@ -752,7 +765,7 @@ namespace nSCD3D11 {
 			GeometryCacheSegment *segments,
 			GeometryCache &cache,
 			GeometryCacheKey const &key,
-			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+			ID3D11Buffer *&buffer,
 			uint32_t &offset,
 			uint32_t bindFlags);
 
@@ -764,7 +777,7 @@ namespace nSCD3D11 {
 			uint32_t requiredSize,
 			uint32_t bindFlags,
 			void const *data,
-			Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+			ID3D11Buffer *&buffer,
 			uint32_t &offset);
 
 		// Ends the current frame with an event query from frameFences.
@@ -782,6 +795,8 @@ namespace nSCD3D11 {
 
 		// Forgets a segment's cache entries. Release also frees its buffer and bookkeeping.
 		void ClearCacheSegment(GeometryCacheSegment *segments, GeometryCache &cache, uint8_t index, bool release);
+		// Releases a segment's buffer and forgets it as the last upload's buffer.
+		void ReleaseSegmentBuffer(GeometryCacheSegment &segment);
 
 		bool UploadVertices(uint32_t first, uint32_t count);
 
