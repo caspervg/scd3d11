@@ -103,6 +103,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		if (name != 0) return;
 		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
@@ -157,6 +158,7 @@ namespace nSCD3D11 {
 
 	void cGDriver::DrawPrimsIndexed(
 		uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		uint64_t const indexBytes = static_cast<uint64_t>(count) * sizeof(uint16_t);
 		if (name != 0 || count == 0 || indices == nullptr || indexBytes > UINT32_MAX) {
@@ -183,6 +185,7 @@ namespace nSCD3D11 {
 			return;
 		}
 		NoteLiveShadowTerrainView();
+		if (!culled) NoteHash(false, indexBytes);
 		if (!culled && !UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 			IndexCacheKey(DXGI_FORMAT_R16_UINT, indices, count),

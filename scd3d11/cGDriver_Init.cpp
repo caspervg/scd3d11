@@ -19,6 +19,7 @@
 #include <GZServPtrs.h>
 #include <cIGZGraphicSystem.h>
 
+#include <cstdio>
 #include <cstring>
 #include <dxgi1_6.h>
 
@@ -331,6 +332,23 @@ namespace nSCD3D11 {
 			    "still reading them", static_cast<unsigned long long>(segmentRefills),
 			    static_cast<unsigned long long>(segmentRefillDiscards));
 		}
+		for (uint32_t kind = 0; kind < 2; ++kind) {
+			std::string line;
+			for (uint32_t bucket = 0; bucket < HASH_SIZE_BUCKETS; ++bucket) {
+				if (hashSizeHistogram[kind][bucket] == 0) continue;
+				char entry[48];
+				snprintf(entry, sizeof(entry), "%s%s%llu: %llu", line.empty() ? "" : ", ",
+				         bucket + 1 == HASH_SIZE_BUCKETS ? ">" : "<=",
+				         1ull << (bucket + 1 == HASH_SIZE_BUCKETS ? bucket - 1 : bucket),
+				         static_cast<unsigned long long>(hashSizeHistogram[kind][bucket]));
+				line += entry;
+			}
+			if (!line.empty()) {
+				Log(LogCategory::Initialization, "hashed %s span sizes (bytes): %s", kind == 0 ? "vertex" : "index",
+				    line.c_str());
+			}
+		}
+		memset(hashSizeHistogram, 0, sizeof(hashSizeHistogram));
 		vertexBufferCacheHits = vertexBufferCacheMisses = 0;
 		indexBufferCacheHits = indexBufferCacheMisses = 0;
 		segmentRefills = segmentRefillDiscards = 0;

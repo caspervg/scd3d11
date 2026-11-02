@@ -497,6 +497,25 @@ namespace nSCD3D11 {
 			uint32_t terrainStreamRenames = 0;
 			uint64_t cacheUploadBytes = 0;
 			uint32_t cacheRefills = 0;
+			uint32_t vertexCacheHits = 0;
+			uint32_t vertexCacheMisses = 0;
+			uint32_t indexCacheHits = 0;
+			uint32_t indexCacheMisses = 0;
+			// Draw-path cost. drawTicks are time-stamp counter ticks spent inside the draw entry points,
+			// counted with DrawStats only. The rest are counted always.
+			uint64_t drawTicks = 0;
+			// DriverConstants rebuilt from state, and the rebuilds that differed from the last upload.
+			uint32_t stateRebuilds = 0;
+			uint32_t stateUploads = 0;
+			uint32_t drawConstantUploads = 0;
+			// Content keys hashed, and the bytes they read. Strided vertices are hashed one at a time.
+			uint32_t vertexHashes = 0;
+			uint32_t stridedVertexHashes = 0;
+			uint64_t vertexHashBytes = 0;
+			uint32_t indexHashes = 0;
+			uint64_t indexHashBytes = 0;
+			// Indexed draws whose primitive (quads, fans) is converted to a triangle list on the CPU.
+			uint32_t convertedDraws = 0;
 			// Live shadows. Static passes run at DrawPostStaticView, full window or one dirty rectangle.
 			uint32_t shadowFullPasses = 0;
 			uint32_t shadowPartialPasses = 0;
@@ -540,6 +559,22 @@ namespace nSCD3D11 {
 			uint32_t shadowProjectionMismatches = 0;
 		} frameStats;
 		LARGE_INTEGER lastFrameTime{};
+		uint64_t lastFrameTicks = 0;
+		// Times the outermost draw entry point into frameStats.drawTicks while DrawStats is on.
+		uint32_t drawTimerDepth = 0;
+		struct DrawTimer {
+			explicit DrawTimer(cGDriver &driver);
+			~DrawTimer();
+			DrawTimer(DrawTimer const &) = delete;
+			DrawTimer &operator=(DrawTimer const &) = delete;
+			cGDriver &driver;
+			uint64_t start;
+		};
+		// Sizes of the spans content keys hash, by power of two ([0] vertices, [1] indices), logged at
+		// shutdown. Bucket b holds sizes in (2^(b-1), 2^b]; the last one everything larger.
+		static constexpr uint32_t HASH_SIZE_BUCKETS = 20;
+		uint64_t hashSizeHistogram[2][HASH_SIZE_BUCKETS]{};
+		void NoteHash(bool vertices, uint64_t bytes);
 		// Inverse transpose of matrices[MODEL_VIEW], recomputed on the first draw after it changes.
 		float normalMatrix[16];
 		bool normalMatrixDirty;

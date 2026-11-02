@@ -444,8 +444,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 		    !segments[cached->second.segment].buffer) {
 			return false;
 		}
-		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheHits;
-		else ++indexBufferCacheHits;
+		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) {
+			++vertexBufferCacheHits;
+			++frameStats.vertexCacheHits;
+		} else {
+			++indexBufferCacheHits;
+			++frameStats.indexCacheHits;
+		}
 		GeometryCacheSegment &segment = segments[cached->second.segment];
 		segment.lastUseFrame = currentFrame;
 		buffer = segment.buffer;
@@ -468,8 +473,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 		}
 
 		if (UseCachedBuffer(segments, cache, key, buffer, offset, bindFlags)) return true;
-		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheMisses;
-		else ++indexBufferCacheMisses;
+		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) {
+			++vertexBufferCacheMisses;
+			++frameStats.vertexCacheMisses;
+		} else {
+			++indexBufferCacheMisses;
+			++frameStats.indexCacheMisses;
+		}
 
 		// Segment count, actual capacities and entries per segment are all bounded, so an oversized upload
 		// evicts older segments rather than growing the cache past its budget.
@@ -763,6 +773,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		// or release boundary, so pointer and size cannot identify contents. Only the terrain vertex
 		// buffer, which the driver owns, can use generation keys instead of hashing.
 		GeometryCacheKey const key = VertexCacheKey(interleavedFormat, interleavedStride, source, count);
+		uint32_t const packedStride = RZVertexFormatStride(interleavedFormat);
+		NoteHash(true, static_cast<uint64_t>(count) * packedStride);
+		if (interleavedStride != packedStride) ++frameStats.stridedVertexHashes;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 
@@ -789,6 +802,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (indices.empty() || byteSize > (std::numeric_limits<uint32_t>::max)()) {
 			return false;
 		}
+		NoteHash(false, byteSize);
 		return UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 			IndexCacheKey(DXGI_FORMAT_R32_UINT, indices.data(), static_cast<uint32_t>(indices.size())),
@@ -869,11 +883,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 			memcpy(constants->normalMatrix, normalMatrix, sizeof(constants->normalMatrix));
 			d3dContext->Unmap(drawConstantBuffer.Get(), 0);
 			drawConstantsDirty = false;
+			++frameStats.drawConstantUploads;
 		}
 
 		// Setters mark the constants dirty. The only other inputs are bound textures and whether the vertex
 		// format carries normals, which can change without a setter and are compared here instead.
 		if (constantsDirty || flagInputs != constantsFlagInputs || constantBufferCache.size() != sizeof(DriverConstants)) {
+			++frameStats.stateRebuilds;
 			DriverConstants constants{};
 			constants.flags = flagInputs;
 			memcpy(constants.projection, matrices[PROJECTION], sizeof(constants.projection));
@@ -937,6 +953,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				}
 				memcpy(mapping.pData, &constants, sizeof(constants));
 				d3dContext->Unmap(stateConstantBuffer.Get(), 0);
+				++frameStats.stateUploads;
 				constantBufferCache.assign(
 					reinterpret_cast<uint8_t const *>(&constants),
 					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
@@ -1037,6 +1054,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	void cGDriver::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		if (first < 0 || count <= 0) return;
 		// A culled draw skips the upload and the draw, but live shadows still see it below.
@@ -1121,6 +1139,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		if (count == 0) return;
 		if (count < 0 || indices == nullptr || (type != 3 && type != 5)) {
@@ -1193,6 +1212,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
 			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
 			if (indexBytes > UINT32_MAX) return;
+			NoteHash(false, indexBytes);
 			if (!UploadCachedBuffer(
 				    indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 				    IndexCacheKey(indexFormat, indices, static_cast<uint32_t>(count)),
@@ -1206,6 +1226,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
+		++frameStats.convertedDraws;
 		if (!UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
 			return;
 		}
