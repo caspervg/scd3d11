@@ -198,6 +198,9 @@ namespace nSCD3D11::Settings {
 		values.doctor = Resolve(sources, "Doctor", ParseFlag, values.doctor);
 		values.doctorDialog = Resolve(sources, "DoctorDialog", ParseFlag, values.doctorDialog);
 		values.updateCheck = Resolve(sources, "UpdateCheck", ParseFlag, values.updateCheck);
+		values.driverThreading = Resolve(sources, "DriverThreading", ParseFlag, values.driverThreading);
+		values.crashDump = Resolve(sources, "CrashDump", ParseFlag, values.crashDump);
+		values.amdCrashFix = Resolve(sources, "AMDCrashFix", ParseFlag, values.amdCrashFix);
 		values.vertexCacheSegments =
 			Resolve(sources, "VertexCacheSegments", ParseVertexCacheSegments, values.vertexCacheSegments);
 		values.vertexCacheSizeMB = Resolve(sources, "VertexCacheSize", ParseVertexCacheSize, values.vertexCacheSizeMB);

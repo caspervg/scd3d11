@@ -25,6 +25,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # target, the vendored libraries included, must use the same one.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Whole-program optimization for the optimized builds (MSVC: /GL, /LTCG), so calls between source files
+# and into the vendored libraries can be inlined. RelWithDebInfo matches Release, as it is the profiling build.
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+
 if (NOT CMAKE_HOST_WIN32 AND NOT CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR "SCD3D11 targets SimCity 4, a 32-bit Windows application, and must be cross-compiled.")
 endif ()
@@ -108,7 +113,9 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
+        scd3d11/AmdRingFix.cpp
         scd3d11/cGDriversCOMDirector.cpp
+        scd3d11/CrashDump.cpp
         scd3d11/LiveShadowHooks.cpp
         scd3d11/ShadowRegistry.cpp
         scd3d11/TerrainShadowMap.cpp
@@ -185,6 +192,10 @@ if (BUILD_TESTING)
             scd3d11/D3D11Conversions.cpp
             scd3d11/VertexFormatUtils.cpp)
     target_link_libraries(D3D11ConversionsTest PRIVATE d3d11)
+    # MSVC 14.44's /LTCG code generation crashes (C1001) on this test's XXH3 streaming-state calls.
+    set_target_properties(D3D11ConversionsTest PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+            INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF)
 
     scd3d11_add_test(GeometryCacheTest
             tests/GeometryCacheTest.cpp
@@ -219,6 +230,19 @@ if (BUILD_TESTING)
 
     scd3d11_add_test(SettingsTest
             tests/SettingsTest.cpp
+            scd3d11/Settings.cpp
+            scd3d11/Diagnostics.cpp)
+
+    scd3d11_add_test(AmdRingFixTest
+            tests/AmdRingFixTest.cpp
+            scd3d11/AmdRingFix.cpp
+            scd3d11/Settings.cpp
+            scd3d11/Diagnostics.cpp)
+    target_link_libraries(AmdRingFixTest PRIVATE d3d11)
+
+    scd3d11_add_test(CrashDumpTest
+            tests/CrashDumpTest.cpp
+            scd3d11/CrashDump.cpp
             scd3d11/Settings.cpp
             scd3d11/Diagnostics.cpp)
 
