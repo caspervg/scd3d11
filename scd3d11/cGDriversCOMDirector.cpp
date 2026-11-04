@@ -25,6 +25,7 @@
 #include <cISC4App.h>
 #include <cRZBaseString.h>
 #include <cRZCOMDllDirector.h>
+#include <SC4NotificationDialog.h>
 #include "cGDriver.h"
 #include "AmdRingFix.h"
 #include "CrashDump.h"
@@ -63,7 +64,14 @@ namespace nSCD3D11
 		bool DoMessage(cIGZMessage2* message) override {
 			if (message == nullptr || message->GetType() != kCheatIssued) return true;
 			uint32_t const cheat = static_cast<cIGZMessage2Standard*>(message)->GetData1();
-			if (cheat == kLiveShadowsCheat) LiveShadowHooks::TogglePause();
+			if (cheat == kLiveShadowsCheat && LiveShadowHooks::Enabled()) LiveShadowHooks::TogglePause();
+			else if (cheat == kLiveShadowsCheat) {
+				// The patches only go in at startup, and SC4 makes its shadow records as a city loads.
+				SC4NotificationDialog::ShowDialog(
+					cRZBaseString("Live shadows are off in SCD3D11.ini. Set LiveShadows=on and restart SimCity 4, "
+					              "then this cheat pauses and resumes them."),
+					cRZBaseString("SCD3D11"));
+			}
 			else if (cheat == kFrameRateCheat) cGDriver::ToggleFrameRate();
 			return true;
 		}
@@ -72,7 +80,7 @@ namespace nSCD3D11
 			cISC4AppPtr app;
 			cIGZCheatCodeManager* const cheats = app ? app->GetCheatCodeManager() : nullptr;
 			if (cheats == nullptr || !cheats->AddNotification2(this, 0)) return;
-			if (LiveShadowHooks::Enabled()) cheats->RegisterCheatCode(kLiveShadowsCheat, cRZBaseString("LiveShadows"));
+			cheats->RegisterCheatCode(kLiveShadowsCheat, cRZBaseString("LiveShadows"));
 			// SC4's own fps cheat already exists.
 			cheats->RegisterCheatCode(kFrameRateCheat, cRZBaseString("FrameRate"));
 		}
