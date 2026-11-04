@@ -57,6 +57,7 @@ namespace nSCD3D11 {
 		kRedrawTerrainChanged,   // a partial pass saw a new terrain shadow map
 		kRedrawCamera,           // zoom or rotation changed
 		kRedrawTranslated,       // a scroll without ShadowRegistry
+		kRedrawPaused,           // the LiveShadows cheat paused or resumed them
 		kLiveShadowRedrawCauses
 	};
 

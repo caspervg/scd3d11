@@ -939,6 +939,10 @@ namespace nSCD3D11::ShadowRegistry {
 		                  IdList *ids) {
 			// Only the render thread draws overlays, so one scratch list is enough.
 			static std::vector<int32_t> kept;
+			if (LiveShadowHooks::Paused()) {
+				original(manager, eyeToWorld, drawContext, ids);
+				return;
+			}
 			++gDrawCalls;
 			bool const timing = DrawStatsEnabled();
 			LARGE_INTEGER start{};
