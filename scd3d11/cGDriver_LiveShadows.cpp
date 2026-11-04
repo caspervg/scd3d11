@@ -112,8 +112,10 @@ CasterOutput CasterVS(VSInput input) {
 	output.uv = mul(textureMatrix, float4(input.uv, 0.0, 1.0)).xy;
 	return output;
 }
+// Casters read the base level only. A shadow map texel covers several texture
+// texels, so a mip would average thin leaves and poles below the alpha cut.
 void CasterPS(CasterOutput input) {
-	float alpha = material.w != 0.0 ? sourceTexture.Sample(sourceSampler, input.uv).a : 1.0;
+	float alpha = material.w != 0.0 ? sourceTexture.SampleLevel(sourceSampler, input.uv, 0).a : 1.0;
 	uint function = (uint)material.x;
 	float reference = material.y;
 	bool alphaPass = material.z == 0.0 ? alpha > (1.0 / 255.0) :
@@ -142,15 +144,16 @@ RegistryOutput RegistryVS(float3 position : POSITION, float2 uv : TEXCOORD0) {
 // point to the prerendered texture, the UV rectangle clips it as DrawShadows'
 // second stage does, and the alpha test is DrawShadows' GEQUAL. A True3D prop
 // (material.z) has real UVs instead and is alpha-tested through them.
+// DrawShadows filters without mipmaps, so this reads the base level as well.
 void RegistryPS(RegistryOutput input) {
 	if (material.z != 0.0) {
-		clip(sourceTexture.Sample(sourceSampler, input.uv).a - material.y);
+		clip(sourceTexture.SampleLevel(sourceSampler, input.uv, 0).a - material.y);
 		return;
 	}
 	float2 uv = mul(textureMatrix, float4(input.world, 1.0)).xy;
 	float2 inside = step(uvBounds.xy, uv) * step(uv, uvBounds.zw);
 	clip(inside.x * inside.y - 0.5);
-	clip(sourceTexture.Sample(sourceSampler, uv).a - material.y);
+	clip(sourceTexture.SampleLevel(sourceSampler, uv, 0).a - material.y);
 }
 
 float4 FullscreenVS(uint id : SV_VertexID) : SV_POSITION {
