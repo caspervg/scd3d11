@@ -29,6 +29,7 @@
 #include <d3dcompiler.h>
 #include <limits>
 #include <new>
+#include <unordered_map>
 
 namespace nSCD3D11 {
     namespace {
@@ -70,12 +71,22 @@ namespace nSCD3D11 {
         constexpr float kTerrainVertexTolerance = 0.05f;
         // A pixel this close to the drawn terrain surface is terrain.
         constexpr float kTerrainPixelTolerance = 1.0f;
+        // A receiver moves out along its normal by up to this many map texels
+        // before the shadow test: half a texel to the nearest texel centre and
+        // one more to the filter's outer taps, with a little to spare.
+        constexpr float kNormalOffsetTexels = 2.0f;
+        // A painted pixel this close outside an occupant's box still counts as
+        // part of it. Covers the depth buffer's 16-bit steps.
+        constexpr float kOccupantBoxMargin = 0.15f;
+        // Occupant numbers are 16-bit in the map, and 0 means none.
+        constexpr size_t kMaxOccupants = 0xFFFF;
 
         char const kLiveShadowShader[] = R"(
 cbuffer ShadowConstants : register(b0) {
 	column_major float4x4 lightMatrix;
 	column_major float4x4 textureMatrix;
-	float4 material;   // alpha function, reference, alpha-test enabled, textured
+	float4 material;   // casters: alpha function or occupant number, reference, alpha-test enabled, textured
+	                   // composite: depth bias, normal offset, occupant box margin, occupant boxes bound
 	float4 projection0; // p[0], p[5], p[10], p[12]
 	float4 projection1; // p[13], p[14], map texel, opacity
 	float4 uvBounds;    // registry casters: u min, v min, u max, v max
@@ -94,6 +105,8 @@ Texture2D<float> shadowMap : register(t1);
 Texture2D<float2> terrainCeiling : register(t2); // ceiling, umbra
 Texture2D<float4> terrainVertices : register(t3); // altitude, normal x, normal z, cell flipped
 Texture2D<uint2> sceneStencil : register(t4); // bit 0x80 of y: a prerendered model's pixel
+Texture2D<uint> shadowOccupants : register(t5); // the nearest caster's occupant number, 0 when unknown
+Buffer<float4> occupantBoxes : register(t6); // occupant n's world box: low at 2n - 2, high at 2n - 1
 SamplerState sourceSampler : register(s0);
 SamplerState shadowSampler : register(s1);
 SamplerState terrainSampler : register(s2);
@@ -115,7 +128,7 @@ CasterOutput CasterVS(VSInput input) {
 }
 // Casters read the base level only. A shadow map texel covers several texture
 // texels, so a mip would average thin leaves and poles below the alpha cut.
-void CasterPS(CasterOutput input) {
+uint CasterPS(CasterOutput input) : SV_TARGET {
 	float alpha = material.w != 0.0 ? sourceTexture.SampleLevel(sourceSampler, input.uv, 0).a : 1.0;
 	uint function = (uint)material.x;
 	float reference = material.y;
@@ -126,6 +139,7 @@ void CasterPS(CasterOutput input) {
 		 function == 5 ? abs(alpha - reference) > (1.0 / 255.0) :
 		 function == 6 ? alpha >= reference : true);
 	clip(alphaPass ? 1.0 : -1.0);
+	return 0u;
 }
 
 struct RegistryOutput {
@@ -146,15 +160,17 @@ RegistryOutput RegistryVS(float3 position : POSITION, float2 uv : TEXCOORD0) {
 // second stage does, and the alpha test is DrawShadows' GEQUAL. A True3D prop
 // (material.z) has real UVs instead and is alpha-tested through them.
 // DrawShadows filters without mipmaps, so this reads the base level as well.
-void RegistryPS(RegistryOutput input) {
+// The texel keeps the caster's occupant number, for the composite's self test.
+uint RegistryPS(RegistryOutput input) : SV_TARGET {
 	if (material.z != 0.0) {
 		clip(sourceTexture.SampleLevel(sourceSampler, input.uv, 0).a - material.y);
-		return;
+		return (uint)material.x;
 	}
 	float2 uv = mul(textureMatrix, float4(input.world, 1.0)).xy;
 	float2 inside = step(uvBounds.xy, uv) * step(uv, uvBounds.zw);
 	clip(inside.x * inside.y - 0.5);
 	clip(sourceTexture.SampleLevel(sourceSampler, uv, 0).a - material.y);
+	return (uint)material.x;
 }
 
 float4 FullscreenVS(uint id : SV_VertexID) : SV_POSITION {
@@ -209,49 +225,72 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 	if (depth >= 0.999999) discard;
 	float3 viewPosition = ViewPosition(pixel, depth);
 	bool terrainMap = terrainShade.x != 0.0;
-	float3 world = terrainMap ? mul(eyeToWorld, float4(viewPosition, 1.0)).xyz : float3(0.0, 0.0, 0.0);
+	float3 world = mul(eyeToWorld, float4(viewPosition, 1.0)).xyz;
 	// Beyond the city's edge lies SC4's backdrop, below the terrain and so
 	// under its shadow ceiling. Nothing out there casts, and shading it only
 	// leaves patches where edge strips are redrawn without the composite.
 	float2 cityExtent = (terrainCell.zw - 1.0) * terrainCell.x;
 	if (terrainMap && (any(world.xz < -1.0) || any(world.xz > cityExtent + 1.0))) discard;
+	// A prerendered model has its shading and its own shadows painted into its
+	// texture, and its depth is a box around the content that ignores how the
+	// content is turned. The driver marks its pixels in the stencil.
+	bool painted = (sceneStencil.Load(int3(pixel, 0)).y & 0x80u) != 0u;
+	float3 normal = normalize(cross(SurfaceStep(pixel, viewPosition, int2(0, 1)),
+	                                SurfaceStep(pixel, viewPosition, int2(1, 0))));
+	if (normal.z < 0.0) normal = -normal;
+	// How far the pixel lies from the drawn terrain, and SC4's lighting normal there.
+	float3 vertexNormal = float3(0.0, 1.0, 0.0);
+	float terrainGap = 1.0e9;
+	if (terrainMap) terrainGap = abs(world.y - TerrainSurface(world.xz, vertexNormal));
 	// SC4 lights a face by how directly it faces the sun, and its shadow
 	// strength is set for flat ground. A face turned partly away gets less
-	// shadow, and a face that is already unlit gets none.
+	// shadow, and a face that is already unlit gets none. A prerendered model's
+	// faces say nothing about its picture, so its pixels count as flat ground.
 	float facing = 1.0;
 	if (sun.w != 0.0) {
-		// A prerendered model has its shading painted into its texture, and its
-		// depth is a box around the content that ignores how the content is
-		// turned. Its faces say nothing about the picture, so its pixels take
-		// the shadow as flat ground does.
-		bool painted = (sceneStencil.Load(int3(pixel, 0)).y & 0x80u) != 0u;
-		float light = 1.0 / sun.w;
+		float lit = painted ? 1.0 / sun.w : dot(normal, -sun.xyz);
 		// SC4 lights the terrain through vertex normals interpolated across
 		// each triangle. The facets' own normals would switch the shadow on
 		// and off along every crease, so terrain pixels use SC4's.
-		float3 vertexNormal = float3(0.0, 1.0, 0.0);
-		bool ground = false;
-		if (terrainMap) ground = abs(world.y - TerrainSurface(world.xz, vertexNormal)) < terrainCell.y;
-		if (!painted) {
-			float3 normal = normalize(cross(SurfaceStep(pixel, viewPosition, int2(0, 1)),
-			                                SurfaceStep(pixel, viewPosition, int2(1, 0))));
-			if (normal.z < 0.0) normal = -normal;
-			light = dot(normal, -sun.xyz);
-			float3 worldNormal = mul((float3x3)eyeToWorld, normal);
-			ground = ground && worldNormal.y > 0.3 * length(worldNormal);
-		}
-		if (ground) light = dot(vertexNormal, -normalize(mul((float3x3)eyeToWorld, sun.xyz)));
-		facing = saturate(light * sun.w);
+		float3 worldNormal = mul((float3x3)eyeToWorld, normal);
+		if (terrainGap < terrainCell.y && (painted || worldNormal.y > 0.3 * length(worldNormal)))
+			lit = dot(vertexNormal, -normalize(mul((float3x3)eyeToWorld, sun.xyz)));
+		facing = saturate(lit * sun.w);
 		clip(facing - 0.001);
 	}
 	float shade = 0.0;
 	if (terrainShade.w != 0.0) {
-		float4 light = mul(lightMatrix, float4(viewPosition, 1.0));
+		// A surface that casts finds its own depth in the map, one filter tap
+		// away in any direction, and would shadow itself in stripes. Moved out
+		// along its normal, by as much as its slope to the light needs, it no
+		// longer does. The terrain casts nothing and stays where it is, below
+		// the ground quads 0.2 above it.
+		float3 receiver = viewPosition;
+		if (terrainGap > 0.3) {
+			float facingSun = saturate(dot(normal, -sun.xyz));
+			receiver += normal * (material.y * sqrt(1.0 - facingSun * facingSun));
+		}
+		float4 light = mul(lightMatrix, float4(receiver, 1.0));
 		float2 shadowUV = light.xy * float2(0.5, -0.5) + 0.5;
 		if (all(shadowUV >= 0.0) && all(shadowUV <= 1.0) && light.z >= 0.0 && light.z <= 1.0) {
+			int size = (int)(1.0 / projection1.z + 0.5);
+			int2 texel = min(int2(shadowUV * size), size - 1);
+			// A prerendered model never shadows itself, since its picture
+			// already does. Each texel keeps its caster's occupant, and a
+			// painted pixel inside that occupant's box is the occupant's own.
+			bool selfTest = painted && material.w != 0.0;
 			[unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
-				float caster = shadowMap.SampleLevel(shadowSampler, shadowUV + float2(x, y) * projection1.z, 0);
-				shade += light.z > caster + material.x ? 1.0 : 0.0;
+				int2 tap = clamp(texel + int2(x, y), 0, size - 1);
+				if (light.z > shadowMap.Load(int3(tap, 0)) + material.x) {
+					uint occupant = selfTest ? shadowOccupants.Load(int3(tap, 0)) : 0u;
+					bool own = false;
+					if (occupant != 0u) {
+						float3 low = occupantBoxes[occupant * 2u - 2u].xyz - material.z;
+						float3 high = occupantBoxes[occupant * 2u - 1u].xyz + material.z;
+						own = all(world >= low) && all(world <= high);
+					}
+					shade += own ? 0.0 : 1.0;
+				}
 			}
 			shade /= 9.0;
 		}
@@ -301,6 +340,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             float quad[4][3]{};
             bool hasQuad = false;
             bool drawQuad = false;
+            // This pass's number for the caster's occupant, from 1. 0 when there are too many.
+            uint32_t occupant = 0;
             UINT startIndex = 0;
             UINT indexCount = 0;
             INT baseVertex = 0;
@@ -325,8 +366,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             out[2] = a[0] * b[1] - a[1] * b[0];
         }
 
-        float BuildLightMatrix(
-            float const minimum[3], float const maximum[3], float const shadowDirection[3], float matrix[16]) {
+        // Returns the depth range. texel is the widest a map texel gets in view units.
+        float BuildLightMatrix(float const minimum[3], float const maximum[3], float const shadowDirection[3],
+                               float matrix[16], float& texel) {
             float forward[3]{shadowDirection[0], shadowDirection[1], shadowDirection[2]};
             Normalize(forward);
             float helper[3]{
@@ -373,6 +415,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             matrix[13] = -(high[1] + low[1]) / (high[1] - low[1]);
             matrix[14] = -low[2] / (high[2] - low[2]);
             matrix[15] = 1.0f;
+            texel = (std::max)(high[0] - low[0], high[1] - low[1]) / static_cast<float>(kShadowMapSize);
             return high[2] - low[2];
         }
 
@@ -1076,6 +1119,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             srv.Texture2D.MipLevels = 1;
             if (SUCCEEDED(result)) result = d3dDevice->CreateShaderResourceView(
                 pipeline.map.Get(), &srv, &pipeline.mapView);
+            texture.Format = DXGI_FORMAT_R16_UINT;
+            texture.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(result)) result = d3dDevice->CreateTexture2D(&texture, nullptr, &pipeline.occupantMap);
+            if (SUCCEEDED(result)) result = d3dDevice->CreateRenderTargetView(
+                pipeline.occupantMap.Get(), nullptr, &pipeline.occupantTarget);
+            if (SUCCEEDED(result)) result = d3dDevice->CreateShaderResourceView(
+                pipeline.occupantMap.Get(), nullptr, &pipeline.occupantView);
             D3D11_SAMPLER_DESC sampler{};
             sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
             sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -1200,6 +1250,12 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // vector each time is a large allocation per pass.
         static std::vector<RegistryDraw> registryDraws;
         registryDraws.clear();
+        // Each occupant gets a number for this pass, and the world box around
+        // all its casters: low x, y, z, 0, then high x, y, z, 0.
+        static std::unordered_map<void const*, uint32_t> occupantNumbers;
+        static std::vector<float> occupantBoxes;
+        occupantNumbers.clear();
+        occupantBoxes.clear();
         UINT registryVertexCount = 0, registryIndexCount = 0;
         unsigned registryCulled = 0, registryMissingTexture = 0, registryQuadOnly = 0, registryMeshCasters = 0;
         if (haveView) {
@@ -1304,6 +1360,22 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 registryIndexCount += draw.indexCount;
                 if (caster.indices.empty()) ++registryQuadOnly;
                 if (caster.meshUVs) ++registryMeshCasters;
+                void const* const key = caster.occupant != nullptr ? caster.occupant : &caster;
+                auto entry = occupantNumbers.find(key);
+                if (entry != occupantNumbers.end()) {
+                    float* const box = &occupantBoxes[(entry->second - 1) * 8];
+                    for (unsigned axis = 0; axis < 3; ++axis) {
+                        box[axis] = (std::min)(box[axis], caster.low[axis]);
+                        box[4 + axis] = (std::max)(box[4 + axis], caster.high[axis]);
+                    }
+                } else if (occupantBoxes.size() / 8 < kMaxOccupants) {
+                    entry = occupantNumbers.emplace(key, static_cast<uint32_t>(occupantBoxes.size() / 8 + 1)).first;
+                    occupantBoxes.insert(occupantBoxes.end(), {
+                                             caster.low[0], caster.low[1], caster.low[2], 0.0f,
+                                             caster.high[0], caster.high[1], caster.high[2], 0.0f
+                                         });
+                }
+                draw.occupant = entry != occupantNumbers.end() ? entry->second : 0;
                 registryDraws.push_back(draw);
             }
         }
@@ -1372,7 +1444,9 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         };
         float lightView[16]{};
         float lightDepthRange = 1.0f;
-        if (haveCasters) lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView);
+        float mapTexel = 0.0f;
+        if (haveCasters)
+            lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView, mapTexel);
         float lightWorld[16]{};
         if (haveCasters && haveView) Multiply(lightView, worldToView, lightWorld);
         frameStats.shadowPassCasters += static_cast<uint32_t>(pass.casters.size());
@@ -1380,7 +1454,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             ++frameStats.shadowMapRenders;
             frameStats.shadowRegistryCasters += static_cast<uint32_t>(registryDraws.size());
             d3dContext->ClearDepthStencilView(pipeline.mapDepth.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-            d3dContext->OMSetRenderTargets(0, nullptr, pipeline.mapDepth.Get());
+            float const noOccupant[4]{};
+            d3dContext->ClearRenderTargetView(pipeline.occupantTarget.Get(), noOccupant);
+            ID3D11RenderTargetView* const occupantTarget = pipeline.occupantTarget.Get();
+            d3dContext->OMSetRenderTargets(1, &occupantTarget, pipeline.mapDepth.Get());
             D3D11_VIEWPORT mapViewport{
                 0, 0, static_cast<float>(kShadowMapSize), static_cast<float>(kShadowMapSize), 0, 1
             };
@@ -1468,6 +1545,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         // upload per pass, because SC4 recreates shadow records too often to
         // keep them. Each caster is then drawn on its own, with its own
         // projector and texture.
+        bool occupantBoxesReady = false;
         if (!registryDraws.empty()) {
             UINT const registryStride = sizeof(float) * kRegistryVertexFloats;
             uint64_t const vertexBytes = static_cast<uint64_t>(registryVertexCount) * registryStride;
@@ -1512,6 +1590,31 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     }
                     d3dContext->Unmap(pipeline.registryVertices.Get(), 0);
                 }
+                // The self test needs the painted marks as well as the boxes.
+                UINT const boxBytes = static_cast<UINT>(occupantBoxes.size() * sizeof(float));
+                if (uploaded && stencilShaderView && boxBytes != 0) {
+                    if (pipeline.occupantBoxCapacity < boxBytes) {
+                        pipeline.occupantBoxesView.Reset();
+                        pipeline.occupantBoxCapacity = 0;
+                        D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+                        view.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+                        view.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+                        if (SUCCEEDED(ensureBuffer(pipeline.occupantBoxes, pipeline.occupantBoxCapacity, boxBytes,
+                                                   D3D11_BIND_SHADER_RESOURCE))) {
+                            view.Buffer.NumElements = pipeline.occupantBoxCapacity / (sizeof(float) * 4);
+                            if (FAILED(d3dDevice->CreateShaderResourceView(pipeline.occupantBoxes.Get(), &view,
+                                                                           &pipeline.occupantBoxesView)))
+                                pipeline.occupantBoxCapacity = 0;
+                        }
+                    }
+                    D3D11_MAPPED_SUBRESOURCE boxMap{};
+                    if (pipeline.occupantBoxesView &&
+                        SUCCEEDED(d3dContext->Map(pipeline.occupantBoxes.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &boxMap))) {
+                        std::memcpy(boxMap.pData, occupantBoxes.data(), boxBytes);
+                        d3dContext->Unmap(pipeline.occupantBoxes.Get(), 0);
+                        occupantBoxesReady = true;
+                    }
+                }
             }
             frameStats.shadowMeshUploads += static_cast<uint32_t>(registryDraws.size());
             frameStats.shadowUploadBytes += vertexBytes + indexBytes;
@@ -1538,6 +1641,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     ShadowRegistry::Caster const& caster = *draw.caster->caster;
                     std::memcpy(constants.textureMatrix, caster.projector, sizeof(constants.textureMatrix));
                     std::memcpy(constants.uvBounds, caster.uvBounds, sizeof(constants.uvBounds));
+                    constants.material[0] = static_cast<float>(draw.occupant);
                     constants.material[1] = caster.meshUVs ? kDefaultRegistryAlphaReference : alphaReference;
                     constants.material[2] = caster.meshUVs ? 1.0f : 0.0f;
                     d3dContext->UpdateSubresource(pipeline.constants.Get(), 0, nullptr, &constants, 0, 0);
@@ -1670,10 +1774,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         ShadowConstants composite{};
         std::memcpy(composite.lightMatrix, lightView, sizeof(lightView));
         composite.material[0] = kShadowDepthBiasWorld / lightDepthRange;
+        composite.material[1] = kNormalOffsetTexels * mapTexel;
+        composite.material[2] = kOccupantBoxMargin;
+        composite.material[3] = haveCasters && occupantBoxesReady ? 1.0f : 0.0f;
         composite.terrainShade[3] = haveCasters ? 1.0f : 0.0f;
+        if (haveView) std::memcpy(composite.eyeToWorld, eyeToWorld, sizeof(eyeToWorld));
         if (terrainBound) {
             TerrainShadowMap::Map const& map = *terrainMap;
-            std::memcpy(composite.eyeToWorld, eyeToWorld, sizeof(eyeToWorld));
             composite.terrainAxes[0] = map.along[0];
             composite.terrainAxes[1] = map.along[1];
             composite.terrainAxes[2] = map.across[0];
@@ -1742,11 +1849,12 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         d3dContext->PSSetShader(pipeline.compositePS.Get(), nullptr, 0);
         d3dContext->VSSetConstantBuffers(0, 1, &cb);
         d3dContext->PSSetConstantBuffers(0, 1, &cb);
-        ID3D11ShaderResourceView* views[5]{
+        ID3D11ShaderResourceView* views[7]{
             depthShaderView.Get(), pipeline.mapView.Get(), terrainBound ? pipeline.terrainMapView.Get() : nullptr,
-            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr, stencilShaderView.Get()
+            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr, stencilShaderView.Get(),
+            pipeline.occupantView.Get(), occupantBoxesReady ? pipeline.occupantBoxesView.Get() : nullptr
         };
-        d3dContext->PSSetShaderResources(0, 5, views);
+        d3dContext->PSSetShaderResources(0, 7, views);
         ID3D11SamplerState* samplers[3]{
             pipeline.mapSampler.Get(), pipeline.mapSampler.Get(), pipeline.clampSampler.Get()
         };
@@ -1755,8 +1863,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         gpuStamp(2);
         ++frameStats.shadowComposites;
         frameStats.shadowCompositePixels += static_cast<uint64_t>(viewport.Width * viewport.Height);
-        views[0] = views[1] = views[2] = views[3] = views[4] = nullptr;
-        d3dContext->PSSetShaderResources(0, 5, views);
+        for (ID3D11ShaderResourceView*& view : views) view = nullptr;
+        d3dContext->PSSetShaderResources(0, 7, views);
         liveShadowDraws.clear();
         d3dContext->ClearState();
         InvalidateD3D11StateCache();

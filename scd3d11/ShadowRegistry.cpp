@@ -119,6 +119,8 @@ namespace nSCD3D11::ShadowRegistry {
 		constexpr ptrdiff_t kFramePositions = 0x24;
 		constexpr ptrdiff_t kFrameTransform = 0x58;
 		constexpr ptrdiff_t kFrameUVs = 0xA8;
+		// CreateOccupantShadow's argument, the occupant.
+		constexpr ptrdiff_t kFrameOccupant = 0xE0;
 
 		// Relaxed props - those without Is Ground Model (0x8A5E5DB8), which SC4
 		// never shadows - are sorted by what their mesh shows. One whose lowest
@@ -502,19 +504,23 @@ namespace nSCD3D11::ShadowRegistry {
 				world[axis] = rotated[axis] * scale + transform.translation[axis];
 		}
 
-		// Reads the mesh the stash site recorded, provided it belongs to the
-		// CreateOccupantShadow frame this AddShadow was called from. Every value
-		// is checked against what AddShadow itself received.
-		bool RecoverIndices(uint8_t const *returnSlot, uint32_t count, void const *positions, void const *uvs,
-		                    void const *transform, std::vector<uint32_t> &triangles) {
+		// The CreateOccupantShadow frame this AddShadow was called from, or null
+		// when it came from elsewhere. Every value is checked against what
+		// AddShadow itself received.
+		uint8_t const *OccupantShadowFrame(uint8_t const *returnSlot, void const *positions, void const *uvs,
+		                                   void const *transform) {
 			uint8_t const *const frame = returnSlot + kReturnSlotToFrame;
-			if (gStashedFrame == nullptr || gStashedFrame + kStashToFrame != frame) return false;
+			if (gStashedFrame == nullptr || gStashedFrame + kStashToFrame != frame) return nullptr;
 			void const *framePositions = nullptr;
 			void const *frameUVs = nullptr;
 			if (!Read(frame + kFramePositions, framePositions) || !Read(frame + kFrameUVs, frameUVs) ||
 			    framePositions != positions || frameUVs != uvs || frame + kFrameTransform != transform)
-				return false;
+				return nullptr;
+			return frame;
+		}
 
+		// Reads the mesh the stash site recorded for this frame.
+		bool RecoverIndices(uint32_t count, std::vector<uint32_t> &triangles) {
 			MeshHeader mesh{};
 			uint16_t vertexCount = 0;
 			if (!Read(gStashedMesh, mesh) || mesh.vertices == nullptr || mesh.primitives == nullptr ||
@@ -627,8 +633,10 @@ namespace nSCD3D11::ShadowRegistry {
 				return;
 			}
 
-			bool const indexed = RecoverIndices(returnSlot, vertexCount, positions, uvs, transform, caster->indices);
+			uint8_t const *const frame = OccupantShadowFrame(returnSlot, positions, uvs, transform);
+			bool const indexed = frame != nullptr && RecoverIndices(vertexCount, caster->indices);
 			if (!indexed) caster->indices.clear();
+			if (frame != nullptr && !Read(frame + kFrameOccupant, caster->occupant)) caster->occupant = nullptr;
 			if (meshCaster) {
 				void *terrain = nullptr;
 				float ground = caster->low[1];

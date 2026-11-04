@@ -331,6 +331,15 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11Buffer> registryIndices;
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> clampSampler;
 			Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
+			// Beside the map: the occupant number of each texel's caster, and
+			// each numbered occupant's world box, so a prerendered model never
+			// shadows itself.
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> occupantMap;
+			Microsoft::WRL::ComPtr<ID3D11RenderTargetView> occupantTarget;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> occupantView;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> occupantBoxes;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> occupantBoxesView;
+			uint32_t occupantBoxCapacity = 0;
 				uint32_t registryVertexCapacity = 0;
 			uint32_t registryIndexCapacity = 0;
 			// TerrainShadows' ceiling map, uploaded whenever its generation moves.
