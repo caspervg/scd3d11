@@ -72,9 +72,9 @@ namespace nSCD3D11 {
         // A pixel this close to the drawn terrain surface is terrain.
         constexpr float kTerrainPixelTolerance = 1.0f;
         // A receiver moves out along its normal by up to this many map texels
-        // before the shadow test: half a texel to the nearest texel centre and
-        // one more to the filter's outer taps, with a little to spare.
-        constexpr float kNormalOffsetTexels = 2.0f;
+        // before the shadow test: the filter counts texel centres up to two
+        // texels away, and a little more covers the depth buffer's steps.
+        constexpr float kNormalOffsetTexels = 2.5f;
         // A painted pixel this close outside an occupant's box still counts as
         // part of it. Covers the depth buffer's 16-bit steps.
         constexpr float kOccupantBoxMargin = 0.15f;
@@ -274,13 +274,20 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 		float2 shadowUV = light.xy * float2(0.5, -0.5) + 0.5;
 		if (all(shadowUV >= 0.0) && all(shadowUV <= 1.0) && light.z >= 0.0 && light.z <= 1.0) {
 			int size = (int)(1.0 / projection1.z + 0.5);
-			int2 texel = min(int2(shadowUV * size), size - 1);
+			// A box three texels wide around the receiver, each texel counted
+			// by how much of it the box covers. The outer ones are partly in,
+			// so the shadow fades smoothly across texels instead of stepping.
+			float2 centre = shadowUV * size - 0.5;
+			int2 first = int2(floor(centre)) - 1;
+			float2 part = centre - floor(centre);
+			float4 weightX = float4(1.0 - part.x, 1.0, 1.0, part.x);
+			float4 weightY = float4(1.0 - part.y, 1.0, 1.0, part.y);
 			// A prerendered model never shadows itself, since its picture
 			// already does. Each texel keeps its caster's occupant, and a
 			// painted pixel inside that occupant's box is the occupant's own.
 			bool selfTest = painted && material.w != 0.0;
-			[unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
-				int2 tap = clamp(texel + int2(x, y), 0, size - 1);
+			[unroll] for (int y = 0; y < 4; ++y) [unroll] for (int x = 0; x < 4; ++x) {
+				int2 tap = clamp(first + int2(x, y), 0, size - 1);
 				if (light.z > shadowMap.Load(int3(tap, 0)) + material.x) {
 					uint occupant = selfTest ? shadowOccupants.Load(int3(tap, 0)) : 0u;
 					bool own = false;
@@ -289,7 +296,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 						float3 high = occupantBoxes[occupant * 2u - 1u].xyz + material.z;
 						own = all(world >= low) && all(world <= high);
 					}
-					shade += own ? 0.0 : 1.0;
+					shade += own ? 0.0 : weightX[x] * weightY[y];
 				}
 			}
 			shade /= 9.0;
