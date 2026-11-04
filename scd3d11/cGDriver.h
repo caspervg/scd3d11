@@ -376,6 +376,8 @@ namespace nSCD3D11 {
 		// vertices are world coordinates, so it is the pass's view once its
 		// first vertex is seen to lie on the city's height field.
 		float liveShadowTerrainView[16]{};
+		// The projection of that same terrain draw.
+		float liveShadowTerrainProjection[16]{};
 		// The terrain's lowest and highest altitude, for the terrain generation it was read at.
 		float liveShadowTerrainLow = 0.0f;
 		float liveShadowTerrainHigh = 0.0f;

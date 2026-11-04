@@ -729,6 +729,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
     void cGDriver::NoteLiveShadowTerrainView() {
         if (liveShadowTerrainViewValid || !LiveShadowHooks::Enabled()) return;
         std::memcpy(liveShadowTerrainView, matrices[MODEL_VIEW], sizeof(liveShadowTerrainView));
+        std::memcpy(liveShadowTerrainProjection, matrices[PROJECTION], sizeof(liveShadowTerrainProjection));
         // Called right after the reservation was uploaded, which holds at least
         // one vertex. Its format leads with the position.
         std::memcpy(liveShadowTerrainVertex,
@@ -977,6 +978,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 haveView = true;
             }
         }
+        bool const terrainProjection = liveShadowTerrainViewValid;
         // The next pass - or the next frame after a scroll - has its own view.
         liveShadowTerrainViewValid = false;
         if (haveView) {
@@ -998,11 +1000,15 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 liveShadowDraws.end());
         }
         // The composite reconstructs view positions through the pass's own
-        // projection, which a partial pass fits to its dirty rectangle.
+        // projection, which a partial pass fits to its dirty rectangle. SC4
+        // folds each draw's depth offset into that projection, so the terrain's,
+        // drawn without one, is the one that matches the depth buffer.
         float projection[16]{};
         bool const projectionFromCapture = !liveShadowDraws.empty();
-        bool const haveProjection = projectionFromCapture || liveShadowSceneProjectionValid;
-        std::memcpy(projection, !liveShadowDraws.empty() ? liveShadowDraws.front().projection : liveShadowSceneProjection,
+        bool const haveProjection = terrainProjection || projectionFromCapture || liveShadowSceneProjectionValid;
+        std::memcpy(projection,
+                    terrainProjection ? liveShadowTerrainProjection
+                    : projectionFromCapture ? liveShadowDraws.front().projection : liveShadowSceneProjection,
                     sizeof(projection));
 
         // A strip at the city's edge often has no shadow record and no terrain
