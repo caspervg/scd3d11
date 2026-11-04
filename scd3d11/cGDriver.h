@@ -17,6 +17,7 @@
  */
 
 #pragma once
+#include <atomic>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <memory>
@@ -795,6 +796,18 @@ namespace nSCD3D11 {
 		// target, depth view and viewport. For code that shares the context: the frame callback, and overlays
 		// and plugins that hook Present.
 		void RestoreOwnedContextState();
+		// The FrameRate cheat's counter, drawn last before Present while it is on.
+		struct FrameRatePipeline {
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> constants;
+			Microsoft::WRL::ComPtr<ID3D11BlendState> blend;
+			LARGE_INTEGER windowStart{};
+			uint32_t frames = 0;
+			uint32_t shown = 0;
+		} frameRate;
+		static std::atomic<bool> frameRateVisible;
+		void DrawFrameRate();
 		// What something else changed on the immediate context that SCD3D11's cached bindings rely on, or null
 		// when it is still as SCD3D11 left it: the output targets, the viewport, and the geometry pipeline
 		// while it counts as bound.
@@ -878,6 +891,9 @@ namespace nSCD3D11 {
 		// Override SC4's native DirectX driver by presenting its GZCLSID with a
 		// higher version number to GZCOM.
 		static const uint32_t kSCD3D11GDriverGZCLSID = 0x0badb6906;
+
+		// Shows or hides the frame rate counter, for the FrameRate cheat.
+		static void ToggleFrameRate();
 
 		static bool FactoryFunctionPtr2(uint32_t riid, void **ppvObj) {
 			cGDriver *pDriver = new cGDriver();

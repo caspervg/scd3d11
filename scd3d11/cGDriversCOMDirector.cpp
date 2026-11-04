@@ -42,6 +42,7 @@ namespace nSCD3D11
 	// SCD3D11's cheats, typed in SC4's cheat box (Ctrl+X). The box sends kCheatIssued with the cheat's ID in data 1.
 	constexpr uint32_t kCheatIssued = 0x230E27AC;
 	constexpr uint32_t kLiveShadowsCheat = 0x3D11C4EA;
+	constexpr uint32_t kFrameRateCheat = 0x3D11F9A7;
 
 	// Lives as long as the game, so it does not count references.
 	class CheatTarget final : public cIGZMessageTarget2
@@ -61,7 +62,9 @@ namespace nSCD3D11
 
 		bool DoMessage(cIGZMessage2* message) override {
 			if (message == nullptr || message->GetType() != kCheatIssued) return true;
-			if (static_cast<cIGZMessage2Standard*>(message)->GetData1() == kLiveShadowsCheat) LiveShadowHooks::TogglePause();
+			uint32_t const cheat = static_cast<cIGZMessage2Standard*>(message)->GetData1();
+			if (cheat == kLiveShadowsCheat) LiveShadowHooks::TogglePause();
+			else if (cheat == kFrameRateCheat) cGDriver::ToggleFrameRate();
 			return true;
 		}
 
@@ -70,6 +73,8 @@ namespace nSCD3D11
 			cIGZCheatCodeManager* const cheats = app ? app->GetCheatCodeManager() : nullptr;
 			if (cheats == nullptr || !cheats->AddNotification2(this, 0)) return;
 			if (LiveShadowHooks::Enabled()) cheats->RegisterCheatCode(kLiveShadowsCheat, cRZBaseString("LiveShadows"));
+			// SC4's own fps cheat already exists.
+			cheats->RegisterCheatCode(kFrameRateCheat, cRZBaseString("FrameRate"));
 		}
 	} gCheatTarget;
 

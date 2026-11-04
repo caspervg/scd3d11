@@ -377,6 +377,7 @@ namespace nSCD3D11 {
 		swapChainBuffer.Reset();
 		sceneDepth = SceneDepthPipeline{};
 		liveShadows = LiveShadowPipeline{};
+		frameRate = FrameRatePipeline{};
 		liveShadowDraws.clear();
 		liveShadowWorldCasters.clear();
 		liveShadowWorldCastersValid = false;

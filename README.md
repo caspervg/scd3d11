@@ -69,6 +69,13 @@ Standard SimCity 4 switches that SCD3D11 reacts to:
 | `-CustomResolution:enabled` `-r<width>x<height>x32` | Render at an arbitrary resolution |
 | `-UserDir:"<path>"` | User directory. With `SCD3D11.dll` in its `Plugins` folder, the log goes to its `Logs` folder |
 
+Cheats, typed in SC4's cheat box (Ctrl+X):
+
+| Cheat | Effect |
+|-------|--------|
+| `FrameRate` | Shows or hides a small frame rate counter in the top right corner |
+| `LiveShadows` | With `LiveShadows=on`, pauses live shadows and brings back SC4's own, or resumes them |
+
 ### Presentation modes
 
 SCD3D11 implements SC4's native windowed and exclusive-fullscreen modes. Add `-Borderless` (or scvk's `-b` or

@@ -672,6 +672,8 @@ namespace nSCD3D11 {
 		bool const vsyncEnabled = Settings::Get().vsync;
 		NoteRenderPhase("Flush: ReShade effects");
 		FinishReShadeFrame();
+		if (frameRateVisible) DrawFrameRate();
+		else frameRate.windowStart.QuadPart = 0;
 		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
 		NoteRenderPhase("Flush: Present");
 		result = TakeInjectedFault(FAULT_PRESENT);
