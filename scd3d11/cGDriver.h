@@ -378,6 +378,8 @@ namespace nSCD3D11 {
 		float liveShadowTerrainView[16]{};
 		// The projection of that same terrain draw.
 		float liveShadowTerrainProjection[16]{};
+		// The map texel size of the last full static pass, which partial and dynamic passes keep.
+		float liveShadowFullPassTexel = 0.0f;
 		// The terrain's lowest and highest altitude, for the terrain generation it was read at.
 		float liveShadowTerrainLow = 0.0f;
 		float liveShadowTerrainHigh = 0.0f;

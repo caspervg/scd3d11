@@ -375,12 +375,15 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             out[2] = a[0] * b[1] - a[1] * b[0];
         }
 
-        // Returns the depth range. texel is the widest a map texel gets in view units.
+        // Returns the depth range. texel is the size of a map texel in view units.
         // The map covers the casters' box, cut down to the receivers' points when
         // there are any: a receiver can only be shadowed by what lies at its own
-        // place in the map.
+        // place in the map. Its texels are never finer than minTexel, and with an
+        // anchor (the world origin in view space) they lie on a grid fixed to the
+        // world, so passes that share a texel size put their texels in the same places.
         float BuildLightMatrix(float const minimum[3], float const maximum[3], float const shadowDirection[3],
-                               float matrix[16], float& texel, float const (*receivers)[3], unsigned receiverCount) {
+                               float matrix[16], float& texel, float const (*receivers)[3], unsigned receiverCount,
+                               float minTexel, float const* anchor) {
             float forward[3]{shadowDirection[0], shadowDirection[1], shadowDirection[2]};
             Normalize(forward);
             float helper[3]{
@@ -432,6 +435,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             high[0] += 1.0f;
             low[1] -= 1.0f;
             high[1] += 1.0f;
+            float const size = static_cast<float>(kShadowMapSize);
+            texel = (std::max)((std::max)(high[0] - low[0], high[1] - low[1]) / (size - 2.0f), minTexel);
+            for (unsigned axis = 0; axis < 2; ++axis) {
+                float const origin = anchor != nullptr ? Dot(axis == 0 ? right : up, anchor) : low[axis];
+                low[axis] = origin + std::floor((low[axis] - origin) / texel) * texel;
+                high[axis] = low[axis] + texel * size;
+            }
             low[2] -= 4096.0f;
             high[2] += 4096.0f;
             std::memset(matrix, 0, sizeof(float) * 16);
@@ -445,7 +455,6 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             matrix[13] = -(high[1] + low[1]) / (high[1] - low[1]);
             matrix[14] = -low[2] / (high[2] - low[2]);
             matrix[15] = 1.0f;
-            texel = (std::max)(high[0] - low[0], high[1] - low[1]) / static_cast<float>(kShadowMapSize);
             return high[2] - low[2];
         }
 
@@ -1518,9 +1527,16 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                                    eyeToWorld[9];
                     }
         }
-        if (haveCasters)
+        // A partial or dynamic pass keeps the last full pass's texels, so what it
+        // redraws matches the rest of the view instead of standing out in patches.
+        float const anchor[3]{worldToView[12], worldToView[13], worldToView[14]};
+        bool const fullPass = staticPass && !partialPass;
+        if (haveCasters) {
             lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView, mapTexel, receivers,
-                                               receiverCount);
+                                               receiverCount, fullPass ? 0.0f : liveShadowFullPassTexel,
+                                               haveView ? anchor : nullptr);
+            if (fullPass) liveShadowFullPassTexel = mapTexel;
+        }
         float lightWorld[16]{};
         if (haveCasters && haveView) Multiply(lightView, worldToView, lightWorld);
         frameStats.shadowPassCasters += static_cast<uint32_t>(pass.casters.size());
