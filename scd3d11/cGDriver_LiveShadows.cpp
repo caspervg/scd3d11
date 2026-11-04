@@ -93,6 +93,7 @@ Texture2D<float> sceneDepth : register(t0);
 Texture2D<float> shadowMap : register(t1);
 Texture2D<float2> terrainCeiling : register(t2); // ceiling, umbra
 Texture2D<float4> terrainVertices : register(t3); // altitude, normal x, normal z, cell flipped
+Texture2D<uint2> sceneStencil : register(t4); // bit 0x80 of y: a prerendered model's pixel
 SamplerState sourceSampler : register(s0);
 SamplerState shadowSampler : register(s1);
 SamplerState terrainSampler : register(s2);
@@ -219,20 +220,27 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 	// shadow, and a face that is already unlit gets none.
 	float facing = 1.0;
 	if (sun.w != 0.0) {
-		float3 normal = normalize(cross(SurfaceStep(pixel, viewPosition, int2(0, 1)),
-		                                SurfaceStep(pixel, viewPosition, int2(1, 0))));
-		if (normal.z < 0.0) normal = -normal;
-		float light = dot(normal, -sun.xyz);
-		if (terrainMap) {
-			// SC4 lights the terrain through vertex normals interpolated across
-			// each triangle. The facets' own normals would switch the shadow on
-			// and off along every crease, so terrain pixels use SC4's.
-			float3 vertexNormal;
-			float ground = TerrainSurface(world.xz, vertexNormal);
+		// A prerendered model has its shading painted into its texture, and its
+		// depth is a box around the content that ignores how the content is
+		// turned. Its faces say nothing about the picture, so its pixels take
+		// the shadow as flat ground does.
+		bool painted = (sceneStencil.Load(int3(pixel, 0)).y & 0x80u) != 0u;
+		float light = 1.0 / sun.w;
+		// SC4 lights the terrain through vertex normals interpolated across
+		// each triangle. The facets' own normals would switch the shadow on
+		// and off along every crease, so terrain pixels use SC4's.
+		float3 vertexNormal = float3(0.0, 1.0, 0.0);
+		bool ground = false;
+		if (terrainMap) ground = abs(world.y - TerrainSurface(world.xz, vertexNormal)) < terrainCell.y;
+		if (!painted) {
+			float3 normal = normalize(cross(SurfaceStep(pixel, viewPosition, int2(0, 1)),
+			                                SurfaceStep(pixel, viewPosition, int2(1, 0))));
+			if (normal.z < 0.0) normal = -normal;
+			light = dot(normal, -sun.xyz);
 			float3 worldNormal = mul((float3x3)eyeToWorld, normal);
-			if (abs(world.y - ground) < terrainCell.y && worldNormal.y > 0.3 * length(worldNormal))
-				light = dot(vertexNormal, -normalize(mul((float3x3)eyeToWorld, sun.xyz)));
+			ground = ground && worldNormal.y > 0.3 * length(worldNormal);
 		}
+		if (ground) light = dot(vertexNormal, -normalize(mul((float3x3)eyeToWorld, sun.xyz)));
 		facing = saturate(light * sun.w);
 		clip(facing - 0.001);
 	}
@@ -1734,11 +1742,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         d3dContext->PSSetShader(pipeline.compositePS.Get(), nullptr, 0);
         d3dContext->VSSetConstantBuffers(0, 1, &cb);
         d3dContext->PSSetConstantBuffers(0, 1, &cb);
-        ID3D11ShaderResourceView* views[4]{
+        ID3D11ShaderResourceView* views[5]{
             depthShaderView.Get(), pipeline.mapView.Get(), terrainBound ? pipeline.terrainMapView.Get() : nullptr,
-            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr
+            terrainBound ? pipeline.terrainAltitudeView.Get() : nullptr, stencilShaderView.Get()
         };
-        d3dContext->PSSetShaderResources(0, 4, views);
+        d3dContext->PSSetShaderResources(0, 5, views);
         ID3D11SamplerState* samplers[3]{
             pipeline.mapSampler.Get(), pipeline.mapSampler.Get(), pipeline.clampSampler.Get()
         };
@@ -1747,8 +1755,8 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         gpuStamp(2);
         ++frameStats.shadowComposites;
         frameStats.shadowCompositePixels += static_cast<uint64_t>(viewport.Width * viewport.Height);
-        views[0] = views[1] = views[2] = views[3] = nullptr;
-        d3dContext->PSSetShaderResources(0, 4, views);
+        views[0] = views[1] = views[2] = views[3] = views[4] = nullptr;
+        d3dContext->PSSetShaderResources(0, 5, views);
         liveShadowDraws.clear();
         d3dContext->ClearState();
         InvalidateD3D11StateCache();

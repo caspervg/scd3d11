@@ -369,6 +369,7 @@ namespace nSCD3D11 {
 		if (!preserveResources) bufferRegionFlags = 0;
 		depthStencilView.Reset();
 		depthShaderView.Reset();
+		stencilShaderView.Reset();
 		depthStencilTexture.Reset();
 		renderTargetViewSrgb.Reset();
 		renderTargetView.Reset();

@@ -28,7 +28,16 @@ namespace nSCD3D11 {
     }
 
     bool cGDriver::ApplyRenderStates() {
+        // With LiveShadows, a draw that writes depth also says in the stencil whether its pixels belong to
+        // a prerendered model, whose shading is painted into its texture. Their materials filter nearest
+        // without mipmaps, which True3D ones never do. Draws that use the stencil themselves are left alone.
+        bool const markPainted = stencilShaderView && !enabledCapabilities[kGDCapability_StencilTest] &&
+                                 enabledCapabilities[kGDCapability_DepthTest] && depthWriteEnabled;
+        bool const painted = markPainted && textureStageEnabled[0] && boundTextures[0] != 0 &&
+                             textureStages[0].magFilter == 0 && textureStages[0].minFilter == 0;
+        int32_t const reference = !markPainted ? stencilReference : painted ? kPaintedStencilBit : 0;
         uint64_t const depthKey =
+                (static_cast<uint64_t>(markPainted) << 36) |
                 static_cast<uint64_t>(enabledCapabilities[kGDCapability_DepthTest]) |
                 (static_cast<uint64_t>(depthWriteEnabled) << 1) |
                 (static_cast<uint64_t>(depthFunction) << 2) |
@@ -41,7 +50,7 @@ namespace nSCD3D11 {
                 (static_cast<uint64_t>(stencilPassOperation) << 33);
         RecordEncountered(ObservedCategory::RenderState, depthKey);
 
-        if (depthKey != appliedDepthStateKey || stencilReference != appliedStencilReference) {
+        if (depthKey != appliedDepthStateKey || reference != appliedStencilReference) {
             auto depthIterator = depthStencilStates.find(depthKey);
             if (depthIterator == depthStencilStates.end()) {
                 D3D11_DEPTH_STENCIL_DESC description{};
@@ -58,6 +67,14 @@ namespace nSCD3D11 {
                 description.FrontFace.StencilFailOp = D3D11StencilOperation(stencilFailOperation);
                 description.FrontFace.StencilDepthFailOp = D3D11StencilOperation(stencilDepthFailOperation);
                 description.FrontFace.StencilPassOp = D3D11StencilOperation(stencilPassOperation);
+                if (markPainted) {
+                    description.StencilEnable = TRUE;
+                    description.StencilReadMask = 0;
+                    description.StencilWriteMask = kPaintedStencilBit;
+                    description.FrontFace = {
+                        D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_REPLACE, D3D11_COMPARISON_ALWAYS
+                    };
+                }
                 description.BackFace = description.FrontFace;
 
                 Microsoft::WRL::ComPtr<ID3D11DepthStencilState> state;
@@ -68,9 +85,9 @@ namespace nSCD3D11 {
                 }
                 depthIterator = depthStencilStates.emplace(depthKey, state).first;
             }
-            d3dContext->OMSetDepthStencilState(depthIterator->second.Get(), static_cast<UINT>(stencilReference));
+            d3dContext->OMSetDepthStencilState(depthIterator->second.Get(), static_cast<UINT>(reference));
             appliedDepthStateKey = depthKey;
-            appliedStencilReference = stencilReference;
+            appliedStencilReference = reference;
         }
 
         uint64_t const blendKey =

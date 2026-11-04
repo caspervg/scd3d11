@@ -256,6 +256,10 @@ namespace nSCD3D11 {
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilTexture;
 		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilView;
 		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> depthShaderView;
+		// The stencil plane, created only with LiveShadows. While it exists, draws mark the pixels of
+		// prerendered models in kPaintedStencilBit (see ApplyRenderStates).
+		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> stencilShaderView;
+		static constexpr uint8_t kPaintedStencilBit = 0x80;
 		DXGI_FORMAT depthStencilFormat;
 		// Scene depth re-encoded for ReShade's DEPTH semantic (see cGDriver_ReShade.cpp).
 		struct SceneDepthPipeline {

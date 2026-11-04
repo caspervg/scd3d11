@@ -167,6 +167,13 @@ namespace nSCD3D11 {
 		depthViewDescription.Texture2D.MipLevels = 1;
 		result = d3dDevice->CreateShaderResourceView(depthStencilTexture.Get(), &depthViewDescription, &depthShaderView);
 		if (FAILED(result)) LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateShaderResourceView(depth)", result);
+		stencilShaderView.Reset();
+		if (Settings::Get().liveShadows && depthStencilFormat == DXGI_FORMAT_D24_UNORM_S8_UINT) {
+			depthViewDescription.Format = DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+			result = d3dDevice->CreateShaderResourceView(depthStencilTexture.Get(), &depthViewDescription,
+			                                             &stencilShaderView);
+			if (FAILED(result)) LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateShaderResourceView(stencil)", result);
+		}
 
 		D3D11_DEPTH_STENCIL_VIEW_DESC depthStencilDescription{};
 		depthStencilDescription.Format = depthStencilFormat;
@@ -178,6 +185,7 @@ namespace nSCD3D11 {
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateDepthStencilView", result);
 			depthShaderView.Reset();
+			stencilShaderView.Reset();
 			depthStencilTexture.Reset();
 			renderTargetViewSrgb.Reset();
 			renderTargetView.Reset();
@@ -241,6 +249,7 @@ namespace nSCD3D11 {
 		InvalidateD3D11StateCache();
 		depthStencilView.Reset();
 		depthShaderView.Reset();
+		stencilShaderView.Reset();
 		depthStencilTexture.Reset();
 		renderTargetViewSrgb.Reset();
 		renderTargetView.Reset();
