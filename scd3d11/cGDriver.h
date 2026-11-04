@@ -376,6 +376,10 @@ namespace nSCD3D11 {
 		// vertices are world coordinates, so it is the pass's view once its
 		// first vertex is seen to lie on the city's height field.
 		float liveShadowTerrainView[16]{};
+		// The terrain's lowest and highest altitude, for the terrain generation it was read at.
+		float liveShadowTerrainLow = 0.0f;
+		float liveShadowTerrainHigh = 0.0f;
+		uint64_t liveShadowTerrainRangeGeneration = UINT64_MAX;
 		float liveShadowTerrainVertex[3]{};
 		bool liveShadowTerrainViewValid = false;
 		// SC4's sun, in world space as of the last static pass and in view

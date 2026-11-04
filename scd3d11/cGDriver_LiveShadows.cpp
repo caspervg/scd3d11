@@ -374,8 +374,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         }
 
         // Returns the depth range. texel is the widest a map texel gets in view units.
+        // The map covers the casters' box, cut down to the receivers' points when
+        // there are any: a receiver can only be shadowed by what lies at its own
+        // place in the map.
         float BuildLightMatrix(float const minimum[3], float const maximum[3], float const shadowDirection[3],
-                               float matrix[16], float& texel) {
+                               float matrix[16], float& texel, float const (*receivers)[3], unsigned receiverCount) {
             float forward[3]{shadowDirection[0], shadowDirection[1], shadowDirection[2]};
             Normalize(forward);
             float helper[3]{
@@ -403,8 +406,26 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     high[axis] = (std::max)(high[axis], values[axis]);
                 }
             }
-            // XY only needs the caster footprint. Depth includes ample receiver
-            // space because the scene depth buffer decides where shadows land.
+            if (receiverCount != 0) {
+                float seenLow[2]{FLT_MAX, FLT_MAX}, seenHigh[2]{-FLT_MAX, -FLT_MAX};
+                for (unsigned index = 0; index < receiverCount; ++index) {
+                    float const values[2]{Dot(right, receivers[index]), Dot(up, receivers[index])};
+                    for (unsigned axis = 0; axis < 2; ++axis) {
+                        seenLow[axis] = (std::min)(seenLow[axis], values[axis]);
+                        seenHigh[axis] = (std::max)(seenHigh[axis], values[axis]);
+                    }
+                }
+                for (unsigned axis = 0; axis < 2; ++axis) {
+                    low[axis] = (std::max)(low[axis], seenLow[axis]);
+                    high[axis] = (std::min)(high[axis], seenHigh[axis]);
+                    if (!(low[axis] < high[axis])) {
+                        low[axis] = seenLow[axis];
+                        high[axis] = seenHigh[axis];
+                    }
+                }
+            }
+            // Depth includes ample receiver space because the scene depth
+            // buffer decides where shadows land.
             low[0] -= 1.0f;
             high[0] += 1.0f;
             low[1] -= 1.0f;
@@ -1457,8 +1478,41 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         float lightView[16]{};
         float lightDepthRange = 1.0f;
         float mapTexel = 0.0f;
+        // What this pass can see: the viewport's rays, from the lowest terrain
+        // up to the highest caster. Orthographic, so each ray is a line in z.
+        float receivers[8][3]{};
+        unsigned receiverCount = 0;
+        TerrainShadowMap::HeightField const& field = TerrainShadows::Terrain();
+        if (haveCasters && haveView && std::fabs(eyeToWorld[9]) > 1.0e-6f && !field.altitudes.empty() &&
+            projection[0] != 0.0f && projection[5] != 0.0f) {
+            if (liveShadowTerrainRangeGeneration != liveShadowTerrainGeneration) {
+                auto const range = std::minmax_element(field.altitudes.begin(), field.altitudes.end());
+                liveShadowTerrainLow = *range.first;
+                liveShadowTerrainHigh = *range.second;
+                liveShadowTerrainRangeGeneration = liveShadowTerrainGeneration;
+            }
+            float top = liveShadowTerrainHigh;
+            for (unsigned mask = 0; mask < 8; ++mask) {
+                float const corner[3]{
+                    (mask & 1) ? boundsHigh[0] : boundsLow[0], (mask & 2) ? boundsHigh[1] : boundsLow[1],
+                    (mask & 4) ? boundsHigh[2] : boundsLow[2]
+                };
+                top = (std::max)(top, eyeToWorld[1] * corner[0] + eyeToWorld[5] * corner[1] +
+                                      eyeToWorld[9] * corner[2] + eyeToWorld[13]);
+            }
+            for (float const ndcX : {-1.0f, 1.0f})
+                for (float const ndcY : {-1.0f, 1.0f})
+                    for (float const height : {liveShadowTerrainLow, top}) {
+                        float* const point = receivers[receiverCount++];
+                        point[0] = (ndcX - projection[12]) / projection[0];
+                        point[1] = (ndcY - projection[13]) / projection[5];
+                        point[2] = (height - eyeToWorld[1] * point[0] - eyeToWorld[5] * point[1] - eyeToWorld[13]) /
+                                   eyeToWorld[9];
+                    }
+        }
         if (haveCasters)
-            lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView, mapTexel);
+            lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView, mapTexel, receivers,
+                                               receiverCount);
         float lightWorld[16]{};
         if (haveCasters && haveView) Multiply(lightView, worldToView, lightWorld);
         frameStats.shadowPassCasters += static_cast<uint32_t>(pass.casters.size());
