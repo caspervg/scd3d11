@@ -35,6 +35,8 @@ namespace nSCD3D11 {
     namespace {
         constexpr UINT kShadowMapSize = 2048;
         constexpr float kShadowDepthBiasWorld = 0.05f;
+        // Plus this many of the depth buffer's steps, which a rebuilt position can be off by.
+        constexpr float kDepthStepsOfBias = 3.0f;
         // The black the casters composite with until SC4's own shadow
         // parameters have been read.
         constexpr float kFallbackShadowOpacity = 0.38f;
@@ -1845,7 +1847,10 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
 
         ShadowConstants composite{};
         std::memcpy(composite.lightMatrix, lightView, sizeof(lightView));
-        composite.material[0] = kShadowDepthBiasWorld / lightDepthRange;
+        // Depth16 rounds the scene depth onto 1/65536 steps of the projection's
+        // depth range, and the composite rebuilds positions from it.
+        float const depthStep = projection[10] != 0.0f ? 2.0f / std::fabs(projection[10]) / 65536.0f : 0.0f;
+        composite.material[0] = (kShadowDepthBiasWorld + kDepthStepsOfBias * depthStep) / lightDepthRange;
         composite.material[1] = kNormalOffsetTexels * mapTexel;
         composite.material[2] = kOccupantBoxMargin;
         composite.material[3] = haveCasters && occupantBoxesReady ? 1.0f : 0.0f;
