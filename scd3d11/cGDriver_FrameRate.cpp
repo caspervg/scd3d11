@@ -10,7 +10,7 @@
 
 // The FrameRate cheat's counter: frames per second in small white digits in
 // the top right corner, drawn last before each Present. It needs no font: the
-// pixel shader holds a 3x5 glyph for each character it can show.
+// pixel shader holds a 3x5 glyph for each digit.
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
@@ -24,12 +24,11 @@ namespace nSCD3D11 {
 		char const kFrameRateShader[] = R"(
 cbuffer FrameRateConstants : register(b0) {
 	float4 area; // left, top, pixels per glyph cell
-	uint4 text;  // x: up to 8 glyphs, 4 bits each, first in the lowest bits; y: how many
+	uint4 text;  // x: up to 8 digits, 4 bits each, first in the lowest bits; y: how many
 };
-// 3x5 glyphs, bit row * 3 + column: 0 to 9, space, f, p, s, and two blanks
-// so that any 4-bit glyph number is in range.
+// 3x5 digits, bit row * 3 + column, then blanks so that any 4-bit glyph number is in range.
 static const uint kGlyphs[16] = {
-	31599, 29850, 29671, 31207, 18925, 31183, 31695, 18727, 31727, 31215, 0, 5070, 5103, 14478, 0, 0
+	31599, 29850, 29671, 31207, 18925, 31183, 31695, 18727, 31727, 31215, 0, 0, 0, 0, 0, 0
 };
 float4 VSMain(uint id : SV_VertexID) : SV_POSITION {
 	float2 uv = float2((id << 1) & 2, id & 2);
@@ -60,8 +59,6 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		};
 		static_assert(sizeof(FrameRateConstants) % 16 == 0, "constant buffers are sized in 16-byte registers");
 
-		// The glyph numbers of kGlyphs.
-		constexpr uint32_t kSpace = 10, kF = 11, kP = 12, kS = 13;
 		// Frames are counted over this long before the number changes.
 		constexpr double kWindowSeconds = 0.5;
 	}
@@ -125,10 +122,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		uint32_t count = 0;
 		auto add = [&](uint32_t glyph) { constants.text[0] |= glyph << (4 * count++); };
 		for (char const digit : label) add(static_cast<uint32_t>(digit - '0'));
-		for (uint32_t const glyph : {kSpace, kF, kP, kS}) add(glyph);
 		constants.text[1] = count;
-		// About 1/50 of the window's height, at least one pixel per cell.
-		float const cell = (std::max)(1.0f, std::round(static_cast<float>(windowHeight) / 360.0f));
+		// About 1/100 of the window's height, at least one pixel per cell.
+		float const cell = (std::max)(1.0f, std::round(static_cast<float>(windowHeight) / 720.0f));
 		float const width = static_cast<float>(4 * count + 1) * cell, height = 7.0f * cell;
 		constants.area[0] = static_cast<float>(windowWidth) - width - 2.0f * cell;
 		constants.area[1] = 2.0f * cell;
