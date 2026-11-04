@@ -59,6 +59,19 @@ namespace nSCD3D11::Doctor {
 		bool inUse = false;
 	};
 
+	// SC4's render properties that decide which shadows exist at all.
+	struct ShadowSettings {
+		// The Shadows graphics option: 0 for Low, 3 for Medium, 5 for High. Props get a shadow only from 3 up.
+		int32_t quality = 5;
+		// kRenderShadows: without it SC4 never draws a shadow record.
+		bool shadows = true;
+		// kRenderFloraShadows.
+		bool floraShadows = true;
+		// kForcePointSampling and kForceBilinear override every texture's filter.
+		bool pointSampling = false;
+		bool bilinear = false;
+	};
+
 	// A setting SCD3D11 could not read and ignored. The source is "command line" or "SCD3D11.ini".
 	struct RejectedSetting {
 		std::string name;
@@ -133,6 +146,13 @@ namespace nSCD3D11::Doctor {
 		std::vector<RejectedSetting> rejectedSettings;
 		// SC4D3D11.log, where SCD3D11 before v0.3 wrote its log, is still there.
 		bool oldLogLeftOver = false;
+		// LiveShadows=on, and whether its patches went in: those for network pieces and True3D props, and
+		// those that take over the shadows of buildings, flora and BAT props.
+		bool liveShadows = false;
+		bool liveShadowHooks = false;
+		bool shadowRegistry = false;
+		// Unknown when the game could not be asked.
+		std::optional<ShadowSettings> shadowSettings;
 	};
 
 	std::vector<Finding> Diagnose(Environment const &environment);

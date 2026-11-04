@@ -364,6 +364,27 @@ int main() {
 		assert(!Has(findings, Severity::Warning, "SC4RenderServices.dll is built"));
 		assert(Has(findings, Severity::Warning, "SC4RenderServices v0.7.1 is older than v0.8.1"));
 	}
+	{
+		// Live shadows report SC4's own shadow settings, and the ones that remove shadows.
+		Environment environment = Clean();
+		environment.liveShadows = environment.liveShadowHooks = environment.shadowRegistry = true;
+		environment.shadowSettings = ShadowSettings{};
+		auto findings = Diagnose(environment);
+		assert(findings.size() == 1 && Has(findings, Severity::Note, "Shadows option is High (5), flora shadows are on"));
+		environment.shadowSettings->quality = 0;
+		environment.shadowSettings->shadows = false;
+		findings = Diagnose(environment);
+		assert(Has(findings, Severity::Warning, "props such as trees, light poles and fences cast no shadow"));
+		assert(Has(findings, Severity::Warning, "kRenderShadows property is off"));
+		environment.shadowRegistry = false;
+		assert(Has(Diagnose(environment), Severity::Warning, "keep SC4's flat shadows"));
+		environment.liveShadowHooks = false;
+		findings = Diagnose(environment);
+		assert(findings.size() == 1 && Has(findings, Severity::Problem, "live shadows stay off"));
+		// Another game version is already a problem of its own.
+		environment.gameVersion641 = false;
+		assert(!Has(Diagnose(environment), Severity::Problem, "live shadows stay off"));
+	}
 	assert(VersionLabel("1.4.1.0") == "v1.4.1");
 	assert(VersionLabel("0.8.2") == "v0.8.2");
 	assert(VersionLabel("1.0.0.3") == "v1.0.0.3");

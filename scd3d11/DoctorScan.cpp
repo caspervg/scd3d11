@@ -12,7 +12,9 @@
 
 #include "Diagnostics.h"
 #include "GameVersion.h"
+#include "LiveShadowHooks.h"
 #include "Settings.h"
+#include "ShadowRegistry.h"
 
 #include "FileSystem.h"
 #include "IniReader.h"
@@ -334,6 +336,35 @@ namespace nSCD3D11::Doctor {
 			return context.monitors;
 		}
 
+		// SC4's render properties (the object at 0x00B43CC4) keep their bools in a vector at +0x0C, 0x20 apart, and
+		// their ints in one at +0x18, 0x28 apart, each value 0x1C into its entry. CreateOccupantShadow reads
+		// kShadowQuality (int 12) this way at 0x0049132C, and DrawOverlays kRenderShadows (bool 9) at 0x00739338.
+		// Only for game version 1.1.641.
+		bool ReadShadowSettings(ShadowSettings &settings) {
+#if defined(_MSC_VER)
+			__try {
+				uint8_t const *const *const properties = *reinterpret_cast<uint8_t const *const *const *>(0x00B43CC4);
+				if (properties == nullptr) return false;
+				uint8_t const *const bools = properties[0x0C / sizeof(void *)];
+				uint8_t const *const boolsEnd = properties[0x10 / sizeof(void *)];
+				uint8_t const *const ints = properties[0x18 / sizeof(void *)];
+				uint8_t const *const intsEnd = properties[0x1C / sizeof(void *)];
+				if (bools == nullptr || ints == nullptr || boolsEnd - bools < 15 * 0x20 || intsEnd - ints < 13 * 0x28)
+					return false;
+				settings.quality = *reinterpret_cast<int32_t const *>(ints + 12 * 0x28 + 0x1C);
+				settings.shadows = bools[9 * 0x20 + 0x1C] != 0;
+				settings.floraShadows = bools[14 * 0x20 + 0x1C] != 0;
+				settings.pointSampling = bools[5 * 0x20 + 0x1C] != 0;
+				settings.bilinear = bools[6 * 0x20 + 0x1C] != 0;
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+#else
+			return false;
+#endif
+		}
+
 		// The flag the 4GB patch sets in the exe's header.
 		bool IsLargeAddressAware() {
 			auto const base = reinterpret_cast<uint8_t const *>(GetModuleHandleW(nullptr));
@@ -444,6 +475,11 @@ namespace nSCD3D11::Doctor {
 			environment.gpuNumber = Settings::Get().gpu.number;
 			environment.monitors = Monitors();
 			environment.largeAddressAware = IsLargeAddressAware();
+			environment.liveShadows = Settings::Get().liveShadows;
+			environment.liveShadowHooks = LiveShadowHooks::Enabled();
+			environment.shadowRegistry = ShadowRegistry::Enabled();
+			ShadowSettings shadowSettings;
+			if (environment.gameVersion641 && ReadShadowSettings(shadowSettings)) environment.shadowSettings = shadowSettings;
 			ReadWine(environment);
 			ReadIni(environment);
 			for (Settings::Rejection const &rejection : Settings::Rejected()) {
