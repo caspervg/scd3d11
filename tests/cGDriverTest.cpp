@@ -7,6 +7,8 @@
 #include <cfloat>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <utility>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -151,6 +153,34 @@ namespace nSCD3D11 {
 			d.activeIndexBufferSegment = d.activeVertexBufferSegment = 0;
 			d.indexBufferCacheHits = d.indexBufferCacheMisses = 0;
 			d.vertexCacheTrimmed = d.indexCacheTrimmed = false;
+			d.dynamicVertexBuffer = d.dynamicIndexBuffer = nullptr;
+		}
+
+		// The last upload's buffers are raw pointers into the segments, so releasing a segment's buffer
+		// must forget them rather than leave them dangling.
+		void ReleasedSegmentsClearTheUploadBuffers() {
+			ResetGeometryCache();
+			uint32_t const indices[]{0, 1, 2};
+			DrawFullscreen(255, 0, 0);
+			ColorVertex const vertices[3]{
+				{{-1.0f, -1.0f, 0.0f}, {255, 0, 0, 255}},
+				{{3.0f, -1.0f, 0.0f}, {255, 0, 0, 255}},
+				{{-1.0f, 3.0f, 0.0f}, {255, 0, 0, 255}},
+			};
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
+			d.DrawElements(0, 3, 5, indices);
+			assert(d.dynamicVertexBuffer == d.vertexBufferSegments[d.activeVertexBufferSegment].buffer.Get());
+			assert(d.dynamicIndexBuffer == d.indexBufferSegments[d.activeIndexBufferSegment].buffer.Get());
+			d.ClearCacheSegment(d.vertexBufferSegments, d.vertexBufferCache, d.activeVertexBufferSegment, true);
+			assert(d.dynamicVertexBuffer == nullptr && d.dynamicIndexBuffer != nullptr);
+			d.ClearCacheSegment(d.indexBufferSegments, d.indexBufferCache, d.activeIndexBufferSegment, true);
+			assert(d.dynamicIndexBuffer == nullptr);
+			// The next draw uploads again and draws, over a green fill.
+			DrawFullscreen(0, 255, 0);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, vertices);
+			d.DrawElements(0, 3, 5, indices);
+			assert(d.dynamicVertexBuffer != nullptr && d.dynamicIndexBuffer != nullptr);
+			assert(Pixel(1, 1) == 0x0000ffff);
 		}
 
 		// Segments stay bound at offset 0 and draws start at their upload, so later uploads in a segment
@@ -221,7 +251,7 @@ namespace nSCD3D11 {
 					else d.DrawElements(2, 3, 5, fanIndices);
 					uint32_t const *expected = line ? lineIndices : fanIndices;
 					uint32_t const bytes = (line ? 2u : 3u) * sizeof(uint32_t);
-					assert(ReadBuffer(d.dynamicIndexBuffer.Get(), d.dynamicIndexBufferOffset, bytes) ==
+					assert(ReadBuffer(d.dynamicIndexBuffer, d.dynamicIndexBufferOffset, bytes) ==
 						std::vector<uint8_t>(reinterpret_cast<uint8_t const *>(expected),
 						                     reinterpret_cast<uint8_t const *>(expected) + bytes));
 				}
@@ -236,7 +266,7 @@ namespace nSCD3D11 {
 		}
 
 		std::vector<uint8_t> UploadedIndices(uint32_t bytes) {
-			return ReadBuffer(d.dynamicIndexBuffer.Get(), d.dynamicIndexBufferOffset, bytes);
+			return ReadBuffer(d.dynamicIndexBuffer, d.dynamicIndexBufferOffset, bytes);
 		}
 
 		void IndexUploadsUseFinalContents() {
@@ -398,7 +428,7 @@ namespace nSCD3D11 {
 
 		float UploadedX(uint32_t vertex) {
 			std::vector<uint8_t> const bytes = ReadBuffer(
-				d.dynamicVertexBuffer.Get(), d.dynamicVertexBufferOffset + vertex * sizeof(D3D11Vertex),
+				d.dynamicVertexBuffer, d.dynamicVertexBufferOffset + vertex * sizeof(D3D11Vertex),
 				sizeof(float));
 			float x;
 			memcpy(&x, bytes.data(), sizeof(x));
@@ -892,7 +922,7 @@ namespace nSCD3D11 {
 			d.TexParameter(0, 2, 2);
 			DrawFull();
 			assert(!d.constantsDirty && !d.drawConstantsDirty);
-			ID3D11SamplerState *const sampler = d.textureStages[0].sampler.Get();
+			ID3D11SamplerState *const sampler = d.textureStages[0].sampler;
 			assert(sampler != nullptr);
 			// Only the cull test consumes the clip rows, and nothing here draws into a partial viewport.
 			d.clipRowsDirty = false;
@@ -907,7 +937,95 @@ namespace nSCD3D11 {
 			d.TexStageMatrix(texture42, 4, 2, 1);
 			d.TexParameter(0, 2, 2);
 			assert(!d.constantsDirty && !d.drawConstantsDirty && !d.normalMatrixDirty && !d.clipRowsDirty);
-			assert(d.textureStages[0].sampler.Get() == sampler);
+			assert(d.textureStages[0].sampler == sampler);
+
+			// The same for every other setter feeding the constants, one at a time since some overwrite what
+			// others set: set it, draw, then repeat it.
+			float const color[4]{0.1f, 0.2f, 0.3f, 0.4f};
+			float const density = 0.5f, start = 2.0f, end = 3.0f, shininess = 8.0f;
+			cGDCombiner combiner{};
+			combiner.RGBCombineMode = 4;
+			combiner.RGBParams[2].SourceType = 2;
+			std::pair<char const *, std::function<void()>> const setters[]{
+				{"Fog(mode)", [&] { d.Fog(0, 2u); }},
+				{"Fog(source)", [&] { d.Fog(5, 4u); }},
+				{"Fog(color)", [&] { d.Fog(1, color); }},
+				{"Fog(density)", [&] { d.Fog(2, &density); }},
+				{"Fog(start)", [&] { d.Fog(3, &start); }},
+				{"Fog(end)", [&] { d.Fog(4, &end); }},
+				{"ColorMultiplier", [&] { d.ColorMultiplier(0.5f, 0.25f, 0.125f); }},
+				{"AlphaMultiplier", [&] { d.AlphaMultiplier(0.75f); }},
+				{"EnableVertexColors", [&] { d.EnableVertexColors(false, true); }},
+				{"EnableLighting", [&] { d.EnableLighting(true); }},
+				{"EnableLight", [&] { d.EnableLight(1, true); }},
+				{"LightModelAmbient", [&] { d.LightModelAmbient(0.1f, 0.2f, 0.3f, 1.0f); }},
+				{"LightColor(parameter)", [&] { d.LightColor(0, 1, color); }},
+				{"LightColor(all)", [&] { d.LightColor(1, color, color, color); }},
+				{"LightPosition", [&] { d.LightPosition(2, color); }},
+				{"LightDirection", [&] { d.LightDirection(3, color); }},
+				{"MaterialColor(parameter)", [&] { d.MaterialColor(3, color); }},
+				{"MaterialColor(shininess)", [&] { d.MaterialColor(4, &shininess); }},
+				{"MaterialColor(all)", [&] { d.MaterialColor(color, color, color, color, 16.0f); }},
+				{"TexEnv(color)", [&] { d.TexEnv(0, 1, color); }},
+				{"TexStageCombine(mode)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineParamType>(1),
+					                  static_cast<eGDTextureStageCombineModeParam>(3));
+				}},
+				{"TexStageCombine(source)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineSourceParamType>(1),
+					                  static_cast<eGDTextureStageCombineSourceParam>(3));
+				}},
+				{"TexStageCombine(operand)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineOperandType>(4), static_cast<eGDBlend>(3));
+				}},
+				{"TexStageCombine(scale)", [&] {
+					d.TexStageCombine(static_cast<eGDTextureStageCombineScaleParamType>(0),
+					                  static_cast<eGDTextureStageCombineScaleParam>(2));
+				}},
+				{"SetCombiner", [&] { d.SetCombiner(combiner, 1); }},
+			};
+			for (auto const &[name, setter]: setters) {
+				setter();
+				DrawFull();
+				setter();
+				if (d.constantsDirty) {
+					std::fprintf(stderr, "repeating %s marked the constants dirty\n", name);
+					assert(false);
+				}
+			}
+			// Capabilities that are render states, not constants, never mark them.
+			for (uint32_t capability: {kGDCapability_DepthTest, kGDCapability_StencilTest, kGDCapability_CullFace,
+			                           kGDCapability_Blend}) {
+				bool const enabled = d.IsEnabled(capability);
+				d.SetCapability(capability, !enabled);
+				assert(!d.constantsDirty);
+				d.SetCapability(capability, enabled);
+			}
+			d.EnableLighting(false);
+			DrawFull();
+
+			// A value changed and changed back before the next draw marks its group but uploads nothing,
+			// and a change in one group uploads the whole buffer with the others as they were.
+			uint32_t const uploads = d.frameStats.stateUploads;
+			float const fogEnd = 5.0f, otherEnd = 6.0f;
+			d.Fog(4, &otherEnd);
+			d.Fog(4, &fogEnd);
+			d.Fog(4, &otherEnd);
+			d.Fog(4, &end);
+			assert(d.constantsDirty == CONSTANTS_FOG);
+			DrawFull();
+			assert(d.frameStats.stateUploads == uploads && !d.constantsDirty);
+			std::vector<uint8_t> const beforeFactor = ReadWholeBuffer(d.stateConstantBuffer.Get());
+			float const factor[4]{0.25f, 0.5f, 0.75f, 1.0f};
+			d.TexEnv(0, 1, factor);
+			assert(d.constantsDirty == CONSTANTS_TEXTURE_FACTOR);
+			DrawFull();
+			assert(d.frameStats.stateUploads == uploads + 1 &&
+			       d.frameStats.constantGroupChanges[6] != 0);
+			std::vector<uint8_t> const afterFactor = ReadWholeBuffer(d.stateConstantBuffer.Get());
+			size_t const factorOffset = offsetof(DriverConstants, textureFactor);
+			assert(std::equal(beforeFactor.begin(), beforeFactor.begin() + factorOffset, afterFactor.begin()));
+			assert(memcmp(afterFactor.data() + factorOffset, factor, sizeof(factor)) == 0);
 
 			// Each real change still marks them.
 			d.TexStageMatrix(nullptr, 0, 0, 0);
@@ -919,7 +1037,7 @@ namespace nSCD3D11 {
 			d.LoadIdentity();
 			assert(!d.constantsDirty && !d.drawConstantsDirty);
 			d.TexParameter(0, 2, 1);
-			assert(d.textureStages[0].sampler.Get() == nullptr);
+			assert(d.textureStages[0].sampler == nullptr);
 
 			d.Disable(kGDCapability_AlphaTest);
 			d.DeleteTextures(1, &texture);
@@ -1338,6 +1456,7 @@ namespace nSCD3D11 {
 		int Run() {
 			DrawsGeometry();
 			DrawsStartAtTheirUpload();
+			ReleasedSegmentsClearTheUploadBuffers();
 			ViewportCullsOutsideDraws();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();

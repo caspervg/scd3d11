@@ -612,7 +612,7 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                     return;
                 }
                 texture = entry->second.view;
-                sampler = textureStages[0].sampler ? textureStages[0].sampler : defaultSampler;
+                if (textureStages[0].sampler) sampler = textureStages[0].sampler;
             }
         }
         LiveShadowDraw draw;

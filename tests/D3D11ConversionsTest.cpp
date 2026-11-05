@@ -1,12 +1,111 @@
 #include "D3D11Conversions.h"
 #include "VertexFormatUtils.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
+#include <set>
+#include <utility>
 #include <vector>
+#include <windows.h>
 #include <wrl/client.h>
 
+namespace {
+    using Digest = std::pair<unsigned long long, unsigned long long>;
+
+    Digest ToPair(XXH128_hash_t const &hash) {
+        return {hash.low64, hash.high64};
+    }
+
+    // The AES content hash: distinct digests for every length and every single-bit change, no read past
+    // the end of its input, and the switch to XXH3 above AES_CONTENT_HASH_MAX_BYTES.
+    void CheckContentHash() {
+        using nSCD3D11::AesContentHash;
+        using nSCD3D11::ContentHash;
+        std::printf("content hash uses AES-NI: %s\n", nSCD3D11::ContentHashUsesAes() ? "yes" : "no");
+        std::vector<uint8_t> bytes(8192);
+        uint32_t seed = 99;
+        for (uint8_t &byte: bytes) {
+            seed = seed * 1664525u + 1013904223u;
+            byte = static_cast<uint8_t>(seed >> 24);
+        }
+        if (!nSCD3D11::ContentHashUsesAes()) {
+            assert(XXH128_isEqual(ContentHash(bytes.data(), 100), XXH3_128bits(bytes.data(), 100)));
+            return;
+        }
+        std::set<Digest> seen;
+        size_t inputs = 0;
+        for (size_t size = 0; size <= 600; ++size, ++inputs) seen.insert(ToPair(AesContentHash(bytes.data(), size)));
+        for (size_t size: {1u, 2u, 3u, 4u, 5u, 7u, 8u, 9u, 15u, 16u, 17u, 31u, 32u, 33u, 47u, 48u, 64u, 200u, 4096u}) {
+            std::vector<uint8_t> message(bytes.begin(), bytes.begin() + size);
+            for (size_t bit = 0; bit < size * 8; ++bit, ++inputs) {
+                message[bit / 8] ^= static_cast<uint8_t>(1u << (bit % 8));
+                seen.insert(ToPair(AesContentHash(message.data(), size)));
+                message[bit / 8] ^= static_cast<uint8_t>(1u << (bit % 8));
+            }
+        }
+        // Index-like data: small, mostly repeated values that differ in a few places.
+        std::vector<uint16_t> indices(48);
+        for (uint32_t base = 0; base < 50000; ++base, ++inputs) {
+            for (size_t i = 0; i < indices.size(); ++i) indices[i] = static_cast<uint16_t>(base / 7 + (i * base) % 5);
+            indices[base % indices.size()] ^= static_cast<uint16_t>(base);
+            seen.insert(ToPair(AesContentHash(indices.data(), indices.size() * sizeof(uint16_t))));
+        }
+        // Equal inputs collapse in the set, so count those apart.
+        std::set<std::vector<uint8_t>> distinctInputs;
+        for (uint32_t base = 0; base < 50000; ++base) {
+            for (size_t i = 0; i < indices.size(); ++i) indices[i] = static_cast<uint16_t>(base / 7 + (i * base) % 5);
+            indices[base % indices.size()] ^= static_cast<uint16_t>(base);
+            uint8_t const *raw = reinterpret_cast<uint8_t const *>(indices.data());
+            distinctInputs.emplace(raw, raw + indices.size() * sizeof(uint16_t));
+        }
+        size_t const repeatedInputs = 50000 - distinctInputs.size();
+        if (seen.size() != inputs - repeatedInputs) {
+            std::fprintf(stderr, "AES content hash: %zu digests for %zu distinct inputs\n", seen.size(),
+                         inputs - repeatedInputs);
+            assert(false);
+        }
+
+        // Every size up to two blocks, ending right before a page the process may not read.
+        SYSTEM_INFO system{};
+        GetSystemInfo(&system);
+        auto *const pages = static_cast<uint8_t *>(
+            VirtualAlloc(nullptr, system.dwPageSize * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        assert(pages != nullptr);
+        DWORD previous = 0;
+        assert(VirtualProtect(pages + system.dwPageSize, system.dwPageSize, PAGE_NOACCESS, &previous));
+        uint8_t *const end = pages + system.dwPageSize;
+        for (size_t size = 0; size <= 64; ++size) {
+            memcpy(end - size, bytes.data(), size);
+            assert(XXH128_isEqual(AesContentHash(end - size, size), AesContentHash(bytes.data(), size)));
+        }
+        VirtualFree(pages, 0, MEM_RELEASE);
+
+        size_t const limit = nSCD3D11::AES_CONTENT_HASH_MAX_BYTES;
+        assert(XXH128_isEqual(ContentHash(bytes.data(), limit), AesContentHash(bytes.data(), limit)));
+        assert(XXH128_isEqual(ContentHash(bytes.data(), limit + 1), XXH3_128bits(bytes.data(), limit + 1)));
+
+        // Padded vertices share the packed key on both sides of the limit (gathered below it, streamed
+        // through XXH3 above it).
+        for (uint32_t count: {200u, 300u}) {
+            uint32_t const packedStride = 16, paddedStride = 20;
+            std::vector<uint8_t> packed(count * packedStride), padded(count * paddedStride, 0xcd);
+            for (uint32_t vertex = 0; vertex < count; ++vertex) {
+                memcpy(&packed[vertex * packedStride], &bytes[vertex * packedStride], packedStride);
+                memcpy(&padded[vertex * paddedStride], &bytes[vertex * packedStride], packedStride);
+            }
+            nSCD3D11::GeometryCacheKey const packedKey =
+                nSCD3D11::VertexCacheKey(kGDVertexFormat_V3F_C4UB, packedStride, packed.data(), count);
+            assert(packedKey == nSCD3D11::VertexCacheKey(kGDVertexFormat_V3F_C4UB, paddedStride, padded.data(), count));
+            padded[paddedStride * (count / 2) + 3] ^= 1;
+            assert(!(packedKey == nSCD3D11::VertexCacheKey(kGDVertexFormat_V3F_C4UB, paddedStride, padded.data(), count)));
+        }
+    }
+}
+
 int main() {
+    CheckContentHash();
     assert(!nSCD3D11::ClearsColor(0));
     assert(nSCD3D11::ClearsColor(0x4000));
     assert(nSCD3D11::D3D11DepthStencilClearFlags(0x1000) == D3D11_CLEAR_DEPTH);
@@ -161,5 +260,54 @@ int main() {
     assert(nSCD3D11::D3D11StencilOperation(2) == D3D11_STENCIL_OP_REPLACE);
     assert(nSCD3D11::D3D11StencilOperation(5) == D3D11_STENCIL_OP_INVERT);
     assert(nSCD3D11::D3D11StencilOperation(6) == 0);
+
+    // The SSE2 index range matches a plain scan for every tail length and unaligned start, including
+    // indices with the top bit set, which the signed compares only handle through the bias.
+    {
+        uint32_t seed = 12345;
+        auto const next = [&seed] {
+            seed = seed * 1664525u + 1013904223u;
+            return seed;
+        };
+        std::vector<uint16_t> shorts(80);
+        std::vector<uint32_t> longs(80);
+        for (int round = 0; round < 200; ++round) {
+            uint32_t const mask = round % 4 == 0 ? 0xffffffffu : round % 4 == 1 ? 0x7fffu : round % 4 == 2 ? 0xffu : 0x80000003u;
+            for (uint32_t i = 0; i < shorts.size(); ++i) {
+                uint32_t const value = next() & mask;
+                shorts[i] = static_cast<uint16_t>(value | (round % 4 == 3 ? 0x8000u : 0u));
+                longs[i] = value;
+            }
+            for (uint32_t start = 0; start < 4; ++start) {
+                for (uint32_t count = 1; start + count <= shorts.size(); ++count) {
+                    uint32_t minimum = 1, maximum = 1;
+                    nSCD3D11::IndexRange(shorts.data() + start, count, minimum, maximum);
+                    uint32_t lo = UINT32_MAX, hi = 0;
+                    for (uint32_t i = start; i < start + count; ++i) {
+                        lo = (std::min)(lo, static_cast<uint32_t>(shorts[i]));
+                        hi = (std::max)(hi, static_cast<uint32_t>(shorts[i]));
+                    }
+                    assert(minimum == lo && maximum == hi);
+                    nSCD3D11::IndexRange(longs.data() + start, count, minimum, maximum);
+                    lo = UINT32_MAX;
+                    hi = 0;
+                    for (uint32_t i = start; i < start + count; ++i) {
+                        lo = (std::min)(lo, longs[i]);
+                        hi = (std::max)(hi, longs[i]);
+                    }
+                    assert(minimum == lo && maximum == hi);
+                }
+            }
+        }
+        uint16_t const extremes16[]{0xffff, 0, 0x8000, 0x7fff, 1, 0xfffe, 0x8001, 0x7ffe, 0xffff};
+        uint32_t minimum = 0, maximum = 0;
+        nSCD3D11::IndexRange(extremes16, 9, minimum, maximum);
+        assert(minimum == 0 && maximum == 0xffff);
+        uint32_t const extremes32[]{0xffffffffu, 0x80000000u, 0x7fffffffu, 5, 0x80000001u};
+        nSCD3D11::IndexRange(extremes32, 5, minimum, maximum);
+        assert(minimum == 5 && maximum == 0xffffffffu);
+        nSCD3D11::IndexRange(extremes32 + 1, 4, minimum, maximum);
+        assert(minimum == 5 && maximum == 0x80000001u);
+    }
     return 0;
 }

@@ -103,6 +103,7 @@ namespace nSCD3D11 {
 	}
 
 	void cGDriver::DrawPrims(uint32_t name, uint32_t primitive, void *, uint32_t byteSize) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		if (name != 0) return;
 		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
@@ -157,17 +158,17 @@ namespace nSCD3D11 {
 
 	void cGDriver::DrawPrimsIndexed(
 		uint32_t name, uint32_t primitive, uint32_t count, uint16_t *indices) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		uint64_t const indexBytes = static_cast<uint64_t>(count) * sizeof(uint16_t);
 		if (name != 0 || count == 0 || indices == nullptr || indexBytes > UINT32_MAX) {
 			return;
 		}
-		uint16_t minimumIndex = UINT16_MAX;
-		uint16_t maximumIndex = 0;
-		for (uint32_t i = 0; i < count; ++i) {
-			if (indices[i] < minimumIndex) minimumIndex = indices[i];
-			if (indices[i] > maximumIndex) maximumIndex = indices[i];
-		}
+		uint32_t minimum = 0;
+		uint32_t maximum = 0;
+		IndexRange(indices, count, minimum, maximum);
+		uint16_t const minimumIndex = static_cast<uint16_t>(minimum);
+		uint16_t const maximumIndex = static_cast<uint16_t>(maximum);
 		uint32_t const extensionStride = RZVertexFormatStride(kGDVertexFormat_V3F_C4UB_2T2F);
 		uint32_t const byteSize = (static_cast<uint32_t>(maximumIndex) + 1) * extensionStride;
 		// Tests the index range, which holds every referenced vertex. Live shadows still see a culled draw.
@@ -183,6 +184,7 @@ namespace nSCD3D11 {
 			return;
 		}
 		NoteLiveShadowTerrainView();
+		if (!culled) NoteHash(false, indexBytes);
 		if (!culled && !UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 			IndexCacheKey(DXGI_FORMAT_R16_UINT, indices, count),

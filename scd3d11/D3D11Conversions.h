@@ -97,6 +97,16 @@ namespace nSCD3D11 {
         }
     };
 
+    // The content digest of geometry keys. Nearly every span SC4 draws is under 256 bytes, where XXH3's
+    // 64-bit multiplies cost most on x86. With AES-NI, spans up to AES_CONTENT_HASH_MAX_BYTES use
+    // AesContentHash, about twice as fast there, and longer ones keep XXH3, whose SSE2 path wins above
+    // that. Without AES-NI everything uses XXH3. The choice depends only on the size and the CPU.
+    constexpr size_t AES_CONTENT_HASH_MAX_BYTES = 4096;
+    XXH128_hash_t ContentHash(void const *data, size_t size);
+    bool ContentHashUsesAes();
+    // Requires AES-NI.
+    XXH128_hash_t AesContentHash(void const *data, size_t size);
+
     // Index keys are built from format, count and the exact bytes uploaded, except SequentialIndexKey.
     GeometryCacheKey IndexCacheKey(DXGI_FORMAT format, void const *indices, uint32_t count);
 
@@ -107,6 +117,10 @@ namespace nSCD3D11 {
     // Content key of interleaved vertices. Only the bytes the format consumes are hashed, so padding
     // between strided vertices never affects it and packed and padded copies of a mesh share a key.
     GeometryCacheKey VertexCacheKey(uint32_t format, uint32_t stride, void const *vertices, uint32_t count);
+
+    // The smallest and largest of count (at least 1) indices, eight or four at a time with SSE2.
+    void IndexRange(uint16_t const *indices, uint32_t count, uint32_t &minimum, uint32_t &maximum);
+    void IndexRange(uint32_t const *indices, uint32_t count, uint32_t &minimum, uint32_t &maximum);
 
     bool IsSupportedVertexFormat(uint32_t format);
 

@@ -23,7 +23,9 @@
 #include <cIGZMessageServer2.h>
 #include <cRZMessage2Standard.h>
 
+#include <bit>
 #include <cstring>
+#include <intrin.h>
 #include <string>
 
 #ifndef NDEBUG
@@ -840,9 +842,31 @@ namespace nSCD3D11 {
 		                                    viewportCullBounds);
 	}
 
+	cGDriver::DrawTimer::DrawTimer(cGDriver &driver)
+		: driver(driver), start(driver.drawTimerDepth++ == 0 && DrawStatsEnabled() ? __rdtsc() : 0) {
+	}
+
+	cGDriver::DrawTimer::~DrawTimer() {
+		if (--driver.drawTimerDepth == 0 && start != 0) driver.frameStats.drawTicks += __rdtsc() - start;
+	}
+
+	void cGDriver::NoteHash(bool vertices, uint64_t bytes) {
+		if (vertices) {
+			++frameStats.vertexHashes;
+			frameStats.vertexHashBytes += bytes;
+		} else {
+			++frameStats.indexHashes;
+			frameStats.indexHashBytes += bytes;
+		}
+		uint32_t const bucket = bytes <= 1 ? 0 : static_cast<uint32_t>(std::bit_width(bytes - 1));
+		++hashSizeHistogram[vertices ? 0 : 1][(std::min)(bucket, HASH_SIZE_BUCKETS - 1)];
+	}
+
 	void cGDriver::ReportFrameStats(void) {
+		uint64_t const ticks = __rdtsc();
 		if (!DrawStatsEnabled()) {
 			frameStats = FrameStats{};
+			lastFrameTicks = ticks;
 			return;
 		}
 		static LARGE_INTEGER const frequency = [] {
@@ -869,6 +893,10 @@ namespace nSCD3D11 {
 			uint64_t terrainStreamRenames = 0;
 			uint64_t cacheUploadBytes = 0;
 			uint64_t cacheRefills = 0;
+			double drawMilliseconds = 0.0;
+			uint64_t stateRebuilds = 0;
+			uint64_t stateUploads = 0;
+			uint64_t drawConstantUploads = 0;
 			// Live shadow fields summed over the second. shadowStaticMaxMs and shadowWorldCasters are maxima.
 			FrameStats shadows;
 			uint32_t shadowFrames = 0;
@@ -884,6 +912,12 @@ namespace nSCD3D11 {
 			                              static_cast<double>(frequency.QuadPart);
 		lastFrameTime = now;
 		FrameStats const &frame = frameStats;
+		// The time-stamp counter runs at a constant rate; this frame's QPC interval calibrates it.
+		double const drawMilliseconds = milliseconds > 0.0 && lastFrameTicks != 0 && ticks > lastFrameTicks
+			                                ? static_cast<double>(frame.drawTicks) * milliseconds /
+			                                  static_cast<double>(ticks - lastFrameTicks)
+			                                : 0.0;
+		lastFrameTicks = ticks;
 		// A scroll shifts the backing store with an offset region copy and redraws the exposed strip. A full
 		// redraw clears the whole view first.
 		bool const scroll = frame.offsetCopies != 0;
@@ -906,6 +940,20 @@ namespace nSCD3D11 {
 			    frame.offsetX, frame.offsetY, frame.viewports, frame.viewport[0], frame.viewport[1],
 			    frame.viewport[2], frame.viewport[3], static_cast<unsigned long long>(frame.viewportPixels),
 			    frame.textureCreates, frame.textureDeletes);
+			Log(LogCategory::Stats,
+			    "slow frame draw path: %.1f ms in draw calls (%.2f us/draw); constants: state %u rebuilt, "
+			    "%u uploaded, model-view %u uploaded; hashed %u vertex spans (%u strided, %.2f MB), %u index "
+			    "spans (%.2f MB); %u converted primitives; cache hits/misses vertices %u/%u, indices %u/%u",
+			    drawMilliseconds, frame.draws != 0 ? drawMilliseconds * 1000.0 / frame.draws : 0.0,
+			    frame.stateRebuilds, frame.stateUploads, frame.drawConstantUploads, frame.vertexHashes,
+			    frame.stridedVertexHashes, static_cast<double>(frame.vertexHashBytes) / 1.0e6, frame.indexHashes,
+			    static_cast<double>(frame.indexHashBytes) / 1.0e6, frame.convertedDraws, frame.vertexCacheHits,
+			    frame.vertexCacheMisses, frame.indexCacheHits, frame.indexCacheMisses);
+			uint32_t const *const groups = frame.constantGroupChanges;
+			Log(LogCategory::Stats,
+			    "slow frame constant changes: projection %u, flags/alpha %u, lights %u, material %u, texture stages %u, "
+			    "fog %u, texture factor %u",
+			    groups[0], groups[1], groups[2], groups[3], groups[4], groups[5], groups[6]);
 		}
 
 		if (summary.start.QuadPart == 0) summary.start = now;
@@ -928,6 +976,10 @@ namespace nSCD3D11 {
 		summary.terrainStreamRenames += frame.terrainStreamRenames;
 		summary.cacheUploadBytes += frame.cacheUploadBytes;
 		summary.cacheRefills += frame.cacheRefills;
+		summary.drawMilliseconds += drawMilliseconds;
+		summary.stateRebuilds += frame.stateRebuilds;
+		summary.stateUploads += frame.stateUploads;
+		summary.drawConstantUploads += frame.drawConstantUploads;
 		if (shadowFrame) {
 			FrameStats &sum = summary.shadows;
 			++summary.shadowFrames;
@@ -987,6 +1039,15 @@ namespace nSCD3D11 {
 			    static_cast<unsigned long long>(summary.scrollFrames ? summary.scrollCulled / summary.scrollFrames : 0),
 			    summary.fullFrames, static_cast<unsigned long long>(summary.textureCreates),
 			    static_cast<unsigned long long>(summary.textureDeletes));
+			if (summary.draws != 0) {
+				Log(LogCategory::Stats,
+				    "draw path: %.1f ms in draw calls (%.2f us/draw); constants: state %llu rebuilt, %llu uploaded, "
+				    "model-view %llu uploaded",
+				    summary.drawMilliseconds, summary.drawMilliseconds * 1000.0 / static_cast<double>(summary.draws),
+				    static_cast<unsigned long long>(summary.stateRebuilds),
+				    static_cast<unsigned long long>(summary.stateUploads),
+				    static_cast<unsigned long long>(summary.drawConstantUploads));
+			}
 			if (summary.terrainDraws != 0 || summary.cacheUploadBytes != 0) {
 				Log(LogCategory::Stats,
 				    "geometry: %llu terrain draws, %.1f MB streamed (%llu renamed); "

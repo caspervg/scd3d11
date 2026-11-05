@@ -84,7 +84,8 @@ target_link_libraries(scd3d11_common INTERFACE sc4_dll_utilities)
 # Limited to C++ sources so none of these reach the resource compiler.
 target_compile_options(scd3d11_common INTERFACE
         $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W3;/utf-8;/MP>
-        $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Wall;-fpermissive>
+        # SSE2, as MSVC's x86 default: the index range scan uses its intrinsics.
+        $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Wall;-fpermissive;-msse2>
         $<$<AND:$<COMPILE_LANG_AND_ID:CXX,MSVC>,$<CONFIG:Release,RelWithDebInfo>>:/Gw;/Zc:threadSafeInit->
         $<$<AND:$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>,$<CONFIG:Release,RelWithDebInfo>>:-flto>
 )

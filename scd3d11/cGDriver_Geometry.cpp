@@ -245,35 +245,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 			float normalMatrix[16];
 		};
 
-		struct DriverConstants {
-			float projection[16];
-			uint32_t flags;
-			uint32_t alphaFunction;
-			float alphaReference;
-			uint32_t enabledLights;
-			float globalAmbient[4];
-			float lightAmbient[8][4];
-			float lightDiffuse[8][4];
-			float lightSpecular[8][4];
-			float lightPosition[8][4];
-			float materialAmbient[4];
-			float materialDiffuse[4];
-			float materialSpecular[4];
-			float materialEmission[4];
-			float materialParameters[4];
-			float textureMatrices[2][16];
-
-			struct StageConstants {
-				uint32_t modes[4];
-				uint32_t parameters0[4];
-				uint32_t parameters1[4];
-			} stages[2];
-
-			float fogColor[4];
-			float fogParameters[4];
-			float textureFactor[4];
-		};
-
 		void MakeNormalMatrix(float const *m, float *out) {
 			float const a00=m[0], a01=m[4], a02=m[8], a10=m[1], a11=m[5], a12=m[9];
 			float const a20=m[2], a21=m[6], a22=m[10];
@@ -436,7 +407,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		GeometryCacheSegment *segments,
 		GeometryCache &cache,
 		GeometryCacheKey const &key,
-		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+		ID3D11Buffer *&buffer,
 		uint32_t &offset,
 		uint32_t bindFlags) {
 		auto const cached = cache.find(key);
@@ -444,11 +415,16 @@ float4 PSMain(PSInput input) : SV_TARGET
 		    !segments[cached->second.segment].buffer) {
 			return false;
 		}
-		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheHits;
-		else ++indexBufferCacheHits;
+		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) {
+			++vertexBufferCacheHits;
+			++frameStats.vertexCacheHits;
+		} else {
+			++indexBufferCacheHits;
+			++frameStats.indexCacheHits;
+		}
 		GeometryCacheSegment &segment = segments[cached->second.segment];
 		segment.lastUseFrame = currentFrame;
-		buffer = segment.buffer;
+		buffer = segment.buffer.Get();
 		offset = cached->second.offset;
 		return true;
 	}
@@ -461,15 +437,20 @@ float4 PSMain(PSInput input) : SV_TARGET
 		uint32_t requiredSize,
 		uint32_t bindFlags,
 		void const *data,
-		Microsoft::WRL::ComPtr<ID3D11Buffer> &buffer,
+		ID3D11Buffer *&buffer,
 		uint32_t &offset) {
 		if (!d3dDevice || !d3dContext || deviceLost || data == nullptr || requiredSize == 0) {
 			return false;
 		}
 
 		if (UseCachedBuffer(segments, cache, key, buffer, offset, bindFlags)) return true;
-		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) ++vertexBufferCacheMisses;
-		else ++indexBufferCacheMisses;
+		if (bindFlags == D3D11_BIND_VERTEX_BUFFER) {
+			++vertexBufferCacheMisses;
+			++frameStats.vertexCacheMisses;
+		} else {
+			++indexBufferCacheMisses;
+			++frameStats.indexCacheMisses;
+		}
 
 		// Segment count, actual capacities and entries per segment are all bounded, so an oversized upload
 		// evicts older segments rather than growing the cache past its budget.
@@ -519,7 +500,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 					others -= segments[victim].capacity;
 					ClearCacheSegment(segments, cache, victim, true);
 				}
-				segment->buffer.Reset();
+				ReleaseSegmentBuffer(*segment);
 				segment->capacity = 0;
 
 				// DYNAMIC buffers cost their full size in 32-bit address space (measured 1:1 on NVIDIA),
@@ -541,7 +522,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer for a dynamic segment", result);
 					LogMemoryStatus(LogCategory::Resource, "when the segment allocation failed");
 					Log(LogCategory::Resource, "dropping the other cached segments and retrying");
-					buffer.Reset();
+					buffer = nullptr;
 					for (uint8_t index = 0; index < GEOMETRY_CACHE_SEGMENTS; ++index) {
 						if (index != activeSegment) ClearCacheSegment(segments, cache, index, true);
 					}
@@ -552,7 +533,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateBuffer(dynamic segment)", result);
 					NoteDeviceLoss(result);
-					segment->buffer.Reset();
+					ReleaseSegmentBuffer(*segment);
 					return false;
 				}
 				segment->capacity = newCapacity;
@@ -587,7 +568,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		d3dContext->Unmap(segment->buffer.Get(), 0);
 		segment->cursor = (segment->cursor + requiredSize + 3u) & ~3u;
 		segment->lastUseFrame = currentFrame;
-		buffer = segment->buffer;
+		buffer = segment->buffer.Get();
 		// Remembering the upload is optional: if the bookkeeping cannot allocate, it still draws.
 		bool keyed = false;
 		try {
@@ -734,12 +715,20 @@ float4 PSMain(PSInput input) : SV_TARGET
 		segment.cursor = 0;
 		if (release) {
 			std::vector<GeometryCacheKey>().swap(segment.keys);
-			segment.buffer.Reset();
+			ReleaseSegmentBuffer(segment);
 			segment.capacity = 0;
 			segment.lastUseFrame = 0;
 		} else {
 			segment.keys.clear();
 		}
+	}
+
+	void cGDriver::ReleaseSegmentBuffer(GeometryCacheSegment &segment) {
+		ID3D11Buffer *const buffer = segment.buffer.Get();
+		if (buffer == nullptr) return;
+		if (dynamicVertexBuffer == buffer) dynamicVertexBuffer = nullptr;
+		if (dynamicIndexBuffer == buffer) dynamicIndexBuffer = nullptr;
+		segment.buffer.Reset();
 	}
 
 	bool cGDriver::UploadVertices(uint32_t first, uint32_t count) {
@@ -763,6 +752,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		// or release boundary, so pointer and size cannot identify contents. Only the terrain vertex
 		// buffer, which the driver owns, can use generation keys instead of hashing.
 		GeometryCacheKey const key = VertexCacheKey(interleavedFormat, interleavedStride, source, count);
+		uint32_t const packedStride = RZVertexFormatStride(interleavedFormat);
+		NoteHash(true, static_cast<uint64_t>(count) * packedStride);
+		if (interleavedStride != packedStride) ++frameStats.stridedVertexHashes;
 		if (UseCachedBuffer(vertexBufferSegments, vertexBufferCache, key,
 		                    dynamicVertexBuffer, dynamicVertexBufferOffset, D3D11_BIND_VERTEX_BUFFER)) return true;
 
@@ -789,6 +781,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		if (indices.empty() || byteSize > (std::numeric_limits<uint32_t>::max)()) {
 			return false;
 		}
+		NoteHash(false, byteSize);
 		return UploadCachedBuffer(
 			indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 			IndexCacheKey(DXGI_FORMAT_R32_UINT, indices.data(), static_cast<uint32_t>(indices.size())),
@@ -806,7 +799,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	UINT cGDriver::BindIndexBuffer(DXGI_FORMAT format) {
-		ID3D11Buffer *const buffer = dynamicIndexBuffer.Get();
+		ID3D11Buffer *const buffer = dynamicIndexBuffer;
 		if (buffer != appliedIndexBuffer || format != appliedIndexFormat) {
 			d3dContext->IASetIndexBuffer(buffer, format, 0);
 			appliedIndexBuffer = buffer;
@@ -842,7 +835,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			ID3D11ShaderResourceView *const view = BoundTextureView(stage);
 			if (view == nullptr || FAILED(EnsureSampler(textureStages[stage]))) continue;
 			textureViews[stage] = view;
-			samplers[stage] = textureStages[stage].sampler.Get();
+			samplers[stage] = textureStages[stage].sampler;
 			flagInputs |= 1u << stage;
 		}
 		bool const lit = lightingEnabled;
@@ -869,63 +862,95 @@ float4 PSMain(PSInput input) : SV_TARGET
 			memcpy(constants->normalMatrix, normalMatrix, sizeof(constants->normalMatrix));
 			d3dContext->Unmap(drawConstantBuffer.Get(), 0);
 			drawConstantsDirty = false;
+			++frameStats.drawConstantUploads;
 		}
 
-		// Setters mark the constants dirty. The only other inputs are bound textures and whether the vertex
-		// format carries normals, which can change without a setter and are compared here instead.
-		if (constantsDirty || flagInputs != constantsFlagInputs || constantBufferCache.size() != sizeof(DriverConstants)) {
-			DriverConstants constants{};
-			constants.flags = flagInputs;
-			memcpy(constants.projection, matrices[PROJECTION], sizeof(constants.projection));
-			constants.alphaFunction = alphaFunction;
-			constants.alphaReference = alphaReference;
-			if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
-			memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
-			memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
-			memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
-			memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
-			memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
-			// Snapshot the projection for the ReShade shadow uniforms. Not gated on lighting: SC4 bakes
-			// its lighting into vertex colours and leaves fixed-function lighting off for the city view,
-			// so waiting for a lit draw would never capture anything. RenderSceneEffects runs at the end
-			// of cSC43DRender::Draw, before any UI, so the last projection seen here is the scene's.
-			CaptureShadowUniforms();
-			memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
-			memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
-			memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
-			memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
-			constants.materialParameters[0] = materialShininess;
-			for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
-				TextureStageState const &source = textureStages[stageIndex];
-				DriverConstants::StageConstants &destination = constants.stages[stageIndex];
-				memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
-				destination.modes[0] = source.environmentMode;
-				destination.modes[1] = source.rgbMode;
-				destination.modes[2] = source.alphaMode;
-				destination.modes[3] = source.rgbScale;
-				destination.parameters0[0] = source.alphaScale;
-				for (uint32_t parameter = 0; parameter < 3; ++parameter) {
-					destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
-					destination.parameters1[parameter] = source.alphaParameters[parameter];
+		// Setters mark the groups of constants they change. The only other inputs are bound textures and
+		// whether the vertex format carries normals, which can change without a setter and are compared
+		// here instead. Only dirty groups are refreshed and compared with what was last uploaded.
+		bool const fullRefresh = constantBufferCache.size() != sizeof(DriverConstants);
+		uint32_t dirty = fullRefresh ? CONSTANTS_ALL : constantsDirty;
+		if (flagInputs != constantsFlagInputs) dirty |= CONSTANTS_HEADER;
+		if (dirty != 0) {
+			++frameStats.stateRebuilds;
+			DriverConstants &constants = driverConstants;
+			if (dirty & CONSTANTS_HEADER) {
+				constants.flags = flagInputs;
+				if (enabledCapabilities[kGDCapability_AlphaTest]) constants.flags |= 8;
+				if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
+				constants.alphaFunction = alphaFunction;
+				constants.alphaReference = alphaReference;
+				constants.enabledLights = 0;
+				if (lit) {
+					if (ambientVertexColors) constants.flags |= 32;
+					if (diffuseFromVertex) constants.flags |= 64;
+					for (uint32_t light = 0; light < 8; ++light)
+						if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
 				}
-				destination.parameters1[3] = source.coordinateSource;
 			}
-			if (lit) {
-				if (ambientVertexColors) constants.flags |= 32;
-				if (diffuseFromVertex) constants.flags |= 64;
-				for (uint32_t light = 0; light < 8; ++light)
-					if (lightsEnabled[light]) constants.enabledLights |= 1u << light;
+			if (dirty & CONSTANTS_PROJECTION) {
+				memcpy(constants.projection, matrices[PROJECTION], sizeof(constants.projection));
+				// Snapshot the projection for the ReShade shadow uniforms. Not gated on lighting: SC4 bakes
+				// its lighting into vertex colours and leaves fixed-function lighting off for the city view,
+				// so waiting for a lit draw would never capture anything. RenderSceneEffects runs at the end
+				// of cSC43DRender::Draw, before any UI, so the last projection seen here is the scene's.
+				CaptureShadowUniforms();
 			}
-			if (enabledCapabilities[kGDCapability_Fog]) constants.flags |= 16;
-			memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
-			constants.fogParameters[0] = fogDensity;
-			constants.fogParameters[1] = fogStart;
-			constants.fogParameters[2] = fogEnd;
-			constants.fogParameters[3] = static_cast<float>(fogMode);
-			memcpy(constants.textureFactor, textureFactor, sizeof(constants.textureFactor));
+			if (dirty & CONSTANTS_LIGHTS) {
+				memcpy(constants.globalAmbient, globalAmbient, sizeof(constants.globalAmbient));
+				memcpy(constants.lightAmbient, lightAmbient, sizeof(constants.lightAmbient));
+				memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
+				memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
+				memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+			}
+			if (dirty & CONSTANTS_MATERIAL) {
+				memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
+				memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
+				memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
+				memcpy(constants.materialEmission, materialEmission, sizeof(constants.materialEmission));
+				constants.materialParameters[0] = materialShininess;
+			}
+			if (dirty & CONSTANTS_STAGES) {
+				for (uint32_t stageIndex = 0; stageIndex < 2; ++stageIndex) {
+					TextureStageState const &source = textureStages[stageIndex];
+					DriverConstants::StageConstants &destination = constants.stages[stageIndex];
+					memcpy(constants.textureMatrices[stageIndex], source.matrix, sizeof(source.matrix));
+					destination.modes[0] = source.environmentMode;
+					destination.modes[1] = source.rgbMode;
+					destination.modes[2] = source.alphaMode;
+					destination.modes[3] = source.rgbScale;
+					destination.parameters0[0] = source.alphaScale;
+					for (uint32_t parameter = 0; parameter < 3; ++parameter) {
+						destination.parameters0[parameter + 1] = source.rgbParameters[parameter];
+						destination.parameters1[parameter] = source.alphaParameters[parameter];
+					}
+					destination.parameters1[3] = source.coordinateSource;
+				}
+			}
+			if (dirty & CONSTANTS_FOG) {
+				memcpy(constants.fogColor, fogColor, sizeof(constants.fogColor));
+				constants.fogParameters[0] = fogDensity;
+				constants.fogParameters[1] = fogStart;
+				constants.fogParameters[2] = fogEnd;
+				constants.fogParameters[3] = static_cast<float>(fogMode);
+			}
+			if (dirty & CONSTANTS_TEXTURE_FACTOR) {
+				memcpy(constants.textureFactor, textureFactor, sizeof(constants.textureFactor));
+			}
 
-			if (constantBufferCache.size() != sizeof(constants) ||
-			    memcmp(constantBufferCache.data(), &constants, sizeof(constants)) != 0) {
+			// A setter can change a value and change it back before the next draw, so a dirty group is
+			// still compared with the upload, over its own bytes only.
+			uint32_t changed = fullRefresh ? CONSTANTS_ALL : 0;
+			if (!fullRefresh) {
+				uint8_t const *const fresh = reinterpret_cast<uint8_t const *>(&constants);
+				for (uint32_t group = 0; group < CONSTANT_GROUP_COUNT; ++group) {
+					if ((dirty & (1u << group)) == 0) continue;
+					ConstantGroupRange const range = ConstantGroupRanges[group];
+					if (memcmp(constantBufferCache.data() + range.offset, fresh + range.offset, range.size) != 0)
+						changed |= 1u << group;
+				}
+			}
+			if (changed != 0) {
 				D3D11_MAPPED_SUBRESOURCE mapping{};
 				HRESULT result = TakeInjectedFault(FAULT_MAP);
 				if (SUCCEEDED(result)) result = d3dContext->Map(
@@ -933,21 +958,26 @@ float4 PSMain(PSInput input) : SV_TARGET
 				if (FAILED(result)) {
 					LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(constants)", result);
 					NoteDeviceLoss(result);
+					// Refreshed but not uploaded: everything is compared again on the next draw.
+					constantBufferCache.clear();
 					return false;
 				}
 				memcpy(mapping.pData, &constants, sizeof(constants));
 				d3dContext->Unmap(stateConstantBuffer.Get(), 0);
+				++frameStats.stateUploads;
+				for (uint32_t group = 0; group < CONSTANT_GROUP_COUNT; ++group)
+					if (changed & (1u << group)) ++frameStats.constantGroupChanges[group];
 				constantBufferCache.assign(
 					reinterpret_cast<uint8_t const *>(&constants),
 					reinterpret_cast<uint8_t const *>(&constants) + sizeof(constants));
 			}
-			constantsDirty = false;
+			constantsDirty = 0;
 			constantsFlagInputs = flagInputs;
 		}
 
 		UINT const stride = sizeof(D3D11Vertex);
 		UINT const offset = 0;
-		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer.Get();
+		ID3D11Buffer *vertexBuffer = dynamicVertexBuffer;
 		ID3D11PixelShader *desiredPixelShader = shadeModel == 0 ? flatPixelShader.Get() : pixelShader.Get();
 		if (!geometryPipelineBound) {
 			d3dContext->IASetInputLayout(inputLayout.Get());
@@ -1037,6 +1067,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	void cGDriver::DrawArrays(uint32_t primitive, int32_t first, int32_t count) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		if (first < 0 || count <= 0) return;
 		// A culled draw skips the upload and the draw, but live shadows still see it below.
@@ -1121,6 +1152,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
+		DrawTimer const timer(*this);
 		++frameStats.draws;
 		if (count == 0) return;
 		if (count < 0 || indices == nullptr || (type != 3 && type != 5)) {
@@ -1133,12 +1165,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 		uint32_t minimumIndex = UINT32_MAX;
 		uint32_t maximumIndex = 0;
 		// Index keys hash the final upload, so this pass only finds the range and, for primitives
-		// D3D11 lacks, gathers the indices to convert. A separate min/max loop vectorizes.
+		// D3D11 lacks, gathers the indices to convert.
 		auto const scan = [&](auto const *source) {
-			for (int32_t i = 0; i < count; ++i) {
-				minimumIndex = (std::min)(minimumIndex, static_cast<uint32_t>(source[i]));
-				maximumIndex = (std::max)(maximumIndex, static_cast<uint32_t>(source[i]));
-			}
+			IndexRange(source, static_cast<uint32_t>(count), minimumIndex, maximumIndex);
 			if (convertPrimitive) sourceIndexScratch.assign(source, source + count);
 		};
 		try {
@@ -1193,6 +1222,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			uint32_t const indexSize = type == 3 ? sizeof(uint16_t) : sizeof(uint32_t);
 			uint64_t const indexBytes = static_cast<uint64_t>(count) * indexSize;
 			if (indexBytes > UINT32_MAX) return;
+			NoteHash(false, indexBytes);
 			if (!UploadCachedBuffer(
 				    indexBufferSegments, activeIndexBufferSegment, indexBufferCache,
 				    IndexCacheKey(indexFormat, indices, static_cast<uint32_t>(count)),
@@ -1206,6 +1236,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
+		++frameStats.convertedDraws;
 		if (!UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
 			return;
 		}
