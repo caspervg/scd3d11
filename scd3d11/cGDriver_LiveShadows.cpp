@@ -839,6 +839,14 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
             std::memcpy(liveShadowColour, pass.colour, sizeof(liveShadowColour));
             liveShadowStrength = pass.strength;
             liveShadowToneValid = true;
+            // SC4 reads these from its lighting exemplar once a city opens, so the doctor cannot.
+            static bool loggedLighting = false;
+            if (!loggedLighting) {
+                loggedLighting = true;
+                Log(LogCategory::Initialization,
+                    "live shadows: SC4's lighting gives shadow strength %.2f and threshold %.2f (0.40 and 0.55 "
+                    "without a lighting mod)", pass.strength, pass.alphaScale);
+            }
         } else if (staticPass && LiveShadowHooks::ShadowParams(liveShadowColour, liveShadowStrength)) {
             liveShadowToneValid = true;
         }

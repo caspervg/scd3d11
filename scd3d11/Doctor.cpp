@@ -701,6 +701,43 @@ namespace nSCD3D11::Doctor {
 				                                       "the game to 1.1.641."});
 			}
 		}
+
+		// Another version of the game is reported by CheckGame, and patches nothing.
+		void CheckLiveShadows(Environment const &environment, std::vector<Finding> &findings) {
+			if (!environment.liveShadows || !environment.gameVersion641) return;
+			if (!environment.liveShadowHooks) {
+				findings.push_back({Severity::Problem, "LiveShadows is on, but another plugin has changed the game code "
+				                                       "it patches, so live shadows stay off. The \"live shadows:\" lines "
+				                                       "in this log say where."});
+				return;
+			}
+			if (!environment.shadowRegistry) {
+				findings.push_back({Severity::Warning, "Buildings, flora and BAT props keep SC4's flat shadows, because "
+				                                       "another plugin has changed the game code SCD3D11 patches for them. "
+				                                       "The \"shadow registry:\" lines in this log say where."});
+			}
+			if (!environment.shadowSettings) return;
+			ShadowSettings const &settings = *environment.shadowSettings;
+			std::string const option = settings.quality >= 5 ? "High" : settings.quality >= 3 ? "Medium" : "Low";
+			findings.push_back({Severity::Note, Format("SC4's Shadows option is %s (%d), flora shadows are %s.",
+			                                           option.c_str(), settings.quality,
+			                                           settings.floraShadows ? "on" : "off")});
+			if (!settings.shadows) {
+				findings.push_back({Severity::Warning, "SC4's kRenderShadows property is off, so buildings, flora and "
+				                                       "props cast no shadow, live or not. An edited Graphics Rules.sgr "
+				                                       "can do this."});
+			}
+			if (settings.quality < 3) {
+				findings.push_back({Severity::Warning, "SC4's Shadows option is Low, so props such as trees, light poles "
+				                                       "and fences cast no shadow, live or not. Set Shadows to Medium or "
+				                                       "High in SC4's graphics options."});
+			}
+			if (settings.pointSampling || settings.bilinear) {
+				findings.push_back({Severity::Note, Format(
+					"SC4 forces %s filtering on every texture, so live shadows cannot tell prerendered models from "
+					"True3D ones and shade them all alike.", settings.pointSampling ? "nearest" : "bilinear")});
+			}
+		}
 	}
 
 	std::string ReleaseVersion(std::string_view json) {
@@ -768,6 +805,7 @@ namespace nSCD3D11::Doctor {
 		CheckMonitors(environment, findings);
 		CheckSettings(environment, findings);
 		CheckGame(environment, findings);
+		CheckLiveShadows(environment, findings);
 		std::stable_sort(findings.begin(), findings.end(),
 		                 [](Finding const &a, Finding const &b) { return a.severity > b.severity; });
 		return findings;
