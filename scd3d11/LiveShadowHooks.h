@@ -21,6 +21,11 @@ namespace nSCD3D11::LiveShadowHooks {
 	void Uninstall();
 
 	bool Enabled();
+	// The LiveShadows cheat pauses live shadows for playtesting. While paused,
+	// nothing casts live and SC4 draws its own shadows again.
+	bool Paused();
+	// Returns whether they are paused now.
+	bool TogglePause();
 	// True while a prebuilt network piece or its model is being drawn.
 	bool NetworkDrawActive();
 	// False when no registered prop mesh has this many vertices: the draw

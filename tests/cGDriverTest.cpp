@@ -1093,6 +1093,59 @@ namespace nSCD3D11 {
 			d.Disable(kGDCapability_Texture2D);
 		}
 
+		// With LiveShadows, a draw that writes depth sets the stencil's painted bit when its texture
+		// filters nearest without mipmaps, as prerendered models do, and clears it otherwise.
+		void MarksPaintedPixels() {
+			D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+			view.Format = DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+			view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+			view.Texture2D.MipLevels = 1;
+			if (d.depthStencilFormat != DXGI_FORMAT_D24_UNORM_S8_UINT) return;
+			assert(SUCCEEDED(d.d3dDevice->CreateShaderResourceView(d.depthStencilTexture.Get(), &view, &d.stencilShaderView)));
+			auto const painted = [&] {
+				std::vector<uint8_t> const texels = Read(d.depthStencilTexture.Get(), 0, 4);
+				return (texels[(static_cast<size_t>(d.windowWidth) + 1) * 4 + 3] & cGDriver::kPaintedStencilBit) != 0;
+			};
+			auto const filter = [&](int32_t mode) {
+				d.TexParameter(0, 0, mode);
+				d.TexParameter(0, 1, mode);
+			};
+			for (uint32_t mode: {0u, 1u}) {
+				d.MatrixMode(mode);
+				d.LoadIdentity();
+			}
+			d.MatrixMode(0);
+			d.SetViewport();
+			d.Clear(0x1000 | 0x2000);
+			d.Enable(kGDCapability_DepthTest);
+			d.DepthFunc(7);
+			d.DepthMask(true);
+			d.TexStage(0);
+			d.Enable(kGDCapability_Texture2D);
+			uint32_t const texture = static_cast<uint32_t>(d.CreateTexture(1, 4, 4, 1, 0));
+			d.SetTexture(texture, 0);
+
+			filter(0);
+			DrawFull();
+			assert(painted());
+			filter(1);
+			DrawFull();
+			assert(!painted());
+			// Without a depth write the mark stays with the surface already in the depth buffer.
+			filter(0);
+			d.DepthMask(false);
+			DrawFull();
+			assert(!painted());
+
+			d.DepthMask(true);
+			d.Disable(kGDCapability_DepthTest);
+			d.DeleteTextures(1, &texture);
+			d.Disable(kGDCapability_Texture2D);
+			d.TexParameter(0, 0, 1);
+			d.TexParameter(0, 1, 6);
+			d.stencilShaderView.Reset();
+		}
+
 		struct DeviceEvents {
 			cGDriver *driver;
 			int destroys = 0;
@@ -1473,6 +1526,7 @@ namespace nSCD3D11 {
 			UnchangedSettersStayClean();
 			NonMipmapMinFiltersSampleOnlyTheBaseLevel();
 			BoundTextureViewsFollowTextureChanges();
+			MarksPaintedPixels();
 			RecoversFromDeviceLoss();
 			GeometryCacheStaysBounded();
 			GeometryCacheTrimsWhenAddressSpaceRunsLow();

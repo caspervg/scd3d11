@@ -110,6 +110,7 @@ namespace nSCD3D11::LiveShadowHooks {
 		PatchSite gAddShadowSite;
 
 		bool gInstalled = false;
+		std::atomic<bool> gPaused{false};
 
 		uintptr_t gPrebuiltDrawRejoin = 0;
 		uintptr_t gPrebuiltModelsRejoin = 0;
@@ -318,12 +319,25 @@ namespace nSCD3D11::LiveShadowHooks {
 		return gInstalled;
 	}
 
+	bool Paused() {
+		return gInstalled && gPaused.load(std::memory_order_relaxed);
+	}
+
+	bool TogglePause() {
+		bool const paused = !gPaused.load();
+		gPaused.store(paused);
+		Log(LogCategory::Initialization,
+		    paused ? "live shadows: paused, SC4 draws its own shadows" : "live shadows: resumed");
+		return paused;
+	}
+
+	// A paused session captures nothing.
 	bool NetworkDrawActive() {
-		return gInstalled && tNetworkDrawDepth != 0;
+		return gInstalled && !gPaused.load(std::memory_order_relaxed) && tNetworkDrawDepth != 0;
 	}
 
 	bool MayMatchPropMesh(uint32_t vertexCount) {
-		return gInstalled &&
+		return gInstalled && !gPaused.load(std::memory_order_relaxed) &&
 		       (gPropCounts[(vertexCount >> 5) & 127].load(std::memory_order_relaxed) & (1u << (vertexCount & 31))) != 0;
 	}
 

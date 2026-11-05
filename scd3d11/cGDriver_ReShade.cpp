@@ -143,6 +143,11 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 
 				if (translated) forced |= 1u << kRedrawTranslated;
 				if (cameraChanged) forced |= 1u << kRedrawCamera;
+				static bool lastPaused = false;
+				if (LiveShadowHooks::Paused() != lastPaused) {
+					lastPaused = !lastPaused;
+					forced |= 1u << kRedrawPaused;
+				}
 				if (translated || cameraChanged) {
 					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;
 					if (translated && !loggedTranslationInvalidation) {

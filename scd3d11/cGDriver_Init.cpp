@@ -387,6 +387,7 @@ namespace nSCD3D11 {
 		if (!preserveResources) bufferRegionFlags = 0;
 		depthStencilView.Reset();
 		depthShaderView.Reset();
+		stencilShaderView.Reset();
 		depthStencilTexture.Reset();
 		renderTargetViewSrgb.Reset();
 		renderTargetView.Reset();
@@ -394,6 +395,7 @@ namespace nSCD3D11 {
 		swapChainBuffer.Reset();
 		sceneDepth = SceneDepthPipeline{};
 		liveShadows = LiveShadowPipeline{};
+		frameRate = FrameRatePipeline{};
 		liveShadowDraws.clear();
 		liveShadowWorldCasters.clear();
 		liveShadowWorldCastersValid = false;

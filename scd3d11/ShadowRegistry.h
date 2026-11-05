@@ -49,6 +49,9 @@ namespace nSCD3D11::ShadowRegistry {
 		float high[3]{};
 		// The occupant's placement height, which is where its ground quad sits.
 		float baseHeight = 0.0f;
+		// The occupant whose shadow this is. SC4 makes one record per texture
+		// tile of a model, and they all belong to it. Null when unknown.
+		void const *occupant = nullptr;
 		// A True3D prop SC4 itself would not shadow: it casts with its own UVs
 		// (in vertices) rather than through the projector, which only fits a
 		// prerendered view.

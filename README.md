@@ -55,7 +55,7 @@ where it came from.
 | `FlipModel` | on | Windowed and borderless: present with the flip model. Off uses the legacy DISCARD swap chain |
 | `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one. A number picks that GPU from the list in `SCD3D11.log` |
 | `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |
-| `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost |
+| `LiveShadows` | off | Real cast shadows along SC4's own sun: buildings, trees, props and network pieces shade each other, slopes and walls, and hills shade the land behind them. Off by default because of the rendering cost. In a game, the `LiveShadows` cheat (Ctrl+X) pauses them to compare with SC4's own shadows, and resumes them |
 | `NetworkShadowMasks` | off | With `LiveShadows`, keep the flat FSH shadow masks of prebuilt network pieces (the NAM ships thousands). They are removed by default because those pieces already cast live, and the two would darken the same ground twice |
 | `ReShade` | on | Off leaves ReShade at its default behaviour (effects over the whole frame, UI included). See [ReShade](#reshade) |
 | `VertexCacheSegments` | 8 | How many segments (1-16) the vertex cache keeps SC4's geometry in on the GPU. With less than 768 MB of address space free, the vertex and index caches shrink to 2 segments until there is room again |
@@ -68,6 +68,13 @@ Standard SimCity 4 switches that SCD3D11 reacts to:
 | `-w` / `-f` | Windowed / fullscreen |
 | `-CustomResolution:enabled` `-r<width>x<height>x32` | Render at an arbitrary resolution |
 | `-UserDir:"<path>"` | User directory. With `SCD3D11.dll` in its `Plugins` folder, the log goes to its `Logs` folder |
+
+Cheats, typed in SC4's cheat box (Ctrl+X):
+
+| Cheat | Effect |
+|-------|--------|
+| `FrameRate` | Shows or hides a small frame rate counter in the top right corner |
+| `LiveShadows` | With `LiveShadows=on`, pauses live shadows and brings back SC4's own, or resumes them |
 
 ### Presentation modes
 

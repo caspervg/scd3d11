@@ -128,6 +128,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Textures.cpp
         scd3d11/cGDriver_Unknown.cpp
         scd3d11/cGDriver_Blit.cpp
+        scd3d11/cGDriver_FrameRate.cpp
         scd3d11/cGDriver_ReShade.cpp
         scd3d11/cGDriver_Viewport.cpp
         scd3d11/D3D11Conversions.cpp
@@ -220,6 +221,13 @@ if (BUILD_TESTING)
             SC4D3D11_SHADER_VARIABLE="kLiveShadowShader"
             SC4D3D11_SHADER_ENTRIES="CasterVS=vs_4_0,CasterPS=ps_4_0,FullscreenVS=vs_4_0,CompositePS=ps_4_0,RegistryVS=vs_4_0,RegistryPS=ps_4_0")
     target_link_libraries(LiveShadowShaderCompileTest PRIVATE d3dcompiler)
+
+    scd3d11_add_test(FrameRateShaderCompileTest tests/D3D11ShaderCompileTest.cpp)
+    target_compile_definitions(FrameRateShaderCompileTest PRIVATE
+            SC4D3D11_GEOMETRY_SOURCE="${PROJECT_SOURCE_DIR}/scd3d11/cGDriver_FrameRate.cpp"
+            SC4D3D11_SHADER_VARIABLE="kFrameRateShader"
+            SC4D3D11_SHADER_ENTRIES="VSMain=vs_4_0,PSMain=ps_4_0")
+    target_link_libraries(FrameRateShaderCompileTest PRIVATE d3dcompiler)
 
     scd3d11_add_test(ShadowRegistryTest
             tests/ShadowRegistryTest.cpp
