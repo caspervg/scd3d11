@@ -45,17 +45,16 @@ namespace nSCD3D11 {
 		}
 
 		// SC4's own DX7 driver posts these after it restores a lost device. The first makes the game
-		// upload its textures again, the second redraws the whole view. The messages are static
-		// because the server only holds them by pointer and cRZUnknown never frees itself.
+		// upload its textures again, the second redraws the whole view. The messages live on the heap
+		// because the server takes ownership and cRZUnknown deletes itself once the last reference goes.
 		void PostDeviceRestoredMessages() {
-			static cRZMessage2Standard restoreTextures;
-			static cRZMessage2Standard forceFullRedraw;
 			cIGZMessageServer2Ptr messageServer;
 			if (!messageServer) return;
-			restoreTextures.SetType(0x8ACAA95F);
-			forceFullRedraw.SetType(0x6ACB92A9);
-			messageServer->MessagePost(static_cast<cIGZMessage2Standard *>(&restoreTextures), false);
-			messageServer->MessagePost(static_cast<cIGZMessage2Standard *>(&forceFullRedraw), false);
+			for (uint32_t type : {0x8ACAA95Fu, 0x6ACB92A9u}) {
+				auto *message = new cRZMessage2Standard();
+				message->SetType(type);
+				messageServer->MessagePost(static_cast<cIGZMessage2Standard *>(message), false);
+			}
 		}
 
 		RECT PrimaryMonitorRectangle() {
