@@ -1,0 +1,31 @@
+name: sc4pac
+
+# Points the sc4pac package at a release on a branch of caspervg/simtropolis-channel, and links to a
+# prefilled pull request in the job summary. The channel's url-check compares lastModified with the
+# STEX upload, which comes after the attested release, so this runs by hand once the release is on
+# the STEX: Actions -> sc4pac -> Run workflow, with "Use workflow from" set to the release tag, or
+# `gh workflow run sc4pac.yml --ref vX.Y.Z`. The action reads the upload time from the STEX page and
+# stops while that page still shows an older upload or another version.
+#
+# The sc4pac environment only gives the fork token to v* tags, so a run from a branch is refused.
+# Prereleases are skipped by the action.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sc4pac:
+    runs-on: ubuntu-latest
+    environment: sc4pac
+    concurrency: sc4pac-caspervg-scd3d11
+
+    steps:
+    - uses: caspervg/sc4pac-release-action@2d3cc1ca8b962e2fb9f92ad10b669cc29a3ed27d # feat/stex-last-modified
+      with:
+        channel: sebamarynissen/simtropolis-channel
+        asset-id: caspervg-scd3d11
+        asset-name: SCD3D11-${{ github.ref_name }}.zip
+        last-modified: stex
+        token: ${{ secrets.SC4PAC_FORK_TOKEN }}
