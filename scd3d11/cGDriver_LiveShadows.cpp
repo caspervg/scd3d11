@@ -18,6 +18,7 @@
 #include "D3D11Conversions.h"
 #include "Diagnostics.h"
 #include "LiveShadowHooks.h"
+#include "Settings.h"
 #include "ShadowRegistry.h"
 #include "TerrainShadows.h"
 #include "VertexFormatUtils.h"
@@ -1857,8 +1858,11 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         ShadowConstants composite{};
         std::memcpy(composite.lightMatrix, lightView, sizeof(lightView));
         // Depth16 rounds the scene depth onto 1/65536 steps of the projection's
-        // depth range, and the composite rebuilds positions from it.
-        float const depthStep = projection[10] != 0.0f ? 2.0f / std::fabs(projection[10]) / 65536.0f : 0.0f;
+        // depth range, and the composite rebuilds positions from it. Without it
+        // the steps are D24's 1/2^24, which a D32_FLOAT buffer never exceeds
+        // below 1, so a 16-bit step would bias 256 times too far.
+        float const depthSteps = Settings::Get().depth16 ? 65536.0f : 16777216.0f;
+        float const depthStep = projection[10] != 0.0f ? 2.0f / std::fabs(projection[10]) / depthSteps : 0.0f;
         composite.material[0] = (kShadowDepthBiasWorld + kDepthStepsOfBias * depthStep) / lightDepthRange;
         composite.material[1] = kNormalOffsetTexels * mapTexel;
         composite.material[2] = kOccupantBoxMargin;
