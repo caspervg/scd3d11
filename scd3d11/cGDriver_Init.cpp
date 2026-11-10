@@ -269,6 +269,7 @@ namespace nSCD3D11 {
 		HRESULT const probeResult = ProbeD3D11Device(SelectAdapter().Get(), probeDevice, probeLevel);
 		if (FAILED(probeResult)) {
 			LogHRESULT(LogCategory::Initialization, "D3D11CreateDevice(capability probe)", probeResult);
+			Doctor::NoteStartFailure(probeResult);
 			UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return false;
@@ -309,6 +310,7 @@ namespace nSCD3D11 {
 				                                                            : "SC4 did not switch to full screen");
 			}
 		}
+		Doctor::LeaveSoftwareMode();
 		Doctor::CheckRequestedScreenMode();
 		AppendRequestedVideoModes();
 		SetLastError(DriverError::OK);

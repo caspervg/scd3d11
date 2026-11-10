@@ -183,11 +183,18 @@ namespace nSCD3D11::Doctor {
 				name = driverClass == kSoftware ? "SC4's own software driver"
 				       : driverClass == kOpenGL ? "SC4's own OpenGL driver"
 				       : driverClass == kDirectX ? "SC4's own DirectX driver" : "a driver inside SimCity 4.exe";
+				std::string const &failure = environment.startFailure;
 				if (driverClass == kSoftware) {
 					reason = "SC4 is set to software rendering, which it also switches to after a hardware driver "
 					         "fails once. Start once with -d:DirectX to go back.";
+					if (environment.softwareRetryFailed || !failure.empty()) {
+						reason = Format("SCD3D11 could not start%s.%s%s Start once with -d:DirectX to try again.",
+						                environment.softwareRetryFailed ? " last time" : "", failure.empty() ? "" : " ",
+						                failure.c_str());
+					}
 				} else if (driverClass == kDirectX) {
-					reason = "SCD3D11 could not start Direct3D 11. The lines above in this log say why.";
+					reason = failure.empty() ? "SCD3D11 could not start Direct3D 11. The lines above in this log say why."
+					                         : failure;
 				}
 			}
 			// What to change to get SCD3D11 back, for the scvk note below.

@@ -147,7 +147,16 @@ int main() {
 		environment.activeDriverClass = 0x7ACA35C6;
 		assert(Has(Diagnose(environment), Severity::Problem, "SC4's own software driver"));
 		assert(Has(Diagnose(environment), Severity::Problem, "Start once with -d:DirectX"));
+		// SCD3D11 switched back once and that start failed, so SC4 stays in software mode and the report says why.
+		environment.softwareRetryFailed = true;
+		assert(Has(Diagnose(environment), Severity::Problem, "SCD3D11 could not start last time. Start once"));
+		environment.startFailure = "Direct3D 11 did not start (error 0x887A0001).";
+		assert(Has(Diagnose(environment), Severity::Problem, "last time. Direct3D 11 did not start (error 0x887A0001). "
+		                                                     "Start once with -d:DirectX to try again."));
+		environment.softwareRetryFailed = false;
 		environment.activeDriverClass = 0xBADB6906;
+		assert(Has(Diagnose(environment), Severity::Problem, "not SCD3D11. Direct3D 11 did not start"));
+		environment.startFailure.clear();
 		assert(Has(Diagnose(environment), Severity::Problem, "SCD3D11 could not start Direct3D 11"));
 	}
 	{

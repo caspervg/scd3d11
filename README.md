@@ -31,6 +31,10 @@ defaults below apply.
 The driver registers GZCOM class `0xBADB6906` — the class ID of the game's own DirectX driver — at a higher version,
 so SC4 selects it automatically. No `-d:` switch is needed. Do not launch with `-d:Software`, which bypasses it.
 
+SC4 changes to its software driver after a hardware driver fails one time, and stays there. SCD3D11 changes it back
+on the next start. If that start also fails, SC4 stays in software mode and the log says why. Start one time with
+`-d:DirectX` to try again.
+
 If you keep plugins outside `Documents\SimCity 4`, pass `-UserDir:` and **quote it**. SC4 splits an unquoted value at
 the first space, silently loads the wrong plugin folder, and falls back to its built-in DirectX driver.
 

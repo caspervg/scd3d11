@@ -130,6 +130,10 @@ namespace nSCD3D11::Doctor {
 		std::string wineHost;
 		// What SCD3D11 did when SC4 asked for a full-screen size the screen lacks. Empty when it did not.
 		std::string screenModeWarning;
+		// Why Direct3D 11 did not start, now or on the last start, as a sentence. Empty when unknown.
+		std::string startFailure;
+		// SCD3D11 took SC4 out of software mode on the last start, and that start failed.
+		bool softwareRetryFailed = false;
 		// Where Windows lives, whose own DLLs are never a plugin's duplicate.
 		std::string windowsFolder;
 		// The GPUs in the machine, without Windows' software renderer, in the order GPU=<n> counts them.
@@ -166,6 +170,12 @@ namespace nSCD3D11::Doctor {
 	// size from -r or SC4GraphicsOptions gets the screen's own size. So does a size the screen lacks, or a
 	// window too large for the desktop, and the report says why.
 	void CheckRequestedScreenMode();
+
+	// Called at the end of cGDriver::Init. SC4 stays on its software driver after one failed start. This
+	// makes SCD3D11 the default again, one time for each failure.
+	void LeaveSoftwareMode();
+	// Called when Direct3D 11 does not start, with its HRESULT, so the report can say why.
+	void NoteStartFailure(long result);
 
 	// Called once SCD3D11 has its device, with the LUID of the GPU it draws on and its window, so the report
 	// can name the GPU and the monitor.

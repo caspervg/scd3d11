@@ -31,6 +31,8 @@
 #include <cIGZMessage2.h>
 #include <cIGZMessageServer2.h>
 #include <cIGZMessageTarget2.h>
+#include <cISC4App.h>
+#include <SC4Preferences.h>
 #include <cRZBaseString.h>
 
 #include <algorithm>
@@ -53,6 +55,13 @@ namespace nSCD3D11::Doctor {
 	namespace {
 		// Set when CheckRequestedScreenMode replaced a full-screen size the screen lacks, for the report.
 		std::string gScreenModeWarning;
+		// Why Direct3D 11 did not start, and what LeaveSoftwareMode did.
+		std::string gStartFailure;
+		bool gLeftSoftwareMode = false;
+		bool gSoftwareRetryFailed = false;
+		// Exists from the moment SCD3D11 takes SC4 out of software mode until a start succeeds. Holds the
+		// reason when that start failed.
+		constexpr wchar_t kSoftwareMarker[] = L"SCD3D11-software.txt";
 		// The LUID of the GPU SCD3D11 draws on and its window, once it has a device.
 		std::optional<uint64_t> gActiveAdapter;
 		HWND gGameWindow = nullptr;
@@ -464,6 +473,8 @@ namespace nSCD3D11::Doctor {
 
 			environment.displayModes = DisplayModes();
 			environment.screenModeWarning = gScreenModeWarning;
+			environment.startFailure = gStartFailure;
+			environment.softwareRetryFailed = gSoftwareRetryFailed;
 			environment.screen = Size{static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN)),
 			                          static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN))};
 			environment.gameVersion641 = IsGameVersion641();
@@ -682,6 +693,52 @@ namespace nSCD3D11::Doctor {
 		gGameWindow = static_cast<HWND>(window);
 	}
 
+	void NoteStartFailure(long result) {
+		char text[128];
+		if (result == DXGI_ERROR_UNSUPPORTED) sprintf_s(text, "Your graphics card or its driver is too old for Direct3D 11.");
+		else sprintf_s(text, "Direct3D 11 did not start (error 0x%08lX).", static_cast<unsigned long>(result));
+		gStartFailure = text;
+		if (gLeftSoftwareMode) std::ofstream(LogDirectory() / kSoftwareMarker) << text;
+	}
+
+	void LeaveSoftwareMode() {
+		if (!IsGameVersion641()) return;
+		cISC4AppPtr app;
+		SC4Preferences *const preferences = app ? app->GetPreferences() : nullptr;
+		// SC4's saved choice: 0 is software, 1 is hardware (read at 0x0044CE40).
+		if (preferences == nullptr || preferences->videoPreferences.driverType != 0) return;
+		// A -d switch or SC4GraphicsOptions picks the driver, so software can be the player's choice.
+		cIGZFrameWork *const framework = RZGetFrameWork();
+		cIGZCmdLine *const commandLine = framework != nullptr ? framework->CommandLine() : nullptr;
+		for (uint32_t index = 1; commandLine != nullptr && index < commandLine->argc(); ++index) {
+			char const *const argument = commandLine->argv(static_cast<int32_t>(index));
+			if (argument != nullptr && _strnicmp(argument, "-d:", 3) == 0) return;
+		}
+		if (auto const options = ReadGraphicsOptions()) {
+			auto const driver = options->find("driver");
+			if (driver != options->end() && !driver->second.empty()) return;
+		}
+
+		std::filesystem::path const marker = LogDirectory() / kSoftwareMarker;
+		std::error_code error;
+		if (std::filesystem::exists(marker, error)) {
+			// A second try could fail the same way, and then the game would never start.
+			std::ifstream file(marker);
+			std::getline(file, gStartFailure);
+			gSoftwareRetryFailed = true;
+			Log(LogCategory::Doctor, "SC4 is in software mode and SCD3D11 could not start last time, so it stays there");
+			return;
+		}
+		cIGZGraphicSystem2Ptr graphics2;
+		// Without the marker there is no guard against a start that fails each time.
+		if (!graphics2 || !std::ofstream(marker)) return;
+		// SC4 picks its driver after it has loaded them all (cGZGraphicSystem::LoadAllDrivers, 0x009904D0).
+		graphics2->SetDefaultDriverClassID(0xBADB6906);
+		preferences->videoPreferences.driverType = 1;
+		gLeftSoftwareMode = true;
+		Log(LogCategory::Doctor, "SC4 was in software mode after a failed start, switched it back to SCD3D11");
+	}
+
 	void CheckRequestedScreenMode() {
 		cIGZGraphicSystemPtr graphics;
 		if (!graphics) return;
@@ -768,6 +825,11 @@ namespace nSCD3D11::Doctor {
 	void Run(cIGZCmdLine *commandLine) {
 		try {
 			Environment const environment = Collect(commandLine);
+			if (environment.driverIsSCD3D11.value_or(false)) {
+				std::error_code error;
+				std::filesystem::remove(LogDirectory() / kSoftwareMarker, error);
+				gLeftSoftwareMode = false;
+			}
 			LogInventory(environment, Settings::Get().doctor);
 			std::vector<Finding> const findings = Diagnose(environment);
 			unsigned counts[3]{};
