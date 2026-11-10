@@ -463,7 +463,7 @@ namespace nSCD3D11 {
 		swapChainDescription.OutputWindow = window;
 		swapChainDescription.Windowed = TRUE;
 		swapChainDescription.SwapEffect = flipModel ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_DISCARD;
-		allowTearing = flipModel && TearingSupported();
+		allowTearing = flipModel && Settings::Get().tearing && TearingSupported();
 		swapChainFlags = presentationMode == PresentationMode::ExclusiveFullscreen
 			                 ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
 			                 : (allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);

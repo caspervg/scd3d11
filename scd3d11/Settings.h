@@ -42,6 +42,9 @@ namespace nSCD3D11::Settings {
 		bool liveShadows = false;
 		bool networkShadowMasks = false;
 		bool vsync = true;
+		// With VSync off, a windowed or borderless frame replaces the one on screen at once and can tear.
+		// Off: Windows shows the newest frame at the next refresh, which costs no frame rate.
+		bool tearing = false;
 		FrameLimitChoice maxFps;
 		// A monitor-sized window. It needs no -f, SCD3D11 turns full screen on, and wins over -w.
 		bool borderless = false;

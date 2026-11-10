@@ -176,6 +176,7 @@ namespace nSCD3D11::Settings {
 		values.liveShadows = Resolve(sources, "LiveShadows", ParseFlag, values.liveShadows);
 		values.networkShadowMasks = Resolve(sources, "NetworkShadowMasks", ParseFlag, values.networkShadowMasks);
 		values.vsync = Resolve(sources, "VSync", ParseFlag, values.vsync);
+		values.tearing = Resolve(sources, "Tearing", ParseFlag, values.tearing);
 		values.maxFps = Resolve(sources, "MaxFPS", ParseFrameLimit, values.maxFps);
 		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
 		// scvk's -b and -FullscreenMode:Borderless, the second SCD3D11's own before v0.3. -Borderless wins

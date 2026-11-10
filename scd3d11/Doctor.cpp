@@ -102,7 +102,7 @@ namespace nSCD3D11::Doctor {
 
 		// SCD3D11's settings, read from the command line and SCD3D11.ini. They must match Settings::Load.
 		constexpr char const *kSettings[] = {
-			"LiveShadows", "NetworkShadowMasks", "VSync", "MaxFPS", "Borderless", "FlipModel", "GPU", "ViewportCull", "Depth16", "ReShade",
+			"LiveShadows", "NetworkShadowMasks", "VSync", "Tearing", "MaxFPS", "Borderless", "FlipModel", "GPU", "ViewportCull", "Depth16", "ReShade",
 			"DrawStats", "LogLevel", "Doctor", "DoctorDialog", "UpdateCheck", "DriverThreading", "CrashDump", "AMDCrashFix",
 			"VertexCacheSegments", "VertexCacheSize",
 		};
