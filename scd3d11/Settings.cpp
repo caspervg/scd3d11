@@ -176,6 +176,7 @@ namespace nSCD3D11::Settings {
 		values.liveShadows = Resolve(sources, "LiveShadows", ParseFlag, values.liveShadows);
 		values.networkShadowMasks = Resolve(sources, "NetworkShadowMasks", ParseFlag, values.networkShadowMasks);
 		values.vsync = Resolve(sources, "VSync", ParseFlag, values.vsync);
+		values.maxFps = Resolve(sources, "MaxFPS", ParseFrameLimit, values.maxFps);
 		values.borderless = Resolve(sources, "Borderless", ParseFlag, values.borderless);
 		// scvk's -b and -FullscreenMode:Borderless, the second SCD3D11's own before v0.3. -Borderless wins
 		// when it is given too.
@@ -206,6 +207,11 @@ namespace nSCD3D11::Settings {
 		values.vertexCacheSizeMB = Resolve(sources, "VertexCacheSize", ParseVertexCacheSize, values.vertexCacheSizeMB);
 		gValues = values;
 		SetDiagnostics(values.drawStats, values.traceLog);
+	}
+
+	bool ParseFrameLimit(std::string_view value, FrameLimitChoice &limit) {
+		limit = FrameLimitChoice{value == "screen", 0};
+		return limit.screen || value == "off" || ParseNumber(value, 10, 1000, limit.fps);
 	}
 
 	Values const &Get() {

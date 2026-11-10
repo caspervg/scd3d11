@@ -29,6 +29,7 @@
 #include <cRZUnknown.h>
 #include "cIGZGDriver.h"
 #include "D3D11Conversions.h"
+#include "FrameLimiter.h"
 #include "GeometryCache.h"
 #include "sGDMode.h"
 #include "ViewportCull.h"
@@ -314,6 +315,13 @@ namespace nSCD3D11 {
 		// Off with FlipModel=off.
 		bool preferFlipModel;
 		UINT swapChainFlags;
+		// The swap chain can show a frame at once with VSync=off, which a flip-model swap chain only does
+		// with DXGI's tearing flags. Not in exclusive fullscreen, which needs no flag.
+		bool allowTearing = false;
+		FrameLimiter frameLimiter;
+		// The refresh rate of the monitor the window is on, read again once a second. 0 when unknown.
+		uint32_t screenRefreshHz = 0;
+		ULONGLONG nextRefreshCheck = 0;
 		// SC4 redraws only dirty rectangles and expects the back buffer to survive Present. DISCARD
 		// swap chains give no such guarantee (exclusive fullscreen really flips), so the game renders
 		// into this persistent texture, which is copied to swapChainBuffer right before each Present.
