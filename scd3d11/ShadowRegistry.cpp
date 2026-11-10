@@ -222,6 +222,8 @@ namespace nSCD3D11::ShadowRegistry {
 			// The gPassSerial of the pass this caster was last gathered into.
 			uint32_t passSerial = 0;
 			bool suppressOnly = false;
+			// A prop SC4 itself would not shadow. Its record exists only for live shadows.
+			bool relaxed = false;
 		};
 		// Indexed by overlay id: AddShadow's ids are slots in the manager's
 		// record array, so they are small and dense, and a gather that looks up
@@ -688,6 +690,7 @@ namespace nSCD3D11::ShadowRegistry {
 			std::memcpy(fresh.high, caster->high, sizeof(fresh.high));
 			fresh.baseHeight = caster->baseHeight;
 			fresh.suppressOnly = caster->suppressOnly;
+			fresh.relaxed = meshCaster;
 			fresh.caster = std::move(caster);
 			uint32_t const slot = static_cast<uint32_t>(id);
 			if (slot >= gCasters.size()) gCasters.resize((std::max)(slot + 1, static_cast<uint32_t>(gCasters.size()) * 3 / 2));
@@ -935,12 +938,56 @@ namespace nSCD3D11::ShadowRegistry {
 			if (manager == gManager && EraseCaster(id)) ++gRemoved;
 		}
 
+		// Copies ids to kept without the relaxed props' records. False when the list
+		// has none of them, and SC4 can draw it as it is.
+		bool DropRelaxed(void *manager, IdList const *ids, std::vector<int32_t> &kept) {
+			kept.clear();
+			IdList list{};
+			if (!Read(ids, list) || list.begin == nullptr || list.end <= list.begin) return false;
+			size_t const count = static_cast<size_t>(list.end - list.begin);
+			if (count > kMaxIdsPerPass) return false;
+			kept.resize(count);
+			if (!SafeCopy(list.begin, kept.data(), count * sizeof(int32_t))) return false;
+
+			std::lock_guard<std::mutex> lock(gMutex);
+			uint8_t const *records = nullptr;
+			if (manager != gManager || gCasterCount == 0 ||
+			    !Read(static_cast<uint8_t const *>(manager) + kManagerRecords, records) || records == nullptr)
+				return false;
+			size_t write = 0;
+			for (size_t read = 0; read < kept.size(); ++read) {
+				int32_t const id = kept[read];
+				if (id >= 0 && static_cast<uint32_t>(id) < gCasters.size() && gCasters[id].caster && gCasters[id].relaxed) {
+					// Still the prop's record, and not a slot SC4 gave to something else.
+					uint8_t const *const record = records + static_cast<size_t>(id) * kRecordSize;
+					int32_t inUse = 0;
+					void const *binding = nullptr;
+					if (Read(record, inUse) && inUse == -1 && Read(record + kRecordBinding, binding) &&
+					    binding == gCasters[id].binding)
+						continue;
+				}
+				kept[write++] = id;
+			}
+			if (write == kept.size()) return false;
+			kept.resize(write);
+			return true;
+		}
+
 		void DrawFiltered(DrawShadowsFunction original, void *manager, float const *eyeToWorld, void *drawContext,
 		                  IdList *ids) {
 			// Only the render thread draws overlays, so one scratch list is enough.
 			static std::vector<int32_t> kept;
 			if (LiveShadowHooks::Paused()) {
-				original(manager, eyeToWorld, drawContext, ids);
+				// SC4 draws its own shadows again, but not the records it would not have made.
+				bool dropped = false;
+				try {
+					dropped = DropRelaxed(manager, ids, kept);
+				} catch (std::bad_alloc const &) {
+				}
+				IdList filtered{};
+				if (dropped && !kept.empty())
+					filtered = IdList{kept.data(), kept.data() + kept.size(), kept.data() + kept.size()};
+				original(manager, eyeToWorld, drawContext, dropped ? &filtered : ids);
 				return;
 			}
 			++gDrawCalls;
