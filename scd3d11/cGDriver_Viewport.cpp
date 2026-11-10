@@ -506,7 +506,7 @@ namespace nSCD3D11 {
 		}
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Initialization, "D3D11CreateDeviceAndSwapChain", result);
-			if (!recoveringDevice) Doctor::NoteStartFailure(result);
+			if (!recoveringDevice) Doctor::NoteStartFailure(result, true);
 			DestroyD3D11Context(recoveringDevice);
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return;

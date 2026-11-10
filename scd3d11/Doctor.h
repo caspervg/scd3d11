@@ -87,8 +87,10 @@ namespace nSCD3D11::Doctor {
 		std::string rawCommandLine;
 		// DLLs loaded into the game.
 		std::vector<Module> modules;
-		// Copies of Windows graphics DLLs in the Apps folder, loaded or not.
+		// DLLs in the Apps folder that stand in for a Windows DLL, and dxwrapper.dll. Loaded or not.
 		std::vector<Module> appsFiles;
+		// File names of DxWrapper's and dgVoodoo's settings and tools in the Apps folder.
+		std::vector<std::string> appsLeftovers;
 		// File names of DLLs in the Plugins folders that import imgui.dll, as plugins built for
 		// SC4RenderServices before v0.8 do. Loaded or not, since they fail to load once imgui.dll is gone.
 		std::vector<std::string> imguiPlugins;
@@ -174,8 +176,9 @@ namespace nSCD3D11::Doctor {
 	// Called at the end of cGDriver::Init. SC4 stays on its software driver after one failed start. This
 	// makes SCD3D11 the default again, one time for each failure.
 	void LeaveSoftwareMode();
-	// Called when Direct3D 11 does not start, with its HRESULT, so the report can say why.
-	void NoteStartFailure(long result);
+	// Called when Direct3D 11 does not start, with its HRESULT, so the report can say why. A failure in
+	// SetVideoMode is fatal: SC4 closes and goes to its software driver, so the player gets a message now.
+	void NoteStartFailure(long result, bool fatal);
 
 	// Called once SCD3D11 has its device, with the LUID of the GPU it draws on and its window, so the report
 	// can name the GPU and the monitor.

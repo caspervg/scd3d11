@@ -538,9 +538,36 @@ namespace nSCD3D11::Doctor {
 			}
 			if (!overlays.empty()) findings.push_back({Severity::Note, "Overlays in the game: " + overlays});
 
+			// DxWrapper is dxwrapper.dll, its INI and a stub named after a Windows DLL. Its window and
+			// full-screen settings were made for SC4's DirectX 7 driver.
+			std::string dxWrapper, dgVoodoo;
+			bool dgVoodooDll = false;
+			for (Module const &file : environment.appsFiles) {
+				std::string const name = FileName(file.path);
+				if (name == "dxwrapper.dll" || Identify(file) == "DxWrapper") dxWrapper += (dxWrapper.empty() ? "" : ", ") + name;
+				dgVoodooDll |= Identify(file) == "dgVoodoo";
+			}
+			for (std::string const &leftover : environment.appsLeftovers) {
+				std::string &list = StartsWith(Lower(leftover), "dxwrapper") ? dxWrapper : dgVoodoo;
+				list += (list.empty() ? "" : ", ") + leftover;
+			}
+			if (!dxWrapper.empty() && FindModule(environment, "dxwrapper.dll") != nullptr) {
+				findings.push_back({Severity::Warning, Format(
+					"DxWrapper is active in the game. SCD3D11 does not need it, and its window and full-screen "
+					"settings can work against SCD3D11. Delete these files from the Apps folder: %s.", dxWrapper.c_str())});
+			} else if (!dxWrapper.empty()) {
+				findings.push_back({Severity::Note, Format("Left over from DxWrapper in the Apps folder: %s. SCD3D11 does "
+				                                           "not use them, so they can be deleted.", dxWrapper.c_str())});
+			}
+			if (!dgVoodoo.empty() && !dgVoodooDll) {
+				findings.push_back({Severity::Note, Format("Left over from dgVoodoo in the Apps folder: %s. SCD3D11 does "
+				                                           "not use them, so they can be deleted.", dgVoodoo.c_str())});
+			}
+
 			for (Module const &file : environment.appsFiles) {
 				std::string const name = FileName(file.path);
 				std::string const kind = Identify(file);
+				if (name == "dxwrapper.dll" || kind == "DxWrapper") continue;
 				if (name == "imgui.dll") {
 					findings.push_back({Severity::Note, "Apps\\imgui.dll is left over from SC4RenderServices before "
 					                                    "v0.8 and is no longer used."});
@@ -562,6 +589,10 @@ namespace nSCD3D11::Doctor {
 					findings.push_back({Severity::Note, Format(
 						"Apps\\%s is %s. SCD3D11 does not need it, only SC4's own DirectX driver uses it.", name.c_str(),
 						kind.c_str())});
+				} else if (file.product.empty()) {
+					// Mod loaders and the like. Normal, but worth a line when a setup misbehaves.
+					findings.push_back({Severity::Note, Format("Apps\\%s loads in place of the Windows DLL with that name.",
+					                                           name.c_str())});
 				} else {
 					findings.push_back({Severity::Note, Format("Apps\\%s is %s.", name.c_str(), kind.c_str())});
 				}

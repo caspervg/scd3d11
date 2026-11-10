@@ -21,7 +21,7 @@
 
 #include <cstddef>
 #include <cstring>
-#include <d3dcompiler.h>
+#include <ShaderBytecode.h>
 
 namespace nSCD3D11 {
 	namespace {
@@ -78,21 +78,13 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 	}
 
 	HRESULT cGDriver::CreateBlitPipeline() {
-		Microsoft::WRL::ComPtr<ID3DBlob> vertexBytecode;
-		Microsoft::WRL::ComPtr<ID3DBlob> pixelBytecode;
-		HRESULT result = D3DCompile(kBlitShaderSource, sizeof(kBlitShaderSource) - 1, "SCD3D11Blit", nullptr,
-		                            nullptr, "VSMain", "vs_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &vertexBytecode,
-		                            nullptr);
+		HRESULT result = S_OK;
 		if (SUCCEEDED(result)) {
-			result = D3DCompile(kBlitShaderSource, sizeof(kBlitShaderSource) - 1, "SCD3D11Blit", nullptr, nullptr,
-			                    "PSMain", "ps_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &pixelBytecode, nullptr);
-		}
-		if (SUCCEEDED(result)) {
-			result = d3dDevice->CreateVertexShader(vertexBytecode->GetBufferPointer(), vertexBytecode->GetBufferSize(),
+			result = d3dDevice->CreateVertexShader(Shaders::kBlitVS.data, Shaders::kBlitVS.size,
 			                                       nullptr, &blit.vertexShader);
 		}
 		if (SUCCEEDED(result)) {
-			result = d3dDevice->CreatePixelShader(pixelBytecode->GetBufferPointer(), pixelBytecode->GetBufferSize(),
+			result = d3dDevice->CreatePixelShader(Shaders::kBlitPS.data, Shaders::kBlitPS.size,
 			                                      nullptr, &blit.pixelShader);
 		}
 		if (SUCCEEDED(result)) {
@@ -100,8 +92,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 				{"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(BlitVertex, position), D3D11_INPUT_PER_VERTEX_DATA, 0},
 				{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(BlitVertex, texCoord), D3D11_INPUT_PER_VERTEX_DATA, 0},
 			};
-			result = d3dDevice->CreateInputLayout(elements, 2, vertexBytecode->GetBufferPointer(),
-			                                      vertexBytecode->GetBufferSize(), &blit.inputLayout);
+			result = d3dDevice->CreateInputLayout(elements, 2, Shaders::kBlitVS.data,
+			                                      Shaders::kBlitVS.size, &blit.inputLayout);
 		}
 		if (SUCCEEDED(result)) {
 			D3D11_BUFFER_DESC const description{

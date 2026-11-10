@@ -55,12 +55,11 @@ namespace nSCD3D11::Doctor {
 	namespace {
 		// Set when CheckRequestedScreenMode replaced a full-screen size the screen lacks, for the report.
 		std::string gScreenModeWarning;
-		// Why Direct3D 11 did not start, and what LeaveSoftwareMode did.
+		// Why Direct3D 11 did not start, and whether LeaveSoftwareMode found the marker of a failed start.
 		std::string gStartFailure;
-		bool gLeftSoftwareMode = false;
 		bool gSoftwareRetryFailed = false;
-		// Exists from the moment SCD3D11 takes SC4 out of software mode until a start succeeds. Holds the
-		// reason when that start failed.
+		// Written when SCD3D11 takes SC4 out of software mode or cannot start, and deleted when a start
+		// succeeds. Holds the reason of the failure, if known.
 		constexpr wchar_t kSoftwareMarker[] = L"SCD3D11-software.txt";
 		// The LUID of the GPU SCD3D11 draws on and its window, once it has a device.
 		std::optional<uint64_t> gActiveAdapter;
@@ -449,6 +448,16 @@ namespace nSCD3D11::Doctor {
 				std::error_code error;
 				if (std::filesystem::exists(apps / name, error)) environment.appsFiles.push_back(Describe(apps / name));
 			}
+			// DxWrapper loads through a stub named after a Windows DLL that SimCity 4.exe imports.
+			for (wchar_t const *name : {L"dxwrapper.dll", L"winmm.dll", L"dsound.dll", L"version.dll", L"msvfw32.dll",
+			                            L"wsock32.dll", L"dinput.dll"}) {
+				std::error_code error;
+				if (std::filesystem::exists(apps / name, error)) environment.appsFiles.push_back(Describe(apps / name));
+			}
+			for (wchar_t const *name : {L"dxwrapper.ini", L"dgVoodoo.conf", L"dgVoodooCpl.exe"}) {
+				std::error_code error;
+				if (std::filesystem::exists(apps / name, error)) environment.appsLeftovers.push_back(Utf8(name));
+			}
 
 			wchar_t layer[512]{};
 			if (GetEnvironmentVariableW(L"__COMPAT_LAYER", layer, 512) < 512) environment.compatibilityLayer = Utf8(layer);
@@ -693,12 +702,19 @@ namespace nSCD3D11::Doctor {
 		gGameWindow = static_cast<HWND>(window);
 	}
 
-	void NoteStartFailure(long result) {
+	void NoteStartFailure(long result, bool fatal) {
 		char text[128];
 		if (result == DXGI_ERROR_UNSUPPORTED) sprintf_s(text, "Your graphics card or its driver is too old for Direct3D 11.");
 		else sprintf_s(text, "Direct3D 11 did not start (error 0x%08lX).", static_cast<unsigned long>(result));
 		gStartFailure = text;
-		if (gLeftSoftwareMode) std::ofstream(LogDirectory() / kSoftwareMarker) << text;
+		// Not in a test host.
+		if (!fatal || !IsGameVersion641()) return;
+		// With the marker, the next start stays in software mode and the doctor gives this reason.
+		std::ofstream(LogDirectory() / kSoftwareMarker) << text;
+		if (!Settings::Get().doctorDialog) return;
+		std::string const message = gStartFailure + "\n\nSimCity 4 will use its software driver. To try SCD3D11 "
+		                                           "again, start the game once with -d:DirectX.";
+		MessageBoxA(nullptr, message.c_str(), "SCD3D11", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
 	}
 
 	void LeaveSoftwareMode() {
@@ -735,7 +751,6 @@ namespace nSCD3D11::Doctor {
 		// SC4 picks its driver after it has loaded them all (cGZGraphicSystem::LoadAllDrivers, 0x009904D0).
 		graphics2->SetDefaultDriverClassID(0xBADB6906);
 		preferences->videoPreferences.driverType = 1;
-		gLeftSoftwareMode = true;
 		Log(LogCategory::Doctor, "SC4 was in software mode after a failed start, switched it back to SCD3D11");
 	}
 
@@ -828,7 +843,6 @@ namespace nSCD3D11::Doctor {
 			if (environment.driverIsSCD3D11.value_or(false)) {
 				std::error_code error;
 				std::filesystem::remove(LogDirectory() / kSoftwareMarker, error);
-				gLeftSoftwareMode = false;
 			}
 			LogInventory(environment, Settings::Get().doctor);
 			std::vector<Finding> const findings = Diagnose(environment);

@@ -269,7 +269,7 @@ namespace nSCD3D11 {
 		HRESULT const probeResult = ProbeD3D11Device(SelectAdapter().Get(), probeDevice, probeLevel);
 		if (FAILED(probeResult)) {
 			LogHRESULT(LogCategory::Initialization, "D3D11CreateDevice(capability probe)", probeResult);
-			Doctor::NoteStartFailure(probeResult);
+			Doctor::NoteStartFailure(probeResult, false);
 			UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return false;
