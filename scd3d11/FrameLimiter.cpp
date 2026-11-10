@@ -36,7 +36,9 @@ namespace nSCD3D11 {
 
 	uint32_t FrameLimit(bool screen, uint32_t maxFps, bool vsync, uint32_t screenRefreshHz) {
 		if (!screen) return maxFps;
-		return vsync ? 0 : screenRefreshHz;
+		// A limit at the refresh rate itself drifts against the screen, which then repeats a frame now and
+		// then: scrolling judders. At twice the rate, each refresh has a new frame.
+		return vsync ? 0 : screenRefreshHz * 2;
 	}
 
 	FrameLimiter::~FrameLimiter() {

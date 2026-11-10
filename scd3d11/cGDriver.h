@@ -315,8 +315,8 @@ namespace nSCD3D11 {
 		// Off with FlipModel=off.
 		bool preferFlipModel;
 		UINT swapChainFlags;
-		// The swap chain can show a frame at once with VSync=off, which a flip-model swap chain only does
-		// with DXGI's tearing flags. Not in exclusive fullscreen, which needs no flag.
+		// Tearing=on: the swap chain can show a frame at once with VSync=off, which a flip-model swap chain
+		// only does with DXGI's tearing flags. Not in exclusive fullscreen, which needs no flag.
 		bool allowTearing = false;
 		FrameLimiter frameLimiter;
 		// The refresh rate of the monitor the window is on, read again once a second. 0 when unknown.

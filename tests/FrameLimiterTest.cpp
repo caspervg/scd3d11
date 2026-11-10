@@ -6,9 +6,9 @@
 using namespace nSCD3D11;
 
 int main() {
-	// MaxFPS=screen: VSync holds the screen's rate itself, so only VSync=off gets a limit.
+	// MaxFPS=screen: VSync holds the screen's rate itself, so only VSync=off gets a limit, twice that rate.
 	assert(FrameLimit(true, 0, true, 144) == 0);
-	assert(FrameLimit(true, 0, false, 144) == 144);
+	assert(FrameLimit(true, 0, false, 144) == 288);
 	// An unknown refresh rate gives no limit.
 	assert(FrameLimit(true, 0, false, 0) == 0);
 	// MaxFPS=<n> holds with and without VSync, and MaxFPS=off never limits.

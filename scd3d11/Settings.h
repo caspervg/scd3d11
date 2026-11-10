@@ -31,7 +31,7 @@ namespace nSCD3D11::Settings {
 		uint32_t number = 0;
 	};
 
-	// MaxFPS=screen, the default: the refresh rate of the screen, when VSync is off. MaxFPS=off: no limit.
+	// MaxFPS=screen, the default: twice the refresh rate of the screen, when VSync is off. MaxFPS=off: no limit.
 	// MaxFPS=<n>: n frames a second, from 10 to 1000, with VSync on or off.
 	struct FrameLimitChoice {
 		bool screen = true;
@@ -42,6 +42,9 @@ namespace nSCD3D11::Settings {
 		bool liveShadows = false;
 		bool networkShadowMasks = false;
 		bool vsync = true;
+		// With VSync off, a windowed or borderless frame replaces the one on screen at once and can tear.
+		// Off: Windows shows the newest frame at the next refresh, which costs no frame rate.
+		bool tearing = false;
 		FrameLimitChoice maxFps;
 		// A monitor-sized window. It needs no -f, SCD3D11 turns full screen on, and wins over -w.
 		bool borderless = false;

@@ -463,7 +463,7 @@ namespace nSCD3D11 {
 		swapChainDescription.OutputWindow = window;
 		swapChainDescription.Windowed = TRUE;
 		swapChainDescription.SwapEffect = flipModel ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_DISCARD;
-		allowTearing = flipModel && TearingSupported();
+		allowTearing = flipModel && Settings::Get().tearing && TearingSupported();
 		swapChainFlags = presentationMode == PresentationMode::ExclusiveFullscreen
 			                 ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
 			                 : (allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
@@ -645,7 +645,7 @@ namespace nSCD3D11 {
 		Settings::FrameLimitChoice const &limit = Settings::Get().maxFps;
 		Log(LogCategory::SwapChain, "VSync %s%s, frame limit: %s", Settings::Get().vsync ? "on" : "off",
 		    !Settings::Get().vsync && allowTearing ? " with tearing" : "",
-		    limit.screen ? "the screen's refresh rate when VSync is off" : limit.fps != 0 ? "MaxFPS" : "none");
+		    limit.screen ? "twice the screen's refresh rate when VSync is off" : limit.fps != 0 ? "MaxFPS" : "none");
 		if (showWindow) {
 			ShowWindow(window, SW_SHOWNORMAL);
 			UpdateWindow(window);
