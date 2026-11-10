@@ -985,7 +985,7 @@ namespace nSCD3D11 {
 
 		int InitializeVideoModeVector(void);
 
-		// Adds the size SC4 is about to ask for, in a window and full screen, when the screen does not list it.
+		// Adds the size SC4 is about to ask for, as a window and full screen.
 		void AppendRequestedVideoModes(void);
 
 		void InstallReShadeAddon(void);

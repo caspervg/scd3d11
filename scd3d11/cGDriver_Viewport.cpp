@@ -342,11 +342,11 @@ namespace nSCD3D11 {
 		}
 
 		sGDMode const mode = videoModes[newModeIndex];
-		// The monitor cannot switch to a size it does not offer. A borderless window scales it instead.
+		// A size the monitor cannot switch to is stretched in a borderless window instead.
 		bool const scaled = mode.isFullscreen && !BorderlessFullscreenRequested() &&
 		                    !DisplayOffers(mode.width, mode.height);
 		if (scaled) {
-			Log(LogCategory::SwapChain, "the screen does not offer %ux%u full screen, scaling it in a borderless window",
+			Log(LogCategory::SwapChain, "the screen has no %ux%u mode, stretching it in a borderless window",
 			    mode.width, mode.height);
 		}
 		PresentationMode const requestedPresentationMode = !mode.isFullscreen
@@ -564,10 +564,9 @@ namespace nSCD3D11 {
 					DXGI_FORMAT_UNKNOWN, swapChainFlags);
 			}
 			if (FAILED(result) && !NoteDeviceLoss(result)) {
-				// The same reason as above: a failed mode costs the player the hardware driver for good, and
-				// a borderless window shows the same picture.
+				// Failing the mode would send SC4 to its software driver. Borderless shows the same picture.
 				LogHRESULT(LogCategory::SwapChain, "enter exclusive fullscreen", result);
-				Log(LogCategory::SwapChain, "using a borderless window instead of exclusive fullscreen");
+				Log(LogCategory::SwapChain, "using a borderless window instead");
 				swapChain->SetFullscreenState(FALSE, nullptr);
 				lastFullscreenState = FALSE;
 				presentationMode = PresentationMode::BorderlessFullscreen;

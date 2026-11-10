@@ -68,16 +68,16 @@ int main() {
 		assert(Has(Diagnose(environment), Severity::Warning, "16-bit colour"));
 	}
 	{
-		// Full screen at a size the screen does not offer, listing the largest ones it does.
+		// Full screen at a size the screen cannot show, listing the largest ones it does.
 		Environment environment = Clean();
 		environment.arguments = {"-f", "-CustomResolution:enabled", "-r1600x900x32"};
 		environment.gameFullScreen = true;
 		assert(Has(Diagnose(environment), Severity::Warning,
-		           "-r1600x900x32 asks for full screen at 1600x900, a size this screen does not offer"));
-		assert(Has(Diagnose(environment), Severity::Warning, "The screen offers 1920x1080, 1366x768."));
+		           "-r1600x900x32 asks for full screen at 1600x900, which your screen cannot show"));
+		assert(Has(Diagnose(environment), Severity::Warning, "Your screen offers 1920x1080, 1366x768."));
 		environment.arguments = {"-w", "-CustomResolution:enabled", "-r1600x900x32"};
 		environment.gameFullScreen = false;
-		assert(!Has(Diagnose(environment), Severity::Warning, "does not offer"));
+		assert(!Has(Diagnose(environment), Severity::Warning, "cannot show"));
 		environment.gameFullScreen = true;
 		environment.arguments = {"-f", "-r1366x768x32"};
 		assert(Has(Diagnose(environment), Severity::Warning, "-CustomResolution:enabled"));

@@ -163,11 +163,8 @@ namespace nSCD3D11::Doctor {
 	std::string LargestSizes(std::vector<Size> modes);
 
 	// Called at the end of cGDriver::Init, just before SC4 picks its screen mode. Full screen without a
-	// size from -r or SC4GraphicsOptions gets the screen's own size. A size or colour depth the screen lacks
-	// gets the screen's own size too and the report says why. A window SC4 would turn into full screen
-	// (another colour depth than the desktop's, or larger than it) is handled the same way. SC4 closes and
-	// switches to its software driver when the driver lists no mode of the size it wants, so cGDriver adds
-	// whatever size is left after this check to its modes.
+	// size from -r or SC4GraphicsOptions gets the screen's own size. So does a size the screen lacks, or a
+	// window too large for the desktop, and the report says why.
 	void CheckRequestedScreenMode();
 
 	// Called once SCD3D11 has its device, with the LUID of the GPU it draws on and its window, so the report
