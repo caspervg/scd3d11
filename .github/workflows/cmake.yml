@@ -104,28 +104,70 @@ jobs:
           build/SCD3D11.*.json
         if-no-files-found: error
 
+  validate-tag:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+    - name: Validate version tag
+      env:
+        TAG_NAME: ${{ github.ref_name }}
+      run: |
+        if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+          echo "Release tags must match vMAJOR.MINOR.PATCH[-PRERELEASE], for example v1.2.0 or v1.2.0-rc.1. Got: $TAG_NAME"
+          exit 1
+        fi
+
   # Pushing a tag such as v1.2.0 publishes the tested Release build, and v1.2.0-rc1 becomes a prerelease.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, validate-tag]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # For the signed attestations.
+      id-token: write
+      attestations: write
+      artifact-metadata: write
 
     steps:
     - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
 
     - uses: actions/download-artifact@v8
       with:
         name: SCD3D11-Release
         path: dist
 
+    - name: Create release zip
+      run: >-
+        zip -j "SCD3D11-${GITHUB_REF_NAME}.zip" dist/SCD3D11.dll SCD3D11.ini dist/SCD3D11.spdx.json
+        dist/SCD3D11.cdx.json README.md LICENSE THIRD_PARTY_NOTICES.txt
+
+    # Build provenance: proves that this workflow built these files from this commit. Players check it
+    # with `gh attestation verify <file> --repo caspervg/scd3d11`. The DLL is a subject too, so the file
+    # in a plugins folder can be checked without the zip.
+    - name: Attest build provenance
+      uses: actions/attest@v4
+      with:
+        subject-path: |
+          SCD3D11-${{ github.ref_name }}.zip
+          dist/SCD3D11.dll
+          dist/SCD3D11.pdb
+          dist/SCD3D11.spdx.json
+          dist/SCD3D11.cdx.json
+
+    - name: Attest SBOM
+      uses: actions/attest@v4
+      with:
+        subject-path: dist/SCD3D11.dll
+        sbom-path: dist/SCD3D11.spdx.json
+
     - name: Publish GitHub release
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         archive="SCD3D11-${GITHUB_REF_NAME}.zip"
-        zip -j "$archive" dist/SCD3D11.dll SCD3D11.ini dist/SCD3D11.spdx.json dist/SCD3D11.cdx.json README.md LICENSE THIRD_PARTY_NOTICES.txt
         prerelease=""
         if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
         # Notes written for the tag come first, above the generated list of changes.
@@ -142,6 +184,8 @@ jobs:
     if: ${{ !contains(github.ref_name, '-') }}
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     environment: sc4pac
     concurrency: sc4pac-caspervg-scd3d11
 
