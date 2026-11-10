@@ -690,7 +690,35 @@ namespace nSCD3D11::Doctor {
 		bool const fullScreen = graphics->IsFullScreenMode();
 		Log(LogCategory::Doctor, "SC4 asks for %ux%u in %u-bit colour, %s", requested.width, requested.height,
 		    requested.bitDepth, fullScreen ? "full screen" : "in a window");
-		if (!fullScreen) return;
+		// cGZGraphicSystem::Init (0x00990880) makes a window full screen, after this check, when its colour
+		// depth is not the desktop's or it is larger than the desktop. The depth is only a number to
+		// SCD3D11, so the desktop's keeps the window. A window that does not fit is checked as the full
+		// screen size it becomes.
+		bool forced = false;
+		if (!fullScreen) {
+			HDC const screen = GetDC(nullptr);
+			uint32_t const desktopDepth =
+				screen != nullptr ? static_cast<uint32_t>(GetDeviceCaps(screen, BITSPIXEL) * GetDeviceCaps(screen, PLANES))
+				                  : 32;
+			if (screen != nullptr) ReleaseDC(nullptr, screen);
+			uint32_t const desktopWidth = static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN));
+			uint32_t const desktopHeight = static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN));
+			if (requested.bitDepth != desktopDepth && (desktopDepth == 16 || desktopDepth == 24 || desktopDepth == 32)) {
+				cGZDisplayMetrics wanted = requested;
+				wanted.bitDepth = desktopDepth;
+				if (graphics->PreInitSetDesiredGameResolution(wanted)) {
+					Log(LogCategory::Doctor, "window in %u-bit colour on a %u-bit desktop: asking for %u-bit, or SC4 "
+					    "makes it full screen", requested.bitDepth, desktopDepth, desktopDepth);
+					requested = wanted;
+				}
+			}
+			if (requested.bitDepth == desktopDepth && requested.width <= desktopWidth && requested.height <= desktopHeight) {
+				return;
+			}
+			Log(LogCategory::Doctor, "SC4 makes this window full screen: the desktop is %ux%u in %u-bit colour",
+			    desktopWidth, desktopHeight, desktopDepth);
+			forced = true;
+		}
 
 		// A size from -r or SC4GraphicsOptions is the player's choice. Without one, SC4 uses the size it
 		// saved last time, 1024x768 at first, where the screen's own size is what a player expects.
@@ -704,7 +732,7 @@ namespace nSCD3D11::Doctor {
 		}
 		std::vector<Size> const modes = DisplayModes();
 		bool const offered = requested.bitDepth == 32 && ScreenOffers(modes, requested.width, requested.height);
-		if (offered && sizeGiven) return;
+		if (offered && (sizeGiven || forced)) return;
 
 		DEVMODEW current{};
 		current.dmSize = sizeof(current);
@@ -715,8 +743,23 @@ namespace nSCD3D11::Doctor {
 		wanted.bitDepth = 32;
 		if (wanted.width == requested.width && wanted.height == requested.height && requested.bitDepth == 32) return;
 		bool const changed = graphics->PreInitSetDesiredGameResolution(wanted);
+		// Full screen by choice now, so SC4 does not open a window as large as the whole desktop.
+		if (changed && forced) graphics->PreInitSetWindowedMode(false);
 
 		char text[1024];
+		if (forced) {
+			sprintf_s(text, "SimCity 4 asked for a window of %ux%u, which does not fit this desktop, so SC4 makes it full "
+			          "screen, at a size this screen does not offer. SCD3D11 %s. The screen offers %s. Change -r on the "
+			          "command line (sizes other than SC4's standard ones also need -CustomResolution:enabled), or "
+			          "WindowWidth and WindowHeight in SC4GraphicsOptions.ini.", requested.width, requested.height,
+			          changed ? "used full screen at the screen's own size instead"
+			                  : "scales that size to the screen in a borderless window",
+			          LargestSizes(modes).c_str());
+			Log(LogCategory::Doctor, "a window of %ux%u does not fit, %s (the report below says more)", requested.width,
+			    requested.height, changed ? "using the screen's own size, full screen" : "scaling it in a borderless window");
+			gScreenModeWarning = text;
+			return;
+		}
 		if (offered) {
 			Log(LogCategory::Doctor, "full screen without a size: %s the screen's own %ux%u instead of SC4's saved %ux%u",
 			    changed ? "using" : "could not switch to", wanted.width, wanted.height, requested.width, requested.height);
@@ -733,12 +776,13 @@ namespace nSCD3D11::Doctor {
 			gScreenModeWarning = text;
 			return;
 		}
-		sprintf_s(text, "SimCity 4 asks for full screen at %ux%u in %u-bit colour, which this screen does not offer, so "
-		          "the game closes without a message. The screen offers %s. Change -r on the command line, or "
-		          "WindowWidth, WindowHeight and ColorDepth in SC4GraphicsOptions.ini.", requested.width,
-		          requested.height, requested.bitDepth, LargestSizes(modes).c_str());
-		Log(LogCategory::Doctor, "problem: %s", text);
-		if (Settings::Get().doctorDialog) MessageBoxA(nullptr, text, "SCD3D11", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+		sprintf_s(text, "SimCity 4 asks for full screen at %ux%u in %u-bit colour, which this screen does not offer. "
+		          "SCD3D11 scales that size to the screen in a borderless window. The screen offers %s. Change -r on "
+		          "the command line, or WindowWidth, WindowHeight and ColorDepth in SC4GraphicsOptions.ini.",
+		          requested.width, requested.height, requested.bitDepth, LargestSizes(modes).c_str());
+		Log(LogCategory::Doctor, "full screen at %ux%u is not offered, scaling it in a borderless window (the report "
+		    "below says more)", requested.width, requested.height);
+		gScreenModeWarning = text;
 	}
 
 	void Run(cIGZCmdLine *commandLine) {

@@ -17,6 +17,7 @@
 #include "VideoModeUtils.h"
 
 #include <GZServPtrs.h>
+#include <cGZDisplayMetrics.h>
 #include <cIGZGraphicSystem.h>
 
 #include <cstdio>
@@ -309,6 +310,7 @@ namespace nSCD3D11 {
 			}
 		}
 		Doctor::CheckRequestedScreenMode();
+		AppendRequestedVideoModes();
 		SetLastError(DriverError::OK);
 		return true;
 	}
@@ -470,12 +472,9 @@ namespace nSCD3D11 {
 		DEVMODEA displayMode{};
 		displayMode.dmSize = sizeof(displayMode);
 		DWORD index = 0;
+		// Every size at every colour depth: SCD3D11 always draws in 32 bits, and Windows' reduced colour
+		// compatibility mode can hide the 32-bit modes.
 		while (EnumDisplaySettingsA(nullptr, index++, &displayMode)) {
-			int const depth = static_cast<int>(displayMode.dmBitsPerPel);
-			if (depth < 24) {
-				continue;
-			}
-
 			AppendVideoMode(
 				videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, 32, true,
 				supportedExtensions.stencilBuffer, supportedExtensions.textureCompression);
@@ -495,5 +494,31 @@ namespace nSCD3D11 {
 		videoModeCount = static_cast<int32_t>(videoModes.size());
 
 		return videoModeCount;
+	}
+
+	// cGZGraphicSystem::DeterminePixelFormat (0x0098E450) takes the mode with exactly the size SC4 wants and
+	// the full screen flag it ends up with. When the list has none, SC4 shows "SimCity 4 will run with the
+	// software driver when next launched", closes, and stays on its software driver from then on. SC4 can
+	// still turn a window into full screen, or full screen into a window, after this driver's Init
+	// (cGZGraphicSystem::Init, 0x00990880), so the size it wants goes in both ways. SetVideoMode shows a
+	// full screen size the monitor does not offer in a borderless window.
+	void cGDriver::AppendRequestedVideoModes(void) {
+		cIGZGraphicSystemPtr graphics;
+		if (!graphics) return;
+		cGZDisplayMetrics requested{};
+		graphics->GetGameMetrics(requested);
+		if (requested.width == 0 || requested.height == 0 ||
+		    requested.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		    requested.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+			return;
+		}
+		for (bool const fullscreen: {false, true}) {
+			if (AppendVideoMode(videoModes, requested.width, requested.height, 32, fullscreen,
+			                    supportedExtensions.stencilBuffer, supportedExtensions.textureCompression)) {
+				Log(LogCategory::Initialization, "added %ux%u %s, which the screen does not list, for SC4's request",
+				    requested.width, requested.height, fullscreen ? "full screen" : "in a window");
+			}
+		}
+		videoModeCount = static_cast<int32_t>(videoModes.size());
 	}
 }

@@ -57,6 +57,16 @@ namespace nSCD3D11 {
 			}
 		}
 
+		// Whether the monitor can switch to this size, which exclusive full screen needs.
+		bool DisplayOffers(uint32_t width, uint32_t height) {
+			DEVMODEA mode{};
+			mode.dmSize = sizeof(mode);
+			for (DWORD index = 0; EnumDisplaySettingsA(nullptr, index, &mode); ++index) {
+				if (mode.dmPelsWidth == width && mode.dmPelsHeight == height) return true;
+			}
+			return false;
+		}
+
 		RECT PrimaryMonitorRectangle() {
 			MONITORINFO monitorInfo{sizeof(monitorInfo)};
 			HMONITOR const monitor = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
@@ -332,9 +342,16 @@ namespace nSCD3D11 {
 		}
 
 		sGDMode const mode = videoModes[newModeIndex];
+		// The monitor cannot switch to a size it does not offer. A borderless window scales it instead.
+		bool const scaled = mode.isFullscreen && !BorderlessFullscreenRequested() &&
+		                    !DisplayOffers(mode.width, mode.height);
+		if (scaled) {
+			Log(LogCategory::SwapChain, "the screen does not offer %ux%u full screen, scaling it in a borderless window",
+			    mode.width, mode.height);
+		}
 		PresentationMode const requestedPresentationMode = !mode.isFullscreen
 			                                                   ? PresentationMode::Windowed
-			                                                   : BorderlessFullscreenRequested()
+			                                                   : BorderlessFullscreenRequested() || scaled
 			                                                     ? PresentationMode::BorderlessFullscreen
 			                                                     : PresentationMode::ExclusiveFullscreen;
 
@@ -545,6 +562,19 @@ namespace nSCD3D11 {
 				result = swapChain->ResizeBuffers(
 					0, static_cast<UINT>(mode.width), static_cast<UINT>(mode.height),
 					DXGI_FORMAT_UNKNOWN, swapChainFlags);
+			}
+			if (FAILED(result) && !NoteDeviceLoss(result)) {
+				// The same reason as above: a failed mode costs the player the hardware driver for good, and
+				// a borderless window shows the same picture.
+				LogHRESULT(LogCategory::SwapChain, "enter exclusive fullscreen", result);
+				Log(LogCategory::SwapChain, "using a borderless window instead of exclusive fullscreen");
+				swapChain->SetFullscreenState(FALSE, nullptr);
+				lastFullscreenState = FALSE;
+				presentationMode = PresentationMode::BorderlessFullscreen;
+				SetWindowPos(window, HWND_TOP, monitorRectangle.left, monitorRectangle.top,
+				             monitorRectangle.right - monitorRectangle.left,
+				             monitorRectangle.bottom - monitorRectangle.top, SWP_NOACTIVATE | SWP_FRAMECHANGED);
+				result = S_OK;
 			}
 			if (FAILED(result)) {
 				LogHRESULT(LogCategory::SwapChain, "enter exclusive fullscreen", result);

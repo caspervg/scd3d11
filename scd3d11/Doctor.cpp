@@ -156,8 +156,8 @@ namespace nSCD3D11::Doctor {
 		                         std::vector<Finding> &findings) {
 			if (ScreenOffers(environment.displayModes, width, height)) return;
 			findings.push_back({Severity::Warning, Format(
-				"%s asks for full screen at %ux%u, a size this screen does not offer, so SC4 closes without a "
-				"message. The screen offers %s.", source, width, height, LargestSizes(environment.displayModes).c_str())});
+				"%s asks for full screen at %ux%u, a size this screen does not offer, so SCD3D11 scales it in a "
+				"borderless window. The screen offers %s.", source, width, height, LargestSizes(environment.displayModes).c_str())});
 		}
 
 		std::string Value(std::map<std::string, std::string> const &ini, char const *key) {
