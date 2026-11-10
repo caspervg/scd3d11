@@ -337,6 +337,21 @@ int main() {
 		assert(Has(findings, Severity::Warning, "Apps\\d3d11.dll is DXVK"));
 		assert(Has(findings, Severity::Note, "Apps\\ddraw.dll is dgVoodoo"));
 		assert(Has(findings, Severity::Note, "imgui.dll is left over"));
+		// dgVoodoo's settings are only a leftover when its DLLs are gone.
+		environment.appsLeftovers = {"dgVoodoo.conf"};
+		assert(!Has(Diagnose(environment), Severity::Note, "Left over from dgVoodoo"));
+		environment.appsFiles = {{"C:\\SC4\\Apps\\dxwrapper.dll", "DxWrapper", "1.0.6542.21"},
+		                         {"C:\\SC4\\Apps\\winmm.dll", "DxWrapper Stub", "1.0.6542.21"},
+		                         {"C:\\SC4\\Apps\\version.dll", "", ""}};
+		environment.appsLeftovers = {"dxwrapper.ini", "dgVoodoo.conf", "dgVoodooCpl.exe"};
+		assert(Has(Diagnose(environment), Severity::Note, "Left over from DxWrapper in the Apps folder: dxwrapper.dll, "
+		                                                  "winmm.dll, dxwrapper.ini."));
+		assert(Has(Diagnose(environment), Severity::Note, "Left over from dgVoodoo in the Apps folder: dgVoodoo.conf, "
+		                                                  "dgVoodooCpl.exe."));
+		assert(Has(Diagnose(environment), Severity::Note, "Apps\\version.dll is an unknown wrapper"));
+		assert(!Has(Diagnose(environment), Severity::Note, "Apps\\winmm.dll is"));
+		environment.modules.push_back({"C:\\SC4\\Apps\\dxwrapper.dll", "DxWrapper", "1.0.6542.21"});
+		assert(Has(Diagnose(environment), Severity::Warning, "DxWrapper is active in the game."));
 		assert(Has(findings, Severity::Warning, "scd3d11.dll is loaded twice"));
 		assert(!Has(findings, Severity::Warning, "version.dll is loaded twice"));
 		assert(!Has(findings, Severity::Warning, "turn the camera"));

@@ -449,6 +449,16 @@ namespace nSCD3D11::Doctor {
 				std::error_code error;
 				if (std::filesystem::exists(apps / name, error)) environment.appsFiles.push_back(Describe(apps / name));
 			}
+			// DxWrapper loads through a stub named after a Windows DLL that SimCity 4.exe imports.
+			for (wchar_t const *name : {L"dxwrapper.dll", L"winmm.dll", L"dsound.dll", L"version.dll", L"msvfw32.dll",
+			                            L"wsock32.dll", L"dinput.dll"}) {
+				std::error_code error;
+				if (std::filesystem::exists(apps / name, error)) environment.appsFiles.push_back(Describe(apps / name));
+			}
+			for (wchar_t const *name : {L"dxwrapper.ini", L"dgVoodoo.conf", L"dgVoodooCpl.exe"}) {
+				std::error_code error;
+				if (std::filesystem::exists(apps / name, error)) environment.appsLeftovers.push_back(Utf8(name));
+			}
 
 			wchar_t layer[512]{};
 			if (GetEnvironmentVariableW(L"__COMPAT_LAYER", layer, 512) < 512) environment.compatibilityLayer = Utf8(layer);

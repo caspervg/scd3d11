@@ -87,8 +87,10 @@ namespace nSCD3D11::Doctor {
 		std::string rawCommandLine;
 		// DLLs loaded into the game.
 		std::vector<Module> modules;
-		// Copies of Windows graphics DLLs in the Apps folder, loaded or not.
+		// DLLs in the Apps folder that stand in for a Windows DLL, and dxwrapper.dll. Loaded or not.
 		std::vector<Module> appsFiles;
+		// File names of DxWrapper's and dgVoodoo's settings and tools in the Apps folder.
+		std::vector<std::string> appsLeftovers;
 		// File names of DLLs in the Plugins folders that import imgui.dll, as plugins built for
 		// SC4RenderServices before v0.8 do. Loaded or not, since they fail to load once imgui.dll is gone.
 		std::vector<std::string> imguiPlugins;
