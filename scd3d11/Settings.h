@@ -31,7 +31,7 @@ namespace nSCD3D11::Settings {
 		uint32_t number = 0;
 	};
 
-	// MaxFPS=screen, the default: the refresh rate of the screen, when VSync is off. MaxFPS=off: no limit.
+	// MaxFPS=screen, the default: twice the refresh rate of the screen, when VSync is off. MaxFPS=off: no limit.
 	// MaxFPS=<n>: n frames a second, from 10 to 1000, with VSync on or off.
 	struct FrameLimitChoice {
 		bool screen = true;

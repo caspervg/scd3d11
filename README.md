@@ -61,7 +61,7 @@ where it came from.
 | `Borderless` | off | A monitor-sized borderless window instead of exclusive fullscreen. Needs no `-f`, and wins over `-w` |
 | `VSync` | on | Wait for vsync before presenting. Off does not wait: Windows shows the newest frame at the next refresh. Exclusive fullscreen can tear with off |
 | `Tearing` | off | With `VSync=off` in a window or borderless: show each frame at once, in the middle of a refresh. This has the lowest delay, but the picture can tear on screens without variable refresh |
-| `MaxFPS` | `screen` | The highest frame rate. `screen` is the refresh rate of your screen and only matters with `VSync=off`, where a cheap view otherwise runs at over 1000 frames a second. `off` sets no limit. A number from 10 to 1000 is held with VSync on or off |
+| `MaxFPS` | `screen` | The highest frame rate. `screen` only matters with `VSync=off`, where a cheap view otherwise runs at over 1000 frames a second: it is twice the refresh rate of your screen, so that each refresh has a new frame. `off` sets no limit. A number from 10 to 1000 is held with VSync on or off |
 | `FlipModel` | on | Windowed and borderless: present with the flip model. Off uses the legacy DISCARD swap chain |
 | `GPU` | `high-performance` | `default` uses the adapter Windows picks instead of the high-performance one. A number picks that GPU from the list in `SCD3D11.log` |
 | `ViewportCull` | on | Drop the draws of a scroll redraw that lie entirely outside its small scissored viewport |

@@ -645,7 +645,7 @@ namespace nSCD3D11 {
 		Settings::FrameLimitChoice const &limit = Settings::Get().maxFps;
 		Log(LogCategory::SwapChain, "VSync %s%s, frame limit: %s", Settings::Get().vsync ? "on" : "off",
 		    !Settings::Get().vsync && allowTearing ? " with tearing" : "",
-		    limit.screen ? "the screen's refresh rate when VSync is off" : limit.fps != 0 ? "MaxFPS" : "none");
+		    limit.screen ? "twice the screen's refresh rate when VSync is off" : limit.fps != 0 ? "MaxFPS" : "none");
 		if (showWindow) {
 			ShowWindow(window, SW_SHOWNORMAL);
 			UpdateWindow(window);
