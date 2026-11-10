@@ -7,6 +7,13 @@ using nSCD3D11::Settings::ParseFlag;
 using nSCD3D11::Settings::ParseNumber;
 
 int main() {
+	{
+		nSCD3D11::Settings::FrameLimitChoice limit;
+		assert(nSCD3D11::Settings::ParseFrameLimit("screen", limit) && limit.screen);
+		assert(nSCD3D11::Settings::ParseFrameLimit("off", limit) && !limit.screen && limit.fps == 0);
+		assert(nSCD3D11::Settings::ParseFrameLimit("60", limit) && !limit.screen && limit.fps == 60);
+		for (char const *bad : {"", "9", "1001", "fast", "60fps"}) assert(!nSCD3D11::Settings::ParseFrameLimit(bad, limit));
+	}
 	bool flag = false;
 	// A bare switch is on. The rest is sc4-dll-utilities' TryParse<bool>, in any case.
 	for (char const *on : {"", "on", "ON", "true", "Enabled", "1"}) assert(ParseFlag(on, flag) && flag);

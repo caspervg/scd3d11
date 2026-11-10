@@ -138,6 +138,7 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/SCD3D11Service.cpp
         scd3d11/Settings.cpp
         scd3d11/TextureUploadUtils.cpp
+        scd3d11/FrameLimiter.cpp
         scd3d11/VideoModeUtils.cpp
         scd3d11/VertexFormatUtils.cpp
         scd3d11/ViewportCull.cpp
@@ -252,6 +253,10 @@ if (BUILD_TESTING)
             scd3d11/Diagnostics.cpp
             scd3d11/Settings.cpp)
     target_link_libraries(ShadowRegistryTest PRIVATE version)
+
+    scd3d11_add_test(FrameLimiterTest
+            tests/FrameLimiterTest.cpp
+            scd3d11/FrameLimiter.cpp)
 
     scd3d11_add_test(SettingsTest
             tests/SettingsTest.cpp

@@ -23,6 +23,8 @@
 #include <cIGZMessageServer2.h>
 #include <cRZMessage2Standard.h>
 
+#include <dxgi1_5.h>
+
 #include <bit>
 #include <cstring>
 #include <intrin.h>
@@ -55,6 +57,29 @@ namespace nSCD3D11 {
 				message->SetType(type);
 				messageServer->MessagePost(static_cast<cIGZMessage2Standard *>(message), false);
 			}
+		}
+
+		// Whether Windows can show a flip-model frame at once, without a wait for the screen's refresh.
+		// Windows 10 1607 and later.
+		bool TearingSupported() {
+			Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
+			BOOL supported = FALSE;
+			return SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+			       SUCCEEDED(factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &supported,
+			                                              sizeof(supported))) && supported;
+		}
+
+		// The refresh rate of the monitor a window is on, or 0 when Windows does not say.
+		uint32_t ScreenRefreshHz(HWND window) {
+			MONITORINFOEXW info{};
+			info.cbSize = sizeof(info);
+			DEVMODEW mode{};
+			mode.dmSize = sizeof(mode);
+			HMONITOR const monitor = MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY);
+			if (monitor == nullptr || !GetMonitorInfoW(monitor, &info) ||
+			    !EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)) return 0;
+			// 0 and 1 mean the default rate of the hardware.
+			return mode.dmDisplayFrequency > 1 ? mode.dmDisplayFrequency : 0;
 		}
 
 		// Whether the monitor can switch to this size, which exclusive full screen needs.
@@ -438,9 +463,10 @@ namespace nSCD3D11 {
 		swapChainDescription.OutputWindow = window;
 		swapChainDescription.Windowed = TRUE;
 		swapChainDescription.SwapEffect = flipModel ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_DISCARD;
+		allowTearing = flipModel && TearingSupported();
 		swapChainFlags = presentationMode == PresentationMode::ExclusiveFullscreen
 			                 ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
-			                 : 0;
+			                 : (allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
 		swapChainDescription.Flags = swapChainFlags;
 
 		UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -502,6 +528,9 @@ namespace nSCD3D11 {
 			Log(LogCategory::SwapChain, "using the legacy swap effect instead");
 			swapChainDescription.BufferCount = 1;
 			swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+			allowTearing = false;
+			swapChainFlags = 0;
+			swapChainDescription.Flags = 0;
 			result = createForAvailableRuntime();
 		}
 		if (FAILED(result)) {
@@ -613,6 +642,10 @@ namespace nSCD3D11 {
 		Log(LogCategory::Capabilities, "D3D feature level 0x%04X, %s at %dx%d, %s swap chain", featureLevel, modeName,
 		    bufferWidth, bufferHeight,
 		    swapChainDescription.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ? "flip model" : "legacy");
+		Settings::FrameLimitChoice const &limit = Settings::Get().maxFps;
+		Log(LogCategory::SwapChain, "VSync %s%s, frame limit: %s", Settings::Get().vsync ? "on" : "off",
+		    !Settings::Get().vsync && allowTearing ? " with tearing" : "",
+		    limit.screen ? "the screen's refresh rate when VSync is off" : limit.fps != 0 ? "MaxFPS" : "none");
 		if (showWindow) {
 			ShowWindow(window, SW_SHOWNORMAL);
 			UpdateWindow(window);
@@ -708,7 +741,19 @@ namespace nSCD3D11 {
 		d3dContext->CopyResource(swapChainBuffer.Get(), backBufferTexture.Get());
 		NoteRenderPhase("Flush: Present");
 		result = TakeInjectedFault(FAULT_PRESENT);
-		if (SUCCEEDED(result)) result = swapChain->Present(vsyncEnabled ? 1 : 0, 0);
+		if (SUCCEEDED(result)) {
+			ULONGLONG const now = GetTickCount64();
+			if (now >= nextRefreshCheck) {
+				nextRefreshCheck = now + 1000;
+				screenRefreshHz = ScreenRefreshHz(static_cast<HWND>(windowHandle));
+			}
+			Settings::FrameLimitChoice const &limit = Settings::Get().maxFps;
+			NoteRenderPhase("Flush: frame limit");
+			frameLimiter.Wait(FrameLimit(limit.screen, limit.fps, vsyncEnabled, screenRefreshHz));
+			NoteRenderPhase("Flush: Present");
+			result = swapChain->Present(vsyncEnabled ? 1 : 0,
+			                            !vsyncEnabled && allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+		}
 		NoteRenderPhase("Flush: after Present");
 		if (SUCCEEDED(result) && !deviceLost) {
 			// Overlays and plugins that hook Present draw on this context inside it. One that leaves another

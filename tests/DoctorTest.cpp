@@ -163,14 +163,15 @@ int main() {
 		// Mistyped and leftover switches.
 		Environment environment = Clean();
 		environment.arguments = {"-UserDir:C:\\My", "Games\\SC4\\", "-LiveShadow", "-VSync=off", "-NativeShadowMasks",
-		                         "-MaxFPS:60", "-SomeOtherPlugin:on", "-CPUPriority:Realtime", "-intro:off",
+		                         "-DepthBuffer:32", "-MaxFPS:60", "-SomeOtherPlugin:on", "-CPUPriority:Realtime", "-intro:off",
 		                         "-NetCommandGenerator:enabled", "-FullscreenMode:Borderless", "-b"};
 		auto const findings = Diagnose(environment);
 		assert(Has(findings, Severity::Warning, "Not a switch on the command line: Games\\SC4\\"));
 		assert(Has(findings, Severity::Warning, "Did you mean -LiveShadows?"));
 		assert(Has(findings, Severity::Warning, "Use a colon instead: -VSync:off"));
 		assert(Has(findings, Severity::Warning, "-NativeShadowMasks no longer does anything"));
-		assert(Has(findings, Severity::Note, "-MaxFPS:60 is an scvk switch"));
+		assert(Has(findings, Severity::Note, "-DepthBuffer:32 is an scvk switch"));
+		assert(!Has(findings, Severity::Note, "-MaxFPS:60"));
 		assert(Has(findings, Severity::Note, "fine if another plugin reads them: -SomeOtherPlugin:on"));
 		assert(Has(findings, Severity::Warning, "-CPUPriority:High"));
 		assert(!Has(findings, Severity::Note, "-intro:off"));
