@@ -589,6 +589,10 @@ namespace nSCD3D11::Doctor {
 					findings.push_back({Severity::Note, Format(
 						"Apps\\%s is %s. SCD3D11 does not need it, only SC4's own DirectX driver uses it.", name.c_str(),
 						kind.c_str())});
+				} else if (file.product.empty()) {
+					// Mod loaders and the like. Normal, but worth a line when a setup misbehaves.
+					findings.push_back({Severity::Note, Format("Apps\\%s loads in place of the Windows DLL with that name.",
+					                                           name.c_str())});
 				} else {
 					findings.push_back({Severity::Note, Format("Apps\\%s is %s.", name.c_str(), kind.c_str())});
 				}

@@ -348,7 +348,7 @@ int main() {
 		                                                  "winmm.dll, dxwrapper.ini."));
 		assert(Has(Diagnose(environment), Severity::Note, "Left over from dgVoodoo in the Apps folder: dgVoodoo.conf, "
 		                                                  "dgVoodooCpl.exe."));
-		assert(Has(Diagnose(environment), Severity::Note, "Apps\\version.dll is an unknown wrapper"));
+		assert(Has(Diagnose(environment), Severity::Note, "Apps\\version.dll loads in place of the Windows DLL"));
 		assert(!Has(Diagnose(environment), Severity::Note, "Apps\\winmm.dll is"));
 		environment.modules.push_back({"C:\\SC4\\Apps\\dxwrapper.dll", "DxWrapper", "1.0.6542.21"});
 		assert(Has(Diagnose(environment), Severity::Warning, "DxWrapper is active in the game."));
