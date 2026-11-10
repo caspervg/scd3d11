@@ -147,6 +147,22 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/ext/cGDriver_VertexBuffers.cpp
 )
 
+# The HLSL lives in the driver sources as raw strings. ShaderBaker compiles it at build time into a
+# header, so SCD3D11.dll does not need D3DCOMPILER_47.dll on the player's PC.
+add_executable(ShaderBaker scd3d11/ShaderBaker.cpp)
+target_link_libraries(ShaderBaker PRIVATE d3dcompiler)
+set(SCD3D11_SHADER_HEADER "${PROJECT_BINARY_DIR}/generated/ShaderBytecode.h")
+add_custom_command(
+        OUTPUT "${SCD3D11_SHADER_HEADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${PROJECT_BINARY_DIR}/generated"
+        COMMAND ShaderBaker "${PROJECT_SOURCE_DIR}/scd3d11" "${SCD3D11_SHADER_HEADER}" $<$<CONFIG:Debug>:--debug>
+        DEPENDS ShaderBaker
+        scd3d11/cGDriver_Geometry.cpp scd3d11/cGDriver_Blit.cpp scd3d11/cGDriver_ReShade.cpp
+        scd3d11/cGDriver_FrameRate.cpp scd3d11/cGDriver_LiveShadows.cpp
+        COMMENT "Compiling the shaders"
+        VERBATIM)
+list(APPEND SCD3D11_DRIVER_SOURCES "${SCD3D11_SHADER_HEADER}")
+
 add_library(SCD3D11 SHARED scd3d11/SCD3D11.def ${SCD3D11_DRIVER_SOURCES})
 
 # Stamped into the DLL's version resource. CI passes the release tag, e.g. v1.2.0 or v1.2.0-rc1.
@@ -171,11 +187,11 @@ target_link_options(SCD3D11 PRIVATE $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Rel
 # SC4 loads the driver as SCD3D11.dll, so suppress CMake's "lib" prefix.
 set_target_properties(SCD3D11 PROPERTIES PREFIX "")
 
-set(SCD3D11_DRIVER_INCLUDES "${PROJECT_SOURCE_DIR}/vendor/reshade/include")
+set(SCD3D11_DRIVER_INCLUDES "${PROJECT_SOURCE_DIR}/vendor/reshade/include" "${PROJECT_BINARY_DIR}/generated")
 target_include_directories(SCD3D11 PRIVATE ${SCD3D11_DRIVER_INCLUDES})
 
 # Unsuffixed names so the same list resolves under both MSVC and the MinGW cross-toolchain.
-target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 d3dcompiler dxgi version wininet advapi32)
+target_link_libraries(SCD3D11 PRIVATE scd3d11_common d3d11 dxgi version wininet advapi32)
 
 include(CTest)
 if (BUILD_TESTING)
@@ -293,7 +309,7 @@ if (BUILD_TESTING)
     target_include_directories(cGDriverTest PRIVATE ${SCD3D11_DRIVER_INCLUDES})
     # Enables the fault injection points the tests use.
     target_compile_definitions(cGDriverTest PRIVATE SCD3D11_TESTING)
-    target_link_libraries(cGDriverTest PRIVATE d3d11 d3dcompiler dxgi version wininet advapi32)
+    target_link_libraries(cGDriverTest PRIVATE d3d11 dxgi version wininet advapi32)
     # No usable D3D11 device skips instead of failing.
     set_tests_properties(cGDriverTest PROPERTIES SKIP_RETURN_CODE 77)
 endif ()

@@ -26,7 +26,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <d3dcompiler.h>
+#include <ShaderBytecode.h>
 #include <limits>
 #include <new>
 #include <unordered_map>
@@ -1096,33 +1096,18 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         LiveShadowPipeline& pipeline = liveShadows;
         HRESULT result = S_OK;
         if (!pipeline.casterVS) {
-            Microsoft::WRL::ComPtr<ID3DBlob> casterVS, casterPS, compositeVS, compositePS, registryVS, registryPS,
-                    messages;
-            auto compile = [&](char const* entry, char const* target, ID3DBlob** output) {
-                return D3DCompile(kLiveShadowShader, sizeof(kLiveShadowShader) - 1, "SCD3D11LiveShadows", nullptr,
-                                  nullptr,
-                                  entry, target, D3DCOMPILE_ENABLE_STRICTNESS, 0, output, &messages);
-            };
-            result = compile("CasterVS", "vs_4_0", &casterVS);
-            if (SUCCEEDED(result)) result = compile("CasterPS", "ps_4_0", &casterPS);
-            if (SUCCEEDED(result)) result = compile("FullscreenVS", "vs_4_0", &compositeVS);
-            if (SUCCEEDED(result)) result = compile("CompositePS", "ps_4_0", &compositePS);
-            if (SUCCEEDED(result)) result = compile("RegistryVS", "vs_4_0", &registryVS);
-            if (SUCCEEDED(result)) result = compile("RegistryPS", "ps_4_0", &registryPS);
-            if (messages) Log(LogCategory::Resource, "live shadow shader compiler: %s",
-                              static_cast<char const*>(messages->GetBufferPointer()));
             if (SUCCEEDED(result)) result = d3dDevice->CreateVertexShader(
-                casterVS->GetBufferPointer(), casterVS->GetBufferSize(), nullptr, &pipeline.casterVS);
+                Shaders::kShadowCasterVS.data, Shaders::kShadowCasterVS.size, nullptr, &pipeline.casterVS);
             if (SUCCEEDED(result)) result = d3dDevice->CreatePixelShader(
-                casterPS->GetBufferPointer(), casterPS->GetBufferSize(), nullptr, &pipeline.casterPS);
+                Shaders::kShadowCasterPS.data, Shaders::kShadowCasterPS.size, nullptr, &pipeline.casterPS);
             if (SUCCEEDED(result)) result = d3dDevice->CreateVertexShader(
-                compositeVS->GetBufferPointer(), compositeVS->GetBufferSize(), nullptr, &pipeline.compositeVS);
+                Shaders::kShadowFullscreenVS.data, Shaders::kShadowFullscreenVS.size, nullptr, &pipeline.compositeVS);
             if (SUCCEEDED(result)) result = d3dDevice->CreatePixelShader(
-                compositePS->GetBufferPointer(), compositePS->GetBufferSize(), nullptr, &pipeline.compositePS);
+                Shaders::kShadowCompositePS.data, Shaders::kShadowCompositePS.size, nullptr, &pipeline.compositePS);
             if (SUCCEEDED(result)) result = d3dDevice->CreateVertexShader(
-                registryVS->GetBufferPointer(), registryVS->GetBufferSize(), nullptr, &pipeline.registryVS);
+                Shaders::kShadowRegistryVS.data, Shaders::kShadowRegistryVS.size, nullptr, &pipeline.registryVS);
             if (SUCCEEDED(result)) result = d3dDevice->CreatePixelShader(
-                registryPS->GetBufferPointer(), registryPS->GetBufferSize(), nullptr, &pipeline.registryPS);
+                Shaders::kShadowRegistryPS.data, Shaders::kShadowRegistryPS.size, nullptr, &pipeline.registryPS);
             D3D11_INPUT_ELEMENT_DESC const elements[]{
                 {
                     "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,offsetof(D3D11Vertex, position),
@@ -1146,13 +1131,13 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
                 }
             };
             if (SUCCEEDED(result)) result = d3dDevice->CreateInputLayout(
-                elements, 5, casterVS->GetBufferPointer(), casterVS->GetBufferSize(), &pipeline.inputLayout);
+                elements, 5, Shaders::kShadowCasterVS.data, Shaders::kShadowCasterVS.size, &pipeline.inputLayout);
             D3D11_INPUT_ELEMENT_DESC const registryElements[]{
                 {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
                 {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, sizeof(float) * 3, D3D11_INPUT_PER_VERTEX_DATA, 0}
             };
             if (SUCCEEDED(result)) result = d3dDevice->CreateInputLayout(
-                registryElements, 2, registryVS->GetBufferPointer(), registryVS->GetBufferSize(),
+                registryElements, 2, Shaders::kShadowRegistryVS.data, Shaders::kShadowRegistryVS.size,
                 &pipeline.registryLayout);
             D3D11_BUFFER_DESC buffer{sizeof(ShadowConstants), D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
             if (SUCCEEDED(result)) result = d3dDevice->CreateBuffer(&buffer, nullptr, &pipeline.constants);

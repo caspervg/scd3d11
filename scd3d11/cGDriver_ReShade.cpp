@@ -30,7 +30,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <d3dcompiler.h>
+#include <ShaderBytecode.h>
 #include <reshade.hpp>
 #include <vector>
 
@@ -335,20 +335,12 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		SceneDepthPipeline &pipeline = sceneDepth;
 		HRESULT result = S_OK;
 		if (!pipeline.pixelShader) {
-			Microsoft::WRL::ComPtr<ID3DBlob> vertexBytecode;
-			Microsoft::WRL::ComPtr<ID3DBlob> pixelBytecode;
-			result = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, "SCD3D11SceneDepth", nullptr, nullptr,
-			                    "VSMain", "vs_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &vertexBytecode, nullptr);
 			if (SUCCEEDED(result)) {
-				result = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, "SCD3D11SceneDepth", nullptr, nullptr,
-				                    "PSMain", "ps_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &pixelBytecode, nullptr);
+				result = d3dDevice->CreateVertexShader(Shaders::kSceneDepthVS.data,
+				                                       Shaders::kSceneDepthVS.size, nullptr, &pipeline.vertexShader);
 			}
 			if (SUCCEEDED(result)) {
-				result = d3dDevice->CreateVertexShader(vertexBytecode->GetBufferPointer(),
-				                                       vertexBytecode->GetBufferSize(), nullptr, &pipeline.vertexShader);
-			}
-			if (SUCCEEDED(result)) {
-				result = d3dDevice->CreatePixelShader(pixelBytecode->GetBufferPointer(), pixelBytecode->GetBufferSize(),
+				result = d3dDevice->CreatePixelShader(Shaders::kSceneDepthPS.data, Shaders::kSceneDepthPS.size,
 				                                      nullptr, &pipeline.pixelShader);
 			}
 			if (SUCCEEDED(result)) {

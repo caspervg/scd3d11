@@ -16,7 +16,7 @@
 #include "Diagnostics.h"
 
 #include <cmath>
-#include <d3dcompiler.h>
+#include <ShaderBytecode.h>
 #include <string>
 
 namespace nSCD3D11 {
@@ -88,17 +88,12 @@ float4 PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		}
 
 		if (!frameRate.pixelShader) {
-			Microsoft::WRL::ComPtr<ID3DBlob> vertex, pixel;
-			HRESULT result = D3DCompile(kFrameRateShader, sizeof(kFrameRateShader) - 1, "SCD3D11FrameRate", nullptr,
-			                            nullptr, "VSMain", "vs_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &vertex, nullptr);
+			HRESULT result = S_OK;
 			if (SUCCEEDED(result))
-				result = D3DCompile(kFrameRateShader, sizeof(kFrameRateShader) - 1, "SCD3D11FrameRate", nullptr,
-				                    nullptr, "PSMain", "ps_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &pixel, nullptr);
-			if (SUCCEEDED(result))
-				result = d3dDevice->CreateVertexShader(vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr,
+				result = d3dDevice->CreateVertexShader(Shaders::kFrameRateVS.data, Shaders::kFrameRateVS.size, nullptr,
 				                                       &frameRate.vertexShader);
 			if (SUCCEEDED(result))
-				result = d3dDevice->CreatePixelShader(pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr,
+				result = d3dDevice->CreatePixelShader(Shaders::kFrameRatePS.data, Shaders::kFrameRatePS.size, nullptr,
 				                                      &frameRate.pixelShader);
 			D3D11_BUFFER_DESC buffer{sizeof(FrameRateConstants), D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
 			if (SUCCEEDED(result)) result = d3dDevice->CreateBuffer(&buffer, nullptr, &frameRate.constants);

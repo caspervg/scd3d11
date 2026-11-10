@@ -16,7 +16,7 @@
 
 #include <cstddef>
 #include <cstring>
-#include <d3dcompiler.h>
+#include <ShaderBytecode.h>
 #include <limits>
 #include <new>
 #include <cmath>
@@ -269,78 +269,31 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return E_POINTER;
 		}
 
-		UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
-#ifndef NDEBUG
-		compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-		Microsoft::WRL::ComPtr<ID3DBlob> vertexBytecode;
-		Microsoft::WRL::ComPtr<ID3DBlob> pixelBytecode;
-		Microsoft::WRL::ComPtr<ID3DBlob> flatPixelBytecode;
-		Microsoft::WRL::ComPtr<ID3DBlob> messages;
-
-		HRESULT result = D3DCompile(
-			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", nullptr, nullptr,
-			"VSMain", "vs_4_0", compileFlags, 0, &vertexBytecode, &messages);
-		if (messages) {
-			Log(LogCategory::Resource, "vertex shader compiler: %s",
-			    static_cast<char const *>(messages->GetBufferPointer()));
-			messages.Reset();
-		}
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "D3DCompile(VSMain)", result);
-			return result;
-		}
 		// Depth16 writes the depth from the pixel shader. Feature level 11 can promise it only moves away from
 		// the viewer, which keeps early depth rejection; 10.x gets a plain depth output.
 		bool const shaderModel5 = featureLevel >= D3D_FEATURE_LEVEL_11_0;
-		char const *const pixelProfile = shaderModel5 ? "ps_5_0" : "ps_4_0";
-		char const *const depthSemantic =
-			!Settings::Get().depth16 ? nullptr : (shaderModel5 ? "SV_DepthGreaterEqual" : "SV_Depth");
-		D3D_SHADER_MACRO const flatMacros[] = {
-			{"SCD3D11_INTERPOLATION", "nointerpolation"},
-			{depthSemantic != nullptr ? "SCD3D11_DEPTH_SEMANTIC" : nullptr, depthSemantic},
-			{nullptr, nullptr}
-		};
-		D3D_SHADER_MACRO const smoothMacros[] = {
-			{depthSemantic != nullptr ? "SCD3D11_DEPTH_SEMANTIC" : nullptr, depthSemantic},
-			{nullptr, nullptr}
-		};
-		result = D3DCompile(
-			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", flatMacros, nullptr,
-			"PSMain", pixelProfile, compileFlags, 0, &flatPixelBytecode, &messages);
-		if (messages) messages.Reset();
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "D3DCompile(PSMain flat)", result);
-			return result;
-		}
+		bool const depth16 = Settings::Get().depth16;
+		Shaders::Bytecode const &smoothPixel =
+			shaderModel5 ? (depth16 ? Shaders::kMainPS50Depth : Shaders::kMainPS50)
+			             : (depth16 ? Shaders::kMainPS40Depth : Shaders::kMainPS40);
+		Shaders::Bytecode const &flatPixel =
+			shaderModel5 ? (depth16 ? Shaders::kMainPS50DepthFlat : Shaders::kMainPS50Flat)
+			             : (depth16 ? Shaders::kMainPS40DepthFlat : Shaders::kMainPS40Flat);
 
-		result = D3DCompile(
-			kShaderSource, sizeof(kShaderSource) - 1, "SC4D3D11", smoothMacros, nullptr,
-			"PSMain", pixelProfile, compileFlags, 0, &pixelBytecode, &messages);
-		if (messages) {
-			Log(LogCategory::Resource, "pixel shader compiler: %s",
-			    static_cast<char const *>(messages->GetBufferPointer()));
-			messages.Reset();
-		}
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "D3DCompile(PSMain)", result);
-			return result;
-		}
-
-		result = d3dDevice->CreateVertexShader(
-			vertexBytecode->GetBufferPointer(), vertexBytecode->GetBufferSize(), nullptr, &vertexShader);
+		HRESULT result = d3dDevice->CreateVertexShader(
+			Shaders::kMainVS.data, Shaders::kMainVS.size, nullptr, &vertexShader);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateVertexShader", result);
 			return result;
 		}
 		result = d3dDevice->CreatePixelShader(
-			pixelBytecode->GetBufferPointer(), pixelBytecode->GetBufferSize(), nullptr, &pixelShader);
+			smoothPixel.data, smoothPixel.size, nullptr, &pixelShader);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreatePixelShader", result);
 			return result;
 		}
 		result = d3dDevice->CreatePixelShader(
-			flatPixelBytecode->GetBufferPointer(), flatPixelBytecode->GetBufferSize(), nullptr, &flatPixelShader);
+			flatPixel.data, flatPixel.size, nullptr, &flatPixelShader);
 		if (FAILED(result)) return result;
 
 		D3D11_INPUT_ELEMENT_DESC const elements[] = {
@@ -364,7 +317,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 		};
 		result = d3dDevice->CreateInputLayout(
 			elements, static_cast<UINT>(sizeof(elements) / sizeof(elements[0])),
-			vertexBytecode->GetBufferPointer(), vertexBytecode->GetBufferSize(), &inputLayout);
+			Shaders::kMainVS.data, Shaders::kMainVS.size, &inputLayout);
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateInputLayout", result);
 			return result;
