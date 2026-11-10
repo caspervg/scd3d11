@@ -17,6 +17,7 @@
 #include "VideoModeUtils.h"
 
 #include <GZServPtrs.h>
+#include <cGZDisplayMetrics.h>
 #include <cIGZGraphicSystem.h>
 
 #include <cstdio>
@@ -268,6 +269,7 @@ namespace nSCD3D11 {
 		HRESULT const probeResult = ProbeD3D11Device(SelectAdapter().Get(), probeDevice, probeLevel);
 		if (FAILED(probeResult)) {
 			LogHRESULT(LogCategory::Initialization, "D3D11CreateDevice(capability probe)", probeResult);
+			Doctor::NoteStartFailure(probeResult);
 			UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return false;
@@ -308,7 +310,9 @@ namespace nSCD3D11 {
 				                                                            : "SC4 did not switch to full screen");
 			}
 		}
+		Doctor::LeaveSoftwareMode();
 		Doctor::CheckRequestedScreenMode();
+		AppendRequestedVideoModes();
 		SetLastError(DriverError::OK);
 		return true;
 	}
@@ -470,12 +474,8 @@ namespace nSCD3D11 {
 		DEVMODEA displayMode{};
 		displayMode.dmSize = sizeof(displayMode);
 		DWORD index = 0;
+		// At any colour depth: SCD3D11 always draws in 32 bits.
 		while (EnumDisplaySettingsA(nullptr, index++, &displayMode)) {
-			int const depth = static_cast<int>(displayMode.dmBitsPerPel);
-			if (depth < 24) {
-				continue;
-			}
-
 			AppendVideoMode(
 				videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, 32, true,
 				supportedExtensions.stencilBuffer, supportedExtensions.textureCompression);
@@ -495,5 +495,28 @@ namespace nSCD3D11 {
 		videoModeCount = static_cast<int32_t>(videoModes.size());
 
 		return videoModeCount;
+	}
+
+	// SC4 needs a mode of exactly the size it wants (cGZGraphicSystem::DeterminePixelFormat, 0x0098E450).
+	// Without one it closes and stays on its software driver. It can still switch between window and full
+	// screen after Init, so the size goes in both ways.
+	void cGDriver::AppendRequestedVideoModes(void) {
+		cIGZGraphicSystemPtr graphics;
+		if (!graphics) return;
+		cGZDisplayMetrics requested{};
+		graphics->GetGameMetrics(requested);
+		if (requested.width == 0 || requested.height == 0 ||
+		    requested.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		    requested.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+			return;
+		}
+		for (bool const fullscreen: {false, true}) {
+			if (AppendVideoMode(videoModes, requested.width, requested.height, 32, fullscreen,
+			                    supportedExtensions.stencilBuffer, supportedExtensions.textureCompression)) {
+				Log(LogCategory::Initialization, "added a %ux%u %s mode for SC4's request", requested.width,
+				    requested.height, fullscreen ? "full screen" : "window");
+			}
+		}
+		videoModeCount = static_cast<int32_t>(videoModes.size());
 	}
 }

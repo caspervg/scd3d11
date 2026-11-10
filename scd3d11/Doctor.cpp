@@ -156,8 +156,8 @@ namespace nSCD3D11::Doctor {
 		                         std::vector<Finding> &findings) {
 			if (ScreenOffers(environment.displayModes, width, height)) return;
 			findings.push_back({Severity::Warning, Format(
-				"%s asks for full screen at %ux%u, a size this screen does not offer, so SC4 closes without a "
-				"message. The screen offers %s.", source, width, height, LargestSizes(environment.displayModes).c_str())});
+				"%s asks for full screen at %ux%u, which your screen cannot show, so the picture is stretched "
+				"to fit. Your screen offers %s.", source, width, height, LargestSizes(environment.displayModes).c_str())});
 		}
 
 		std::string Value(std::map<std::string, std::string> const &ini, char const *key) {
@@ -183,11 +183,18 @@ namespace nSCD3D11::Doctor {
 				name = driverClass == kSoftware ? "SC4's own software driver"
 				       : driverClass == kOpenGL ? "SC4's own OpenGL driver"
 				       : driverClass == kDirectX ? "SC4's own DirectX driver" : "a driver inside SimCity 4.exe";
+				std::string const &failure = environment.startFailure;
 				if (driverClass == kSoftware) {
 					reason = "SC4 is set to software rendering, which it also switches to after a hardware driver "
 					         "fails once. Start once with -d:DirectX to go back.";
+					if (environment.softwareRetryFailed || !failure.empty()) {
+						reason = Format("SCD3D11 could not start%s.%s%s Start once with -d:DirectX to try again.",
+						                environment.softwareRetryFailed ? " last time" : "", failure.empty() ? "" : " ",
+						                failure.c_str());
+					}
 				} else if (driverClass == kDirectX) {
-					reason = "SCD3D11 could not start Direct3D 11. The lines above in this log say why.";
+					reason = failure.empty() ? "SCD3D11 could not start Direct3D 11. The lines above in this log say why."
+					                         : failure;
 				}
 			}
 			// What to change to get SCD3D11 back, for the scvk note below.

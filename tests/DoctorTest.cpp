@@ -68,16 +68,16 @@ int main() {
 		assert(Has(Diagnose(environment), Severity::Warning, "16-bit colour"));
 	}
 	{
-		// Full screen at a size the screen does not offer, listing the largest ones it does.
+		// Full screen at a size the screen cannot show, listing the largest ones it does.
 		Environment environment = Clean();
 		environment.arguments = {"-f", "-CustomResolution:enabled", "-r1600x900x32"};
 		environment.gameFullScreen = true;
 		assert(Has(Diagnose(environment), Severity::Warning,
-		           "-r1600x900x32 asks for full screen at 1600x900, a size this screen does not offer"));
-		assert(Has(Diagnose(environment), Severity::Warning, "The screen offers 1920x1080, 1366x768."));
+		           "-r1600x900x32 asks for full screen at 1600x900, which your screen cannot show"));
+		assert(Has(Diagnose(environment), Severity::Warning, "Your screen offers 1920x1080, 1366x768."));
 		environment.arguments = {"-w", "-CustomResolution:enabled", "-r1600x900x32"};
 		environment.gameFullScreen = false;
-		assert(!Has(Diagnose(environment), Severity::Warning, "does not offer"));
+		assert(!Has(Diagnose(environment), Severity::Warning, "cannot show"));
 		environment.gameFullScreen = true;
 		environment.arguments = {"-f", "-r1366x768x32"};
 		assert(Has(Diagnose(environment), Severity::Warning, "-CustomResolution:enabled"));
@@ -147,7 +147,16 @@ int main() {
 		environment.activeDriverClass = 0x7ACA35C6;
 		assert(Has(Diagnose(environment), Severity::Problem, "SC4's own software driver"));
 		assert(Has(Diagnose(environment), Severity::Problem, "Start once with -d:DirectX"));
+		// SCD3D11 switched back once and that start failed, so SC4 stays in software mode and the report says why.
+		environment.softwareRetryFailed = true;
+		assert(Has(Diagnose(environment), Severity::Problem, "SCD3D11 could not start last time. Start once"));
+		environment.startFailure = "Direct3D 11 did not start (error 0x887A0001).";
+		assert(Has(Diagnose(environment), Severity::Problem, "last time. Direct3D 11 did not start (error 0x887A0001). "
+		                                                     "Start once with -d:DirectX to try again."));
+		environment.softwareRetryFailed = false;
 		environment.activeDriverClass = 0xBADB6906;
+		assert(Has(Diagnose(environment), Severity::Problem, "not SCD3D11. Direct3D 11 did not start"));
+		environment.startFailure.clear();
 		assert(Has(Diagnose(environment), Severity::Problem, "SCD3D11 could not start Direct3D 11"));
 	}
 	{

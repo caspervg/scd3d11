@@ -31,6 +31,8 @@
 #include <cIGZMessage2.h>
 #include <cIGZMessageServer2.h>
 #include <cIGZMessageTarget2.h>
+#include <cISC4App.h>
+#include <SC4Preferences.h>
 #include <cRZBaseString.h>
 
 #include <algorithm>
@@ -53,6 +55,13 @@ namespace nSCD3D11::Doctor {
 	namespace {
 		// Set when CheckRequestedScreenMode replaced a full-screen size the screen lacks, for the report.
 		std::string gScreenModeWarning;
+		// Why Direct3D 11 did not start, and what LeaveSoftwareMode did.
+		std::string gStartFailure;
+		bool gLeftSoftwareMode = false;
+		bool gSoftwareRetryFailed = false;
+		// Exists from the moment SCD3D11 takes SC4 out of software mode until a start succeeds. Holds the
+		// reason when that start failed.
+		constexpr wchar_t kSoftwareMarker[] = L"SCD3D11-software.txt";
 		// The LUID of the GPU SCD3D11 draws on and its window, once it has a device.
 		std::optional<uint64_t> gActiveAdapter;
 		HWND gGameWindow = nullptr;
@@ -464,6 +473,8 @@ namespace nSCD3D11::Doctor {
 
 			environment.displayModes = DisplayModes();
 			environment.screenModeWarning = gScreenModeWarning;
+			environment.startFailure = gStartFailure;
+			environment.softwareRetryFailed = gSoftwareRetryFailed;
 			environment.screen = Size{static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN)),
 			                          static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN))};
 			environment.gameVersion641 = IsGameVersion641();
@@ -682,6 +693,52 @@ namespace nSCD3D11::Doctor {
 		gGameWindow = static_cast<HWND>(window);
 	}
 
+	void NoteStartFailure(long result) {
+		char text[128];
+		if (result == DXGI_ERROR_UNSUPPORTED) sprintf_s(text, "Your graphics card or its driver is too old for Direct3D 11.");
+		else sprintf_s(text, "Direct3D 11 did not start (error 0x%08lX).", static_cast<unsigned long>(result));
+		gStartFailure = text;
+		if (gLeftSoftwareMode) std::ofstream(LogDirectory() / kSoftwareMarker) << text;
+	}
+
+	void LeaveSoftwareMode() {
+		if (!IsGameVersion641()) return;
+		cISC4AppPtr app;
+		SC4Preferences *const preferences = app ? app->GetPreferences() : nullptr;
+		// SC4's saved choice: 0 is software, 1 is hardware (read at 0x0044CE40).
+		if (preferences == nullptr || preferences->videoPreferences.driverType != 0) return;
+		// A -d switch or SC4GraphicsOptions picks the driver, so software can be the player's choice.
+		cIGZFrameWork *const framework = RZGetFrameWork();
+		cIGZCmdLine *const commandLine = framework != nullptr ? framework->CommandLine() : nullptr;
+		for (uint32_t index = 1; commandLine != nullptr && index < commandLine->argc(); ++index) {
+			char const *const argument = commandLine->argv(static_cast<int32_t>(index));
+			if (argument != nullptr && _strnicmp(argument, "-d:", 3) == 0) return;
+		}
+		if (auto const options = ReadGraphicsOptions()) {
+			auto const driver = options->find("driver");
+			if (driver != options->end() && !driver->second.empty()) return;
+		}
+
+		std::filesystem::path const marker = LogDirectory() / kSoftwareMarker;
+		std::error_code error;
+		if (std::filesystem::exists(marker, error)) {
+			// A second try could fail the same way, and then the game would never start.
+			std::ifstream file(marker);
+			std::getline(file, gStartFailure);
+			gSoftwareRetryFailed = true;
+			Log(LogCategory::Doctor, "SC4 is in software mode and SCD3D11 could not start last time, so it stays there");
+			return;
+		}
+		cIGZGraphicSystem2Ptr graphics2;
+		// Without the marker there is no guard against a start that fails each time.
+		if (!graphics2 || !std::ofstream(marker)) return;
+		// SC4 picks its driver after it has loaded them all (cGZGraphicSystem::LoadAllDrivers, 0x009904D0).
+		graphics2->SetDefaultDriverClassID(0xBADB6906);
+		preferences->videoPreferences.driverType = 1;
+		gLeftSoftwareMode = true;
+		Log(LogCategory::Doctor, "SC4 was in software mode after a failed start, switched it back to SCD3D11");
+	}
+
 	void CheckRequestedScreenMode() {
 		cIGZGraphicSystemPtr graphics;
 		if (!graphics) return;
@@ -690,7 +747,32 @@ namespace nSCD3D11::Doctor {
 		bool const fullScreen = graphics->IsFullScreenMode();
 		Log(LogCategory::Doctor, "SC4 asks for %ux%u in %u-bit colour, %s", requested.width, requested.height,
 		    requested.bitDepth, fullScreen ? "full screen" : "in a window");
-		if (!fullScreen) return;
+		// SC4 turns a window into full screen after this check when its colour depth differs from the
+		// desktop's or it is larger than the desktop (cGZGraphicSystem::Init, 0x00990880).
+		bool forced = false;
+		if (!fullScreen) {
+			HDC const screen = GetDC(nullptr);
+			uint32_t const desktopDepth =
+				screen != nullptr ? static_cast<uint32_t>(GetDeviceCaps(screen, BITSPIXEL) * GetDeviceCaps(screen, PLANES))
+				                  : 32;
+			if (screen != nullptr) ReleaseDC(nullptr, screen);
+			uint32_t const desktopWidth = static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN));
+			uint32_t const desktopHeight = static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN));
+			if (requested.bitDepth != desktopDepth && (desktopDepth == 16 || desktopDepth == 24 || desktopDepth == 32)) {
+				cGZDisplayMetrics wanted = requested;
+				wanted.bitDepth = desktopDepth;
+				if (graphics->PreInitSetDesiredGameResolution(wanted)) {
+					Log(LogCategory::Doctor, "using the desktop's %u-bit colour so the window stays a window", desktopDepth);
+					requested = wanted;
+				}
+			}
+			if (requested.bitDepth == desktopDepth && requested.width <= desktopWidth && requested.height <= desktopHeight) {
+				return;
+			}
+			Log(LogCategory::Doctor, "the window does not fit the %ux%u desktop, so SC4 makes it full screen",
+			    desktopWidth, desktopHeight);
+			forced = true;
+		}
 
 		// A size from -r or SC4GraphicsOptions is the player's choice. Without one, SC4 uses the size it
 		// saved last time, 1024x768 at first, where the screen's own size is what a player expects.
@@ -704,7 +786,7 @@ namespace nSCD3D11::Doctor {
 		}
 		std::vector<Size> const modes = DisplayModes();
 		bool const offered = requested.bitDepth == 32 && ScreenOffers(modes, requested.width, requested.height);
-		if (offered && sizeGiven) return;
+		if (offered && (sizeGiven || forced)) return;
 
 		DEVMODEW current{};
 		current.dmSize = sizeof(current);
@@ -715,35 +797,39 @@ namespace nSCD3D11::Doctor {
 		wanted.bitDepth = 32;
 		if (wanted.width == requested.width && wanted.height == requested.height && requested.bitDepth == 32) return;
 		bool const changed = graphics->PreInitSetDesiredGameResolution(wanted);
-
-		char text[1024];
+		// Otherwise SC4 opens a window as large as the desktop.
+		if (changed && forced) graphics->PreInitSetWindowedMode(false);
 		if (offered) {
 			Log(LogCategory::Doctor, "full screen without a size: %s the screen's own %ux%u instead of SC4's saved %ux%u",
 			    changed ? "using" : "could not switch to", wanted.width, wanted.height, requested.width, requested.height);
 			return;
 		}
-		if (changed) {
-			sprintf_s(text, "SimCity 4 asked for full screen at %ux%u in %u-bit colour, which this screen does not offer. "
-			          "SCD3D11 used the screen's own %ux%u instead, where SC4 would have closed without a message. The "
-			          "screen offers %s. Change -r on the command line, or WindowWidth, WindowHeight and ColorDepth in "
-			          "SC4GraphicsOptions.ini.", requested.width, requested.height, requested.bitDepth, wanted.width,
-			          wanted.height, LargestSizes(modes).c_str());
-			Log(LogCategory::Doctor, "full screen at %ux%u is not offered, using %ux%u instead (the report below says more)",
-			    requested.width, requested.height, wanted.width, wanted.height);
-			gScreenModeWarning = text;
+
+		if (changed && wanted.width == requested.width && wanted.height == requested.height) {
+			Log(LogCategory::Doctor, "using 32-bit colour instead of %u-bit", requested.bitDepth);
 			return;
 		}
-		sprintf_s(text, "SimCity 4 asks for full screen at %ux%u in %u-bit colour, which this screen does not offer, so "
-		          "the game closes without a message. The screen offers %s. Change -r on the command line, or "
-		          "WindowWidth, WindowHeight and ColorDepth in SC4GraphicsOptions.ini.", requested.width,
-		          requested.height, requested.bitDepth, LargestSizes(modes).c_str());
-		Log(LogCategory::Doctor, "problem: %s", text);
-		if (Settings::Get().doctorDialog) MessageBoxA(nullptr, text, "SCD3D11", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+
+		char what[64], result[96];
+		sprintf_s(what, forced ? "A %ux%u window does not fit on your desktop" : "Your screen cannot show %ux%u full screen",
+		          requested.width, requested.height);
+		if (changed) sprintf_s(result, "the game runs full screen at %ux%u", wanted.width, wanted.height);
+		else sprintf_s(result, "the picture is stretched to fit the screen");
+		char text[512];
+		sprintf_s(text, "%s, so %s. To pick another size, use -r with -CustomResolution:enabled, or "
+		          "SC4GraphicsOptions.ini. Your screen offers %s.", what, result, LargestSizes(modes).c_str());
+		Log(LogCategory::Doctor, "%ux%u is not offered: %s", requested.width, requested.height, result);
+		gScreenModeWarning = text;
 	}
 
 	void Run(cIGZCmdLine *commandLine) {
 		try {
 			Environment const environment = Collect(commandLine);
+			if (environment.driverIsSCD3D11.value_or(false)) {
+				std::error_code error;
+				std::filesystem::remove(LogDirectory() / kSoftwareMarker, error);
+				gLeftSoftwareMode = false;
+			}
 			LogInventory(environment, Settings::Get().doctor);
 			std::vector<Finding> const findings = Diagnose(environment);
 			unsigned counts[3]{};
