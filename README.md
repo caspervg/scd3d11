@@ -41,6 +41,10 @@ the first space, silently loads the wrong plugin folder, and falls back to its b
 To check that it is active, start the game and open `SCD3D11.log` in the `Logs` folder next to the plugins folder
 (normally `Documents\SimCity 4\Logs\SCD3D11.log`). Its `adapter:` line names the GPU in use.
 
+Each release is built by GitHub Actions and has a signed build attestation. To check a download with the
+[GitHub CLI](https://cli.github.com): `gh attestation verify SCD3D11-<version>.zip --repo caspervg/scd3d11`. The
+same command works on `SCD3D11.dll`.
+
 ## Uninstalling
 
 Delete `SCD3D11.dll` and `SCD3D11.ini` from the plugins folder. SimCity 4 goes back to its built-in DirectX driver on the next launch.
