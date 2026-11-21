@@ -1056,6 +1056,9 @@ namespace nSCD3D11 {
 		// becomes part of the backing store, and again at scene end for any dynamic
 		// casters.
 		void RenderLivePropShadows(bool staticPass);
+		// Called when SC4 starts a static view, before it draws the terrain:
+		// drops what was captured since the last shadow pass.
+		void BeginLiveShadowStaticPass(void);
 		// Non-zero once, for each partial static pass that ran while shadows were
 		// live: the LiveShadowRedrawCause bits. The caller invalidates SC4's
 		// backing store so the next draw is a clean full redraw.
