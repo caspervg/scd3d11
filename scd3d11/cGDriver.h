@@ -33,6 +33,7 @@
 #include "GeometryCache.h"
 #include "sGDMode.h"
 #include "ViewportCull.h"
+#include "ext/cIGZGAsyncSnapshotExtension.h"
 #include "ext/cIGZGBufferRegionExtension.h"
 #include "ext/cIGZGDriverLightingExtension.h"
 #include "ext/cIGZGDriverVertexBufferExtension.h"
@@ -144,6 +145,7 @@ namespace nSCD3D11 {
 			public cIGZGDriverLightingExtension,
 			public cIGZGDriverVertexBufferExtension,
 			public cIGZGSnapshotExtension,
+			public cIGZGAsyncSnapshotExtension,
 			public cRZUnknown {
 		friend struct cGDriverTestAccess;
 
@@ -329,6 +331,16 @@ namespace nSCD3D11 {
 		// CopyColorBuffer's staging texture, kept between reads. It only grows: a read uses its top-left corner.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> snapshotStaging;
 		UINT snapshotStagingWidth = 0, snapshotStagingHeight = 0;
+		// One copy BeginCopy queued and EndCopy has not collected. Ticket 0 marks a free slot. The staging
+		// texture stays with the slot and only grows, like snapshotStaging.
+		struct AsyncSnapshot {
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+			UINT stagingWidth = 0, stagingHeight = 0;
+			uint32_t ticket = 0;
+			int32_t width = 0, height = 0;
+		};
+		AsyncSnapshot asyncSnapshots[4];
+		uint32_t lastAsyncSnapshotTicket = 0;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> swapChainBuffer;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
 		// sRGB view of backBufferTexture, for ReShade techniques that write with SRGBWriteEnable.
@@ -1287,6 +1299,15 @@ namespace nSCD3D11 {
 		virtual bool DeleteAllBufferRegions(void) override;
 
 		virtual cIGZBuffer *CopyColorBuffer(int32_t, int32_t, int32_t, int32_t, cIGZBuffer *) override;
+
+	public:
+		virtual uint32_t GetAsyncSnapshotVersion() override;
+
+		virtual uint32_t BeginCopy(int32_t x, int32_t y, int32_t width, int32_t height) override;
+
+		virtual bool EndCopy(uint32_t ticket, uint8_t *pixels, uint32_t capacity, uint32_t timeoutMs) override;
+
+		virtual void CancelCopy(uint32_t ticket) override;
 
 	public:
 		virtual void EnableLighting(bool) override;

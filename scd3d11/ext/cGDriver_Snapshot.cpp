@@ -15,6 +15,7 @@
 #include "../Diagnostics.h"
 
 #include <algorithm>
+#include <cstring>
 
 static const uint32_t GZIID_cIGZGraphicSystem = 0x73283c;
 static const uint32_t RZSRVID_GraphicSystem = 0xc416025c;
@@ -146,5 +147,115 @@ namespace nSCD3D11 {
 			return fail();
 		}
 		return buffer;
+	}
+
+	uint32_t cGDriver::GetAsyncSnapshotVersion() {
+		return 1;
+	}
+
+	uint32_t cGDriver::BeginCopy(int32_t x, int32_t y, int32_t width, int32_t height) {
+		if (!d3dDevice || !d3dContext || !backBufferTexture || deviceLost) return 0;
+		if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
+		    int64_t{x} + width > windowWidth || int64_t{y} + height > windowHeight) {
+			return 0;
+		}
+
+		AsyncSnapshot *snapshot = nullptr;
+		for (AsyncSnapshot &candidate: asyncSnapshots) {
+			if (candidate.ticket == 0) {
+				snapshot = &candidate;
+				break;
+			}
+		}
+		if (snapshot == nullptr) return 0;
+
+		if (!snapshot->staging || snapshot->stagingWidth < static_cast<UINT>(width) ||
+		    snapshot->stagingHeight < static_cast<UINT>(height)) {
+			D3D11_TEXTURE2D_DESC stagingDescription{};
+			stagingDescription.Width = (std::max)(snapshot->stagingWidth, static_cast<UINT>(width));
+			stagingDescription.Height = (std::max)(snapshot->stagingHeight, static_cast<UINT>(height));
+			stagingDescription.MipLevels = 1;
+			stagingDescription.ArraySize = 1;
+			stagingDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			stagingDescription.SampleDesc.Count = 1;
+			stagingDescription.Usage = D3D11_USAGE_STAGING;
+			stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			snapshot->staging.Reset();
+			snapshot->stagingWidth = snapshot->stagingHeight = 0;
+			HRESULT const created = d3dDevice->CreateTexture2D(&stagingDescription, nullptr, &snapshot->staging);
+			if (FAILED(created)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(async snapshot)", created);
+				NoteDeviceLoss(created);
+				return 0;
+			}
+			snapshot->stagingWidth = stagingDescription.Width;
+			snapshot->stagingHeight = stagingDescription.Height;
+		}
+
+		// The back buffer is R8G8B8A8_TYPELESS and never multisampled, so it copies straight into the UNORM
+		// staging texture. The copy runs after the draws already on the context, whatever comes later.
+		D3D11_BOX const sourceBox{
+			static_cast<UINT>(x), static_cast<UINT>(y), 0,
+			static_cast<UINT>(x + width), static_cast<UINT>(y + height), 1
+		};
+		d3dContext->CopySubresourceRegion(snapshot->staging.Get(), 0, 0, 0, 0, backBufferTexture.Get(), 0, &sourceBox);
+		// Hand the copy to the GPU now, so it is done by the time EndCopy asks for it.
+		d3dContext->Flush();
+
+		if (++lastAsyncSnapshotTicket == 0) lastAsyncSnapshotTicket = 1;
+		snapshot->ticket = lastAsyncSnapshotTicket;
+		snapshot->width = width;
+		snapshot->height = height;
+		return snapshot->ticket;
+	}
+
+	bool cGDriver::EndCopy(uint32_t ticket, uint8_t *pixels, uint32_t capacity, uint32_t timeoutMs) {
+		AsyncSnapshot *snapshot = nullptr;
+		for (AsyncSnapshot &candidate: asyncSnapshots) {
+			if (ticket != 0 && candidate.ticket == ticket) {
+				snapshot = &candidate;
+				break;
+			}
+		}
+		if (snapshot == nullptr) return false;
+		snapshot->ticket = 0;
+
+		size_t const rowBytes = static_cast<size_t>(snapshot->width) * 4;
+		if (pixels == nullptr || static_cast<uint64_t>(rowBytes) * snapshot->height > capacity || !d3dContext) {
+			return false;
+		}
+
+		ID3D11Texture2D *const staging = snapshot->staging.Get();
+		D3D11_MAPPED_SUBRESOURCE mapping{};
+		HRESULT result = S_OK;
+		ULONGLONG const deadline = GetTickCount64() + timeoutMs;
+		while ((result = d3dContext->Map(staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapping)) ==
+		       DXGI_ERROR_WAS_STILL_DRAWING) {
+			if (GetTickCount64() >= deadline) return false;
+			if (!SwitchToThread()) YieldProcessor();
+		}
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(async snapshot)", result);
+			NoteDeviceLoss(result);
+			return false;
+		}
+
+		// The back buffer's alpha is whatever the draws left there. Callers get opaque pixels, as from
+		// CopyColorBuffer.
+		for (int32_t row = 0; row < snapshot->height; ++row) {
+			uint8_t *const target = pixels + static_cast<size_t>(row) * rowBytes;
+			memcpy(target, static_cast<uint8_t const *>(mapping.pData) + static_cast<size_t>(row) * mapping.RowPitch,
+			       rowBytes);
+			for (size_t alpha = 3; alpha < rowBytes; alpha += 4) target[alpha] = 255;
+		}
+		d3dContext->Unmap(staging, 0);
+		return true;
+	}
+
+	void cGDriver::CancelCopy(uint32_t ticket) {
+		if (ticket == 0) return;
+		for (AsyncSnapshot &snapshot: asyncSnapshots) {
+			if (snapshot.ticket == ticket) snapshot.ticket = 0;
+		}
 	}
 }

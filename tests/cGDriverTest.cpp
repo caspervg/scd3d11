@@ -1506,6 +1506,95 @@ namespace nSCD3D11 {
 			assert(SwapEffect() == DXGI_SWAP_EFFECT_FLIP_DISCARD);
 		}
 
+		// BeginCopy queues a copy behind the draws before it, so later draws do not change what EndCopy
+		// returns: RGBA rows, top row first, alpha 255.
+		void AsyncSnapshotsReadQueuedCopies() {
+			cIGZGAsyncSnapshotExtension *snapshots = nullptr;
+			assert(d.QueryInterface(GZIID_cIGZGAsyncSnapshotExtension, reinterpret_cast<void **>(&snapshots)));
+			assert(snapshots == static_cast<cIGZGAsyncSnapshotExtension *>(&d));
+			assert(snapshots->GetAsyncSnapshotVersion() == 1);
+
+			// Alpha 0, to see EndCopy make it 255. Red without blue tells RGBA from BGRA.
+			d.ClearColor(1.0f, 1.0f, 0.0f, 0.0f);
+			d.Clear(0x4000);
+			assert(Pixel(1, 1) == 0xffff0000);
+			uint32_t const cleared = snapshots->BeginCopy(1, 2, 3, 2);
+			assert(cleared != 0);
+
+			// A gradient, so a wrong origin or row order shows.
+			ColorVertex const gradient[3]{
+				{{-1.0f, -1.0f, 0.0f}, {0, 0, 255, 255}},
+				{{3.0f, -1.0f, 0.0f}, {0, 255, 0, 255}},
+				{{-1.0f, 3.0f, 0.0f}, {255, 0, 0, 255}},
+			};
+			d.SetTexture(0, 0);
+			d.InterleavedArrays(kGDVertexFormat_V3F_C4UB, 0, gradient);
+			d.DrawArrays(0, 0, 3);
+			std::vector<uint8_t> const drawn = Read(d.backBufferTexture.Get(), 0, 4);
+			int32_t const x = d.windowWidth / 3, y = d.windowHeight / 4, width = 17, height = 9;
+			uint32_t const shaded = snapshots->BeginCopy(x, y, width, height);
+			assert(shaded != 0 && shaded != cleared);
+
+			DrawFullscreen(0, 0, 255);
+			assert(Pixel(1, 1) == 0x0000ffff);
+
+			std::vector<uint8_t> pixels(3 * 2 * 4);
+			assert(snapshots->EndCopy(cleared, pixels.data(), static_cast<uint32_t>(pixels.size()), 2000));
+			for (size_t i = 0; i < pixels.size(); i += 4) {
+				assert(pixels[i] == 255 && pixels[i + 1] == 255 && pixels[i + 2] == 0 && pixels[i + 3] == 255);
+			}
+			// Released by the read.
+			assert(!snapshots->EndCopy(cleared, pixels.data(), static_cast<uint32_t>(pixels.size()), 2000));
+
+			pixels.assign(static_cast<size_t>(width) * height * 4, 0);
+			assert(snapshots->EndCopy(shaded, pixels.data(), static_cast<uint32_t>(pixels.size()), 2000));
+			for (int32_t row = 0; row < height; ++row) {
+				for (int32_t column = 0; column < width; ++column) {
+					uint8_t const *expected = drawn.data() + (static_cast<size_t>(y + row) * d.windowWidth + x + column) * 4;
+					uint8_t const *actual = pixels.data() + (static_cast<size_t>(row) * width + column) * 4;
+					assert(memcmp(expected, actual, 3) == 0 && actual[3] == 255);
+				}
+			}
+
+			// Rectangles that do not fit the back buffer fail instead of being clamped.
+			assert(snapshots->BeginCopy(-1, 0, 2, 2) == 0);
+			assert(snapshots->BeginCopy(0, -1, 2, 2) == 0);
+			assert(snapshots->BeginCopy(0, 0, 0, 1) == 0);
+			assert(snapshots->BeginCopy(0, 0, 1, 0) == 0);
+			assert(snapshots->BeginCopy(d.windowWidth - 1, 0, 2, 1) == 0);
+			assert(snapshots->BeginCopy(0, d.windowHeight - 1, 1, 2) == 0);
+			uint32_t const whole = snapshots->BeginCopy(0, 0, d.windowWidth, d.windowHeight);
+			assert(whole != 0);
+			snapshots->CancelCopy(whole);
+
+			// Four in flight at most. CancelCopy frees a slot and ignores tickets it does not know.
+			uint32_t tickets[4]{};
+			for (uint32_t &ticket: tickets) assert((ticket = snapshots->BeginCopy(0, 0, 4, 4)) != 0);
+			assert(snapshots->BeginCopy(0, 0, 4, 4) == 0);
+			snapshots->CancelCopy(0);
+			snapshots->CancelCopy(cleared);
+			assert(snapshots->BeginCopy(0, 0, 4, 4) == 0);
+			snapshots->CancelCopy(tickets[1]);
+			assert(!snapshots->EndCopy(tickets[1], pixels.data(), static_cast<uint32_t>(pixels.size()), 2000));
+			tickets[1] = snapshots->BeginCopy(0, 0, 4, 4);
+			assert(tickets[1] != 0);
+
+			// Too small a buffer fails and still releases the ticket.
+			assert(!snapshots->EndCopy(tickets[0], pixels.data(), 4 * 4 * 4 - 1, 2000));
+			assert(!snapshots->EndCopy(tickets[0], pixels.data(), static_cast<uint32_t>(pixels.size()), 2000));
+			assert(!snapshots->EndCopy(tickets[2], nullptr, 4 * 4 * 4, 2000));
+			assert(snapshots->EndCopy(tickets[3], pixels.data(), 4 * 4 * 4, 2000));
+			assert(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 255 && pixels[3] == 255);
+
+			// A new device forgets the copies of the old one.
+			assert(d.RecoverD3D11Device());
+			assert(!snapshots->EndCopy(tickets[1], pixels.data(), static_cast<uint32_t>(pixels.size()), 2000));
+			for (uint32_t &ticket: tickets) assert((ticket = snapshots->BeginCopy(0, 0, 4, 4)) != 0);
+			for (uint32_t ticket: tickets) snapshots->CancelCopy(ticket);
+
+			snapshots->Release();
+		}
+
 		int Run() {
 			DrawsGeometry();
 			DrawsStartAtTheirUpload();
@@ -1532,6 +1621,7 @@ namespace nSCD3D11 {
 			GeometryCacheTrimsWhenAddressSpaceRunsLow();
 			GeometryCacheRefillsWithoutRenaming();
 			FlipModelWithLegacyFallback();
+			AsyncSnapshotsReadQueuedCopies();
 			return 0;
 		}
 	};

@@ -398,6 +398,8 @@ namespace nSCD3D11 {
 		backBufferTexture.Reset();
 		snapshotStaging.Reset();
 		snapshotStagingWidth = snapshotStagingHeight = 0;
+		// Pending tickets die with the device: EndCopy then fails on them.
+		for (AsyncSnapshot &snapshot: asyncSnapshots) snapshot = AsyncSnapshot{};
 		swapChainBuffer.Reset();
 		sceneDepth = SceneDepthPipeline{};
 		liveShadows = LiveShadowPipeline{};
