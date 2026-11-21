@@ -66,42 +66,50 @@ namespace nSCD3D11 {
 
 		if (!backBufferTexture) return fail();
 
-		D3D11_TEXTURE2D_DESC stagingDescription{};
-		stagingDescription.Width = static_cast<UINT>(width);
-		stagingDescription.Height = static_cast<UINT>(height);
-		stagingDescription.MipLevels = 1;
-		stagingDescription.ArraySize = 1;
-		stagingDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-		stagingDescription.SampleDesc.Count = 1;
-		stagingDescription.Usage = D3D11_USAGE_STAGING;
-		stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
-		HRESULT result = d3dDevice->CreateTexture2D(&stagingDescription, nullptr, &staging);
-		if (FAILED(result)) {
-			LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(snapshot)", result);
-			return fail();
+		if (!snapshotStaging || snapshotStagingWidth < static_cast<UINT>(width) ||
+		    snapshotStagingHeight < static_cast<UINT>(height)) {
+			D3D11_TEXTURE2D_DESC stagingDescription{};
+			stagingDescription.Width = (std::max)(snapshotStagingWidth, static_cast<UINT>(width));
+			stagingDescription.Height = (std::max)(snapshotStagingHeight, static_cast<UINT>(height));
+			stagingDescription.MipLevels = 1;
+			stagingDescription.ArraySize = 1;
+			stagingDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			stagingDescription.SampleDesc.Count = 1;
+			stagingDescription.Usage = D3D11_USAGE_STAGING;
+			stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			snapshotStaging.Reset();
+			snapshotStagingWidth = snapshotStagingHeight = 0;
+			HRESULT const created = d3dDevice->CreateTexture2D(&stagingDescription, nullptr, &snapshotStaging);
+			if (FAILED(created)) {
+				LogHRESULT(LogCategory::Resource, "ID3D11Device::CreateTexture2D(snapshot)", created);
+				return fail();
+			}
+			snapshotStagingWidth = stagingDescription.Width;
+			snapshotStagingHeight = stagingDescription.Height;
 		}
+		ID3D11Texture2D *const staging = snapshotStaging.Get();
+		HRESULT result = S_OK;
 
 		D3D11_BOX const sourceBox{
 			static_cast<UINT>(left), static_cast<UINT>(top), 0,
 			static_cast<UINT>(right), static_cast<UINT>(bottom), 1
 		};
-		d3dContext->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, backBufferTexture.Get(), 0, &sourceBox);
+		d3dContext->CopySubresourceRegion(staging, 0, 0, 0, 0, backBufferTexture.Get(), 0, &sourceBox);
 
 		// Wait for the copy with a time limit instead of blocking inside Map. A GPU that stalls here then
 		// costs a missing thumbnail, which SC4 replaces with its default one, instead of a hung save.
 		d3dContext->Flush();
 		D3D11_MAPPED_SUBRESOURCE mapping{};
 		ULONGLONG const deadline = GetTickCount64() + kSnapshotTimeoutMilliseconds;
-		while ((result = d3dContext->Map(staging.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapping)) ==
+		while ((result = d3dContext->Map(staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapping)) ==
 		       DXGI_ERROR_WAS_STILL_DRAWING) {
 			if (GetTickCount64() >= deadline) {
 				Log(LogCategory::Resource, "snapshot: GPU copy not finished after %llu ms, skipping it",
 				    static_cast<unsigned long long>(kSnapshotTimeoutMilliseconds));
 				return fail();
 			}
-			Sleep(1);
+			// Sleep(1) can take a whole timer tick (15.6 ms by default), far longer than the copy.
+			if (!SwitchToThread()) YieldProcessor();
 		}
 		if (FAILED(result)) {
 			LogHRESULT(LogCategory::Resource, "ID3D11DeviceContext::Map(snapshot)", result);
@@ -111,20 +119,28 @@ namespace nSCD3D11 {
 
 		bool const locked = buffer->Lock(cIGZBuffer::eLockFlags::IsDirtyUpdate);
 		if (locked) {
+			// cGZBuffer::SetPixel (0x00826560) stores the color at bits + y * stride + x * bytes per pixel,
+			// the values GetColorSurfaceBits and GetColorSurfaceStride return. A 32-bit buffer takes whole rows.
+			auto *const bits = reinterpret_cast<uint8_t *>(static_cast<uintptr_t>(buffer->GetColorSurfaceBits()));
+			uint32_t const stride = buffer->GetColorSurfaceStride();
+			bool const rows = bits != nullptr && buffer->GetBytesPerPixel() == 4 &&
+			                  stride >= static_cast<uint32_t>(width) * 4;
 			for (int32_t row = 0; row < height; ++row) {
 				uint8_t const *source = static_cast<uint8_t const *>(mapping.pData) + static_cast<size_t>(row) * mapping
 				                        .RowPitch;
+				auto *const target = rows ? reinterpret_cast<uint32_t *>(bits + static_cast<size_t>(row) * stride) : nullptr;
 				for (int32_t column = 0; column < width; ++column) {
 					uint32_t const color = 0xff000000u |
 					                       static_cast<uint32_t>(source[column * 4 + 0]) << 16 |
 					                       static_cast<uint32_t>(source[column * 4 + 1]) << 8 |
 					                       source[column * 4 + 2];
-					buffer->SetPixel(column, row, color);
+					if (target) target[column] = color;
+					else buffer->SetPixel(column, row, color);
 				}
 			}
 			buffer->Unlock(cIGZBuffer::eLockFlags::IsDirtyUpdate);
 		}
-		d3dContext->Unmap(staging.Get(), 0);
+		d3dContext->Unmap(staging, 0);
 		if (!locked) {
 			SetLastError(DriverError::CREATE_CONTEXT_FAIL);
 			return fail();

@@ -326,6 +326,9 @@ namespace nSCD3D11 {
 		// swap chains give no such guarantee (exclusive fullscreen really flips), so the game renders
 		// into this persistent texture, which is copied to swapChainBuffer right before each Present.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBufferTexture;
+		// CopyColorBuffer's staging texture, kept between reads. It only grows: a read uses its top-left corner.
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> snapshotStaging;
+		UINT snapshotStagingWidth = 0, snapshotStagingHeight = 0;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> swapChainBuffer;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
 		// sRGB view of backBufferTexture, for ReShade techniques that write with SRGBWriteEnable.
