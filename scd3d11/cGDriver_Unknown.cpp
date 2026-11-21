@@ -49,6 +49,10 @@ namespace nSCD3D11
 			*ppvObj = static_cast<cIGZGSnapshotExtension*>(this);
 			break;
 
+		case GZIID_cIGZGAsyncSnapshotExtension:
+			*ppvObj = static_cast<cIGZGAsyncSnapshotExtension*>(this);
+			break;
+
 		default:
 			Log(LogCategory::Grid, "QueryInterface(0x%08X) -> unsupported", riid);
 			return false;
