@@ -58,7 +58,7 @@ namespace nSCD3D11 {
 			if (!buffer->Init(width, height, cGZBufferColorType::A8R8G8B8, 32)) {
 				return fail();
 			}
-		} else if (buffer->GetColorType() != cGZBufferColorType::A8R8G8B8 ||
+		} else if (buffer->GetColorType().bufferType != cGZBufferColorType::A8R8G8B8 ||
 		           buffer->Width() != static_cast<uint32_t>(width) || buffer->Height() != static_cast<uint32_t>(
 			           height)) {
 			return nullptr;
