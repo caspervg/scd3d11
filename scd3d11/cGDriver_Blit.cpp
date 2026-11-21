@@ -75,6 +75,110 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			rgba[2] = static_cast<float>(value & 0xff) / 255.0f;
 			rgba[3] = static_cast<float>(value >> 24) / 255.0f;
 		}
+
+		// One triangle over the viewport at the clear depth. The scissor keeps it inside the viewport.
+		char const kViewportClearShader[] = R"(
+cbuffer ViewportClearConstants : register(b0) {
+	float4 color;
+	float depth;
+};
+float4 VSMain(uint id : SV_VertexID) : SV_POSITION {
+	float2 uv = float2((id << 1) & 2, id & 2);
+	return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), depth, 1.0);
+}
+float4 PSMain(float4 position : SV_POSITION) : SV_TARGET {
+	return color;
+}
+)";
+
+		struct ViewportClearConstants {
+			float color[4];
+			float depth;
+			float padding[3];
+		};
+		static_assert(sizeof(ViewportClearConstants) % 16 == 0, "constant buffers are sized in 16-byte registers");
+	}
+
+	HRESULT cGDriver::CreateViewportClearPipeline() {
+		HRESULT result = d3dDevice->CreateVertexShader(Shaders::kViewportClearVS.data, Shaders::kViewportClearVS.size,
+		                                               nullptr, &viewportClear.vertexShader);
+		if (SUCCEEDED(result)) {
+			result = d3dDevice->CreatePixelShader(Shaders::kViewportClearPS.data, Shaders::kViewportClearPS.size,
+			                                      nullptr, &viewportClear.pixelShader);
+		}
+		if (SUCCEEDED(result)) {
+			D3D11_BUFFER_DESC const description{
+				sizeof(ViewportClearConstants), D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0
+			};
+			result = d3dDevice->CreateBuffer(&description, nullptr, &viewportClear.constants);
+		}
+		if (SUCCEEDED(result)) {
+			D3D11_RASTERIZER_DESC description{};
+			description.FillMode = D3D11_FILL_SOLID;
+			description.CullMode = D3D11_CULL_NONE;
+			description.ScissorEnable = TRUE;
+			result = d3dDevice->CreateRasterizerState(&description, &viewportClear.rasterizer);
+		}
+		for (int color = 0; color < 2 && SUCCEEDED(result); ++color) {
+			D3D11_BLEND_DESC description{};
+			description.RenderTarget[0].RenderTargetWriteMask = color ? D3D11_COLOR_WRITE_ENABLE_ALL : 0;
+			result = d3dDevice->CreateBlendState(&description, &viewportClear.blend[color]);
+		}
+		for (int index = 0; index < 4 && SUCCEEDED(result); ++index) {
+			D3D11_DEPTH_STENCIL_DESC description{};
+			description.DepthEnable = (index & 1) != 0;
+			description.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+			description.DepthFunc = D3D11_COMPARISON_ALWAYS;
+			description.StencilEnable = (index & 2) != 0;
+			description.StencilReadMask = description.StencilWriteMask = 0xff;
+			description.FrontFace = {D3D11_STENCIL_OP_REPLACE, D3D11_STENCIL_OP_REPLACE, D3D11_STENCIL_OP_REPLACE,
+			                         D3D11_COMPARISON_ALWAYS};
+			description.BackFace = description.FrontFace;
+			result = d3dDevice->CreateDepthStencilState(&description, &viewportClear.depth[index]);
+		}
+		if (FAILED(result)) {
+			LogHRESULT(LogCategory::Resource, "CreateViewportClearPipeline", result);
+			viewportClear = ViewportClearPipeline{};
+		}
+		return result;
+	}
+
+	// SimGLDX7 cleared with IDirect3DDevice7::Clear(0, nullptr, ...), which clears the current viewport only.
+	// SC4 counts on that: a dirty rectangle or a strip uncovered by scrolling is cleared and redrawn on its
+	// own, and the rest of the frame, restored from the backing store, has to stay as it is.
+	void cGDriver::ClearViewport(bool color, UINT depthStencilFlags) {
+		if (deviceLost || (!viewportClear.vertexShader && FAILED(CreateViewportClearPipeline()))) return;
+
+		ViewportClearConstants constants{};
+		std::memcpy(constants.color, clearColor, sizeof(constants.color));
+		constants.depth = clearDepth;
+		d3dContext->UpdateSubresource(viewportClear.constants.Get(), 0, nullptr, &constants, 0, 0);
+
+		UINT viewportCount = 1;
+		D3D11_VIEWPORT savedViewport{};
+		d3dContext->RSGetViewports(&viewportCount, &savedViewport);
+		// Depth range 0 to 1, so the triangle's depth lands as it is. The scissor is still the viewport.
+		D3D11_VIEWPORT const fullViewport{
+			0.0f, 0.0f, static_cast<float>(windowWidth), static_cast<float>(windowHeight), 0.0f, 1.0f
+		};
+		int const depthState = ((depthStencilFlags & D3D11_CLEAR_DEPTH) != 0 ? 1 : 0) |
+		                       ((depthStencilFlags & D3D11_CLEAR_STENCIL) != 0 ? 2 : 0);
+		ID3D11Buffer *const buffer = viewportClear.constants.Get();
+		d3dContext->RSSetViewports(1, &fullViewport);
+		d3dContext->RSSetState(viewportClear.rasterizer.Get());
+		d3dContext->OMSetBlendState(viewportClear.blend[color ? 1 : 0].Get(), nullptr, 0xffffffff);
+		d3dContext->OMSetDepthStencilState(viewportClear.depth[depthState].Get(), clearStencil);
+		d3dContext->IASetInputLayout(nullptr);
+		d3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		d3dContext->VSSetShader(viewportClear.vertexShader.Get(), nullptr, 0);
+		d3dContext->VSSetConstantBuffers(0, 1, &buffer);
+		d3dContext->PSSetShader(viewportClear.pixelShader.Get(), nullptr, 0);
+		d3dContext->PSSetConstantBuffers(0, 1, &buffer);
+		d3dContext->Draw(3, 0);
+
+		if (viewportCount == 1) d3dContext->RSSetViewports(1, &savedViewport);
+		// Every binding above belongs to the geometry pipeline's caches. Force it to rebind.
+		InvalidateD3D11StateCache();
 	}
 
 	HRESULT cGDriver::CreateBlitPipeline() {

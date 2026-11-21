@@ -49,6 +49,8 @@ namespace {
 		 {kFlat, "nointerpolation", kDepth, "SV_DepthGreaterEqual"}},
 		{"kBlitVS", "cGDriver_Blit.cpp", "kBlitShaderSource", "VSMain", "vs_4_0"},
 		{"kBlitPS", "cGDriver_Blit.cpp", "kBlitShaderSource", "PSMain", "ps_4_0"},
+		{"kViewportClearVS", "cGDriver_Blit.cpp", "kViewportClearShader", "VSMain", "vs_4_0"},
+		{"kViewportClearPS", "cGDriver_Blit.cpp", "kViewportClearShader", "PSMain", "ps_4_0"},
 		{"kSceneDepthVS", "cGDriver_ReShade.cpp", "kShaderSource", "VSMain", "vs_4_0"},
 		{"kSceneDepthPS", "cGDriver_ReShade.cpp", "kShaderSource", "PSMain", "ps_4_0"},
 		{"kFrameRateVS", "cGDriver_FrameRate.cpp", "kFrameRateShader", "VSMain", "vs_4_0"},

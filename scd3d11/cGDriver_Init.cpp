@@ -404,6 +404,7 @@ namespace nSCD3D11 {
 		liveShadowWorldCasters.clear();
 		liveShadowWorldCastersValid = false;
 		blit = BlitPipeline{};
+		viewportClear = ViewportClearPipeline{};
 		++textureViewsGeneration;
 		if (preserveResources) {
 			for (auto &entry: textures) {

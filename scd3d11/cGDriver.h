@@ -756,6 +756,18 @@ namespace nSCD3D11 {
 			uint32_t textureHeight = 0;
 			std::vector<uint8_t> scratch;
 		} blit;
+		// Clear inside a partial viewport. ClearRenderTargetView and ClearDepthStencilView always clear the
+		// whole view, so this draws one triangle under the scissor instead.
+		struct ViewportClearPipeline {
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> constants;
+			Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+			Microsoft::WRL::ComPtr<ID3D11BlendState> blend[2];         // [writes colour]
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depth[4];  // [writes depth | writes stencil << 1]
+		} viewportClear;
+		HRESULT CreateViewportClearPipeline();
+		void ClearViewport(bool color, UINT depthStencilFlags);
 		// Toggled by Punt(0x6C4236E7): SC4 brackets a plain StretchBlt with it when the source
 		// carries per-pixel alpha that should blend.
 		bool blitUsesSourceAlpha;
