@@ -898,6 +898,22 @@ float4 CompositePS(float4 position : SV_POSITION) : SV_TARGET {
         return true;
     }
 
+    // SC4 draws the terrain in the static view and the water in the dynamic
+    // passes that follow, both through the vertex buffer extension. The dynamic
+    // shadow pass at the end of cSC43DRender::Draw takes what those passes
+    // captured, but it hangs on Draw's vtable slot. A plugin that calls Draw by
+    // address skips it, and the water's view and projection would then pass for
+    // the terrain's in the next static pass: after a zoom change the composite
+    // rebuilt every position at the old scale and shaded whatever landed under
+    // the terrain's shadow ceiling.
+    void cGDriver::BeginLiveShadowStaticPass() {
+        if (!LiveShadowHooks::Enabled()) return;
+        liveShadowTerrainViewValid = false;
+        liveShadowDraws.clear();
+        ShadowRegistry::Pass leftover;
+        ShadowRegistry::TakePass(leftover);
+    }
+
     void cGDriver::RenderLivePropShadows(bool staticPass) {
         if (!LiveShadowHooks::Enabled()) return;
         if (LiveShadowHooks::Paused()) {

@@ -40,6 +40,8 @@ namespace nSCD3D11 {
 		// The cSC43DRender vtable slot for cSC43DRender::Draw, its only reference (SimCity 4 1.1.641).
 		constexpr uintptr_t kDrawSlotVA = 0x00ABABB4;
 		constexpr uintptr_t kDrawVA = 0x007CB530;
+		// DrawPreStaticView opens every static-view submission and draws its terrain.
+		constexpr uintptr_t kDrawPreStaticViewVA = 0x007C3E90;
 		// DrawPostStaticView is called after every static-view submission, including
 		// dirty-rectangle updates, and before SC4 saves that image to its backing store.
 		constexpr uintptr_t kDrawPostStaticViewVA = 0x007C3ED0;
@@ -66,6 +68,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		DrawFunction gOriginalDraw = nullptr;
 		uintptr_t gDrawPostStaticViewRejoin = 0;
 		cGDriver *gDriver = nullptr;
+		uintptr_t gDrawPreStaticViewRejoin = 0;
 		reshade::api::effect_runtime *gRuntime = nullptr;
 		ID3D11ShaderResourceView *gSceneDepthView = nullptr;
 		bool gDepthBound = false;
@@ -187,6 +190,21 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			DrawPostStaticViewOriginal(self, edx);
 			if (gDriver != nullptr) gDriver->RenderLivePropShadows(true);
 		}
+
+		__declspec(naked) void __fastcall DrawPreStaticViewOriginal(void *, void *) {
+			__asm {
+				push esi
+				push edi
+				mov  edi, ecx
+				mov  eax, dword ptr [edi + 0x11c]
+				jmp  dword ptr [gDrawPreStaticViewRejoin]
+			}
+		}
+
+		void __fastcall DrawPreStaticViewHook(void *self, void *edx) {
+			if (gDriver != nullptr) gDriver->BeginLiveShadowStaticPass();
+			DrawPreStaticViewOriginal(self, edx);
+		}
 #endif
 
 		void OnReloadedEffects(reshade::api::effect_runtime *runtime) {
@@ -259,19 +277,19 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			return true;
 		}
 
-		bool PatchDrawPostStaticView(void *module) {
-#if defined(_MSC_VER) && defined(_M_IX86)
-			auto *const target = static_cast<uint8_t *>(module) + (kDrawPostStaticViewVA - kImageBase);
+		// DrawPreStaticView and DrawPostStaticView open with the same ten bytes.
+		bool PatchStaticViewEntry(void *module, uintptr_t virtualAddress, void *hook, uintptr_t &rejoin) {
+			auto *const target = static_cast<uint8_t *>(module) + (virtualAddress - kImageBase);
 			uint8_t const expected[]{0x56, 0x57, 0x8B, 0xF9, 0x8B, 0x87, 0x1C, 0x01, 0x00, 0x00};
-			if (!InImage(module, kDrawPostStaticViewVA, sizeof(expected))) return false;
+			if (!InImage(module, virtualAddress, sizeof(expected))) return false;
 			if (std::memcmp(target, expected, sizeof(expected)) != 0) return false;
 			uint8_t replacement[sizeof(expected)]{};
 			std::memset(replacement, 0x90, sizeof(replacement));
 			replacement[0] = 0xE9;
 			int32_t const displacement = static_cast<int32_t>(
-				reinterpret_cast<uintptr_t>(&DrawPostStaticViewHook) - (reinterpret_cast<uintptr_t>(target) + 5));
+				reinterpret_cast<uintptr_t>(hook) - (reinterpret_cast<uintptr_t>(target) + 5));
 			std::memcpy(replacement + 1, &displacement, sizeof(displacement));
-			gDrawPostStaticViewRejoin = reinterpret_cast<uintptr_t>(target + sizeof(expected));
+			rejoin = reinterpret_cast<uintptr_t>(target + sizeof(expected));
 			DWORD protection = 0;
 			if (!VirtualProtect(target, sizeof(expected), PAGE_EXECUTE_READWRITE, &protection)) return false;
 			std::memcpy(target, replacement, sizeof(replacement));
@@ -279,6 +297,22 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			VirtualProtect(target, sizeof(expected), protection, &ignored);
 			FlushInstructionCache(GetCurrentProcess(), target, sizeof(expected));
 			return true;
+		}
+
+		bool PatchDrawPostStaticView(void *module) {
+#if defined(_MSC_VER) && defined(_M_IX86)
+			return PatchStaticViewEntry(module, kDrawPostStaticViewVA,
+			                            reinterpret_cast<void *>(&DrawPostStaticViewHook), gDrawPostStaticViewRejoin);
+#else
+			(void)module;
+			return false;
+#endif
+		}
+
+		bool PatchDrawPreStaticView(void *module) {
+#if defined(_MSC_VER) && defined(_M_IX86)
+			return PatchStaticViewEntry(module, kDrawPreStaticViewVA,
+			                            reinterpret_cast<void *>(&DrawPreStaticViewHook), gDrawPreStaticViewRejoin);
 #else
 			(void)module;
 			return false;
@@ -308,6 +342,10 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		} else {
 			Log(LogCategory::Initialization,
 			    "live shadows: static pass hooked before SC4 backing-store save");
+		}
+		if (!PatchDrawPreStaticView(executable)) {
+			Log(LogCategory::Initialization,
+			    "live shadows: DrawPreStaticView byte guard failed; a static pass can start from a stale view");
 		}
 		if (!Settings::Get().reshade) return;
 
