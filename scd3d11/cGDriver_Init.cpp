@@ -396,6 +396,8 @@ namespace nSCD3D11 {
 		renderTargetViewSrgb.Reset();
 		renderTargetView.Reset();
 		backBufferTexture.Reset();
+		snapshotStaging.Reset();
+		snapshotStagingWidth = snapshotStagingHeight = 0;
 		swapChainBuffer.Reset();
 		sceneDepth = SceneDepthPipeline{};
 		liveShadows = LiveShadowPipeline{};
