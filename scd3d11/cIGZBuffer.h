@@ -40,6 +40,9 @@ public:
 		R8G8B8 = 8,
 		A8R8G8B8 = 9,
 	};
+
+	eColorType bufferType;
+	uint32_t bitsPerPixel;
 };
 
 class cIGZBuffer : public cIGZUnknown
@@ -64,8 +67,9 @@ public:
 	virtual uint32_t GetBufferArea() const = 0;
 	virtual uint32_t GetBufferArea(cRZRect& rect) const = 0;
 	virtual uint32_t GetMemoryUsage() const = 0;
-	virtual cGZBufferColorType::eColorType GetColorType() const = 0;
-	virtual uint8_t GetColorType(cGZBufferColorType::eColorType& bufferColorType) const = 0;
+	// The game returns the type and the bit depth together, through a hidden pointer (cGZBuffer 0x008268f0).
+	virtual cGZBufferColorType GetColorType() const = 0;
+	virtual void GetColorType(cGZBufferColorType& colorType) const = 0;
 	virtual uint32_t GetBitsPerPixel() const = 0;
 	virtual uint32_t GetBytesPerPixel() const = 0;
 
