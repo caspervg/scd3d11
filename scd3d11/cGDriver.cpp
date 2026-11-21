@@ -215,17 +215,29 @@ namespace nSCD3D11 {
 			return;
 		}
 
-		if (ClearsColor(mask) && renderTargetView) {
+		bool const color = ClearsColor(mask) && renderTargetView;
+		UINT const depthStencilFlags = depthStencilView ? D3D11DepthStencilClearFlags(mask) : 0;
+		if (color) {
 			++frameStats.colorClears;
 			if (!viewportCullActive) ++frameStats.fullClears;
+		}
+		if (depthStencilFlags != 0) depthRegionScratchValid = false;
+
+		// Like SimGLDX7, only the viewport is cleared (ClearViewport).
+		bool const partial = scissorEnabled && (viewportX > 0 || viewportY > 0 ||
+		                                        static_cast<int64_t>(viewportX) + viewportWidth < windowWidth ||
+		                                        static_cast<int64_t>(viewportY) + viewportHeight < windowHeight);
+		if (partial) {
+			if (color || depthStencilFlags != 0) ClearViewport(color, depthStencilFlags);
+			return;
+		}
+
+		if (color) {
 			d3dContext->ClearRenderTargetView(renderTargetView.Get(), clearColor);
 			reshadeEffectsInBackBuffer = false;
 		}
-
-		UINT const depthStencilFlags = D3D11DepthStencilClearFlags(mask);
-		if (depthStencilFlags != 0 && depthStencilView) {
+		if (depthStencilFlags != 0) {
 			d3dContext->ClearDepthStencilView(depthStencilView.Get(), depthStencilFlags, clearDepth, clearStencil);
-			depthRegionScratchValid = false;
 		}
 	}
 

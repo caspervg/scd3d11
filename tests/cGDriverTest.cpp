@@ -78,6 +78,43 @@ namespace nSCD3D11 {
 			assert(Pixel(1, 1) == 0xff0000ff);
 		}
 
+		// SimGLDX7 cleared the viewport only. With a partial viewport (a dirty rectangle or a scroll strip) the
+		// colour and depth outside it must stay, since SC4 restored them from its backing store.
+		void ClearsOnlyTheViewport() {
+			for (uint32_t mode: {0u, 1u}) {
+				d.MatrixMode(mode);
+				d.LoadIdentity();
+			}
+			d.MatrixMode(0);
+			d.SetViewport();
+			d.ClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+			d.ClearDepth(1.0);
+			d.Clear(0x4000 | 0x1000);
+
+			// SimGL coordinates: x 2-5, rows 2-5 from the bottom.
+			d.SetViewport(2, 2, 4, 4);
+			d.ClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+			d.ClearDepth(0.0);
+			d.Clear(0x4000 | 0x1000);
+			d.SetViewport();
+			int const bottom = d.windowHeight - 1;
+			assert(Pixel(3, bottom - 3) == 0xff0000ff);
+			assert(Pixel(1, bottom - 3) == 0x0000ffff);
+			assert(Pixel(6, bottom - 3) == 0x0000ffff);
+			assert(Pixel(3, bottom - 6) == 0x0000ffff);
+			assert(Pixel(1, 1) == 0x0000ffff);
+
+			// Depth: a draw that passes only in front of the far plane lands outside the cleared rectangle.
+			d.Enable(kGDCapability_DepthTest);
+			d.DepthFunc(1);
+			DrawFullscreen(0, 255, 0);
+			d.Disable(kGDCapability_DepthTest);
+			d.ClearDepth(1.0);
+			assert(Pixel(3, bottom - 3) == 0xff0000ff);
+			assert(Pixel(1, bottom - 3) == 0x00ff00ff);
+			assert(Pixel(1, 1) == 0x00ff00ff);
+		}
+
 		// Draws beyond one edge of a small scissored viewport are dropped. Everything else still draws.
 		void ViewportCullsOutsideDraws() {
 			for (uint32_t mode: {0u, 1u}) {
@@ -1600,6 +1637,7 @@ namespace nSCD3D11 {
 			DrawsStartAtTheirUpload();
 			ReleasedSegmentsClearTheUploadBuffers();
 			ViewportCullsOutsideDraws();
+			ClearsOnlyTheViewport();
 			IndexKeysDoNotAlias();
 			IndexUploadsUseFinalContents();
 			OversizedInputsFailBeforeReading();
