@@ -44,6 +44,9 @@ namespace nSCD3D11 {
 		// dirty-rectangle updates, and before SC4 saves that image to its backing store.
 		constexpr uintptr_t kDrawPostStaticViewVA = 0x007C3ED0;
 		constexpr uintptr_t kDrawPostStaticViewRejoinVA = 0x007C3EDA;
+		// The cSC43DRender vtable slot (+0xC4) for DrawViewportRectangle, its only reference.
+		constexpr uintptr_t kDrawViewportRectangleSlotVA = 0x00ABAC24;
+		constexpr uintptr_t kDrawViewportRectangleVA = 0x007C3400;
 
 		char const kShaderSource[] = R"(
 float4 VSMain(uint id : SV_VertexID) : SV_POSITION {
@@ -62,8 +65,13 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 )";
 
 		using DrawFunction = bool(__fastcall *)(void *self, void *edx);
+		// cSC43DRender::DrawViewportRectangle(rect, color, depthWrite, colorWrite), a thiscall.
+		using DrawViewportRectangleFunction = void(__fastcall *)(void *self, void *edx, void const *rect,
+		                                                         void const *color, uint32_t depthWrite,
+		                                                         uint32_t colorWrite);
 
 		DrawFunction gOriginalDraw = nullptr;
+		DrawViewportRectangleFunction gOriginalDrawViewportRectangle = nullptr;
 		uintptr_t gDrawPostStaticViewRejoin = 0;
 		cGDriver *gDriver = nullptr;
 		reshade::api::effect_runtime *gRuntime = nullptr;
@@ -172,6 +180,21 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			return drawn;
 		}
 
+		// cSC43DRender::ClearViewport never clears depth for a partial redraw (a dirty
+		// rectangle or a scroll strip). It draws this quad at z -32500 through the 2D
+		// camera instead, with depth func ALWAYS and depth writes on. A full redraw
+		// calls Clear(0x1000). The quad's depth is short of the far plane, so whatever
+		// writes no depth over it (the backdrop, plugin-drawn content) looked like
+		// a surface to the live shadow composite and was shaded. After a quad that
+		// writes depth, clear the viewport's depth the way a full redraw does. The
+		// quad's colour is left as it was.
+		void __fastcall DrawViewportRectangleHook(void *self, void *edx, void const *rect, void const *color,
+		                                          uint32_t depthWrite, uint32_t colorWrite) {
+			gOriginalDrawViewportRectangle(self, edx, rect, color, depthWrite, colorWrite);
+			// The game passes bools in 32-bit slots, so only the low byte is set.
+			if ((depthWrite & 0xFFu) != 0 && gDriver != nullptr) gDriver->Clear(0x1000);
+		}
+
 #if defined(_MSC_VER) && defined(_M_IX86)
 		__declspec(naked) void __fastcall DrawPostStaticViewOriginal(void *, void *) {
 			__asm {
@@ -247,11 +270,11 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			       virtualAddress - kImageBase + size <= nt->OptionalHeader.SizeOfImage;
 		}
 
-		bool PatchDrawSlot(void *replacement, void *expected) {
+		bool PatchSlot(uintptr_t slotVA, void *replacement, void *expected) {
 			void *const module = GetModuleHandleW(nullptr);
-			if (!InImage(module, kDrawSlotVA, sizeof(void *))) return false;
+			if (!InImage(module, slotVA, sizeof(void *))) return false;
 			auto *const slot = reinterpret_cast<void **>(
-				reinterpret_cast<uintptr_t>(module) + (kDrawSlotVA - kImageBase));
+				reinterpret_cast<uintptr_t>(module) + (slotVA - kImageBase));
 			DWORD protection = 0;
 			if (*slot != expected || !VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return false;
 			*slot = replacement;
@@ -296,12 +319,20 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		void *const executable = GetModuleHandleW(nullptr);
 		auto const draw = reinterpret_cast<void *>(
 			reinterpret_cast<uintptr_t>(executable) + (kDrawVA - kImageBase));
-		if (!PatchDrawSlot(reinterpret_cast<void *>(&DrawHook), draw)) {
+		if (!PatchSlot(kDrawSlotVA, reinterpret_cast<void *>(&DrawHook), draw)) {
 			Log(LogCategory::Initialization, "scene effects: cSC43DRender::Draw not found");
 			return;
 		}
 		gOriginalDraw = reinterpret_cast<DrawFunction>(draw);
 		gDriver = this;
+		auto const drawViewportRectangle = reinterpret_cast<void *>(
+			reinterpret_cast<uintptr_t>(executable) + (kDrawViewportRectangleVA - kImageBase));
+		if (PatchSlot(kDrawViewportRectangleSlotVA, reinterpret_cast<void *>(&DrawViewportRectangleHook),
+		              drawViewportRectangle)) {
+			gOriginalDrawViewportRectangle = reinterpret_cast<DrawViewportRectangleFunction>(drawViewportRectangle);
+		} else {
+			Log(LogCategory::Initialization, "partial redraws: DrawViewportRectangle not found");
+		}
 		if (!PatchDrawPostStaticView(executable)) {
 			Log(LogCategory::Initialization,
 			    "live shadows: DrawPostStaticView byte guard failed; using end-of-scene fallback");
